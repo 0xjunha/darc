@@ -1,0 +1,17 @@
+[workspace]
+resolver = "3"
+
+members = [
+    "crates/cli",
+    "crates/core",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Junha Park <0xjunha@gmail.com>"]
+repository = "https://github.com/0xjunha/memstack"
+
+[workspace.dependencies]
+memstack-core = { path = "crates/core" }
