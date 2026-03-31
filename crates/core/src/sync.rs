@@ -586,6 +586,7 @@ fn discover_codex_sessions(
 ) -> Result<CodexDiscovery> {
     let archived_root = source.home.join("archived_sessions");
     let mut candidates = BTreeMap::<String, Vec<CodexCandidate>>::new();
+    let mut repo_cache = CodexRepoCache::default();
 
     for root in [&source.sessions_root, &archived_root] {
         if !root.exists() {
@@ -623,7 +624,7 @@ fn discover_codex_sessions(
                 }
             };
 
-            let meta = match extract_codex_session_meta(path) {
+            let (meta, matches_project) = match extract_codex_session_meta(path) {
                 Ok(Some(meta)) => {
                     if meta.id != session_id {
                         warnings.push(format!(
@@ -633,26 +634,36 @@ fn discover_codex_sessions(
                             meta.id
                         ));
                     }
-                    Some(meta)
+                    let repo_root = repo_cache.repo_root(&meta.cwd);
+                    let matches_project = codex_session_matches_project(
+                        &repo_root,
+                        project_paths,
+                        project_upstream,
+                        &mut repo_cache,
+                    );
+                    (
+                        Some(CodexSessionMeta {
+                            id: meta.id,
+                            cwd: repo_root,
+                        }),
+                        matches_project,
+                    )
                 }
                 Ok(None) => {
                     warnings.push(format!(
                         "skipped Codex session meta match for {}: first line was not session_meta",
                         path.display()
                     ));
-                    None
+                    (None, false)
                 }
                 Err(error) => {
                     warnings.push(format!(
                         "failed to parse Codex session meta from {}: {error:#}",
                         path.display()
                     ));
-                    None
+                    (None, false)
                 }
             };
-            let matches_project = meta.as_ref().is_some_and(|meta| {
-                codex_session_matches_project(&meta.cwd, project_paths, project_upstream)
-            });
 
             candidates
                 .entry(session_id.clone())
@@ -688,13 +699,15 @@ fn discover_codex_sessions(
 
 /// Returns whether a Codex session belongs to the active project.
 fn codex_session_matches_project(
-    cwd: &Path,
+    repo_root: &Path,
     project_paths: &BTreeSet<PathBuf>,
     project_upstream: Option<&str>,
+    repo_cache: &mut CodexRepoCache,
 ) -> bool {
-    project_paths.contains(cwd)
-        || project_upstream
-            .is_some_and(|upstream| git_remote_origin(cwd).as_deref() == Some(upstream))
+    project_paths.contains(repo_root)
+        || project_upstream.is_some_and(|upstream| {
+            repo_cache.remote_origin(repo_root).as_deref() == Some(upstream)
+        })
 }
 
 /// Chooses the winning Codex copy for one logical session id.
@@ -731,18 +744,8 @@ fn extract_codex_session_meta(path: &Path) -> Result<Option<CodexSessionMeta>> {
 
     Ok(Some(CodexSessionMeta {
         id: envelope.payload.id,
-        cwd: normalize_codex_cwd(&envelope.payload.cwd),
+        cwd: normalize_project_path(&envelope.payload.cwd),
     }))
-}
-
-/// Normalizes a Codex cwd to the repo root when one is available.
-fn normalize_codex_cwd(path: &Path) -> PathBuf {
-    current_project_root(path).unwrap_or_else(|_| normalize_project_path(path))
-}
-
-/// Reads the configured git remote used to recognize equivalent checkouts.
-fn git_remote_origin(path: &Path) -> Option<String> {
-    try_git_output(path, &["config", "--get", "remote.origin.url"])
 }
 
 /// Extracts the logical Codex session id from a rollout filename.
@@ -1003,6 +1006,39 @@ struct CodexCandidate {
     matches_project: bool,
     size: u64,
     mtime_ms: u64,
+}
+
+/// Caches Codex repo lookups for one sync run.
+#[derive(Debug, Default)]
+struct CodexRepoCache {
+    repo_root_by_cwd: BTreeMap<PathBuf, PathBuf>,
+    remote_origin_by_root: BTreeMap<PathBuf, Option<String>>,
+}
+
+impl CodexRepoCache {
+    /// Resolves the repo root for one reported Codex cwd.
+    fn repo_root(&mut self, cwd: &Path) -> PathBuf {
+        let cwd = normalize_project_path(cwd);
+        if let Some(repo_root) = self.repo_root_by_cwd.get(&cwd) {
+            return repo_root.clone();
+        }
+
+        let repo_root = current_project_root(&cwd).unwrap_or_else(|_| cwd.clone());
+        self.repo_root_by_cwd.insert(cwd, repo_root.clone());
+        repo_root
+    }
+
+    /// Resolves the git origin for one repo root.
+    fn remote_origin(&mut self, repo_root: &Path) -> Option<String> {
+        if let Some(remote_origin) = self.remote_origin_by_root.get(repo_root) {
+            return remote_origin.clone();
+        }
+
+        let remote_origin = try_git_output(repo_root, &["config", "--get", "remote.origin.url"]);
+        self.remote_origin_by_root
+            .insert(repo_root.to_path_buf(), remote_origin.clone());
+        remote_origin
+    }
 }
 
 /// Stores file metadata used for change detection.
