@@ -7,4 +7,6 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
 memstack-core = { workspace = true }
