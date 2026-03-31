@@ -110,11 +110,13 @@ fn run_sync(args: SyncArgs) -> Result<()> {
     println!("Sources: {}", format_sources(&plan.sources));
     println!(
         "Sessions: {} to copy, {} unchanged",
-        plan.sessions_to_copy, plan.sessions_unchanged
+        plan.sessions_to_copy(),
+        plan.sessions_unchanged
     );
     println!(
         "Auxiliary: {} to copy, {} unchanged",
-        plan.auxiliary_to_copy, plan.auxiliary_unchanged
+        plan.auxiliary_to_copy(),
+        plan.auxiliary_unchanged
     );
     if !plan.new_known_paths.is_empty() {
         println!("Known paths: {} new", plan.new_known_paths.len());

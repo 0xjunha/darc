@@ -40,20 +40,33 @@ pub struct SyncPlan {
     pub project_root: PathBuf,
     pub sessions_root: PathBuf,
     pub sources: Vec<SourceKind>,
-    pub sessions_to_copy: usize,
     pub sessions_unchanged: usize,
-    pub auxiliary_to_copy: usize,
     pub auxiliary_unchanged: usize,
     pub new_known_paths: Vec<PathBuf>,
     pub warnings: Vec<String>,
-    pub manifest_written: bool,
-    pub config_written: bool,
-    manifest_path: PathBuf,
-    config_path: PathBuf,
-    manifest: Manifest,
-    config_toml: Option<String>,
-    session_copies: Vec<PendingCopy>,
-    auxiliary_copies: Vec<PendingCopy>,
+    writes: PreparedSyncWrites,
+}
+
+impl SyncPlan {
+    /// Returns how many parent session files this sync would copy.
+    pub fn sessions_to_copy(&self) -> usize {
+        self.writes.session_copies.len()
+    }
+
+    /// Returns how many auxiliary files this sync would copy.
+    pub fn auxiliary_to_copy(&self) -> usize {
+        self.writes.auxiliary_copies.len()
+    }
+
+    /// Returns whether executing this plan would rewrite the manifest.
+    pub fn manifest_written(&self) -> bool {
+        self.writes.manifest_written
+    }
+
+    /// Returns whether executing this plan would rewrite the shared config.
+    pub fn config_written(&self) -> bool {
+        self.writes.config_toml.is_some()
+    }
 }
 
 /// Reports the results of an executed sync.
@@ -86,32 +99,53 @@ pub fn prepare_sync(root: Option<PathBuf>, options: SyncOptions) -> Result<SyncP
 
 /// Executes a prepared sync by copying files and atomically updating metadata.
 pub fn execute_sync(plan: SyncPlan) -> Result<SyncReport> {
-    for copy in &plan.session_copies {
+    let SyncPlan {
+        project_name,
+        project_root,
+        sessions_root,
+        sources,
+        sessions_unchanged,
+        auxiliary_unchanged,
+        new_known_paths,
+        warnings,
+        writes,
+    } = plan;
+    let PreparedSyncWrites {
+        manifest_written,
+        manifest_path,
+        config_path,
+        manifest,
+        config_toml,
+        session_copies,
+        auxiliary_copies,
+    } = writes;
+
+    for copy in &session_copies {
         copy_file_atomically(&copy.source_path, &copy.destination_path)?;
     }
-    for copy in &plan.auxiliary_copies {
+    for copy in &auxiliary_copies {
         copy_file_atomically(&copy.source_path, &copy.destination_path)?;
     }
-    if plan.manifest_written {
-        write_json_atomically(&plan.manifest_path, &plan.manifest)?;
+    if manifest_written {
+        write_json_atomically(&manifest_path, &manifest)?;
     }
-    if let Some(config_toml) = &plan.config_toml {
-        write_text_atomically(&plan.config_path, config_toml)?;
+    if let Some(config_toml) = &config_toml {
+        write_text_atomically(&config_path, config_toml)?;
     }
 
     Ok(SyncReport {
-        project_name: plan.project_name,
-        project_root: plan.project_root,
-        sessions_root: plan.sessions_root,
-        sources: plan.sources,
-        sessions_copied: plan.session_copies.len(),
-        sessions_unchanged: plan.sessions_unchanged,
-        auxiliary_copied: plan.auxiliary_copies.len(),
-        auxiliary_unchanged: plan.auxiliary_unchanged,
-        new_known_paths: plan.new_known_paths,
-        warnings: plan.warnings,
-        manifest_written: plan.manifest_written,
-        config_written: plan.config_written,
+        project_name,
+        project_root,
+        sessions_root,
+        sources,
+        sessions_copied: session_copies.len(),
+        sessions_unchanged,
+        auxiliary_copied: auxiliary_copies.len(),
+        auxiliary_unchanged,
+        new_known_paths,
+        warnings,
+        manifest_written,
+        config_written: config_toml.is_some(),
     })
 }
 
@@ -245,20 +279,19 @@ fn prepare_sync_from(current_dir: &Path, root: PathBuf, options: SyncOptions) ->
         project_root: current_root,
         sessions_root: project.sessions_root,
         sources,
-        sessions_to_copy: session_copies.len(),
         sessions_unchanged,
-        auxiliary_to_copy: auxiliary_copies.len(),
         auxiliary_unchanged,
         new_known_paths,
         warnings,
-        manifest_written,
-        config_written: config_toml.is_some(),
-        manifest_path,
-        config_path,
-        manifest,
-        config_toml,
-        session_copies,
-        auxiliary_copies,
+        writes: PreparedSyncWrites {
+            manifest_written,
+            manifest_path,
+            config_path,
+            manifest,
+            config_toml,
+            session_copies,
+            auxiliary_copies,
+        },
     })
 }
 
@@ -1008,6 +1041,18 @@ struct CodexCandidate {
     mtime_ms: u64,
 }
 
+/// Stores the private write operations captured during sync planning.
+#[derive(Debug, Clone)]
+struct PreparedSyncWrites {
+    manifest_written: bool,
+    manifest_path: PathBuf,
+    config_path: PathBuf,
+    manifest: Manifest,
+    config_toml: Option<String>,
+    session_copies: Vec<PendingCopy>,
+    auxiliary_copies: Vec<PendingCopy>,
+}
+
 /// Caches Codex repo lookups for one sync run.
 #[derive(Debug, Default)]
 struct CodexRepoCache {
@@ -1427,7 +1472,7 @@ mod tests {
         let plan = prepare_sync_from(&project_root, memstack_root.clone(), SyncOptions::default())?;
 
         assert!(plan.new_known_paths.is_empty());
-        assert!(plan.config_written);
+        assert!(plan.config_written());
 
         let report = execute_sync(plan)?;
 
@@ -1499,8 +1544,8 @@ mod tests {
 
         let plan = prepare_sync_from(&project_root, memstack_root.clone(), SyncOptions::default())?;
 
-        assert_eq!(plan.sessions_to_copy, 2);
-        assert_eq!(plan.auxiliary_to_copy, 1);
+        assert_eq!(plan.sessions_to_copy(), 2);
+        assert_eq!(plan.auxiliary_to_copy(), 1);
         assert!(plan.new_known_paths.is_empty());
 
         let report = execute_sync(plan)?;
@@ -1546,12 +1591,12 @@ mod tests {
         assert!(config_after.projects[0].known_paths.is_empty());
 
         let second_plan = prepare_sync_from(&project_root, memstack_root, SyncOptions::default())?;
-        assert_eq!(second_plan.sessions_to_copy, 0);
-        assert_eq!(second_plan.auxiliary_to_copy, 0);
+        assert_eq!(second_plan.sessions_to_copy(), 0);
+        assert_eq!(second_plan.auxiliary_to_copy(), 0);
         assert_eq!(second_plan.sessions_unchanged, 2);
         assert_eq!(second_plan.auxiliary_unchanged, 1);
-        assert!(!second_plan.manifest_written);
-        assert!(!second_plan.config_written);
+        assert!(!second_plan.manifest_written());
+        assert!(!second_plan.config_written());
 
         Ok(())
     }
@@ -1604,7 +1649,7 @@ mod tests {
         let plan = prepare_sync_from(&project_root, memstack_root.clone(), SyncOptions::default())?;
 
         assert_eq!(plan.project_root, canonical_project_root);
-        assert_eq!(plan.sessions_to_copy, 1);
+        assert_eq!(plan.sessions_to_copy(), 1);
         assert_eq!(plan.new_known_paths, vec![canonical_related_root.clone()]);
 
         let report = execute_sync(plan)?;
