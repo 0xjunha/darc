@@ -167,6 +167,7 @@ fn prepare_sync_from(current_dir: &Path, root: PathBuf, options: SyncOptions) ->
     let project = config.projects[project_index].clone();
     let primary_project_path = normalize_project_path(&project.local_path);
     let full_project_paths = project_path_set(&current_root, &project.known_paths)?;
+    let other_project_paths = other_configured_project_paths(&config.projects, project_index);
     let project_upstream = try_git_output(&current_root, &["config", "--get", "remote.origin.url"])
         .or(project.git_upstream.clone());
     let sources = selected_sources(&config, &options.source_filter)?;
@@ -196,6 +197,7 @@ fn prepare_sync_from(current_dir: &Path, root: PathBuf, options: SyncOptions) ->
                         codex,
                         &full_project_paths,
                         project_upstream.as_deref(),
+                        &other_project_paths,
                         &mut warnings,
                     )?;
                     for session in &discovery.sessions {
@@ -271,8 +273,7 @@ fn find_project_index(
     let mut matches = Vec::new();
 
     for (index, project) in projects.iter().enumerate() {
-        let mut project_paths = normalized_known_paths(&project.local_path, &project.known_paths);
-        project_paths.insert(normalize_project_path(&project.local_path));
+        let project_paths = configured_project_paths(project);
         if !project_paths.is_disjoint(current_paths) {
             matches.push(index);
         }
@@ -290,6 +291,26 @@ fn find_project_index(
             bail!("current directory matched multiple configured projects: {names}")
         }
     }
+}
+
+/// Returns the configured primary and known paths for one project.
+fn configured_project_paths(project: &ProjectConfig) -> BTreeSet<PathBuf> {
+    let mut project_paths = normalized_known_paths(&project.local_path, &project.known_paths);
+    project_paths.insert(normalize_project_path(&project.local_path));
+    project_paths
+}
+
+/// Returns the configured paths owned by projects other than the active project.
+fn other_configured_project_paths(
+    projects: &[ProjectConfig],
+    active_index: usize,
+) -> BTreeSet<PathBuf> {
+    projects
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != active_index)
+        .flat_map(|(_, project)| configured_project_paths(project))
+        .collect()
 }
 
 /// Resolves the enabled source list after applying any CLI filter.
@@ -583,6 +604,7 @@ fn discover_codex_sessions(
     source: &CodexSourceConfig,
     project_paths: &BTreeSet<PathBuf>,
     project_upstream: Option<&str>,
+    other_project_paths: &BTreeSet<PathBuf>,
     warnings: &mut Vec<String>,
 ) -> Result<CodexDiscovery> {
     let archived_root = source.home.join("archived_sessions");
@@ -614,7 +636,7 @@ fn discover_codex_sessions(
                 ));
                 continue;
             };
-            let Some(session_id) = parse_codex_ulid(file_name) else {
+            let Some(session_id) = parse_codex_session_id(file_name) else {
                 continue;
             };
             let snapshot = match file_snapshot(path) {
@@ -625,44 +647,49 @@ fn discover_codex_sessions(
                 }
             };
 
-            let (meta, matches_project) = match extract_codex_session_meta(path) {
+            let (repo_root, matches_project) = match extract_codex_session_meta(path) {
                 Ok(Some(meta)) => {
                     if meta.id != session_id {
                         warnings.push(format!(
-                            "Codex session id mismatch in {}: filename={} payload={}",
+                            "skipped Codex session with mismatched ids in {}: filename={} payload={}",
                             path.display(),
                             session_id,
                             meta.id
                         ));
+                        continue;
                     }
                     let repo_root = repo_cache.repo_root(&meta.cwd);
+                    if !project_paths.contains(&repo_root)
+                        && other_project_paths.contains(&repo_root)
+                    {
+                        warnings.push(format!(
+                            "skipped Codex session in {} because repo {} is already configured for another project",
+                            path.display(),
+                            repo_root.display()
+                        ));
+                        continue;
+                    }
                     let matches_project = codex_session_matches_project(
                         &repo_root,
                         project_paths,
                         project_upstream,
                         &mut repo_cache,
                     );
-                    (
-                        Some(CodexSessionMeta {
-                            id: meta.id,
-                            cwd: repo_root,
-                        }),
-                        matches_project,
-                    )
+                    (repo_root, matches_project)
                 }
                 Ok(None) => {
                     warnings.push(format!(
                         "skipped Codex session meta match for {}: first line was not session_meta",
                         path.display()
                     ));
-                    (None, false)
+                    continue;
                 }
                 Err(error) => {
                     warnings.push(format!(
                         "failed to parse Codex session meta from {}: {error:#}",
                         path.display()
                     ));
-                    (None, false)
+                    continue;
                 }
             };
 
@@ -673,7 +700,7 @@ fn discover_codex_sessions(
                     session_id,
                     source_path: path.to_path_buf(),
                     archive_path: PathBuf::from(SourceKind::Codex.directory_name()).join(file_name),
-                    meta,
+                    repo_root,
                     matches_project,
                     size: snapshot.size,
                     mtime_ms: snapshot.mtime_ms,
@@ -689,7 +716,7 @@ fn discover_codex_sessions(
             provider: SourceKind::Codex,
             source_path: candidate.source_path.clone(),
             archive_path: candidate.archive_path.clone(),
-            cwd: candidate.meta.as_ref().map(|meta| meta.cwd.clone()),
+            cwd: Some(candidate.repo_root.clone()),
             size: candidate.size,
             mtime_ms: candidate.mtime_ms,
         })
@@ -713,13 +740,9 @@ fn codex_session_matches_project(
 
 /// Chooses the winning Codex copy for one logical session id.
 fn select_codex_candidate(candidates: &[CodexCandidate]) -> Option<CodexCandidate> {
-    if !candidates.iter().any(|candidate| candidate.matches_project) {
-        return None;
-    }
-
     candidates
         .iter()
-        .filter(|candidate| candidate.matches_project && candidate.meta.is_some())
+        .filter(|candidate| candidate.matches_project)
         .max_by(|left, right| {
             left.size
                 .cmp(&right.size)
@@ -742,15 +765,17 @@ fn extract_codex_session_meta(path: &Path) -> Result<Option<CodexSessionMeta>> {
     if envelope.event_type.as_deref() != Some("session_meta") {
         return Ok(None);
     }
+    let payload: CodexSessionMetaPayload = serde_json::from_value(envelope.payload)
+        .context("failed to deserialize session_meta payload")?;
 
     Ok(Some(CodexSessionMeta {
-        id: envelope.payload.id,
-        cwd: normalize_project_path(&envelope.payload.cwd),
+        id: payload.id,
+        cwd: normalize_project_path(&payload.cwd),
     }))
 }
 
 /// Extracts the logical Codex session id from a rollout filename.
-fn parse_codex_ulid(file_name: &str) -> Option<String> {
+fn parse_codex_session_id(file_name: &str) -> Option<String> {
     let trimmed = file_name.strip_prefix("rollout-")?.strip_suffix(".jsonl")?;
     let start = trimmed.len().checked_sub(36)?;
     (start > 0 && trimmed.as_bytes().get(start - 1) == Some(&b'-'))
@@ -1069,7 +1094,7 @@ struct CodexCandidate {
     session_id: String,
     source_path: PathBuf,
     archive_path: PathBuf,
-    meta: Option<CodexSessionMeta>,
+    repo_root: PathBuf,
     matches_project: bool,
     size: u64,
     mtime_ms: u64,
@@ -1251,7 +1276,8 @@ impl ManifestAuxiliaryEntry {
 struct CodexSessionMetaEnvelope {
     #[serde(rename = "type")]
     event_type: Option<String>,
-    payload: CodexSessionMetaPayload,
+    #[serde(default)]
+    payload: serde_json::Value,
 }
 
 /// Deserializes the `payload` field from a Codex `session_meta` line.
@@ -1344,8 +1370,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_codex_ulid_reads_logical_id() {
-        let id = parse_codex_ulid(
+    fn parse_codex_session_id_reads_logical_id() {
+        let id = parse_codex_session_id(
             "rollout-2026-03-27T17-53-08-019d2e7f-4e07-7940-8d37-0a04e9aeb621.jsonl",
         );
 
@@ -1365,6 +1391,22 @@ mod tests {
 
         assert_eq!(meta.cwd, PathBuf::from("/tmp/demo/repo"));
         assert_eq!(meta.id, "x");
+
+        Ok(())
+    }
+
+    #[test]
+    fn extract_codex_session_meta_ignores_non_meta_first_line() -> Result<()> {
+        let dir = unique_test_dir("codex-non-meta");
+        let rollout = dir.join("rollout.jsonl");
+        write_file(
+            &rollout,
+            "{\"type\":\"message\",\"payload\":{\"text\":\"hello\"}}\n",
+        )?;
+
+        let meta = extract_codex_session_meta(&rollout)?;
+
+        assert!(meta.is_none());
 
         Ok(())
     }
@@ -1436,10 +1478,7 @@ mod tests {
             session_id: "id".into(),
             source_path: PathBuf::from("/tmp/a"),
             archive_path: PathBuf::from("codex/a.jsonl"),
-            meta: Some(CodexSessionMeta {
-                id: "id".into(),
-                cwd: PathBuf::from("/tmp/project"),
-            }),
+            repo_root: PathBuf::from("/tmp/project"),
             matches_project: true,
             size: 10,
             mtime_ms: 20,
@@ -1449,13 +1488,13 @@ mod tests {
             mtime_ms: 10,
             ..matching.clone()
         };
-        let broken = CodexCandidate {
-            meta: None,
+        let other_project = CodexCandidate {
             size: 100,
+            matches_project: false,
             ..matching.clone()
         };
 
-        let candidates = [matching, larger.clone(), broken];
+        let candidates = [matching, larger.clone(), other_project];
         let winner = select_codex_candidate(&candidates).expect("winner");
 
         assert_eq!(winner.size, larger.size);
@@ -1748,6 +1787,121 @@ mod tests {
         assert_eq!(
             config_after.projects[0].known_paths,
             vec![canonical_related_root]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn prepare_sync_skips_mismatched_codex_session_ids() -> Result<()> {
+        let workspace = unique_test_dir("sync-codex-id-mismatch");
+        let project_root = workspace.join("repo");
+        let memstack_root = workspace.join("memstack");
+        let claude_home = workspace.join("claude");
+        let claude_projects = claude_home.join("projects");
+        let codex_home = workspace.join("codex");
+        let codex_sessions_root = codex_home.join("sessions");
+        let codex_sessions = codex_sessions_root.join("2026/04/01");
+        fs::create_dir_all(&project_root)?;
+        fs::create_dir_all(&claude_projects)?;
+        fs::create_dir_all(&codex_sessions)?;
+        let canonical_project_root = fs::canonicalize(&project_root)?;
+
+        let config = sample_config(
+            &memstack_root,
+            &project_root,
+            &claude_home,
+            &claude_projects,
+            &codex_home,
+            &codex_sessions_root,
+        );
+        fs::create_dir_all(&memstack_root)?;
+        write_file(
+            &memstack_root.join(CONFIG_FILE_NAME),
+            &toml::to_string_pretty(&config)?,
+        )?;
+
+        write_file(
+            &codex_sessions
+                .join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
+            &format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e40\",\"cwd\":\"{}\"}}}}\n{{\"type\":\"message\"}}\n",
+                canonical_project_root.display()
+            ),
+        )?;
+
+        let plan = prepare_sync_from(&project_root, memstack_root, SyncOptions::default())?;
+
+        assert_eq!(plan.sessions_to_copy(), 0);
+        assert_eq!(plan.sessions_unchanged, 0);
+        assert!(
+            plan.warnings
+                .iter()
+                .any(|warning| warning.contains("mismatched ids"))
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn prepare_sync_skips_codex_checkout_owned_by_other_project() -> Result<()> {
+        let workspace = unique_test_dir("sync-codex-other-project");
+        let remote = "https://example.com/acme/memstack.git";
+        let project_root = workspace.join("repo-a");
+        let related_root = workspace.join("repo-b");
+        let related_subdir = related_root.join("nested");
+        let memstack_root = workspace.join("memstack");
+        let claude_home = workspace.join("claude");
+        let claude_projects = claude_home.join("projects");
+        let codex_home = workspace.join("codex");
+        let codex_sessions_root = codex_home.join("sessions");
+        let codex_sessions = codex_sessions_root.join("2026/04/01");
+        fs::create_dir_all(&claude_projects)?;
+        fs::create_dir_all(&codex_sessions)?;
+        init_git_repo(&project_root, remote)?;
+        init_git_repo(&related_root, remote)?;
+        fs::create_dir_all(&related_subdir)?;
+
+        let mut config = sample_config(
+            &memstack_root,
+            &project_root,
+            &claude_home,
+            &claude_projects,
+            &codex_home,
+            &codex_sessions_root,
+        );
+        config.projects[0].git_upstream = Some(remote.into());
+        config.projects.push(ProjectConfig {
+            id: "repo-b-def456".into(),
+            name: "repo-b".into(),
+            local_path: related_root.clone(),
+            git_upstream: Some(remote.into()),
+            sessions_root: memstack_root.join("projects/repo-b-def456/sessions"),
+            known_paths: Vec::new(),
+        });
+        fs::create_dir_all(&memstack_root)?;
+        write_file(
+            &memstack_root.join(CONFIG_FILE_NAME),
+            &toml::to_string_pretty(&config)?,
+        )?;
+
+        write_file(
+            &codex_sessions
+                .join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
+            &format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\"}}}}\n{{\"type\":\"message\"}}\n",
+                related_subdir.display()
+            ),
+        )?;
+
+        let plan = prepare_sync_from(&project_root, memstack_root, SyncOptions::default())?;
+
+        assert_eq!(plan.sessions_to_copy(), 0);
+        assert!(plan.new_known_paths.is_empty());
+        assert!(
+            plan.warnings
+                .iter()
+                .any(|warning| warning.contains("already configured for another project"))
         );
 
         Ok(())
