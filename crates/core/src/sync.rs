@@ -212,52 +212,20 @@ fn prepare_sync_from(current_dir: &Path, root: PathBuf, options: SyncOptions) ->
     }
 
     let mut manifest_written = false;
-    let mut session_copies = Vec::new();
-    let mut sessions_unchanged = 0;
-    for session in discovered_sessions {
-        let existing = manifest.sessions.get(&session.id);
-        let should_copy = existing
-            .is_none_or(|entry| entry.size != session.size || entry.mtime_ms != session.mtime_ms);
-        if !should_copy {
-            sessions_unchanged += 1;
-        }
-        if should_copy || existing.is_none_or(|entry| !entry.matches(&session)) {
-            manifest_written = true;
-            manifest
-                .sessions
-                .insert(session.id.clone(), session.manifest_entry(&synced_at));
-        }
-        if should_copy {
-            session_copies.push(PendingCopy {
-                source_path: session.source_path,
-                destination_path: project.sessions_root.join(&session.archive_path),
-            });
-        }
-    }
-
-    let mut auxiliary_copies = Vec::new();
-    let mut auxiliary_unchanged = 0;
-    for auxiliary in discovered_auxiliary {
-        let existing = manifest.auxiliary.get(&auxiliary.key);
-        let should_copy = existing.is_none_or(|entry| {
-            entry.size != auxiliary.size || entry.mtime_ms != auxiliary.mtime_ms
-        });
-        if !should_copy {
-            auxiliary_unchanged += 1;
-        }
-        if should_copy || existing.is_none_or(|entry| !entry.matches(&auxiliary)) {
-            manifest_written = true;
-            manifest
-                .auxiliary
-                .insert(auxiliary.key.clone(), auxiliary.manifest_entry(&synced_at));
-        }
-        if should_copy {
-            auxiliary_copies.push(PendingCopy {
-                source_path: auxiliary.source_path,
-                destination_path: project.sessions_root.join(&auxiliary.archive_path),
-            });
-        }
-    }
+    let (session_copies, sessions_unchanged) = plan_manifest_updates(
+        discovered_sessions,
+        &mut manifest.sessions,
+        &synced_at,
+        &project.sessions_root,
+        &mut manifest_written,
+    );
+    let (auxiliary_copies, auxiliary_unchanged) = plan_manifest_updates(
+        discovered_auxiliary,
+        &mut manifest.auxiliary,
+        &synced_at,
+        &project.sessions_root,
+        &mut manifest_written,
+    );
 
     let previous_known_paths = normalized_known_paths(&project.local_path, &project.known_paths);
     let normalized_known_paths_vec: Vec<_> = previous_known_paths.iter().cloned().collect();
@@ -998,6 +966,39 @@ impl DiscoveredSession {
     }
 }
 
+impl ManifestArtifact for DiscoveredSession {
+    type Entry = ManifestSessionEntry;
+    type Key = String;
+
+    /// Returns the manifest key for one discovered session.
+    fn key(&self) -> &Self::Key {
+        &self.id
+    }
+
+    /// Returns whether the discovered session still needs copying.
+    fn should_copy(&self, entry: &Self::Entry) -> bool {
+        entry.size != self.size || entry.mtime_ms != self.mtime_ms
+    }
+
+    /// Returns whether the manifest entry still matches the discovered session.
+    fn matches_entry(&self, entry: &Self::Entry) -> bool {
+        entry.matches(self)
+    }
+
+    /// Builds the manifest entry for one discovered session.
+    fn manifest_entry(&self, synced_at: &str) -> Self::Entry {
+        DiscoveredSession::manifest_entry(self, synced_at)
+    }
+
+    /// Builds a pending copy for one discovered session.
+    fn into_pending_copy(self, sessions_root: &Path) -> PendingCopy {
+        PendingCopy {
+            source_path: self.source_path,
+            destination_path: sessions_root.join(self.archive_path),
+        }
+    }
+}
+
 /// Stores one discovered Claude auxiliary artifact before manifest diffing.
 #[derive(Debug, Clone)]
 struct DiscoveredAuxiliary {
@@ -1018,6 +1019,39 @@ impl DiscoveredAuxiliary {
             size: self.size,
             mtime_ms: self.mtime_ms,
             synced_at: synced_at.to_owned(),
+        }
+    }
+}
+
+impl ManifestArtifact for DiscoveredAuxiliary {
+    type Entry = ManifestAuxiliaryEntry;
+    type Key = String;
+
+    /// Returns the manifest key for one discovered auxiliary file.
+    fn key(&self) -> &Self::Key {
+        &self.key
+    }
+
+    /// Returns whether the discovered auxiliary file still needs copying.
+    fn should_copy(&self, entry: &Self::Entry) -> bool {
+        entry.size != self.size || entry.mtime_ms != self.mtime_ms
+    }
+
+    /// Returns whether the manifest entry still matches the discovered auxiliary file.
+    fn matches_entry(&self, entry: &Self::Entry) -> bool {
+        entry.matches(self)
+    }
+
+    /// Builds the manifest entry for one discovered auxiliary file.
+    fn manifest_entry(&self, synced_at: &str) -> Self::Entry {
+        DiscoveredAuxiliary::manifest_entry(self, synced_at)
+    }
+
+    /// Builds a pending copy for one discovered auxiliary file.
+    fn into_pending_copy(self, sessions_root: &Path) -> PendingCopy {
+        PendingCopy {
+            source_path: self.source_path,
+            destination_path: sessions_root.join(self.archive_path),
         }
     }
 }
@@ -1084,6 +1118,60 @@ impl CodexRepoCache {
             .insert(repo_root.to_path_buf(), remote_origin.clone());
         remote_origin
     }
+}
+
+/// Describes one discovered artifact that can update the sync manifest.
+trait ManifestArtifact {
+    type Entry;
+    type Key: Clone + Ord;
+
+    /// Returns the manifest key for one discovered artifact.
+    fn key(&self) -> &Self::Key;
+
+    /// Returns whether the discovered artifact still needs copying.
+    fn should_copy(&self, entry: &Self::Entry) -> bool;
+
+    /// Returns whether the manifest entry still matches the discovered artifact.
+    fn matches_entry(&self, entry: &Self::Entry) -> bool;
+
+    /// Builds the manifest entry for one discovered artifact.
+    fn manifest_entry(&self, synced_at: &str) -> Self::Entry;
+
+    /// Builds a pending copy for one discovered artifact.
+    fn into_pending_copy(self, sessions_root: &Path) -> PendingCopy;
+}
+
+/// Plans manifest updates and file copies for one discovered artifact list.
+fn plan_manifest_updates<T>(
+    discovered: Vec<T>,
+    manifest_entries: &mut BTreeMap<T::Key, T::Entry>,
+    synced_at: &str,
+    sessions_root: &Path,
+    manifest_written: &mut bool,
+) -> (Vec<PendingCopy>, usize)
+where
+    T: ManifestArtifact,
+{
+    let mut copies = Vec::new();
+    let mut unchanged = 0;
+
+    for artifact in discovered {
+        let key = artifact.key().clone();
+        let existing = manifest_entries.get(&key);
+        let should_copy = existing.is_none_or(|entry| artifact.should_copy(entry));
+        if !should_copy {
+            unchanged += 1;
+        }
+        if should_copy || existing.is_none_or(|entry| !artifact.matches_entry(entry)) {
+            *manifest_written = true;
+            manifest_entries.insert(key, artifact.manifest_entry(synced_at));
+        }
+        if should_copy {
+            copies.push(artifact.into_pending_copy(sessions_root));
+        }
+    }
+
+    (copies, unchanged)
 }
 
 /// Stores file metadata used for change detection.
@@ -1265,7 +1353,7 @@ mod tests {
     }
 
     #[test]
-    fn extract_codex_session_meta_normalizes_cwd() -> Result<()> {
+    fn extract_codex_session_meta_normalizes_cwd_textually() -> Result<()> {
         let dir = unique_test_dir("codex-meta");
         let rollout = dir.join("rollout.jsonl");
         write_file(
@@ -1343,7 +1431,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_duplicate_resolution_prefers_parseable_then_larger_then_newer() {
+    fn codex_duplicate_resolution_prefers_larger_then_newer_match() {
         let matching = CodexCandidate {
             session_id: "id".into(),
             source_path: PathBuf::from("/tmp/a"),
