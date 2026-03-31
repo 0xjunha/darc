@@ -18,7 +18,8 @@ use crate::{
     constants::CONFIG_FILE_NAME,
     default_root_path,
     project_paths::{
-        current_project_root, encode_path_for_claude, normalize_project_path, project_path_set,
+        current_project_root, encode_path_for_claude, normalize_project_path,
+        normalized_known_paths, project_path_set,
     },
 };
 
@@ -128,6 +129,7 @@ fn prepare_sync_from(current_dir: &Path, root: PathBuf, options: SyncOptions) ->
     let current_live_paths = project_path_set(&current_root, &[])?;
     let project_index = find_project_index(&config.projects, &current_live_paths)?;
     let project = config.projects[project_index].clone();
+    let primary_project_path = normalize_project_path(&project.local_path);
     let full_project_paths = project_path_set(&current_root, &project.known_paths)?;
     let sources = selected_sources(&config, &options.source_filter)?;
     let manifest_path = project.sessions_root.join(".manifest.json");
@@ -137,7 +139,8 @@ fn prepare_sync_from(current_dir: &Path, root: PathBuf, options: SyncOptions) ->
 
     let mut discovered_sessions = Vec::new();
     let mut discovered_auxiliary = Vec::new();
-    let mut persisted_paths = full_project_paths.clone();
+    let mut persisted_known_paths = full_project_paths.clone();
+    persisted_known_paths.remove(&primary_project_path);
 
     for source in &sources {
         match source {
@@ -154,8 +157,10 @@ fn prepare_sync_from(current_dir: &Path, root: PathBuf, options: SyncOptions) ->
                     let discovery =
                         discover_codex_sessions(codex, &full_project_paths, &mut warnings)?;
                     for session in &discovery.sessions {
-                        if let Some(path) = &session.cwd {
-                            persisted_paths.insert(path.clone());
+                        if let Some(path) = &session.cwd
+                            && path != &primary_project_path
+                        {
+                            persisted_known_paths.insert(path.clone());
                         }
                     }
                     discovered_sessions.extend(discovery.sessions);
@@ -212,19 +217,18 @@ fn prepare_sync_from(current_dir: &Path, root: PathBuf, options: SyncOptions) ->
         }
     }
 
-    let previous_known_paths = project
-        .known_paths
-        .iter()
-        .map(|path| normalize_project_path(path))
-        .collect::<BTreeSet<_>>();
-    let new_known_paths = persisted_paths
+    let previous_known_paths = normalized_known_paths(&project.local_path, &project.known_paths);
+    let normalized_known_paths_vec: Vec<_> = previous_known_paths.iter().cloned().collect();
+    let new_known_paths = persisted_known_paths
         .difference(&previous_known_paths)
         .cloned()
         .collect::<Vec<_>>();
-    let config_toml = if new_known_paths.is_empty() {
+    let config_toml = if new_known_paths.is_empty()
+        && config.projects[project_index].known_paths == normalized_known_paths_vec
+    {
         None
     } else {
-        config.projects[project_index].known_paths = persisted_paths.into_iter().collect();
+        config.projects[project_index].known_paths = persisted_known_paths.into_iter().collect();
         Some(toml::to_string_pretty(&config).context("failed to serialize updated shared config")?)
     };
 
@@ -258,10 +262,8 @@ fn find_project_index(
     let mut matches = Vec::new();
 
     for (index, project) in projects.iter().enumerate() {
-        let mut project_paths = BTreeSet::from([normalize_project_path(&project.local_path)]);
-        for path in &project.known_paths {
-            project_paths.insert(normalize_project_path(path));
-        }
+        let mut project_paths = normalized_known_paths(&project.local_path, &project.known_paths);
+        project_paths.insert(normalize_project_path(&project.local_path));
         if !project_paths.is_disjoint(current_paths) {
             matches.push(index);
         }
@@ -1295,6 +1297,51 @@ mod tests {
     }
 
     #[test]
+    fn prepare_sync_rewrites_known_paths_without_primary_root() -> Result<()> {
+        let workspace = unique_test_dir("sync-known-path-cleanup");
+        let project_root = workspace.join("repo");
+        let memstack_root = workspace.join("memstack");
+        let claude_home = workspace.join("claude");
+        let claude_projects = claude_home.join("projects");
+        let codex_home = workspace.join("codex");
+        let codex_sessions_root = codex_home.join("sessions");
+        fs::create_dir_all(&project_root)?;
+        fs::create_dir_all(&claude_projects)?;
+        fs::create_dir_all(&codex_sessions_root)?;
+        let canonical_project_root = fs::canonicalize(&project_root)?;
+
+        let mut config = sample_config(
+            &memstack_root,
+            &project_root,
+            &claude_home,
+            &claude_projects,
+            &codex_home,
+            &codex_sessions_root,
+        );
+        config.projects[0].known_paths = vec![canonical_project_root.clone()];
+        fs::create_dir_all(&memstack_root)?;
+        write_file(
+            &memstack_root.join(CONFIG_FILE_NAME),
+            &toml::to_string_pretty(&config)?,
+        )?;
+
+        let plan = prepare_sync_from(&project_root, memstack_root.clone(), SyncOptions::default())?;
+
+        assert!(plan.new_known_paths.is_empty());
+        assert!(plan.config_written);
+
+        let report = execute_sync(plan)?;
+
+        assert!(report.new_known_paths.is_empty());
+        assert!(report.config_written);
+
+        let config_after = load_config(&memstack_root.join(CONFIG_FILE_NAME))?;
+        assert!(config_after.projects[0].known_paths.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
     fn prepare_and_execute_sync_copies_sessions_and_updates_manifest() -> Result<()> {
         let workspace = unique_test_dir("sync-exec");
         let claude_session_id = "885a05b8-f731-4fde-bfdb-a24ce28dc9c3";
@@ -1355,14 +1402,14 @@ mod tests {
 
         assert_eq!(plan.sessions_to_copy, 2);
         assert_eq!(plan.auxiliary_to_copy, 1);
-        assert_eq!(plan.new_known_paths, vec![canonical_project_root.clone()]);
+        assert!(plan.new_known_paths.is_empty());
 
         let report = execute_sync(plan)?;
 
         assert_eq!(report.sessions_copied, 2);
         assert_eq!(report.auxiliary_copied, 1);
         assert!(report.manifest_written);
-        assert!(report.config_written);
+        assert!(!report.config_written);
 
         let manifest_path = memstack_root.join("projects/memstack-abc123/sessions/.manifest.json");
         let manifest: Manifest = serde_json::from_str(&fs::read_to_string(&manifest_path)?)?;
@@ -1397,10 +1444,7 @@ mod tests {
             .exists());
 
         let config_after = load_config(&memstack_root.join(CONFIG_FILE_NAME))?;
-        assert_eq!(
-            config_after.projects[0].known_paths,
-            vec![canonical_project_root.clone()]
-        );
+        assert!(config_after.projects[0].known_paths.is_empty());
 
         let second_plan = prepare_sync_from(&project_root, memstack_root, SyncOptions::default())?;
         assert_eq!(second_plan.sessions_to_copy, 0);

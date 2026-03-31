@@ -11,7 +11,7 @@ use walkdir::WalkDir;
 
 use crate::config::*;
 use crate::constants::*;
-use crate::project_paths::seed_known_paths;
+use crate::project_paths::{normalized_known_paths, seed_known_paths};
 
 /// Describes the shared config and project directories that `init` will create.
 #[derive(Debug, Clone)]
@@ -338,6 +338,9 @@ fn merge_project_with_existing(
 /// Normalizes a loaded project config so legacy entries gain a stable id.
 fn normalize_project_config(mut project: ProjectConfig) -> Result<ProjectConfig> {
     project.local_path = canonicalize_if_exists(project.local_path);
+    project.known_paths = normalized_known_paths(&project.local_path, &project.known_paths)
+        .into_iter()
+        .collect();
     if project.id.is_empty() {
         project.id = project_id_from_path(&project.local_path)?;
     }
@@ -521,6 +524,40 @@ mod tests {
         assert!(!project.id.is_empty());
         assert_eq!(project.local_path, canonicalize_if_exists(project_root));
         assert_eq!(project.sessions_root, legacy_sessions_root);
+
+        Ok(())
+    }
+
+    #[test]
+    fn load_existing_projects_drops_local_path_from_known_paths() -> Result<()> {
+        let workspace_root = unique_test_dir("legacy-known-paths");
+        let project_root = workspace_root.join("repo");
+        let worktree_root = workspace_root.join("wt1");
+        fs::create_dir_all(&project_root)?;
+        fs::create_dir_all(&worktree_root)?;
+
+        let config = SharedConfig::new(
+            workspace_root.clone(),
+            vec![ProjectConfig {
+                id: "repo-abc123".into(),
+                name: "repo".into(),
+                local_path: project_root.clone(),
+                git_upstream: None,
+                sessions_root: workspace_root.join("projects/repo-abc123/sessions"),
+                known_paths: vec![project_root.clone(), worktree_root.clone()],
+            }],
+            SourcesConfig::default(),
+        );
+        let config_path = workspace_root.join(CONFIG_FILE_NAME);
+        fs::write(&config_path, toml::to_string_pretty(&config)?)?;
+
+        let projects = load_existing_projects(&config_path)?;
+
+        assert_eq!(projects.len(), 1);
+        assert_eq!(
+            projects[0].known_paths,
+            vec![canonicalize_if_exists(worktree_root)]
+        );
 
         Ok(())
     }

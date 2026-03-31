@@ -31,9 +31,24 @@ pub(crate) fn project_path_set(
     Ok(paths)
 }
 
+/// Normalizes stored known paths while excluding the primary project root.
+pub(crate) fn normalized_known_paths(
+    current_root: &Path,
+    known_paths: &[PathBuf],
+) -> BTreeSet<PathBuf> {
+    let current_root = normalize_project_path(current_root);
+    known_paths
+        .iter()
+        .map(|path| normalize_project_path(path))
+        .filter(|path| path != &current_root)
+        .collect()
+}
+
 /// Returns the seed list stored into `known_paths` for a freshly initialized project.
 pub(crate) fn seed_known_paths(current_root: &Path) -> Result<Vec<PathBuf>> {
-    Ok(project_path_set(current_root, &[])?.into_iter().collect())
+    let mut paths = project_path_set(current_root, &[])?;
+    paths.remove(&normalize_project_path(current_root));
+    Ok(paths.into_iter().collect())
 }
 
 /// Encodes a project path using Claude's directory naming rule.
@@ -149,6 +164,21 @@ mod tests {
         assert!(paths.contains(&root));
 
         Ok(())
+    }
+
+    #[test]
+    fn normalized_known_paths_excludes_primary_root() {
+        let root = PathBuf::from("/tmp/example");
+        let paths = normalized_known_paths(
+            &root,
+            &[
+                root.clone(),
+                PathBuf::from("/tmp/example/"),
+                PathBuf::from("/tmp/worktree"),
+            ],
+        );
+
+        assert_eq!(paths, BTreeSet::from([PathBuf::from("/tmp/worktree")]));
     }
 
     #[test]
