@@ -779,28 +779,55 @@ fn write_bytes_atomically(path: &Path, content: &[u8]) -> Result<()> {
 
 /// Renames a temp path into place, replacing an existing target when necessary.
 fn rename_atomically(temp_path: &Path, destination: &Path) -> Result<()> {
-    if let Err(error) = fs::rename(temp_path, destination) {
-        if destination.exists() {
-            fs::remove_file(destination)
-                .with_context(|| format!("failed to replace {}", destination.display()))?;
-            fs::rename(temp_path, destination).with_context(|| {
-                format!(
-                    "failed to rename {} to {} after replacement: {error}",
-                    temp_path.display(),
-                    destination.display()
-                )
-            })?;
-        } else {
-            return Err(error).with_context(|| {
-                format!(
-                    "failed to rename {} to {}",
-                    temp_path.display(),
-                    destination.display()
-                )
-            });
-        }
+    match fs::rename(temp_path, destination) {
+        Ok(()) => Ok(()),
+        Err(error) if destination.exists() => replace_existing_file(temp_path, destination, error),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "failed to rename {} to {}",
+                temp_path.display(),
+                destination.display()
+            )
+        }),
     }
-    Ok(())
+}
+
+/// Replaces an existing file while keeping the original available until the swap succeeds.
+fn replace_existing_file(
+    temp_path: &Path,
+    destination: &Path,
+    rename_error: std::io::Error,
+) -> Result<()> {
+    let backup_path = temporary_path(destination);
+    fs::rename(destination, &backup_path).with_context(|| {
+        format!(
+            "failed to move {} aside after renaming {} to {} failed: {rename_error}",
+            destination.display(),
+            temp_path.display(),
+            destination.display()
+        )
+    })?;
+
+    match fs::rename(temp_path, destination) {
+        Ok(()) => fs::remove_file(&backup_path)
+            .with_context(|| format!("failed to remove backup {}", backup_path.display())),
+        Err(error) => match fs::rename(&backup_path, destination) {
+            Ok(()) => Err(error).with_context(|| {
+                format!(
+                    "failed to rename {} to {} after moving the existing file aside",
+                    temp_path.display(),
+                    destination.display()
+                )
+            }),
+            Err(restore_error) => bail!(
+                "failed to rename {} to {} after moving aside {}; also failed to restore backup {}: {error}; {restore_error}",
+                temp_path.display(),
+                destination.display(),
+                destination.display(),
+                backup_path.display()
+            ),
+        },
+    }
 }
 
 /// Builds a temp sibling path for an atomic replace operation.
@@ -1217,6 +1244,52 @@ mod tests {
         let formatted = format_system_time_utc(UNIX_EPOCH)?;
 
         assert_eq!(formatted, "1970-01-01T00:00:00Z");
+
+        Ok(())
+    }
+
+    #[test]
+    fn replace_existing_file_swaps_in_new_content() -> Result<()> {
+        let dir = unique_test_dir("replace-existing");
+        let destination = dir.join("session.jsonl");
+        let temp_path = dir.join("session.jsonl.tmp");
+        fs::create_dir_all(&dir)?;
+        write_file(&destination, "old\n")?;
+        write_file(&temp_path, "new\n")?;
+
+        replace_existing_file(
+            &temp_path,
+            &destination,
+            std::io::Error::other("simulated rename failure"),
+        )?;
+
+        assert_eq!(fs::read_to_string(&destination)?, "new\n");
+        assert!(!temp_path.exists());
+
+        Ok(())
+    }
+
+    #[test]
+    fn replace_existing_file_restores_destination_on_failure() -> Result<()> {
+        let dir = unique_test_dir("replace-restore");
+        let destination = dir.join("session.jsonl");
+        let missing_temp = dir.join("missing.tmp");
+        fs::create_dir_all(&dir)?;
+        write_file(&destination, "old\n")?;
+
+        let error = replace_existing_file(
+            &missing_temp,
+            &destination,
+            std::io::Error::other("simulated rename failure"),
+        )
+        .expect_err("replacement should fail when temp path is missing");
+
+        assert!(
+            error
+                .to_string()
+                .contains("after moving the existing file aside")
+        );
+        assert_eq!(fs::read_to_string(&destination)?, "old\n");
 
         Ok(())
     }
