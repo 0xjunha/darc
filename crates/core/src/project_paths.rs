@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 
 /// Resolves the current project root, preferring the git toplevel when available.
 pub(crate) fn current_project_root(current_dir: &Path) -> Result<PathBuf> {
-    let root = git_output(current_dir, &["rev-parse", "--show-toplevel"])
+    let root = try_git_output(current_dir, &["rev-parse", "--show-toplevel"])
         .map(PathBuf::from)
         .unwrap_or_else(|| current_dir.to_path_buf());
     fs::canonicalize(&root).with_context(|| format!("unable to canonicalize {}", root.display()))
@@ -99,7 +99,7 @@ fn parse_git_worktree_output(output: &str) -> Vec<PathBuf> {
 }
 
 /// Executes a git command and returns trimmed UTF-8 stdout on success.
-fn git_output(cwd: &Path, args: &[&str]) -> Option<String> {
+pub(crate) fn try_git_output(cwd: &Path, args: &[&str]) -> Option<String> {
     let output = Command::new("git")
         .args(args)
         .current_dir(cwd)

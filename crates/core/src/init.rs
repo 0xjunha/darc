@@ -2,7 +2,6 @@ use std::fmt::Display;
 use std::{
     env, fmt, fs,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 use anyhow::{Context, Result, bail};
@@ -11,7 +10,7 @@ use walkdir::WalkDir;
 
 use crate::config::*;
 use crate::constants::*;
-use crate::project_paths::{normalized_known_paths, seed_known_paths};
+use crate::project_paths::{normalized_known_paths, seed_known_paths, try_git_output};
 
 /// Describes the shared config and project directories that `init` will create.
 #[derive(Debug, Clone)]
@@ -270,26 +269,6 @@ fn detect_project(current_dir: &Path, projects_root: &Path) -> Result<ProjectCon
     let git_upstream = try_git_output(&path, &["config", "--get", "remote.origin.url"]);
 
     project_config_from_path(path, projects_root, git_upstream)
-}
-
-/// Executes a git command and returns trimmed stdout when it succeeds.
-pub(crate) fn try_git_output(cwd: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(cwd)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-
-    let value = String::from_utf8(output.stdout).ok()?;
-    let value = value.trim();
-    if value.is_empty() {
-        return None;
-    }
-
-    Some(value.to_owned())
 }
 
 /// Returns the effective Codex home directory, honoring `CODEX_HOME` when set.

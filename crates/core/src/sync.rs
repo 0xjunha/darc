@@ -4,6 +4,7 @@ use std::{
     fs::{self, File},
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -19,11 +20,12 @@ use crate::{
     default_root_path,
     project_paths::{
         current_project_root, encode_path_for_claude, normalize_project_path,
-        normalized_known_paths, project_path_set,
+        normalized_known_paths, project_path_set, try_git_output,
     },
 };
 
 const MANIFEST_VERSION: u32 = 1;
+static UNIQUE_PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Collects optional filters for the `sync` workflow.
 #[derive(Debug, Clone, Default)]
@@ -131,6 +133,8 @@ fn prepare_sync_from(current_dir: &Path, root: PathBuf, options: SyncOptions) ->
     let project = config.projects[project_index].clone();
     let primary_project_path = normalize_project_path(&project.local_path);
     let full_project_paths = project_path_set(&current_root, &project.known_paths)?;
+    let project_upstream = try_git_output(&current_root, &["config", "--get", "remote.origin.url"])
+        .or(project.git_upstream.clone());
     let sources = selected_sources(&config, &options.source_filter)?;
     let manifest_path = project.sessions_root.join(".manifest.json");
     let mut manifest = load_manifest(&manifest_path)?;
@@ -154,8 +158,12 @@ fn prepare_sync_from(current_dir: &Path, root: PathBuf, options: SyncOptions) ->
             }
             SourceKind::Codex => {
                 if let Some(codex) = &config.sources.codex {
-                    let discovery =
-                        discover_codex_sessions(codex, &full_project_paths, &mut warnings)?;
+                    let discovery = discover_codex_sessions(
+                        codex,
+                        &full_project_paths,
+                        project_upstream.as_deref(),
+                        &mut warnings,
+                    )?;
                     for session in &discovery.sessions {
                         if let Some(path) = &session.cwd
                             && path != &primary_project_path
@@ -573,6 +581,7 @@ fn is_supported_claude_auxiliary(path: &Path) -> bool {
 fn discover_codex_sessions(
     source: &CodexSourceConfig,
     project_paths: &BTreeSet<PathBuf>,
+    project_upstream: Option<&str>,
     warnings: &mut Vec<String>,
 ) -> Result<CodexDiscovery> {
     let archived_root = source.home.join("archived_sessions");
@@ -641,9 +650,9 @@ fn discover_codex_sessions(
                     None
                 }
             };
-            let matches_project = meta
-                .as_ref()
-                .is_some_and(|meta| project_paths.contains(&meta.cwd));
+            let matches_project = meta.as_ref().is_some_and(|meta| {
+                codex_session_matches_project(&meta.cwd, project_paths, project_upstream)
+            });
 
             candidates
                 .entry(session_id.clone())
@@ -677,6 +686,17 @@ fn discover_codex_sessions(
     Ok(CodexDiscovery { sessions })
 }
 
+/// Returns whether a Codex session belongs to the active project.
+fn codex_session_matches_project(
+    cwd: &Path,
+    project_paths: &BTreeSet<PathBuf>,
+    project_upstream: Option<&str>,
+) -> bool {
+    project_paths.contains(cwd)
+        || project_upstream
+            .is_some_and(|upstream| git_remote_origin(cwd).as_deref() == Some(upstream))
+}
+
 /// Chooses the winning Codex copy for one logical session id.
 fn select_codex_candidate(candidates: &[CodexCandidate]) -> Option<CodexCandidate> {
     if !candidates.iter().any(|candidate| candidate.matches_project) {
@@ -685,12 +705,10 @@ fn select_codex_candidate(candidates: &[CodexCandidate]) -> Option<CodexCandidat
 
     candidates
         .iter()
-        .filter(|candidate| candidate.matches_project || candidate.meta.is_none())
+        .filter(|candidate| candidate.matches_project && candidate.meta.is_some())
         .max_by(|left, right| {
-            left.meta
-                .is_some()
-                .cmp(&right.meta.is_some())
-                .then_with(|| left.size.cmp(&right.size))
+            left.size
+                .cmp(&right.size)
                 .then_with(|| left.mtime_ms.cmp(&right.mtime_ms))
         })
         .cloned()
@@ -713,8 +731,18 @@ fn extract_codex_session_meta(path: &Path) -> Result<Option<CodexSessionMeta>> {
 
     Ok(Some(CodexSessionMeta {
         id: envelope.payload.id,
-        cwd: normalize_project_path(&envelope.payload.cwd),
+        cwd: normalize_codex_cwd(&envelope.payload.cwd),
     }))
+}
+
+/// Normalizes a Codex cwd to the repo root when one is available.
+fn normalize_codex_cwd(path: &Path) -> PathBuf {
+    current_project_root(path).unwrap_or_else(|_| normalize_project_path(path))
+}
+
+/// Reads the configured git remote used to recognize equivalent checkouts.
+fn git_remote_origin(path: &Path) -> Option<String> {
+    try_git_output(path, &["config", "--get", "remote.origin.url"])
 }
 
 /// Extracts the logical Codex session id from a rollout filename.
@@ -745,7 +773,7 @@ fn copy_file_atomically(source: &Path, destination: &Path) -> Result<()> {
         .parent()
         .with_context(|| format!("missing parent directory for {}", destination.display()))?;
     fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
-    let temp_path = temporary_path(destination);
+    let temp_path = unique_sibling_path(destination, "tmp");
     fs::copy(source, &temp_path).with_context(|| {
         format!(
             "failed to copy {} to {}",
@@ -773,7 +801,7 @@ fn write_bytes_atomically(path: &Path, content: &[u8]) -> Result<()> {
         .parent()
         .with_context(|| format!("missing parent directory for {}", path.display()))?;
     fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
-    let temp_path = temporary_path(path);
+    let temp_path = unique_sibling_path(path, "tmp");
     fs::write(&temp_path, content)
         .with_context(|| format!("failed to write {}", temp_path.display()))?;
     rename_atomically(&temp_path, path)
@@ -800,7 +828,7 @@ fn replace_existing_file(
     destination: &Path,
     rename_error: std::io::Error,
 ) -> Result<()> {
-    let backup_path = temporary_path(destination);
+    let backup_path = unique_sibling_path(destination, "bak");
     fs::rename(destination, &backup_path).with_context(|| {
         format!(
             "failed to move {} aside after renaming {} to {} failed: {rename_error}",
@@ -832,19 +860,16 @@ fn replace_existing_file(
     }
 }
 
-/// Builds a temp sibling path for an atomic replace operation.
-fn temporary_path(path: &Path) -> PathBuf {
+/// Builds a unique sibling path for atomic replace temp and backup files.
+fn unique_sibling_path(path: &Path, kind: &str) -> PathBuf {
     let file_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "memstack-temp".to_owned());
     path.with_file_name(format!(
-        ".{file_name}.tmp-{}-{}",
+        ".{file_name}.memstack-{kind}-{}-{}",
         std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
+        UNIQUE_PATH_COUNTER.fetch_add(1, Ordering::Relaxed),
     ))
 }
 
@@ -1069,6 +1094,8 @@ struct CodexSessionMetaPayload {
 
 #[cfg(test)]
 mod tests {
+    use std::process::Command;
+
     use super::*;
 
     fn unique_test_dir(prefix: &str) -> PathBuf {
@@ -1087,6 +1114,30 @@ mod tests {
         fs::create_dir_all(parent)?;
         fs::write(path, content)?;
         Ok(())
+    }
+
+    fn run_git(cwd: &Path, args: &[&str]) -> Result<()> {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .with_context(|| format!("failed to run git {:?} in {}", args, cwd.display()))?;
+        if output.status.success() {
+            return Ok(());
+        }
+
+        bail!(
+            "git {:?} failed in {}: {}",
+            args,
+            cwd.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+    }
+
+    fn init_git_repo(path: &Path, remote: &str) -> Result<()> {
+        fs::create_dir_all(path)?;
+        run_git(path, &["init"])?;
+        run_git(path, &["remote", "add", "origin", remote])
     }
 
     fn sample_config(
@@ -1297,6 +1348,18 @@ mod tests {
     }
 
     #[test]
+    fn unique_sibling_path_is_distinct_per_call() {
+        let path = Path::new("/tmp/session.jsonl");
+        let first = unique_sibling_path(path, "tmp");
+        let second = unique_sibling_path(path, "tmp");
+        let backup = unique_sibling_path(path, "bak");
+
+        assert_ne!(first, second);
+        assert_ne!(first, backup);
+        assert_ne!(second, backup);
+    }
+
+    #[test]
     fn prepare_sync_rewrites_known_paths_without_primary_root() -> Result<()> {
         let workspace = unique_test_dir("sync-known-path-cleanup");
         let project_root = workspace.join("repo");
@@ -1453,6 +1516,70 @@ mod tests {
         assert_eq!(second_plan.auxiliary_unchanged, 1);
         assert!(!second_plan.manifest_written);
         assert!(!second_plan.config_written);
+
+        Ok(())
+    }
+
+    #[test]
+    fn prepare_sync_learns_codex_checkout_with_same_upstream() -> Result<()> {
+        let workspace = unique_test_dir("sync-codex-known-path");
+        let remote = "https://example.com/acme/memstack.git";
+        let project_root = workspace.join("repo-a");
+        let related_root = workspace.join("repo-b");
+        let related_subdir = related_root.join("nested");
+        let memstack_root = workspace.join("memstack");
+        let claude_home = workspace.join("claude");
+        let claude_projects = claude_home.join("projects");
+        let codex_home = workspace.join("codex");
+        let codex_sessions_root = codex_home.join("sessions");
+        let codex_sessions = codex_sessions_root.join("2026/04/01");
+        fs::create_dir_all(&claude_projects)?;
+        fs::create_dir_all(&codex_sessions)?;
+        init_git_repo(&project_root, remote)?;
+        init_git_repo(&related_root, remote)?;
+        fs::create_dir_all(&related_subdir)?;
+        let canonical_project_root = fs::canonicalize(&project_root)?;
+        let canonical_related_root = fs::canonicalize(&related_root)?;
+
+        let mut config = sample_config(
+            &memstack_root,
+            &project_root,
+            &claude_home,
+            &claude_projects,
+            &codex_home,
+            &codex_sessions_root,
+        );
+        config.projects[0].git_upstream = Some(remote.into());
+        fs::create_dir_all(&memstack_root)?;
+        write_file(
+            &memstack_root.join(CONFIG_FILE_NAME),
+            &toml::to_string_pretty(&config)?,
+        )?;
+
+        let rollout_name = "rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl";
+        write_file(
+            &codex_sessions.join(rollout_name),
+            &format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\"}}}}\n{{\"type\":\"message\"}}\n",
+                related_subdir.display()
+            ),
+        )?;
+
+        let plan = prepare_sync_from(&project_root, memstack_root.clone(), SyncOptions::default())?;
+
+        assert_eq!(plan.project_root, canonical_project_root);
+        assert_eq!(plan.sessions_to_copy, 1);
+        assert_eq!(plan.new_known_paths, vec![canonical_related_root.clone()]);
+
+        let report = execute_sync(plan)?;
+
+        assert_eq!(report.new_known_paths, vec![canonical_related_root.clone()]);
+
+        let config_after = load_config(&memstack_root.join(CONFIG_FILE_NAME))?;
+        assert_eq!(
+            config_after.projects[0].known_paths,
+            vec![canonical_related_root]
+        );
 
         Ok(())
     }
