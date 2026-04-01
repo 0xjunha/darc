@@ -2,16 +2,15 @@ use std::fmt::Display;
 use std::{
     env, fmt, fs,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 use anyhow::{Context, Result, bail};
 use directories::BaseDirs;
-use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
+use crate::config::*;
 use crate::constants::*;
-use crate::versions::CONFIG_VERSION;
+use crate::project_paths::{normalized_known_paths, seed_known_paths, try_git_output};
 
 /// Describes the shared config and project directories that `init` will create.
 #[derive(Debug, Clone)]
@@ -62,18 +61,6 @@ impl Display for InitDraft {
     }
 }
 
-/// Stores one project entry inside the shared config.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProjectConfig {
-    #[serde(default)]
-    pub id: String,
-    pub name: String,
-    pub local_path: PathBuf,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub git_upstream: Option<String>,
-    pub sessions_root: PathBuf,
-}
-
 /// Summarizes one detected upstream rollout source.
 #[derive(Debug, Clone)]
 pub struct DetectedRolloutSource {
@@ -82,23 +69,6 @@ pub struct DetectedRolloutSource {
     pub root: PathBuf,
     pub rollout_files: usize,
     pub subagent_rollout_files: usize,
-}
-
-/// Identifies which upstream tool produced a rollout tree.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum SourceKind {
-    Claude,
-    Codex,
-}
-
-impl SourceKind {
-    /// Returns a human-readable name for the source kind.
-    pub fn title(self) -> &'static str {
-        match self {
-            Self::Claude => "Claude",
-            Self::Codex => "Codex",
-        }
-    }
 }
 
 fn format_source(source: &DetectedRolloutSource) -> String {
@@ -123,48 +93,6 @@ fn format_source(source: &DetectedRolloutSource) -> String {
             source.rollout_files,
         ),
     }
-}
-
-/// Represents the full config file.
-#[derive(Debug, Clone, Serialize)]
-struct SharedConfig {
-    version: u32,
-    root: PathBuf,
-    projects: Vec<ProjectConfig>,
-    sources: SourcesConfig,
-}
-
-/// Groups the detected upstream source settings in the config.
-#[derive(Debug, Clone, Default, Serialize)]
-struct SourcesConfig {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    claude: Option<ClaudeSourceConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    codex: Option<CodexSourceConfig>,
-}
-
-/// Stores Claude-specific source settings in the shared config.
-#[derive(Debug, Clone, Serialize)]
-struct ClaudeSourceConfig {
-    enabled: bool,
-    home: PathBuf,
-    include_subagents: bool,
-    projects_root: PathBuf,
-}
-
-/// Stores Codex-specific source settings in the shared config.
-#[derive(Debug, Clone, Serialize)]
-struct CodexSourceConfig {
-    enabled: bool,
-    home: PathBuf,
-    sessions_root: PathBuf,
-}
-
-/// Reads only the existing project list from a prior shared config file.
-#[derive(Debug, Default, Deserialize)]
-struct ExistingConfig {
-    #[serde(default)]
-    projects: Vec<ProjectConfig>,
 }
 
 /// Resolves the default shared root path under the current user's home directory.
@@ -246,11 +174,10 @@ fn build_config(
             .then_with(|| left.local_path.cmp(&right.local_path))
     });
 
-    SharedConfig {
-        version: CONFIG_VERSION,
+    SharedConfig::new(
         root,
         projects,
-        sources: SourcesConfig {
+        SourcesConfig {
             claude: sources
                 .iter()
                 .find(|source| source.kind == SourceKind::Claude)
@@ -269,7 +196,7 @@ fn build_config(
                     sessions_root: source.root.clone(),
                 }),
         },
-    }
+    )
 }
 
 /// Loads any existing project entries from the shared config file.
@@ -278,11 +205,8 @@ fn load_existing_projects(config_path: &Path) -> Result<Vec<ProjectConfig>> {
         return Ok(Vec::new());
     }
 
-    let config = fs::read_to_string(config_path)
-        .with_context(|| format!("failed to read {}", config_path.display()))?;
-    let existing: ExistingConfig =
-        toml::from_str(&config).context("failed to parse existing shared config")?;
-    existing
+    let config = load_config(config_path)?;
+    config
         .projects
         .into_iter()
         .map(normalize_project_config)
@@ -347,26 +271,6 @@ fn detect_project(current_dir: &Path, projects_root: &Path) -> Result<ProjectCon
     project_config_from_path(path, projects_root, git_upstream)
 }
 
-/// Executes a git command and returns trimmed stdout when it succeeds.
-fn try_git_output(cwd: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(cwd)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-
-    let value = String::from_utf8(output.stdout).ok()?;
-    let value = value.trim();
-    if value.is_empty() {
-        return None;
-    }
-
-    Some(value.to_owned())
-}
-
 /// Returns the effective Codex home directory, honoring `CODEX_HOME` when set.
 fn codex_home(home_dir: &Path) -> PathBuf {
     env::var_os("CODEX_HOME")
@@ -382,6 +286,7 @@ fn project_config_from_path(
 ) -> Result<ProjectConfig> {
     let name = project_name_from_path(&local_path)?;
     let id = project_id_from_path(&local_path)?;
+    let known_paths = seed_known_paths(&local_path)?;
 
     Ok(ProjectConfig {
         id: id.clone(),
@@ -389,6 +294,7 @@ fn project_config_from_path(
         local_path,
         git_upstream,
         sessions_root: default_sessions_root(projects_root, &id),
+        known_paths,
     })
 }
 
@@ -402,6 +308,7 @@ fn merge_project_with_existing(
         .find(|existing| existing.id == project.id)
         .map(|existing| ProjectConfig {
             sessions_root: existing.sessions_root.clone(),
+            known_paths: existing.known_paths.clone(),
             ..project.clone()
         })
         .unwrap_or(project)
@@ -410,6 +317,9 @@ fn merge_project_with_existing(
 /// Normalizes a loaded project config so legacy entries gain a stable id.
 fn normalize_project_config(mut project: ProjectConfig) -> Result<ProjectConfig> {
     project.local_path = canonicalize_if_exists(project.local_path);
+    project.known_paths = normalized_known_paths(&project.local_path, &project.known_paths)
+        .into_iter()
+        .collect();
     if project.id.is_empty() {
         project.id = project_id_from_path(&project.local_path)?;
     }
@@ -426,7 +336,7 @@ fn project_name_from_path(path: &Path) -> Result<String> {
 }
 
 /// Builds the stable project id from the canonical local project root path.
-fn project_id_from_path(path: &Path) -> Result<String> {
+pub(crate) fn project_id_from_path(path: &Path) -> Result<String> {
     let name = project_name_from_path(path)?;
     Ok(format!(
         "{}-{}",
@@ -598,6 +508,40 @@ mod tests {
     }
 
     #[test]
+    fn load_existing_projects_drops_local_path_from_known_paths() -> Result<()> {
+        let workspace_root = unique_test_dir("legacy-known-paths");
+        let project_root = workspace_root.join("repo");
+        let worktree_root = workspace_root.join("wt1");
+        fs::create_dir_all(&project_root)?;
+        fs::create_dir_all(&worktree_root)?;
+
+        let config = SharedConfig::new(
+            workspace_root.clone(),
+            vec![ProjectConfig {
+                id: "repo-abc123".into(),
+                name: "repo".into(),
+                local_path: project_root.clone(),
+                git_upstream: None,
+                sessions_root: workspace_root.join("projects/repo-abc123/sessions"),
+                known_paths: vec![project_root.clone(), worktree_root.clone()],
+            }],
+            SourcesConfig::default(),
+        );
+        let config_path = workspace_root.join(CONFIG_FILE_NAME);
+        fs::write(&config_path, toml::to_string_pretty(&config)?)?;
+
+        let projects = load_existing_projects(&config_path)?;
+
+        assert_eq!(projects.len(), 1);
+        assert_eq!(
+            projects[0].known_paths,
+            vec![canonicalize_if_exists(worktree_root)]
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn merge_project_with_existing_keeps_existing_sessions_root() -> Result<()> {
         let projects_root = unique_test_dir("merge-projects");
         let project_root = unique_test_dir("merge-repo");
@@ -615,6 +559,53 @@ mod tests {
 
         assert_eq!(merged.sessions_root, existing_sessions_root);
         assert_eq!(merged.id, project_id_from_path(&project_root)?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn config_round_trips_with_known_paths() -> Result<()> {
+        let dir = unique_test_dir("round-trip");
+        fs::create_dir_all(&dir)?;
+
+        let config = SharedConfig::new(
+            dir.clone(),
+            vec![ProjectConfig {
+                id: "test-abc123".into(),
+                name: "test".into(),
+                local_path: dir.join("repo"),
+                git_upstream: None,
+                sessions_root: dir.join("sessions"),
+                known_paths: vec![dir.join("wt1"), dir.join("wt2")],
+            }],
+            SourcesConfig::default(),
+        );
+
+        let toml_str = toml::to_string_pretty(&config)?;
+        let loaded: SharedConfig = toml::from_str(&toml_str)?;
+
+        assert_eq!(loaded.projects.len(), 1);
+        assert_eq!(loaded.projects[0].known_paths.len(), 2);
+        assert_eq!(loaded.projects[0].known_paths[0], dir.join("wt1"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn config_deserializes_without_known_paths() -> Result<()> {
+        let dir = unique_test_dir("no-known-paths");
+        fs::create_dir_all(&dir)?;
+
+        let toml_str = format!(
+            "version = 1\nroot = \"{dir}\"\n\n\
+             [[projects]]\nid = \"x-123\"\nname = \"x\"\n\
+             local_path = \"{dir}/repo\"\nsessions_root = \"{dir}/sessions\"\n",
+            dir = dir.display()
+        );
+        let loaded: SharedConfig = toml::from_str(&toml_str)?;
+
+        assert_eq!(loaded.projects.len(), 1);
+        assert!(loaded.projects[0].known_paths.is_empty());
 
         Ok(())
     }

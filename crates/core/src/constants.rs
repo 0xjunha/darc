@@ -7,4 +7,8 @@ pub(crate) const INDEX_DB_FILE_NAME: &str = "index.sqlite";
 
 pub(crate) const CLAUDE_DEFAULT_DIR: &str = ".claude";
 
+pub(crate) const CLAUDE_DIR_NAME: &str = "claude";
+
 pub(crate) const CODEX_DEFAULT_DIR: &str = ".codex";
+
+pub(crate) const CODEX_DIR_NAME: &str = "codex";
