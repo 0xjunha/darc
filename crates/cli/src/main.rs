@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use memstack_core::{
-    SourceKind, SyncOptions, default_root_path, execute_sync, prepare_init, prepare_sync,
-    write_init,
+    InitDraft, SourceKind, SyncOptions, default_root_path, execute_sync, prepare_init,
+    prepare_sync, write_init,
 };
 
 #[derive(Debug, Parser)]
@@ -79,20 +79,41 @@ fn run_init(args: InitArgs) -> Result<()> {
 
     println!("{draft}");
     if args.dry_run {
-        println!("\nDry run only. Config was not written.\n");
+        println!("\n{}", format_init_status(&draft, true));
+        println!();
         println!("{}", draft.config_toml()?);
     } else {
-        println!(
-            "\n{} config.",
-            if draft.config_exists {
-                "Updated"
-            } else {
-                "Created"
-            }
-        );
+        println!("\n{}", format_init_status(&draft, false));
     }
 
     Ok(())
+}
+
+/// Formats the post-summary status lines for `init`.
+fn format_init_status(draft: &InitDraft, dry_run: bool) -> String {
+    if dry_run {
+        return if draft.global_config_exists {
+            if draft.project_exists {
+                "Dry run only. Existing memstack config was left unchanged.".to_owned()
+            } else {
+                "Dry run only. Project was not added to memstack.".to_owned()
+            }
+        } else {
+            "Dry run only. Global memstack config and project registration were not written."
+                .to_owned()
+        };
+    }
+
+    let mut lines = Vec::new();
+    if !draft.global_config_exists {
+        lines.push("Initialized global memstack config.".to_owned());
+    }
+    lines.push(if draft.project_exists {
+        "Project is already configured in memstack.".to_owned()
+    } else {
+        "Added project to memstack.".to_owned()
+    });
+    lines.join("\n")
 }
 
 /// Prepares and optionally executes the project-scoped sync workflow.
