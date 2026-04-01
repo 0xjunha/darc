@@ -6,6 +6,7 @@ use std::{
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::constants::{CLAUDE_DIR_NAME, CODEX_DIR_NAME};
 use crate::versions::CONFIG_VERSION;
 
 /// Represents the full shared config file.
@@ -89,8 +90,8 @@ impl SourceKind {
     /// Returns the stable directory name used for archived sessions.
     pub fn directory_name(self) -> &'static str {
         match self {
-            Self::Claude => "claude",
-            Self::Codex => "codex",
+            Self::Claude => CLAUDE_DIR_NAME,
+            Self::Codex => CODEX_DIR_NAME,
         }
     }
 

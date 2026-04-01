@@ -12,6 +12,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
+use crate::versions::MANIFEST_VERSION;
 use crate::{
     config::{
         ClaudeSourceConfig, CodexSourceConfig, ProjectConfig, SharedConfig, SourceKind, load_config,
@@ -24,7 +25,6 @@ use crate::{
     },
 };
 
-const MANIFEST_VERSION: u32 = 1;
 static UNIQUE_PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Collects optional filters for the `sync` workflow.
