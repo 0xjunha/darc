@@ -167,7 +167,7 @@ fn prepare_sync_from(current_dir: &Path, root: PathBuf, options: SyncOptions) ->
     let project = config.projects[project_index].clone();
     let primary_project_path = normalize_project_path(&project.local_path);
     let full_project_paths = project_path_set(&current_root, &project.known_paths)?;
-    let other_project_paths = other_configured_project_paths(&config.projects, project_index);
+    let other_project_paths = other_project_paths(&config.projects, project_index)?;
     let project_upstream = try_git_output(&current_root, &["config", "--get", "remote.origin.url"])
         .or(project.git_upstream.clone());
     let sources = selected_sources(&config, &options.source_filter)?;
@@ -300,17 +300,20 @@ fn configured_project_paths(project: &ProjectConfig) -> BTreeSet<PathBuf> {
     project_paths
 }
 
-/// Returns the configured paths owned by projects other than the active project.
-fn other_configured_project_paths(
+/// Returns all paths owned by projects other than the active project, including live worktrees.
+fn other_project_paths(
     projects: &[ProjectConfig],
     active_index: usize,
-) -> BTreeSet<PathBuf> {
-    projects
-        .iter()
-        .enumerate()
-        .filter(|(index, _)| *index != active_index)
-        .flat_map(|(_, project)| configured_project_paths(project))
-        .collect()
+) -> Result<BTreeSet<PathBuf>> {
+    let mut paths = BTreeSet::new();
+    for (index, project) in projects.iter().enumerate() {
+        if index == active_index {
+            continue;
+        }
+        let root = normalize_project_path(&project.local_path);
+        paths.extend(project_path_set(&root, &project.known_paths)?);
+    }
+    Ok(paths)
 }
 
 /// Resolves the enabled source list after applying any CLI filter.
@@ -1825,6 +1828,85 @@ mod tests {
             plan.warnings
                 .iter()
                 .any(|warning| warning.contains("mismatched ids"))
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn prepare_sync_skips_codex_session_in_other_projects_live_worktree() -> Result<()> {
+        let workspace = unique_test_dir("sync-codex-other-worktree");
+        let remote = "https://example.com/acme/memstack.git";
+        let project_root = workspace.join("repo-a");
+        let repo_b_root = workspace.join("repo-b");
+        let repo_b_worktree = workspace.join("repo-b-wt");
+        let memstack_root = workspace.join("memstack");
+        let claude_home = workspace.join("claude");
+        let claude_projects = claude_home.join("projects");
+        let codex_home = workspace.join("codex");
+        let codex_sessions_root = codex_home.join("sessions");
+        let codex_sessions = codex_sessions_root.join("2026/04/01");
+        fs::create_dir_all(&claude_projects)?;
+        fs::create_dir_all(&codex_sessions)?;
+        init_git_repo(&project_root, remote)?;
+        init_git_repo(&repo_b_root, remote)?;
+
+        // repo-b needs a commit before we can add a worktree.
+        run_git(&repo_b_root, &["commit", "--allow-empty", "-m", "init"])?;
+        run_git(
+            &repo_b_root,
+            &[
+                "worktree",
+                "add",
+                repo_b_worktree.to_str().unwrap(),
+                "-b",
+                "wt-branch",
+            ],
+        )?;
+        let canonical_worktree = fs::canonicalize(&repo_b_worktree)?;
+
+        // Configure repo-b without the worktree in known_paths.
+        let mut config = sample_config(
+            &memstack_root,
+            &project_root,
+            &claude_home,
+            &claude_projects,
+            &codex_home,
+            &codex_sessions_root,
+        );
+        config.projects[0].git_upstream = Some(remote.into());
+        config.projects.push(ProjectConfig {
+            id: "repo-b-def456".into(),
+            name: "repo-b".into(),
+            local_path: repo_b_root.clone(),
+            git_upstream: Some(remote.into()),
+            sessions_root: memstack_root.join("projects/repo-b-def456/sessions"),
+            known_paths: Vec::new(),
+        });
+        fs::create_dir_all(&memstack_root)?;
+        write_file(
+            &memstack_root.join(CONFIG_FILE_NAME),
+            &toml::to_string_pretty(&config)?,
+        )?;
+
+        // Place a Codex session whose cwd is inside repo-b's live worktree.
+        write_file(
+            &codex_sessions
+                .join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
+            &format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\"}}}}\n{{\"type\":\"message\"}}\n",
+                canonical_worktree.display()
+            ),
+        )?;
+
+        let plan = prepare_sync_from(&project_root, memstack_root, SyncOptions::default())?;
+
+        assert_eq!(plan.sessions_to_copy(), 0);
+        assert!(plan.new_known_paths.is_empty());
+        assert!(
+            plan.warnings
+                .iter()
+                .any(|warning| warning.contains("already configured for another project"))
         );
 
         Ok(())
