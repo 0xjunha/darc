@@ -315,7 +315,6 @@ fn other_configured_project_paths(
 
 /// Resolves the enabled source list after applying any CLI filter.
 fn selected_sources(config: &SharedConfig, filter: &[SourceKind]) -> Result<Vec<SourceKind>> {
-    let filter = filter.iter().copied().collect::<BTreeSet<_>>();
     let mut sources = Vec::new();
 
     if config
@@ -342,7 +341,8 @@ fn selected_sources(config: &SharedConfig, filter: &[SourceKind]) -> Result<Vec<
             bail!("no enabled rollout sources are configured");
         }
         let wanted = filter
-            .into_iter()
+            .iter()
+            .copied()
             .map(SourceKind::title)
             .collect::<Vec<_>>()
             .join(", ");
@@ -591,8 +591,9 @@ fn discover_claude_auxiliary_dir(
 
 /// Returns whether a Claude file should be archived as auxiliary metadata.
 fn is_supported_claude_auxiliary(path: &Path) -> bool {
-    path.extension().and_then(|extension| extension.to_str()) == Some("jsonl")
-        || path.extension().and_then(|extension| extension.to_str()) == Some("txt")
+    let ext = path.extension().and_then(|e| e.to_str());
+    ext == Some("jsonl")
+        || ext == Some("txt")
         || path
             .file_name()
             .and_then(|name| name.to_str())
@@ -1173,7 +1174,7 @@ where
         if !should_copy {
             unchanged += 1;
         }
-        if should_copy || existing.is_none_or(|entry| !artifact.matches_entry(entry)) {
+        if should_copy || existing.is_some_and(|entry| !artifact.matches_entry(entry)) {
             *manifest_written = true;
             manifest_entries.insert(key, artifact.manifest_entry(synced_at));
         }
