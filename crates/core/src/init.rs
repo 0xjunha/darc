@@ -15,7 +15,8 @@ use crate::project_paths::{normalized_known_paths, seed_known_paths, try_git_out
 /// Describes the shared config and project directories that `init` will create.
 #[derive(Debug, Clone)]
 pub struct InitDraft {
-    pub config_exists: bool,
+    pub global_config_exists: bool,
+    pub project_exists: bool,
     pub sources: Vec<DetectedRolloutSource>,
     pub project: ProjectConfig,
     config: SharedConfig,
@@ -45,19 +46,26 @@ impl InitDraft {
 
 impl Display for InitDraft {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "Detected sources:")?;
-        for source in &self.sources {
-            writeln!(f, "- {}", format_source(source))?;
+        if self.global_config_exists {
+            writeln!(f, "Global Memstack: existing config detected")?;
+        } else {
+            writeln!(f, "Global Memstack: no config detected")?;
+            writeln!(f, "Detected sources:")?;
+            for source in &self.sources {
+                writeln!(f, "- {}", format_source(source))?;
+            }
         }
+        writeln!(f, "Root Path: {}", self.root().display())?;
+        writeln!(f, "Config Path: {}", self.config_path().display())?;
+        writeln!(f, "Index DB Path: {}", self.index_db_path().display())?;
 
-        writeln!(f, "\nProject Name: {}", self.project.name)?;
+        writeln!(f, "\nProject:")?;
+        writeln!(f, "Name: {}", self.project.name)?;
         writeln!(f, "Local Path: {}", self.project.local_path.display())?;
         if let Some(upstream) = &self.project.git_upstream {
             writeln!(f, "Upstream: {upstream}")?;
         }
-        writeln!(f, "Root Path: {}", self.root().display())?;
-        writeln!(f, "Config Path: {}", self.config_path().display())?;
-        write!(f, "Index Path: {}", self.index_db_path().display())
+        Ok(())
     }
 }
 
@@ -111,6 +119,7 @@ pub fn prepare_init(root: Option<PathBuf>) -> Result<InitDraft> {
     let config_path = root_path.join(CONFIG_FILE_NAME);
     let projects_root = root_path.join("projects");
     let sources = detect_sources(&base_dirs)?;
+    let global_config_exists = config_path.exists();
 
     if sources.is_empty() {
         bail!(
@@ -121,10 +130,11 @@ pub fn prepare_init(root: Option<PathBuf>) -> Result<InitDraft> {
     }
 
     let existing_projects = load_existing_projects(&config_path)?;
-    let project = merge_project_with_existing(
-        &existing_projects,
-        detect_project(&current_dir, &projects_root)?,
-    );
+    let detected_project = detect_project(&current_dir, &projects_root)?;
+    let project_exists = existing_projects
+        .iter()
+        .any(|existing| existing.id == detected_project.id);
+    let project = merge_project_with_existing(&existing_projects, detected_project);
     let config = build_config(
         existing_projects,
         project.clone(),
@@ -132,7 +142,8 @@ pub fn prepare_init(root: Option<PathBuf>) -> Result<InitDraft> {
         root_path.clone(),
     );
     Ok(InitDraft {
-        config_exists: config_path.exists(),
+        global_config_exists,
+        project_exists,
         sources,
         project,
         config,
@@ -459,6 +470,81 @@ mod tests {
             .expect("system clock should be after the Unix epoch")
             .as_nanos();
         env::temp_dir().join(format!("test-{prefix}-{}-{nanos}", std::process::id()))
+    }
+
+    /// Builds an init draft fixture for display and status tests.
+    fn init_draft_fixture(global_config_exists: bool, project_exists: bool) -> Result<InitDraft> {
+        let workspace_root = unique_test_dir("init-display");
+        let project_root = workspace_root.join("repo");
+        let sessions_root = workspace_root.join("projects/repo-abc123/sessions");
+        fs::create_dir_all(&project_root)?;
+
+        let project = ProjectConfig {
+            id: "repo-abc123".into(),
+            name: "repo".into(),
+            local_path: project_root,
+            git_upstream: Some("https://example.com/acme/repo.git".into()),
+            sessions_root,
+            known_paths: Vec::new(),
+        };
+        let config = SharedConfig::new(
+            workspace_root,
+            vec![project.clone()],
+            SourcesConfig::default(),
+        );
+
+        Ok(InitDraft {
+            global_config_exists,
+            project_exists,
+            sources: vec![
+                DetectedRolloutSource {
+                    home: PathBuf::from("/Users/test/.claude"),
+                    kind: SourceKind::Claude,
+                    root: PathBuf::from("/Users/test/.claude/projects"),
+                    rollout_files: 12,
+                    subagent_rollout_files: 3,
+                },
+                DetectedRolloutSource {
+                    home: PathBuf::from("/Users/test/.codex"),
+                    kind: SourceKind::Codex,
+                    root: PathBuf::from("/Users/test/.codex/sessions"),
+                    rollout_files: 21,
+                    subagent_rollout_files: 0,
+                },
+            ],
+            project,
+            config,
+        })
+    }
+
+    #[test]
+    fn init_draft_display_for_first_run_shows_global_and_project_sections() -> Result<()> {
+        let draft = init_draft_fixture(false, false)?;
+        let rendered = draft.to_string();
+
+        assert!(rendered.contains("Global Memstack: no config detected"));
+        assert!(rendered.contains("Detected sources:"));
+        assert!(rendered.contains("Root Path:"));
+        assert!(rendered.contains("Config Path:"));
+        assert!(rendered.contains("Index DB Path:"));
+        assert!(rendered.contains("\nProject:\n"));
+        assert!(rendered.contains("Name: repo"));
+        assert!(rendered.contains("Upstream: https://example.com/acme/repo.git"));
+        assert!(rendered.find("Detected sources:") < rendered.find("Project:"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn init_draft_display_for_existing_config_omits_detected_sources() -> Result<()> {
+        let draft = init_draft_fixture(true, false)?;
+        let rendered = draft.to_string();
+
+        assert!(rendered.contains("Global Memstack: existing config detected"));
+        assert!(!rendered.contains("Detected sources:"));
+        assert!(rendered.contains("\nProject:\n"));
+
+        Ok(())
     }
 
     #[test]
