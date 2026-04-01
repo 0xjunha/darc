@@ -120,10 +120,7 @@ pub fn execute_sync(plan: SyncPlan) -> Result<SyncReport> {
         auxiliary_copies,
     } = writes;
 
-    for copy in &session_copies {
-        copy_file_atomically(&copy.source_path, &copy.destination_path)?;
-    }
-    for copy in &auxiliary_copies {
+    for copy in session_copies.iter().chain(&auxiliary_copies) {
         copy_file_atomically(&copy.source_path, &copy.destination_path)?;
     }
     if manifest_written {
@@ -193,21 +190,21 @@ fn prepare_sync_from(current_dir: &Path, root: PathBuf, options: SyncOptions) ->
             }
             SourceKind::Codex => {
                 if let Some(codex) = &config.sources.codex {
-                    let discovery = discover_codex_sessions(
+                    let sessions = discover_codex_sessions(
                         codex,
                         &full_project_paths,
                         project_upstream.as_deref(),
                         &other_project_paths,
                         &mut warnings,
                     )?;
-                    for session in &discovery.sessions {
+                    for session in &sessions {
                         if let Some(path) = &session.cwd
                             && path != &primary_project_path
                         {
                             persisted_known_paths.insert(path.clone());
                         }
                     }
-                    discovered_sessions.extend(discovery.sessions);
+                    discovered_sessions.extend(sessions);
                 }
             }
         }
@@ -230,13 +227,14 @@ fn prepare_sync_from(current_dir: &Path, root: PathBuf, options: SyncOptions) ->
     );
 
     let previous_known_paths = normalized_known_paths(&project.local_path, &project.known_paths);
-    let normalized_known_paths_vec: Vec<_> = previous_known_paths.iter().cloned().collect();
     let new_known_paths = persisted_known_paths
         .difference(&previous_known_paths)
         .cloned()
         .collect::<Vec<_>>();
     let config_toml = if new_known_paths.is_empty()
-        && config.projects[project_index].known_paths == normalized_known_paths_vec
+        && previous_known_paths
+            .iter()
+            .eq(config.projects[project_index].known_paths.iter())
     {
         None
     } else {
@@ -610,7 +608,7 @@ fn discover_codex_sessions(
     project_upstream: Option<&str>,
     other_project_paths: &BTreeSet<PathBuf>,
     warnings: &mut Vec<String>,
-) -> Result<CodexDiscovery> {
+) -> Result<Vec<DiscoveredSession>> {
     let archived_root = source.home.join("archived_sessions");
     let mut candidates = BTreeMap::<String, Vec<CodexCandidate>>::new();
     let mut repo_cache = CodexRepoCache::default();
@@ -726,7 +724,7 @@ fn discover_codex_sessions(
         })
         .collect();
 
-    Ok(CodexDiscovery { sessions })
+    Ok(sessions)
 }
 
 /// Returns whether a Codex session belongs to the active project.
@@ -934,6 +932,7 @@ fn format_system_time_utc(time: SystemTime) -> Result<String> {
 }
 
 /// Converts days since the Unix epoch into a UTC calendar date.
+/// Uses Howard Hinnant's algorithm: <https://howardhinnant.github.io/date_algorithms.html#civil_from_days>
 fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
     let z = days_since_epoch + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
@@ -953,12 +952,6 @@ fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
 struct ClaudeDiscovery {
     sessions: Vec<DiscoveredSession>,
     auxiliary: Vec<DiscoveredAuxiliary>,
-}
-
-/// Captures supported Codex discovery results.
-#[derive(Debug, Default)]
-struct CodexDiscovery {
-    sessions: Vec<DiscoveredSession>,
 }
 
 /// Stores source and destination metadata for a pending copy.
@@ -1197,7 +1190,7 @@ struct FileSnapshot {
 }
 
 /// Mirrors the on-disk sync manifest.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Manifest {
     version: u32,
     #[serde(default)]
@@ -1217,7 +1210,7 @@ impl Default for Manifest {
 }
 
 /// Stores one parent-session manifest entry keyed by logical session id.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ManifestSessionEntry {
     provider: SourceKind,
     source_path: PathBuf,
@@ -1242,7 +1235,7 @@ impl ManifestSessionEntry {
 }
 
 /// Stores one auxiliary manifest entry keyed by source path.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ManifestAuxiliaryEntry {
     parent_session: String,
     archive_path: PathBuf,
@@ -1357,6 +1350,63 @@ mod tests {
                 }),
             },
         )
+    }
+
+    /// Shared filesystem fixture for integration tests that exercise prepare/execute sync.
+    struct TestWorkspace {
+        root: PathBuf,
+        project_root: PathBuf,
+        memstack_root: PathBuf,
+        claude_home: PathBuf,
+        claude_projects: PathBuf,
+        codex_home: PathBuf,
+        codex_sessions_root: PathBuf,
+        canonical_project_root: PathBuf,
+    }
+
+    impl TestWorkspace {
+        fn new(prefix: &str) -> Result<Self> {
+            let root = unique_test_dir(prefix);
+            let project_root = root.join("repo");
+            let memstack_root = root.join("memstack");
+            let claude_home = root.join("claude");
+            let claude_projects = claude_home.join("projects");
+            let codex_home = root.join("codex");
+            let codex_sessions_root = codex_home.join("sessions");
+            fs::create_dir_all(&project_root)?;
+            fs::create_dir_all(&claude_projects)?;
+            fs::create_dir_all(&codex_sessions_root)?;
+            let canonical_project_root = fs::canonicalize(&project_root)?;
+            Ok(Self {
+                root,
+                project_root,
+                memstack_root,
+                claude_home,
+                claude_projects,
+                codex_home,
+                codex_sessions_root,
+                canonical_project_root,
+            })
+        }
+
+        fn default_config(&self) -> SharedConfig {
+            sample_config(
+                &self.memstack_root,
+                &self.project_root,
+                &self.claude_home,
+                &self.claude_projects,
+                &self.codex_home,
+                &self.codex_sessions_root,
+            )
+        }
+
+        fn write_config(&self, config: &SharedConfig) -> Result<()> {
+            fs::create_dir_all(&self.memstack_root)?;
+            write_file(
+                &self.memstack_root.join(CONFIG_FILE_NAME),
+                &toml::to_string_pretty(config)?,
+            )
+        }
     }
 
     #[test]
@@ -1559,34 +1609,16 @@ mod tests {
 
     #[test]
     fn prepare_sync_rewrites_known_paths_without_primary_root() -> Result<()> {
-        let workspace = unique_test_dir("sync-known-path-cleanup");
-        let project_root = workspace.join("repo");
-        let memstack_root = workspace.join("memstack");
-        let claude_home = workspace.join("claude");
-        let claude_projects = claude_home.join("projects");
-        let codex_home = workspace.join("codex");
-        let codex_sessions_root = codex_home.join("sessions");
-        fs::create_dir_all(&project_root)?;
-        fs::create_dir_all(&claude_projects)?;
-        fs::create_dir_all(&codex_sessions_root)?;
-        let canonical_project_root = fs::canonicalize(&project_root)?;
+        let ws = TestWorkspace::new("sync-known-path-cleanup")?;
+        let mut config = ws.default_config();
+        config.projects[0].known_paths = vec![ws.canonical_project_root.clone()];
+        ws.write_config(&config)?;
 
-        let mut config = sample_config(
-            &memstack_root,
-            &project_root,
-            &claude_home,
-            &claude_projects,
-            &codex_home,
-            &codex_sessions_root,
-        );
-        config.projects[0].known_paths = vec![canonical_project_root.clone()];
-        fs::create_dir_all(&memstack_root)?;
-        write_file(
-            &memstack_root.join(CONFIG_FILE_NAME),
-            &toml::to_string_pretty(&config)?,
+        let plan = prepare_sync_from(
+            &ws.project_root,
+            ws.memstack_root.clone(),
+            SyncOptions::default(),
         )?;
-
-        let plan = prepare_sync_from(&project_root, memstack_root.clone(), SyncOptions::default())?;
 
         assert!(plan.new_known_paths.is_empty());
         assert!(plan.config_written());
@@ -1596,7 +1628,7 @@ mod tests {
         assert!(report.new_known_paths.is_empty());
         assert!(report.config_written);
 
-        let config_after = load_config(&memstack_root.join(CONFIG_FILE_NAME))?;
+        let config_after = load_config(&ws.memstack_root.join(CONFIG_FILE_NAME))?;
         assert!(config_after.projects[0].known_paths.is_empty());
 
         Ok(())
@@ -1604,38 +1636,16 @@ mod tests {
 
     #[test]
     fn prepare_and_execute_sync_copies_sessions_and_updates_manifest() -> Result<()> {
-        let workspace = unique_test_dir("sync-exec");
+        let ws = TestWorkspace::new("sync-exec")?;
         let claude_session_id = "885a05b8-f731-4fde-bfdb-a24ce28dc9c3";
-        let project_root = workspace.join("repo");
-        let memstack_root = workspace.join("memstack");
-        let claude_home = workspace.join("claude");
-        let claude_projects = claude_home.join("projects");
-        let codex_home = workspace.join("codex");
-        let codex_sessions_root = codex_home.join("sessions");
-        let codex_sessions = codex_sessions_root.join("2026/03/31");
-        let codex_archived = codex_home.join("archived_sessions");
-        fs::create_dir_all(&project_root)?;
-        fs::create_dir_all(&claude_projects)?;
+        let codex_sessions = ws.codex_sessions_root.join("2026/03/31");
+        let codex_archived = ws.codex_home.join("archived_sessions");
         fs::create_dir_all(&codex_sessions)?;
         fs::create_dir_all(&codex_archived)?;
-        let canonical_project_root = fs::canonicalize(&project_root)?;
+        ws.write_config(&ws.default_config())?;
 
-        let config = sample_config(
-            &memstack_root,
-            &project_root,
-            &claude_home,
-            &claude_projects,
-            &codex_home,
-            &codex_sessions_root,
-        );
-        fs::create_dir_all(&memstack_root)?;
-        write_file(
-            &memstack_root.join(CONFIG_FILE_NAME),
-            &toml::to_string_pretty(&config)?,
-        )?;
-
-        let encoded = encode_path_for_claude(&canonical_project_root);
-        let claude_dir = claude_projects.join(encoded);
+        let encoded = encode_path_for_claude(&ws.canonical_project_root);
+        let claude_dir = ws.claude_projects.join(encoded);
         let claude_session = claude_dir.join(format!("{claude_session_id}.jsonl"));
         let claude_aux = claude_dir.join(format!("{claude_session_id}/subagents/agent-a1.jsonl"));
         write_file(&claude_session, "{\"type\":\"message\"}\n")?;
@@ -1648,18 +1658,22 @@ mod tests {
             &active_rollout,
             &format!(
                 "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\"}}}}\n",
-                canonical_project_root.display()
+                ws.canonical_project_root.display()
             ),
         )?;
         write_file(
             &archived_rollout,
             &format!(
                 "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\"}}}}\n{{\"type\":\"message\"}}\n",
-                canonical_project_root.display()
+                ws.canonical_project_root.display()
             ),
         )?;
 
-        let plan = prepare_sync_from(&project_root, memstack_root.clone(), SyncOptions::default())?;
+        let plan = prepare_sync_from(
+            &ws.project_root,
+            ws.memstack_root.clone(),
+            SyncOptions::default(),
+        )?;
 
         assert_eq!(plan.sessions_to_copy(), 2);
         assert_eq!(plan.auxiliary_to_copy(), 1);
@@ -1672,7 +1686,9 @@ mod tests {
         assert!(report.manifest_written);
         assert!(!report.config_written);
 
-        let manifest_path = memstack_root.join("projects/memstack-abc123/sessions/.manifest.json");
+        let manifest_path = ws
+            .memstack_root
+            .join("projects/memstack-abc123/sessions/.manifest.json");
         let manifest: Manifest = serde_json::from_str(&fs::read_to_string(&manifest_path)?)?;
         let claude_entry = manifest
             .sessions
@@ -1693,21 +1709,24 @@ mod tests {
             codex_entry.source_path, archived_rollout,
             "duplicate resolution should keep the larger archived rollout",
         );
-        assert!(memstack_root
+        assert!(ws
+            .memstack_root
             .join(format!(
                 "projects/memstack-abc123/sessions/claude/{claude_session_id}/{claude_session_id}.jsonl"
             ))
             .exists());
-        assert!(memstack_root
+        assert!(ws
+            .memstack_root
             .join(format!(
                 "projects/memstack-abc123/sessions/claude/{claude_session_id}/subagents/agent-a1.jsonl"
             ))
             .exists());
 
-        let config_after = load_config(&memstack_root.join(CONFIG_FILE_NAME))?;
+        let config_after = load_config(&ws.memstack_root.join(CONFIG_FILE_NAME))?;
         assert!(config_after.projects[0].known_paths.is_empty());
 
-        let second_plan = prepare_sync_from(&project_root, memstack_root, SyncOptions::default())?;
+        let second_plan =
+            prepare_sync_from(&ws.project_root, ws.memstack_root, SyncOptions::default())?;
         assert_eq!(second_plan.sessions_to_copy(), 0);
         assert_eq!(second_plan.auxiliary_to_copy(), 0);
         assert_eq!(second_plan.sessions_unchanged, 2);
@@ -1720,39 +1739,20 @@ mod tests {
 
     #[test]
     fn prepare_sync_learns_codex_checkout_with_same_upstream() -> Result<()> {
-        let workspace = unique_test_dir("sync-codex-known-path");
+        let ws = TestWorkspace::new("sync-codex-known-path")?;
         let remote = "https://example.com/acme/memstack.git";
-        let project_root = workspace.join("repo-a");
-        let related_root = workspace.join("repo-b");
+        let related_root = ws.root.join("repo-b");
         let related_subdir = related_root.join("nested");
-        let memstack_root = workspace.join("memstack");
-        let claude_home = workspace.join("claude");
-        let claude_projects = claude_home.join("projects");
-        let codex_home = workspace.join("codex");
-        let codex_sessions_root = codex_home.join("sessions");
-        let codex_sessions = codex_sessions_root.join("2026/04/01");
-        fs::create_dir_all(&claude_projects)?;
+        let codex_sessions = ws.codex_sessions_root.join("2026/04/01");
         fs::create_dir_all(&codex_sessions)?;
-        init_git_repo(&project_root, remote)?;
+        init_git_repo(&ws.project_root, remote)?;
         init_git_repo(&related_root, remote)?;
         fs::create_dir_all(&related_subdir)?;
-        let canonical_project_root = fs::canonicalize(&project_root)?;
         let canonical_related_root = fs::canonicalize(&related_root)?;
 
-        let mut config = sample_config(
-            &memstack_root,
-            &project_root,
-            &claude_home,
-            &claude_projects,
-            &codex_home,
-            &codex_sessions_root,
-        );
+        let mut config = ws.default_config();
         config.projects[0].git_upstream = Some(remote.into());
-        fs::create_dir_all(&memstack_root)?;
-        write_file(
-            &memstack_root.join(CONFIG_FILE_NAME),
-            &toml::to_string_pretty(&config)?,
-        )?;
+        ws.write_config(&config)?;
 
         let rollout_name = "rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl";
         write_file(
@@ -1763,9 +1763,13 @@ mod tests {
             ),
         )?;
 
-        let plan = prepare_sync_from(&project_root, memstack_root.clone(), SyncOptions::default())?;
+        let plan = prepare_sync_from(
+            &ws.project_root,
+            ws.memstack_root.clone(),
+            SyncOptions::default(),
+        )?;
 
-        assert_eq!(plan.project_root, canonical_project_root);
+        assert_eq!(plan.project_root, ws.canonical_project_root);
         assert_eq!(plan.sessions_to_copy(), 1);
         assert_eq!(plan.new_known_paths, vec![canonical_related_root.clone()]);
 
@@ -1773,7 +1777,7 @@ mod tests {
 
         assert_eq!(report.new_known_paths, vec![canonical_related_root.clone()]);
 
-        let config_after = load_config(&memstack_root.join(CONFIG_FILE_NAME))?;
+        let config_after = load_config(&ws.memstack_root.join(CONFIG_FILE_NAME))?;
         assert_eq!(
             config_after.projects[0].known_paths,
             vec![canonical_related_root]
@@ -1784,43 +1788,21 @@ mod tests {
 
     #[test]
     fn prepare_sync_skips_mismatched_codex_session_ids() -> Result<()> {
-        let workspace = unique_test_dir("sync-codex-id-mismatch");
-        let project_root = workspace.join("repo");
-        let memstack_root = workspace.join("memstack");
-        let claude_home = workspace.join("claude");
-        let claude_projects = claude_home.join("projects");
-        let codex_home = workspace.join("codex");
-        let codex_sessions_root = codex_home.join("sessions");
-        let codex_sessions = codex_sessions_root.join("2026/04/01");
-        fs::create_dir_all(&project_root)?;
-        fs::create_dir_all(&claude_projects)?;
+        let ws = TestWorkspace::new("sync-codex-id-mismatch")?;
+        let codex_sessions = ws.codex_sessions_root.join("2026/04/01");
         fs::create_dir_all(&codex_sessions)?;
-        let canonical_project_root = fs::canonicalize(&project_root)?;
-
-        let config = sample_config(
-            &memstack_root,
-            &project_root,
-            &claude_home,
-            &claude_projects,
-            &codex_home,
-            &codex_sessions_root,
-        );
-        fs::create_dir_all(&memstack_root)?;
-        write_file(
-            &memstack_root.join(CONFIG_FILE_NAME),
-            &toml::to_string_pretty(&config)?,
-        )?;
+        ws.write_config(&ws.default_config())?;
 
         write_file(
             &codex_sessions
                 .join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
             &format!(
                 "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e40\",\"cwd\":\"{}\"}}}}\n{{\"type\":\"message\"}}\n",
-                canonical_project_root.display()
+                ws.canonical_project_root.display()
             ),
         )?;
 
-        let plan = prepare_sync_from(&project_root, memstack_root, SyncOptions::default())?;
+        let plan = prepare_sync_from(&ws.project_root, ws.memstack_root, SyncOptions::default())?;
 
         assert_eq!(plan.sessions_to_copy(), 0);
         assert_eq!(plan.sessions_unchanged, 0);
@@ -1835,20 +1817,13 @@ mod tests {
 
     #[test]
     fn prepare_sync_skips_codex_session_in_other_projects_live_worktree() -> Result<()> {
-        let workspace = unique_test_dir("sync-codex-other-worktree");
+        let ws = TestWorkspace::new("sync-codex-other-worktree")?;
         let remote = "https://example.com/acme/memstack.git";
-        let project_root = workspace.join("repo-a");
-        let repo_b_root = workspace.join("repo-b");
-        let repo_b_worktree = workspace.join("repo-b-wt");
-        let memstack_root = workspace.join("memstack");
-        let claude_home = workspace.join("claude");
-        let claude_projects = claude_home.join("projects");
-        let codex_home = workspace.join("codex");
-        let codex_sessions_root = codex_home.join("sessions");
-        let codex_sessions = codex_sessions_root.join("2026/04/01");
-        fs::create_dir_all(&claude_projects)?;
+        let repo_b_root = ws.root.join("repo-b");
+        let repo_b_worktree = ws.root.join("repo-b-wt");
+        let codex_sessions = ws.codex_sessions_root.join("2026/04/01");
         fs::create_dir_all(&codex_sessions)?;
-        init_git_repo(&project_root, remote)?;
+        init_git_repo(&ws.project_root, remote)?;
         init_git_repo(&repo_b_root, remote)?;
 
         // repo-b needs a commit before we can add a worktree.
@@ -1866,28 +1841,17 @@ mod tests {
         let canonical_worktree = fs::canonicalize(&repo_b_worktree)?;
 
         // Configure repo-b without the worktree in known_paths.
-        let mut config = sample_config(
-            &memstack_root,
-            &project_root,
-            &claude_home,
-            &claude_projects,
-            &codex_home,
-            &codex_sessions_root,
-        );
+        let mut config = ws.default_config();
         config.projects[0].git_upstream = Some(remote.into());
         config.projects.push(ProjectConfig {
             id: "repo-b-def456".into(),
             name: "repo-b".into(),
             local_path: repo_b_root.clone(),
             git_upstream: Some(remote.into()),
-            sessions_root: memstack_root.join("projects/repo-b-def456/sessions"),
+            sessions_root: ws.memstack_root.join("projects/repo-b-def456/sessions"),
             known_paths: Vec::new(),
         });
-        fs::create_dir_all(&memstack_root)?;
-        write_file(
-            &memstack_root.join(CONFIG_FILE_NAME),
-            &toml::to_string_pretty(&config)?,
-        )?;
+        ws.write_config(&config)?;
 
         // Place a Codex session whose cwd is inside repo-b's live worktree.
         write_file(
@@ -1899,7 +1863,7 @@ mod tests {
             ),
         )?;
 
-        let plan = prepare_sync_from(&project_root, memstack_root, SyncOptions::default())?;
+        let plan = prepare_sync_from(&ws.project_root, ws.memstack_root, SyncOptions::default())?;
 
         assert_eq!(plan.sessions_to_copy(), 0);
         assert!(plan.new_known_paths.is_empty());
@@ -1914,45 +1878,27 @@ mod tests {
 
     #[test]
     fn prepare_sync_skips_codex_checkout_owned_by_other_project() -> Result<()> {
-        let workspace = unique_test_dir("sync-codex-other-project");
+        let ws = TestWorkspace::new("sync-codex-other-project")?;
         let remote = "https://example.com/acme/memstack.git";
-        let project_root = workspace.join("repo-a");
-        let related_root = workspace.join("repo-b");
+        let related_root = ws.root.join("repo-b");
         let related_subdir = related_root.join("nested");
-        let memstack_root = workspace.join("memstack");
-        let claude_home = workspace.join("claude");
-        let claude_projects = claude_home.join("projects");
-        let codex_home = workspace.join("codex");
-        let codex_sessions_root = codex_home.join("sessions");
-        let codex_sessions = codex_sessions_root.join("2026/04/01");
-        fs::create_dir_all(&claude_projects)?;
+        let codex_sessions = ws.codex_sessions_root.join("2026/04/01");
         fs::create_dir_all(&codex_sessions)?;
-        init_git_repo(&project_root, remote)?;
+        init_git_repo(&ws.project_root, remote)?;
         init_git_repo(&related_root, remote)?;
         fs::create_dir_all(&related_subdir)?;
 
-        let mut config = sample_config(
-            &memstack_root,
-            &project_root,
-            &claude_home,
-            &claude_projects,
-            &codex_home,
-            &codex_sessions_root,
-        );
+        let mut config = ws.default_config();
         config.projects[0].git_upstream = Some(remote.into());
         config.projects.push(ProjectConfig {
             id: "repo-b-def456".into(),
             name: "repo-b".into(),
             local_path: related_root.clone(),
             git_upstream: Some(remote.into()),
-            sessions_root: memstack_root.join("projects/repo-b-def456/sessions"),
+            sessions_root: ws.memstack_root.join("projects/repo-b-def456/sessions"),
             known_paths: Vec::new(),
         });
-        fs::create_dir_all(&memstack_root)?;
-        write_file(
-            &memstack_root.join(CONFIG_FILE_NAME),
-            &toml::to_string_pretty(&config)?,
-        )?;
+        ws.write_config(&config)?;
 
         write_file(
             &codex_sessions
@@ -1963,7 +1909,7 @@ mod tests {
             ),
         )?;
 
-        let plan = prepare_sync_from(&project_root, memstack_root, SyncOptions::default())?;
+        let plan = prepare_sync_from(&ws.project_root, ws.memstack_root, SyncOptions::default())?;
 
         assert_eq!(plan.sessions_to_copy(), 0);
         assert!(plan.new_known_paths.is_empty());
