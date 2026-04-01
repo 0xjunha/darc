@@ -664,11 +664,6 @@ fn discover_codex_sessions(
                     if !project_paths.contains(&repo_root)
                         && other_project_paths.contains(&repo_root)
                     {
-                        warnings.push(format!(
-                            "skipped Codex session in {} because repo {} is already configured for another project",
-                            path.display(),
-                            repo_root.display()
-                        ));
                         continue;
                     }
                     let matches_project = codex_session_matches_project(
@@ -1867,11 +1862,7 @@ mod tests {
 
         assert_eq!(plan.sessions_to_copy(), 0);
         assert!(plan.new_known_paths.is_empty());
-        assert!(
-            plan.warnings
-                .iter()
-                .any(|warning| warning.contains("already configured for another project"))
-        );
+        assert!(plan.warnings.is_empty());
 
         Ok(())
     }
@@ -1913,11 +1904,7 @@ mod tests {
 
         assert_eq!(plan.sessions_to_copy(), 0);
         assert!(plan.new_known_paths.is_empty());
-        assert!(
-            plan.warnings
-                .iter()
-                .any(|warning| warning.contains("already configured for another project"))
-        );
+        assert!(plan.warnings.is_empty());
 
         Ok(())
     }
