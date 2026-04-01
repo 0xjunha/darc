@@ -976,21 +976,6 @@ struct DiscoveredSession {
     mtime_ms: u64,
 }
 
-impl DiscoveredSession {
-    /// Builds the manifest entry for one discovered parent session.
-    fn manifest_entry(&self, synced_at: &str) -> ManifestSessionEntry {
-        ManifestSessionEntry {
-            provider: self.provider,
-            source_path: self.source_path.clone(),
-            archive_path: self.archive_path.clone(),
-            cwd: self.cwd.clone(),
-            size: self.size,
-            mtime_ms: self.mtime_ms,
-            synced_at: synced_at.to_owned(),
-        }
-    }
-}
-
 impl ManifestArtifact for DiscoveredSession {
     type Entry = ManifestSessionEntry;
     type Key = String;
@@ -1012,7 +997,15 @@ impl ManifestArtifact for DiscoveredSession {
 
     /// Builds the manifest entry for one discovered session.
     fn manifest_entry(&self, synced_at: &str) -> Self::Entry {
-        DiscoveredSession::manifest_entry(self, synced_at)
+        ManifestSessionEntry {
+            provider: self.provider,
+            source_path: self.source_path.clone(),
+            archive_path: self.archive_path.clone(),
+            cwd: self.cwd.clone(),
+            size: self.size,
+            mtime_ms: self.mtime_ms,
+            synced_at: synced_at.to_owned(),
+        }
     }
 
     /// Builds a pending copy for one discovered session.
@@ -1033,19 +1026,6 @@ struct DiscoveredAuxiliary {
     parent_session: String,
     size: u64,
     mtime_ms: u64,
-}
-
-impl DiscoveredAuxiliary {
-    /// Builds the manifest entry for one discovered auxiliary artifact.
-    fn manifest_entry(&self, synced_at: &str) -> ManifestAuxiliaryEntry {
-        ManifestAuxiliaryEntry {
-            parent_session: self.parent_session.clone(),
-            archive_path: self.archive_path.clone(),
-            size: self.size,
-            mtime_ms: self.mtime_ms,
-            synced_at: synced_at.to_owned(),
-        }
-    }
 }
 
 impl ManifestArtifact for DiscoveredAuxiliary {
@@ -1069,7 +1049,13 @@ impl ManifestArtifact for DiscoveredAuxiliary {
 
     /// Builds the manifest entry for one discovered auxiliary file.
     fn manifest_entry(&self, synced_at: &str) -> Self::Entry {
-        DiscoveredAuxiliary::manifest_entry(self, synced_at)
+        ManifestAuxiliaryEntry {
+            parent_session: self.parent_session.clone(),
+            archive_path: self.archive_path.clone(),
+            size: self.size,
+            mtime_ms: self.mtime_ms,
+            synced_at: synced_at.to_owned(),
+        }
     }
 
     /// Builds a pending copy for one discovered auxiliary file.
