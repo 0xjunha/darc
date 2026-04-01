@@ -8,7 +8,7 @@ use memstack_core::{
 };
 
 #[derive(Debug, Parser)]
-#[command(name = "memstack", version, about = "memstack")]
+#[command(name = "memstack", version, about = "Memstack CLI")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
