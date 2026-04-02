@@ -17,6 +17,7 @@ use crate::rollout::ParseDeterminism;
 pub(crate) struct CodexRolloutSessionMeta {
     pub(crate) session_id: String,
     pub(crate) cwd: PathBuf,
+    pub(crate) cli_version: Option<String>,
 }
 
 /// Stores the parsed session-level metadata needed before schema dispatch.
@@ -101,15 +102,28 @@ pub(crate) fn read_rollout_session_meta(path: &Path) -> Result<Option<CodexRollo
     parse_rollout_session_meta_line(&line, path)
 }
 
-/// Reads the first non-empty rollout line from one JSONL file.
-fn read_first_rollout_line(path: &Path) -> Result<Option<String>> {
+/// Reads the first non-empty rollout line bytes from one JSONL file.
+pub(crate) fn read_first_rollout_line_bytes(path: &Path) -> Result<Option<Vec<u8>>> {
     let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     let mut reader = BufReader::new(file);
-    let mut line = String::new();
-    if reader.read_line(&mut line)? == 0 {
+    let mut line = Vec::new();
+    if reader.read_until(b'\n', &mut line)? == 0 {
         return Ok(None);
     }
     Ok(Some(line))
+}
+
+/// Reads the first non-empty rollout line from one JSONL file.
+fn read_first_rollout_line(path: &Path) -> Result<Option<String>> {
+    let Some(line) = read_first_rollout_line_bytes(path)? else {
+        return Ok(None);
+    };
+    String::from_utf8(line).map(Some).with_context(|| {
+        format!(
+            "failed to decode the first JSONL line in {}",
+            path.display()
+        )
+    })
 }
 
 /// Parses one raw JSONL line into a Codex rollout header.
@@ -141,6 +155,7 @@ pub(crate) fn parse_rollout_session_meta_line(
         meta.map(|meta| CodexRolloutSessionMeta {
             session_id: meta.session_id,
             cwd: meta.cwd,
+            cli_version: meta.cli_version,
         })
     })
 }
@@ -244,6 +259,7 @@ mod tests {
 
         assert_eq!(meta.session_id, "session-1");
         assert_eq!(meta.cwd, PathBuf::from("/tmp/repo"));
+        assert_eq!(meta.cli_version, None);
     }
 
     #[test]

@@ -21,7 +21,8 @@ mod version;
 use header::parse_rollout_header_parts;
 pub(crate) use header::{
     CodexRolloutHeader, CodexRolloutSessionMeta, parse_rollout_file_session_id,
-    read_rollout_header, read_rollout_session_meta, reconcile_rollout_session_id,
+    parse_rollout_session_meta_line, read_first_rollout_line_bytes, read_rollout_header,
+    read_rollout_session_meta, reconcile_rollout_session_id,
 };
 use version::{CodexCliVersion, CodexSchemaFeature, supports_feature, supports_response_item};
 
@@ -185,6 +186,7 @@ pub(crate) fn parse_rollout_reader<R: BufRead>(
     sink.finish()
 }
 
+/// Parses the strict rollout header from one buffered set of raw JSONL lines.
 #[cfg(test)]
 fn parse_rollout_header_from_lines(
     raw_lines: &[NumberedRawLine],
@@ -197,6 +199,7 @@ fn parse_rollout_header_from_lines(
         .with_context(|| format!("missing session_meta line in {}", source_path.display()))
 }
 
+/// Replays buffered rollout lines through the standard streaming parser.
 #[cfg(test)]
 fn parse_rollout_lines<S: CodexRolloutSink>(
     raw_lines: Vec<NumberedRawLine>,
@@ -578,6 +581,7 @@ fn ensure_feature_support(
     )
 }
 
+/// Buffers one rollout reader into numbered raw lines for shared parse entry points.
 #[cfg(test)]
 fn read_raw_lines<R: BufRead>(reader: R) -> Result<Vec<NumberedRawLine>> {
     let mut raw_lines = Vec::new();
