@@ -2,7 +2,6 @@ use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet},
     env, fs,
-    io::{BufRead, BufReader},
     path::{Path, PathBuf},
 };
 
@@ -21,7 +20,7 @@ use crate::{
     rollout::codex::{
         CodexRolloutHeader, CodexRolloutSink, compare_rollout_priority, parse_rollout_file,
         parse_rollout_file_into, parse_rollout_file_session_id, parse_rollout_session_meta_line,
-        read_rollout_session_meta, reconcile_rollout_session_id,
+        read_first_rollout_line_bytes, reconcile_rollout_session_id,
     },
 };
 
@@ -38,9 +37,9 @@ pub struct ParseReport {
     pub codex_archive_root: PathBuf,
     pub index_db_path: PathBuf,
     pub sessions_discovered: usize,
-    pub sessions_indexed: usize,
-    pub sessions_skipped: usize,
-    pub turns_indexed: usize,
+    pub sessions_skipped_this_run: usize,
+    pub sessions_currently_indexed: usize,
+    pub turns_currently_indexed: usize,
     pub skipped_rollouts: Vec<SkippedCodexRollout>,
 }
 
@@ -152,6 +151,13 @@ struct ArchivedCodexRolloutCandidate {
     mtime_ms: u64,
 }
 
+/// Stores one archived rollout inspection result before duplicate grouping.
+#[derive(Debug, Clone)]
+enum ArchivedCodexRolloutInspection {
+    Candidate(ArchivedCodexRolloutCandidate),
+    Skipped(SkippedCodexRollout),
+}
+
 /// Stores the ordered archived rollout duplicates for one logical session id.
 #[derive(Debug, Clone)]
 struct ArchivedCodexRolloutGroup {
@@ -183,13 +189,6 @@ impl IndexedCodexSessionSnapshot {
             && self.source_size == Some(candidate.size)
             && self.source_mtime_ms == Some(candidate.mtime_ms)
     }
-}
-
-/// Stores the rollout identity discovered before duplicate selection and parsing.
-#[derive(Debug, Clone)]
-struct ArchivedCodexRolloutIdentity {
-    session_id: String,
-    cli_version: Option<String>,
 }
 
 /// Streams one parsed rollout directly into SQLite session and turn rows.
@@ -325,24 +324,17 @@ impl CodexRolloutSink for SqliteRolloutSink<'_> {
 #[derive(Debug, Clone)]
 struct DiscoveredArchivedCodexRollouts {
     groups: Vec<ArchivedCodexRolloutGroup>,
-    retained_session_ids: BTreeSet<String>,
+    discovered_session_ids: BTreeSet<String>,
     skipped_rollouts: Vec<SkippedCodexRollout>,
 }
 
 /// Describes the SQLite index changes produced by one parse run.
 #[derive(Debug, Clone)]
 struct IndexedCodexParseOutcome {
-    sessions_indexed: usize,
-    sessions_skipped: usize,
+    sessions_succeeded: usize,
+    sessions_currently_indexed: usize,
     skipped_rollouts: Vec<SkippedCodexRollout>,
-    turns_indexed: usize,
-}
-
-/// Captures best-effort metadata for one rollout skip report.
-#[derive(Debug, Clone, Default)]
-struct CodexRolloutSkipContext {
-    logical_session_id: Option<String>,
-    cli_version: Option<String>,
+    turns_currently_indexed: usize,
 }
 
 /// Marks hard infrastructure failures while indexing one rollout candidate.
@@ -375,11 +367,14 @@ fn parse_project_codex_turns_from(current_dir: &Path, root: PathBuf) -> Result<P
         &mut connection,
         &active_project.project.id,
         &discovered_rollouts.groups,
-        &discovered_rollouts.retained_session_ids,
+        &discovered_rollouts.discovered_session_ids,
     )?;
     let mut skipped_rollouts = discovered_rollouts.skipped_rollouts;
     skipped_rollouts.extend(parse_outcome.skipped_rollouts);
-    let sessions_discovered = discovered_rollouts.groups.len();
+    let sessions_discovered = discovered_rollouts.discovered_session_ids.len();
+    let sessions_skipped_this_run = sessions_discovered
+        .checked_sub(parse_outcome.sessions_succeeded)
+        .context("successful Codex session count exceeds discovered sessions")?;
 
     Ok(ParseReport {
         project_name: active_project.project.name,
@@ -387,9 +382,9 @@ fn parse_project_codex_turns_from(current_dir: &Path, root: PathBuf) -> Result<P
         codex_archive_root,
         index_db_path,
         sessions_discovered,
-        sessions_indexed: parse_outcome.sessions_indexed,
-        sessions_skipped: parse_outcome.sessions_skipped,
-        turns_indexed: parse_outcome.turns_indexed,
+        sessions_skipped_this_run,
+        sessions_currently_indexed: parse_outcome.sessions_currently_indexed,
+        turns_currently_indexed: parse_outcome.turns_currently_indexed,
         skipped_rollouts,
     })
 }
@@ -401,19 +396,18 @@ fn discover_archived_codex_rollouts(
 ) -> Result<DiscoveredArchivedCodexRollouts> {
     let rollout_paths = discover_archived_codex_rollout_paths(root)?;
     let mut rollout_candidates = Vec::new();
-    let mut retained_session_ids = BTreeSet::new();
+    let mut discovered_session_ids = BTreeSet::new();
     let mut skipped_rollouts = Vec::new();
 
     for path in &rollout_paths {
         match inspect_archived_codex_rollout(path, sessions_root)? {
-            Some(candidate) => {
-                retained_session_ids.insert(candidate.session_id.clone());
+            ArchivedCodexRolloutInspection::Candidate(candidate) => {
+                discovered_session_ids.insert(candidate.session_id.clone());
                 rollout_candidates.push(candidate);
             }
-            None => {
-                let skipped = discover_archived_codex_rollout_skip(path)?;
+            ArchivedCodexRolloutInspection::Skipped(skipped) => {
                 if let Some(session_id) = &skipped.logical_session_id {
-                    retained_session_ids.insert(session_id.clone());
+                    discovered_session_ids.insert(session_id.clone());
                 }
                 skipped_rollouts.push(skipped);
             }
@@ -422,7 +416,7 @@ fn discover_archived_codex_rollouts(
 
     Ok(DiscoveredArchivedCodexRollouts {
         groups: group_archived_codex_rollouts(rollout_candidates),
-        retained_session_ids,
+        discovered_session_ids,
         skipped_rollouts,
     })
 }
@@ -458,7 +452,7 @@ fn is_archived_codex_rollout(path: &Path) -> bool {
 fn inspect_archived_codex_rollout(
     path: &Path,
     sessions_root: &Path,
-) -> Result<Option<ArchivedCodexRolloutCandidate>> {
+) -> Result<ArchivedCodexRolloutInspection> {
     let (size, mtime_ms) = file_snapshot(path)?;
     let archive_path = path
         .strip_prefix(sessions_root)
@@ -471,43 +465,119 @@ fn inspect_archived_codex_rollout(
         })?
         .to_string_lossy()
         .into_owned();
-    let Some(identity) = archived_codex_rollout_identity(path)? else {
-        return Ok(None);
-    };
-
-    Ok(Some(ArchivedCodexRolloutCandidate {
-        source_path: path.to_path_buf(),
-        archive_path,
-        session_id: identity.session_id,
-        cli_version: identity.cli_version,
-        size,
-        mtime_ms,
-    }))
-}
-
-/// Reads the tolerant rollout identity used during duplicate grouping and skip reporting.
-fn archived_codex_rollout_identity(path: &Path) -> Result<Option<ArchivedCodexRolloutIdentity>> {
     let file_name = path.file_name().and_then(|name| name.to_str());
     let filename_session_id = file_name.and_then(parse_rollout_file_session_id);
-    let payload_meta = match read_rollout_session_meta(path) {
-        Ok(meta) => meta,
-        Err(_) if filename_session_id.is_some() => None,
-        Err(_) => return Ok(None),
+    let Some(first_line) = read_first_rollout_line_bytes(path)? else {
+        return Ok(ArchivedCodexRolloutInspection::Skipped(
+            build_skipped_codex_rollout(
+                path,
+                filename_session_id,
+                None,
+                format!("missing session_meta line in {}", path.display()),
+            ),
+        ));
     };
-    let payload_session_id = payload_meta.as_ref().map(|meta| meta.session_id.as_str());
-
-    let Some(session_id) = (match reconcile_rollout_session_id(path, file_name, payload_session_id)
-    {
-        Ok(session_id) => session_id,
-        Err(_) => return Ok(None),
-    }) else {
-        return Ok(None);
+    let first_line = match String::from_utf8(first_line) {
+        Ok(first_line) => first_line,
+        Err(error) if filename_session_id.is_some() => {
+            return Ok(ArchivedCodexRolloutInspection::Candidate(
+                build_archived_codex_rollout_candidate(
+                    path,
+                    &archive_path,
+                    filename_session_id.expect("checked above"),
+                    None,
+                    size,
+                    mtime_ms,
+                ),
+            ));
+        }
+        Err(error) => {
+            return Ok(ArchivedCodexRolloutInspection::Skipped(
+                build_skipped_codex_rollout(path, filename_session_id, None, error.to_string()),
+            ));
+        }
     };
+    let meta = match parse_rollout_session_meta_line(&first_line, path) {
+        Ok(Some(meta)) => meta,
+        Ok(None) if filename_session_id.is_some() => {
+            return Ok(ArchivedCodexRolloutInspection::Candidate(
+                build_archived_codex_rollout_candidate(
+                    path,
+                    &archive_path,
+                    filename_session_id.expect("checked above"),
+                    None,
+                    size,
+                    mtime_ms,
+                ),
+            ));
+        }
+        Ok(None) => {
+            return Ok(ArchivedCodexRolloutInspection::Skipped(
+                build_skipped_codex_rollout(
+                    path,
+                    filename_session_id,
+                    None,
+                    format!("missing session_meta line in {}", path.display()),
+                ),
+            ));
+        }
+        Err(error) if filename_session_id.is_some() => {
+            return Ok(ArchivedCodexRolloutInspection::Candidate(
+                build_archived_codex_rollout_candidate(
+                    path,
+                    &archive_path,
+                    filename_session_id.expect("checked above"),
+                    None,
+                    size,
+                    mtime_ms,
+                ),
+            ));
+        }
+        Err(error) => {
+            return Ok(ArchivedCodexRolloutInspection::Skipped(
+                build_skipped_codex_rollout(path, filename_session_id, None, error.to_string()),
+            ));
+        }
+    };
+    let payload_session_id = meta.session_id.clone();
+    let session_id =
+        match reconcile_rollout_session_id(path, file_name, Some(payload_session_id.as_str())) {
+            Ok(Some(session_id)) => session_id,
+            Ok(None) => {
+                return Ok(ArchivedCodexRolloutInspection::Skipped(
+                    build_skipped_codex_rollout(
+                        path,
+                        Some(payload_session_id),
+                        meta.cli_version,
+                        format!(
+                            "failed to derive archived Codex session id from {}",
+                            path.display()
+                        ),
+                    ),
+                ));
+            }
+            Err(error) => {
+                return Ok(ArchivedCodexRolloutInspection::Skipped(
+                    build_skipped_codex_rollout(
+                        path,
+                        filename_session_id.or(Some(payload_session_id)),
+                        meta.cli_version,
+                        error.to_string(),
+                    ),
+                ));
+            }
+        };
 
-    Ok(Some(ArchivedCodexRolloutIdentity {
-        session_id,
-        cli_version: payload_meta.and_then(|meta| meta.cli_version),
-    }))
+    Ok(ArchivedCodexRolloutInspection::Candidate(
+        build_archived_codex_rollout_candidate(
+            path,
+            &archive_path,
+            session_id,
+            meta.cli_version,
+            size,
+            mtime_ms,
+        ),
+    ))
 }
 
 /// Groups archived rollout duplicates by session id and orders each group by priority.
@@ -566,106 +636,22 @@ fn file_snapshot(path: &Path) -> Result<(u64, u64)> {
     Ok((metadata.len(), mtime_ms))
 }
 
-/// Builds one skip report for an archived rollout omitted during discovery.
-fn discover_archived_codex_rollout_skip(path: &Path) -> Result<SkippedCodexRollout> {
-    let first_line = read_first_rollout_line_bytes(path)?;
-    let file_name = path.file_name().and_then(|name| name.to_str());
-    let filename_session_id = file_name.and_then(parse_rollout_file_session_id);
-
-    match first_line {
-        Some(first_line) => {
-            let line = match String::from_utf8(first_line) {
-                Ok(line) => line,
-                Err(error) => {
-                    return Ok(build_skipped_codex_rollout(
-                        path,
-                        filename_session_id,
-                        None,
-                        error.to_string(),
-                    ));
-                }
-            };
-            let context = rollout_skip_context_from_first_line(path, Some(&line));
-            let reason = match parse_rollout_session_meta_line(&line, path) {
-                Ok(Some(meta)) => {
-                    reconcile_rollout_session_id(path, file_name, Some(meta.session_id.as_str()))
-                        .and_then(|session_id| {
-                            session_id.with_context(|| {
-                                format!(
-                                    "failed to derive archived Codex session id from {}",
-                                    path.display()
-                                )
-                            })
-                        })
-                        .expect_err("discovery skips are only built for rejected rollouts")
-                        .to_string()
-                }
-                Ok(None) => format!("missing session_meta line in {}", path.display()),
-                Err(error) => error.to_string(),
-            };
-
-            Ok(build_skipped_codex_rollout(
-                path,
-                context.logical_session_id,
-                context.cli_version,
-                reason,
-            ))
-        }
-        None => Ok(build_skipped_codex_rollout(
-            path,
-            filename_session_id,
-            None,
-            format!("missing session_meta line in {}", path.display()),
-        )),
-    }
-}
-
-/// Reads the first JSONL line bytes from one rollout file while keeping I/O failures fatal.
-fn read_first_rollout_line_bytes(path: &Path) -> Result<Option<Vec<u8>>> {
-    let file =
-        fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-    let mut reader = BufReader::new(file);
-    let mut line = Vec::new();
-    if reader
-        .read_until(b'\n', &mut line)
-        .with_context(|| format!("failed to read the first line in {}", path.display()))?
-        == 0
-    {
-        return Ok(None);
-    }
-    Ok(Some(line))
-}
-
-/// Builds the best-effort skip context from one rollout file's first line.
-fn rollout_skip_context_from_first_line(
-    path: &Path,
-    first_line: Option<&str>,
-) -> CodexRolloutSkipContext {
-    let file_name = path.file_name().and_then(|name| name.to_str());
-    let filename_session_id = file_name.and_then(parse_rollout_file_session_id);
-    let Some(line) = first_line else {
-        return CodexRolloutSkipContext {
-            logical_session_id: filename_session_id,
-            cli_version: None,
-        };
-    };
-    let Ok(Some(meta)) = parse_rollout_session_meta_line(line, path) else {
-        return CodexRolloutSkipContext {
-            logical_session_id: filename_session_id,
-            cli_version: None,
-        };
-    };
-
-    let logical_session_id =
-        reconcile_rollout_session_id(path, file_name, Some(meta.session_id.as_str()))
-            .ok()
-            .flatten()
-            .or(filename_session_id)
-            .or_else(|| Some(meta.session_id.clone()));
-
-    CodexRolloutSkipContext {
-        logical_session_id,
-        cli_version: meta.cli_version,
+/// Builds one archived rollout candidate from inspected file metadata.
+fn build_archived_codex_rollout_candidate(
+    source_path: &Path,
+    archive_path: &str,
+    session_id: String,
+    cli_version: Option<String>,
+    size: u64,
+    mtime_ms: u64,
+) -> ArchivedCodexRolloutCandidate {
+    ArchivedCodexRolloutCandidate {
+        source_path: source_path.to_path_buf(),
+        archive_path: archive_path.to_owned(),
+        session_id,
+        cli_version,
+        size,
+        mtime_ms,
     }
 }
 
@@ -689,7 +675,7 @@ fn update_project_codex_turns(
     connection: &mut Connection,
     project_id: &str,
     archived_rollouts: &[ArchivedCodexRolloutGroup],
-    retained_session_ids: &BTreeSet<String>,
+    discovered_session_ids: &BTreeSet<String>,
 ) -> Result<IndexedCodexParseOutcome> {
     let mut transaction = connection
         .transaction()
@@ -697,12 +683,12 @@ fn update_project_codex_turns(
     let indexed_snapshots = load_indexed_codex_session_snapshots(&transaction, project_id)?;
 
     for session_id in indexed_snapshots.keys() {
-        if !retained_session_ids.contains(session_id) {
+        if !discovered_session_ids.contains(session_id) {
             delete_indexed_codex_session(&transaction, project_id, session_id)?;
         }
     }
 
-    let mut sessions_skipped = 0;
+    let mut sessions_succeeded = 0;
     let mut skipped_rollouts = Vec::new();
     for archived_group in archived_rollouts {
         let group_outcome = update_archived_codex_rollout_group(
@@ -711,7 +697,7 @@ fn update_project_codex_turns(
             indexed_snapshots.get(archived_group.session_id()),
             archived_group,
         )?;
-        sessions_skipped += usize::from(group_outcome.session_skipped);
+        sessions_succeeded += usize::from(group_outcome.session_succeeded);
         skipped_rollouts.extend(group_outcome.skipped_rollouts);
     }
 
@@ -720,17 +706,17 @@ fn update_project_codex_turns(
         .context("failed to commit SQLite parse transaction")?;
 
     Ok(IndexedCodexParseOutcome {
-        sessions_indexed: project_codex_session_count(connection, project_id)?,
-        sessions_skipped,
+        sessions_succeeded,
+        sessions_currently_indexed: project_codex_session_count(connection, project_id)?,
         skipped_rollouts,
-        turns_indexed: project_codex_turn_count(connection, project_id)?,
+        turns_currently_indexed: project_codex_turn_count(connection, project_id)?,
     })
 }
 
 /// Describes how one archived duplicate group affected the SQLite index.
 #[derive(Debug, Clone)]
 struct ArchivedCodexRolloutGroupOutcome {
-    session_skipped: bool,
+    session_succeeded: bool,
     skipped_rollouts: Vec<SkippedCodexRollout>,
 }
 
@@ -746,7 +732,7 @@ fn update_archived_codex_rollout_group(
     for archived in &archived_group.candidates {
         if indexed_snapshot.is_some_and(|snapshot| snapshot.matches_candidate(archived)) {
             return Ok(ArchivedCodexRolloutGroupOutcome {
-                session_skipped: false,
+                session_succeeded: true,
                 skipped_rollouts,
             });
         }
@@ -763,7 +749,7 @@ fn update_archived_codex_rollout_group(
                     )
                 })?;
                 return Ok(ArchivedCodexRolloutGroupOutcome {
-                    session_skipped: false,
+                    session_succeeded: true,
                     skipped_rollouts,
                 });
             }
@@ -775,7 +761,7 @@ fn update_archived_codex_rollout_group(
     }
 
     Ok(ArchivedCodexRolloutGroupOutcome {
-        session_skipped: true,
+        session_succeeded: false,
         skipped_rollouts,
     })
 }
@@ -1304,9 +1290,9 @@ mod tests {
         assert_eq!(report.project_name, "repo");
         assert_eq!(report.project_root, fs::canonicalize(&project_root)?);
         assert_eq!(report.sessions_discovered, 1);
-        assert_eq!(report.sessions_indexed, 1);
-        assert_eq!(report.sessions_skipped, 0);
-        assert_eq!(report.turns_indexed, 2);
+        assert_eq!(report.sessions_currently_indexed, 1);
+        assert_eq!(report.sessions_skipped_this_run, 0);
+        assert_eq!(report.turns_currently_indexed, 2);
         assert_eq!(report.index_db_path, index_db_path);
         assert!(report.skipped_rollouts.is_empty());
 
@@ -1418,7 +1404,7 @@ mod tests {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
 
-        assert_eq!(report.turns_indexed, 2);
+        assert_eq!(report.turns_currently_indexed, 2);
         assert_eq!(indexed_turns, 2);
         assert_eq!(first_turn.0, "Updated task");
         assert_eq!(first_turn.1, "Updated reply");
@@ -1466,9 +1452,9 @@ mod tests {
         )?;
 
         assert_eq!(report.sessions_discovered, 1);
-        assert_eq!(report.sessions_indexed, 1);
-        assert_eq!(report.sessions_skipped, 0);
-        assert_eq!(report.turns_indexed, 1);
+        assert_eq!(report.sessions_currently_indexed, 1);
+        assert_eq!(report.sessions_skipped_this_run, 0);
+        assert_eq!(report.turns_currently_indexed, 1);
         assert_eq!(indexed_turn.0, "Original task");
         assert_eq!(indexed_turn.1, "Original reply");
         assert!(report.skipped_rollouts.is_empty());
@@ -1541,9 +1527,9 @@ mod tests {
         )?;
 
         assert_eq!(report.sessions_discovered, 1);
-        assert_eq!(report.sessions_indexed, 1);
-        assert_eq!(report.sessions_skipped, 0);
-        assert_eq!(report.turns_indexed, 1);
+        assert_eq!(report.sessions_currently_indexed, 1);
+        assert_eq!(report.sessions_skipped_this_run, 0);
+        assert_eq!(report.turns_currently_indexed, 1);
         assert_eq!(indexed_sessions, 1);
         assert_eq!(indexed_turns, 1);
         assert_eq!(
@@ -1586,10 +1572,10 @@ mod tests {
             |row| row.get(0),
         )?;
 
-        assert_eq!(report.sessions_discovered, 0);
-        assert_eq!(report.sessions_indexed, 0);
-        assert_eq!(report.sessions_skipped, 0);
-        assert_eq!(report.turns_indexed, 0);
+        assert_eq!(report.sessions_discovered, 1);
+        assert_eq!(report.sessions_currently_indexed, 0);
+        assert_eq!(report.sessions_skipped_this_run, 1);
+        assert_eq!(report.turns_currently_indexed, 0);
         assert_eq!(indexed_sessions, 0);
         assert_eq!(report.skipped_rollouts.len(), 1);
         assert_eq!(
@@ -1650,9 +1636,9 @@ mod tests {
         )?;
 
         assert_eq!(report.sessions_discovered, 1);
-        assert_eq!(report.sessions_indexed, 1);
-        assert_eq!(report.sessions_skipped, 0);
-        assert_eq!(report.turns_indexed, 1);
+        assert_eq!(report.sessions_currently_indexed, 1);
+        assert_eq!(report.sessions_skipped_this_run, 0);
+        assert_eq!(report.turns_currently_indexed, 1);
         assert_eq!(indexed_turn.0, "Fresh task");
         assert_eq!(indexed_turn.1, "Fresh reply");
         assert!(report.skipped_rollouts.is_empty());
@@ -1705,9 +1691,9 @@ mod tests {
         )?;
 
         assert_eq!(report.sessions_discovered, 1);
-        assert_eq!(report.sessions_indexed, 1);
-        assert_eq!(report.sessions_skipped, 0);
-        assert_eq!(report.turns_indexed, 1);
+        assert_eq!(report.sessions_currently_indexed, 1);
+        assert_eq!(report.sessions_skipped_this_run, 0);
+        assert_eq!(report.turns_currently_indexed, 1);
         assert_eq!(
             indexed_row.0,
             "codex/rollout-2026-04-01T09-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"
@@ -1758,9 +1744,9 @@ mod tests {
         )?;
 
         assert_eq!(report.sessions_discovered, 1);
-        assert_eq!(report.sessions_indexed, 0);
-        assert_eq!(report.sessions_skipped, 1);
-        assert_eq!(report.turns_indexed, 0);
+        assert_eq!(report.sessions_currently_indexed, 0);
+        assert_eq!(report.sessions_skipped_this_run, 1);
+        assert_eq!(report.turns_currently_indexed, 0);
         assert_eq!(indexed_sessions, 0);
         assert_eq!(report.skipped_rollouts.len(), 2);
         assert!(report.skipped_rollouts.iter().all(|skipped| {
@@ -1807,9 +1793,9 @@ mod tests {
         )?;
 
         assert_eq!(report.sessions_discovered, 1);
-        assert_eq!(report.sessions_indexed, 1);
-        assert_eq!(report.sessions_skipped, 1);
-        assert_eq!(report.turns_indexed, 1);
+        assert_eq!(report.sessions_currently_indexed, 1);
+        assert_eq!(report.sessions_skipped_this_run, 1);
+        assert_eq!(report.turns_currently_indexed, 1);
         assert_eq!(indexed_turn.0, "Original task");
         assert_eq!(indexed_turn.1, "Original reply");
         assert_eq!(report.skipped_rollouts.len(), 1);
@@ -1865,10 +1851,10 @@ mod tests {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
 
-        assert_eq!(report.sessions_discovered, 0);
-        assert_eq!(report.sessions_indexed, 1);
-        assert_eq!(report.sessions_skipped, 0);
-        assert_eq!(report.turns_indexed, 1);
+        assert_eq!(report.sessions_discovered, 1);
+        assert_eq!(report.sessions_currently_indexed, 1);
+        assert_eq!(report.sessions_skipped_this_run, 1);
+        assert_eq!(report.turns_currently_indexed, 1);
         assert_eq!(indexed_turn.0, "Original task");
         assert_eq!(indexed_turn.1, "Original reply");
         assert_eq!(report.skipped_rollouts.len(), 1);
@@ -1930,9 +1916,9 @@ mod tests {
         )?;
 
         assert_eq!(report.sessions_discovered, 1);
-        assert_eq!(report.sessions_indexed, 1);
-        assert_eq!(report.sessions_skipped, 0);
-        assert_eq!(report.turns_indexed, 1);
+        assert_eq!(report.sessions_currently_indexed, 1);
+        assert_eq!(report.sessions_skipped_this_run, 0);
+        assert_eq!(report.turns_currently_indexed, 1);
         assert_eq!(indexed_turn.0, "Original task");
         assert_eq!(indexed_turn.1, "Original reply");
         assert_eq!(report.skipped_rollouts.len(), 1);
@@ -1991,9 +1977,9 @@ mod tests {
         )?;
 
         assert_eq!(report.sessions_discovered, 2);
-        assert_eq!(report.sessions_indexed, 1);
-        assert_eq!(report.sessions_skipped, 1);
-        assert_eq!(report.turns_indexed, 1);
+        assert_eq!(report.sessions_currently_indexed, 1);
+        assert_eq!(report.sessions_skipped_this_run, 1);
+        assert_eq!(report.turns_currently_indexed, 1);
         assert_eq!(indexed_sessions, 1);
         assert_eq!(indexed_turn.0, "Good task");
         assert_eq!(indexed_turn.1, "Good reply");
@@ -2066,9 +2052,9 @@ mod tests {
         )?;
 
         assert_eq!(report.sessions_discovered, 2);
-        assert_eq!(report.sessions_indexed, 1);
-        assert_eq!(report.sessions_skipped, 1);
-        assert_eq!(report.turns_indexed, 1);
+        assert_eq!(report.sessions_currently_indexed, 1);
+        assert_eq!(report.sessions_skipped_this_run, 1);
+        assert_eq!(report.turns_currently_indexed, 1);
         assert_eq!(indexed_sessions, 1);
         assert_eq!(indexed_turn.0, "Healthy task");
         assert_eq!(indexed_turn.1, "Healthy reply");

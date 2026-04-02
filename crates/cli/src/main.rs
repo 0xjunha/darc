@@ -189,9 +189,18 @@ fn run_parse(args: ParseArgs) -> Result<()> {
     println!("Archive: {}", report.codex_archive_root.display());
     println!("Index DB: {}", report.index_db_path.display());
     println!("Sessions discovered: {}", report.sessions_discovered);
-    println!("Sessions indexed: {}", report.sessions_indexed);
-    println!("Sessions skipped: {}", report.sessions_skipped);
-    println!("Turns currently indexed: {}", report.turns_indexed);
+    println!(
+        "Sessions skipped this run: {}",
+        report.sessions_skipped_this_run
+    );
+    println!(
+        "Sessions currently indexed: {}",
+        report.sessions_currently_indexed
+    );
+    println!(
+        "Turns currently indexed: {}",
+        report.turns_currently_indexed
+    );
     println!("Skipped rollout files: {}", report.skipped_rollouts.len());
 
     Ok(())
