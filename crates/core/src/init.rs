@@ -10,6 +10,7 @@ use walkdir::WalkDir;
 
 use crate::config::*;
 use crate::constants::*;
+use crate::index_db::ensure_index_database;
 use crate::project_paths::{normalized_known_paths, seed_known_paths, try_git_output};
 
 /// Describes the shared config and project directories that `init` will create.
@@ -161,9 +162,9 @@ pub fn write_init(draft: &InitDraft) -> Result<()> {
     fs::create_dir_all(&draft.project.sessions_root)
         .with_context(|| format!("failed to create {}", draft.project.sessions_root.display()))?;
     create_parent(&config_path, "config path")?;
-    create_parent(&index_db_path, "index database path")?;
     fs::write(&config_path, config_toml.as_bytes())
         .with_context(|| format!("failed to write {}", config_path.display()))?;
+    ensure_index_database(&index_db_path)?;
     Ok(())
 }
 
@@ -692,6 +693,19 @@ mod tests {
 
         assert_eq!(loaded.projects.len(), 1);
         assert!(loaded.projects[0].known_paths.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn write_init_creates_index_database_file() -> Result<()> {
+        let draft = init_draft_fixture(false, false)?;
+        let index_db_path = draft.root().join(INDEX_DB_FILE_NAME);
+
+        write_init(&draft)?;
+
+        assert!(draft.root().join(CONFIG_FILE_NAME).exists());
+        assert!(index_db_path.exists());
 
         Ok(())
     }

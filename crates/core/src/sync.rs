@@ -12,12 +12,10 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
+use crate::active_project::load_active_project;
 use crate::versions::MANIFEST_VERSION;
 use crate::{
-    config::{
-        ClaudeSourceConfig, CodexSourceConfig, ProjectConfig, SharedConfig, SourceKind, load_config,
-    },
-    constants::CONFIG_FILE_NAME,
+    config::{ClaudeSourceConfig, CodexSourceConfig, ProjectConfig, SharedConfig, SourceKind},
     default_root_path,
     project_paths::{
         current_project_root, encode_path_for_claude, normalize_project_path,
@@ -148,20 +146,15 @@ pub fn execute_sync(plan: SyncPlan) -> Result<SyncReport> {
 
 /// Plans a sync from an explicit working directory for deterministic tests.
 fn prepare_sync_from(current_dir: &Path, root: PathBuf, options: SyncOptions) -> Result<SyncPlan> {
-    let config_path = root.join(CONFIG_FILE_NAME);
-    if !config_path.exists() {
-        bail!(
-            "shared config not found at {}\nrun `memstack init --root {}` from your project root first",
-            config_path.display(),
-            root.display()
-        );
-    }
-
-    let mut config = load_config(&config_path)?;
-    let current_root = current_project_root(current_dir)?;
-    let current_live_paths = project_path_set(&current_root, &[])?;
-    let project_index = find_project_index(&config.projects, &current_live_paths)?;
-    let project = config.projects[project_index].clone();
+    let active_project = load_active_project(current_dir, &root)?;
+    let crate::active_project::ActiveProject {
+        mut config,
+        config_path,
+        current_root,
+        current_live_paths: _current_live_paths,
+        project_index,
+        project,
+    } = active_project;
     let primary_project_path = normalize_project_path(&project.local_path);
     let full_project_paths = project_path_set(&current_root, &project.known_paths)?;
     let other_project_paths = other_project_paths(&config.projects, project_index)?;
@@ -261,41 +254,6 @@ fn prepare_sync_from(current_dir: &Path, root: PathBuf, options: SyncOptions) ->
             auxiliary_copies,
         },
     })
-}
-
-/// Matches the current repo or worktree against configured projects.
-fn find_project_index(
-    projects: &[ProjectConfig],
-    current_paths: &BTreeSet<PathBuf>,
-) -> Result<usize> {
-    let mut matches = Vec::new();
-
-    for (index, project) in projects.iter().enumerate() {
-        let project_paths = configured_project_paths(project);
-        if !project_paths.is_disjoint(current_paths) {
-            matches.push(index);
-        }
-    }
-
-    match matches.as_slice() {
-        [] => bail!("current directory does not match any configured memstack project"),
-        [index] => Ok(*index),
-        _ => {
-            let names = matches
-                .into_iter()
-                .map(|index| projects[index].name.clone())
-                .collect::<Vec<_>>()
-                .join(", ");
-            bail!("current directory matched multiple configured projects: {names}")
-        }
-    }
-}
-
-/// Returns the configured primary and known paths for one project.
-fn configured_project_paths(project: &ProjectConfig) -> BTreeSet<PathBuf> {
-    let mut project_paths = normalized_known_paths(&project.local_path, &project.known_paths);
-    project_paths.insert(normalize_project_path(&project.local_path));
-    project_paths
 }
 
 /// Returns all paths owned by projects other than the active project, including live worktrees.
@@ -1270,6 +1228,7 @@ mod tests {
     use std::process::Command;
 
     use super::*;
+    use crate::{config::load_config, constants::CONFIG_FILE_NAME};
 
     fn unique_test_dir(prefix: &str) -> PathBuf {
         env::temp_dir().join(format!(

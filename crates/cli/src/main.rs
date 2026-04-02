@@ -4,7 +4,8 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use memstack_core::{
     CodexRollout, CodexTurn, CodexTurnStatus, CodexTurnStep, InitDraft, SourceKind, SyncOptions,
-    default_root_path, execute_sync, parse_codex_rollout, prepare_init, prepare_sync, write_init,
+    default_root_path, execute_sync, parse_codex_rollout, parse_project_codex_turns, prepare_init,
+    prepare_sync, write_init,
 };
 
 #[derive(Debug, Parser)]
@@ -21,6 +22,8 @@ enum Commands {
     Init(InitArgs),
     /// Sync matching Claude and Codex sessions into the project archive.
     Sync(SyncArgs),
+    /// Parse archived Codex rollouts for the active project into SQLite.
+    Parse(ParseArgs),
     /// Parse one archived Codex rollout and print its reconstructed turns.
     InspectCodex(InspectCodexArgs),
 }
@@ -46,6 +49,13 @@ struct SyncArgs {
 
     #[arg(long = "source", value_enum)]
     source: Vec<SourceArg>,
+}
+
+/// Parse archived Codex rollouts for the active project into SQLite.
+#[derive(Debug, Args)]
+struct ParseArgs {
+    #[arg(long, default_value_os_t = default_root_path())]
+    root: PathBuf,
 }
 
 /// Parse one archived Codex rollout and print its reconstructed turns.
@@ -78,6 +88,7 @@ fn run() -> Result<()> {
     match cli.command {
         Commands::Init(args) => run_init(args),
         Commands::Sync(args) => run_sync(args),
+        Commands::Parse(args) => run_parse(args),
         Commands::InspectCodex(args) => run_inspect_codex(args),
     }
 }
@@ -139,7 +150,7 @@ fn run_sync(args: SyncArgs) -> Result<()> {
     )?;
 
     println!("Project: {}", plan.project_name);
-    println!("Root: {}", plan.project_root.display());
+    println!("Project Root: {}", plan.project_root.display());
     println!("Archive: {}", plan.sessions_root.display());
     println!("Sources: {}", format_sources(&plan.sources));
     println!(
@@ -175,6 +186,20 @@ fn run_sync(args: SyncArgs) -> Result<()> {
     if report.config_written {
         println!("Updated config.");
     }
+
+    Ok(())
+}
+
+/// Parses archived Codex rollouts for the active project into SQLite.
+fn run_parse(args: ParseArgs) -> Result<()> {
+    let report = parse_project_codex_turns(Some(args.root))?;
+
+    println!("Project: {}", report.project_name);
+    println!("Project Root: {}", report.project_root.display());
+    println!("Archive: {}", report.codex_archive_root.display());
+    println!("Index DB: {}", report.index_db_path.display());
+    println!("Sessions indexed: {}", report.sessions_indexed);
+    println!("Turns indexed: {}", report.turns_indexed);
 
     Ok(())
 }
