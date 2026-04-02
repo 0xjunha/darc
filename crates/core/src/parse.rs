@@ -283,8 +283,11 @@ fn rewrite_project_codex_turns(
                     project_id,
                     session_id,
                     archive_path,
-                    cwd
-                ) VALUES (?1, ?2, ?3, ?4)
+                    cwd,
+                    cli_version,
+                    schema_id,
+                    determinism
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                 ",
             )
             .context("failed to prepare Codex session insert")?;
@@ -315,6 +318,9 @@ fn rewrite_project_codex_turns(
                     indexed.rollout.session_id,
                     indexed.archive_path,
                     indexed.rollout.cwd.to_string_lossy(),
+                    indexed.rollout.cli_version,
+                    indexed.rollout.schema_id,
+                    indexed.rollout.determinism.as_sql_text(),
                 ])
                 .with_context(|| {
                     format!(
@@ -715,10 +721,22 @@ mod tests {
             ["repo-abc123", "019d3415-0b9c-7dc3-88e0-e9cb7a789e3f"],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
+        let session_metadata: (String, String, String) = connection.query_row(
+            "
+            SELECT cli_version, schema_id, determinism
+            FROM codex_sessions
+            WHERE project_id = ?1 AND session_id = ?2
+            ",
+            ["repo-abc123", "019d3415-0b9c-7dc3-88e0-e9cb7a789e3f"],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
         assert_eq!(indexed_sessions, 1);
         assert_eq!(indexed_turns, 2);
         assert_eq!(second_turn.0, "Second task");
         assert_eq!(second_turn.1, "Second reply");
+        assert_eq!(session_metadata.0, "0.118.0");
+        assert_eq!(session_metadata.1, "codex.turn_lifecycle");
+        assert_eq!(session_metadata.2, "exact");
 
         Ok(())
     }

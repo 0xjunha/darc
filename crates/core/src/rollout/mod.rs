@@ -11,6 +11,14 @@ pub enum ParseDeterminism {
 }
 
 impl ParseDeterminism {
+    /// Returns the stable SQLite string value for one rollout determinism level.
+    pub(crate) const fn as_sql_text(self) -> &'static str {
+        match self {
+            Self::Exact => "exact",
+            Self::BestEffortForward => "best_effort_forward",
+        }
+    }
+
     /// Returns whether the selected schema was an exact version match.
     pub(crate) fn is_exact(self) -> bool {
         matches!(self, Self::Exact)
