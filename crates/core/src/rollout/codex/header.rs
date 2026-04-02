@@ -17,6 +17,7 @@ use crate::rollout::ParseDeterminism;
 pub(crate) struct CodexRolloutSessionMeta {
     pub(crate) session_id: String,
     pub(crate) cwd: PathBuf,
+    pub(crate) cli_version: Option<String>,
 }
 
 /// Stores the parsed session-level metadata needed before schema dispatch.
@@ -141,6 +142,7 @@ pub(crate) fn parse_rollout_session_meta_line(
         meta.map(|meta| CodexRolloutSessionMeta {
             session_id: meta.session_id,
             cwd: meta.cwd,
+            cli_version: meta.cli_version,
         })
     })
 }
@@ -244,6 +246,7 @@ mod tests {
 
         assert_eq!(meta.session_id, "session-1");
         assert_eq!(meta.cwd, PathBuf::from("/tmp/repo"));
+        assert_eq!(meta.cli_version, None);
     }
 
     #[test]

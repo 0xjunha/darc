@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use memstack_core::{
-    InitDraft, SourceKind, SyncOptions, default_root_path, execute_sync, parse_project_codex_turns,
-    prepare_init, prepare_sync, write_init,
+    InitDraft, SkippedCodexRollout, SourceKind, SyncOptions, default_root_path, execute_sync,
+    parse_project_codex_turns, prepare_init, prepare_sync, write_init,
 };
 
 #[derive(Debug, Parser)]
@@ -180,12 +180,19 @@ fn run_sync(args: SyncArgs) -> Result<()> {
 fn run_parse(args: ParseArgs) -> Result<()> {
     let report = parse_project_codex_turns(Some(args.root))?;
 
+    for skipped in &report.skipped_rollouts {
+        eprintln!("warning: {}", format_skipped_rollout(skipped));
+    }
+
     println!("Project: {}", report.project_name);
     println!("Project Root: {}", report.project_root.display());
     println!("Archive: {}", report.codex_archive_root.display());
     println!("Index DB: {}", report.index_db_path.display());
-    println!("Sessions discovered: {}", report.sessions_indexed);
+    println!("Sessions discovered: {}", report.sessions_discovered);
+    println!("Sessions indexed: {}", report.sessions_indexed);
+    println!("Sessions skipped: {}", report.sessions_skipped);
     println!("Turns currently indexed: {}", report.turns_indexed);
+    println!("Skipped rollout files: {}", report.skipped_rollouts.len());
 
     Ok(())
 }
@@ -206,4 +213,29 @@ fn format_sources(sources: &[SourceKind]) -> String {
         .map(|source| source.title())
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// Formats one skipped rollout warning for `memstack parse`.
+fn format_skipped_rollout(skipped: &SkippedCodexRollout) -> String {
+    let mut details = Vec::new();
+    if let Some(session_id) = &skipped.logical_session_id {
+        details.push(format!("session_id={session_id}"));
+    }
+    if let Some(cli_version) = &skipped.cli_version {
+        details.push(format!("cli_version={cli_version}"));
+    }
+    if details.is_empty() {
+        format!(
+            "skipped Codex rollout {}: {}",
+            skipped.source_path.display(),
+            skipped.reason
+        )
+    } else {
+        format!(
+            "skipped Codex rollout {} ({}): {}",
+            skipped.source_path.display(),
+            details.join(", "),
+            skipped.reason
+        )
+    }
 }
