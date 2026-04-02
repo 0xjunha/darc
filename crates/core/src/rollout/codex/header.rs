@@ -60,19 +60,34 @@ pub(crate) fn parse_rollout_file_session_id(file_name: &str) -> Option<String> {
         .then(|| trimmed[start..].to_owned())
 }
 
+/// Reads the first rollout line and extracts the strict header metadata for parsing.
+pub(crate) fn read_rollout_header(path: &Path) -> Result<Option<CodexRolloutHeader>> {
+    let Some(line) = read_first_rollout_line(path)? else {
+        return Ok(None);
+    };
+    parse_rollout_header_line(&line, path)
+}
+
 /// Reads the first rollout line and extracts tolerant metadata for session discovery.
 pub(crate) fn read_rollout_session_meta(path: &Path) -> Result<Option<CodexRolloutSessionMeta>> {
+    let Some(line) = read_first_rollout_line(path)? else {
+        return Ok(None);
+    };
+    parse_rollout_session_meta_line(&line, path)
+}
+
+/// Reads the first non-empty rollout line from one JSONL file.
+fn read_first_rollout_line(path: &Path) -> Result<Option<String>> {
     let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     let mut reader = BufReader::new(file);
     let mut line = String::new();
     if reader.read_line(&mut line)? == 0 {
         return Ok(None);
     }
-    parse_rollout_session_meta_line(&line, path)
+    Ok(Some(line))
 }
 
 /// Parses one raw JSONL line into a Codex rollout header.
-#[cfg(test)]
 pub(crate) fn parse_rollout_header_line(
     line: &str,
     source_path: &Path,
