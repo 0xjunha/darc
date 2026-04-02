@@ -18,7 +18,7 @@ use crate::{
     rollout::ParseDeterminism,
     rollout::codex::{
         CodexRolloutHeader, CodexRolloutSink, compare_rollout_priority, parse_rollout_file,
-        parse_rollout_file_into, parse_rollout_file_session_id, read_rollout_session_meta,
+        parse_rollout_file_into, read_rollout_session_meta, reconcile_rollout_session_id,
     },
 };
 
@@ -376,35 +376,28 @@ fn inspect_archived_codex_rollout(
 
 /// Reads the logical session id used to group archived rollout duplicates.
 fn archived_codex_rollout_session_id(path: &Path) -> Result<String> {
-    let filename_session_id = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .and_then(parse_rollout_file_session_id);
+    let file_name = path.file_name().and_then(|name| name.to_str());
     let payload_session_id = match read_rollout_session_meta(path) {
         Ok(Some(meta)) => Some(meta.session_id),
         Ok(None) => None,
-        Err(_) if filename_session_id.is_some() => None,
+        Err(_)
+            if file_name
+                .and_then(crate::rollout::codex::parse_rollout_file_session_id)
+                .is_some() =>
+        {
+            None
+        }
         Err(error) => return Err(error),
     };
 
-    match (filename_session_id, payload_session_id) {
-        (Some(filename_session_id), Some(payload_session_id))
-            if filename_session_id != payload_session_id =>
-        {
-            anyhow::bail!(
-                "mismatched Codex session ids in {}: filename={} payload={}",
-                path.display(),
-                filename_session_id,
-                payload_session_id
-            );
-        }
-        (Some(filename_session_id), _) => Ok(filename_session_id),
-        (None, Some(payload_session_id)) => Ok(payload_session_id),
-        (None, None) => anyhow::bail!(
-            "failed to derive archived Codex session id from {}",
-            path.display()
-        ),
-    }
+    reconcile_rollout_session_id(path, file_name, payload_session_id.as_deref())?.with_context(
+        || {
+            format!(
+                "failed to derive archived Codex session id from {}",
+                path.display()
+            )
+        },
+    )
 }
 
 /// Keeps one archived rollout candidate per logical Codex session id.

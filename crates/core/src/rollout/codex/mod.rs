@@ -21,7 +21,7 @@ mod version;
 use header::parse_rollout_header_parts;
 pub(crate) use header::{
     CodexRolloutHeader, CodexRolloutSessionMeta, parse_rollout_file_session_id,
-    read_rollout_header, read_rollout_session_meta,
+    read_rollout_header, read_rollout_session_meta, reconcile_rollout_session_id,
 };
 use version::{CodexCliVersion, CodexSchemaFeature, supports_feature, supports_response_item};
 
