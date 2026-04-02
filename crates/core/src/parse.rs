@@ -1,4 +1,5 @@
 use std::{
+    cmp::Ordering,
     collections::{BTreeMap, BTreeSet},
     env, fs,
     path::{Path, PathBuf},
@@ -136,6 +137,22 @@ struct ArchivedCodexRolloutCandidate {
     mtime_ms: u64,
 }
 
+/// Stores the ordered archived rollout duplicates for one logical session id.
+#[derive(Debug, Clone)]
+struct ArchivedCodexRolloutGroup {
+    candidates: Vec<ArchivedCodexRolloutCandidate>,
+}
+
+impl ArchivedCodexRolloutGroup {
+    /// Returns the logical session id shared by one duplicate rollout group.
+    fn session_id(&self) -> &str {
+        self.candidates
+            .first()
+            .map(|candidate| candidate.session_id.as_str())
+            .expect("archived rollout group should never be empty")
+    }
+}
+
 /// Stores the indexed snapshot used to skip unchanged archived sessions.
 #[derive(Debug, Clone)]
 struct IndexedCodexSessionSnapshot {
@@ -154,8 +171,8 @@ impl IndexedCodexSessionSnapshot {
 }
 
 /// Streams one parsed rollout directly into SQLite session and turn rows.
-struct SqliteRolloutSink<'tx, 'conn> {
-    transaction: &'tx Transaction<'conn>,
+struct SqliteRolloutSink<'conn> {
+    connection: &'conn Connection,
     project_id: String,
     archive_path: String,
     source_size: u64,
@@ -164,15 +181,15 @@ struct SqliteRolloutSink<'tx, 'conn> {
     turn_ordinal: i64,
 }
 
-impl<'tx, 'conn> SqliteRolloutSink<'tx, 'conn> {
+impl<'conn> SqliteRolloutSink<'conn> {
     /// Creates one SQLite sink for a selected archived rollout candidate.
     fn new(
-        transaction: &'tx Transaction<'conn>,
+        connection: &'conn Connection,
         project_id: &str,
         archived: &ArchivedCodexRolloutCandidate,
     ) -> Self {
         Self {
-            transaction,
+            connection,
             project_id: project_id.to_owned(),
             archive_path: archived.archive_path.clone(),
             source_size: archived.size,
@@ -183,14 +200,14 @@ impl<'tx, 'conn> SqliteRolloutSink<'tx, 'conn> {
     }
 }
 
-impl CodexRolloutSink for SqliteRolloutSink<'_, '_> {
+impl CodexRolloutSink for SqliteRolloutSink<'_> {
     fn begin_rollout(&mut self, header: &CodexRolloutHeader) -> Result<()> {
         let source_size = i64::try_from(self.source_size)
             .context("Codex source_size exceeds SQLite INTEGER range")?;
         let source_mtime_ms = i64::try_from(self.source_mtime_ms)
             .context("Codex source_mtime_ms exceeds SQLite INTEGER range")?;
 
-        self.transaction
+        self.connection
             .execute(
                 "
                 INSERT INTO codex_sessions (
@@ -233,7 +250,7 @@ impl CodexRolloutSink for SqliteRolloutSink<'_, '_> {
         let final_answer_at = turn.final_answer.as_ref().map(|message| &message.timestamp);
         let final_answer_text = turn.final_answer.as_ref().map(|message| &message.text);
 
-        self.transaction
+        self.connection
             .execute(
                 "
                 INSERT INTO codex_turns (
@@ -310,13 +327,13 @@ fn parse_project_codex_turns_from(current_dir: &Path, root: PathBuf) -> Result<P
 fn discover_archived_codex_rollouts(
     root: &Path,
     sessions_root: &Path,
-) -> Result<Vec<ArchivedCodexRolloutCandidate>> {
+) -> Result<Vec<ArchivedCodexRolloutGroup>> {
     let rollout_paths = discover_archived_codex_rollout_paths(root)?;
     let rollout_candidates = rollout_paths
         .iter()
         .map(|path| inspect_archived_codex_rollout(path, sessions_root))
         .collect::<Result<Vec<_>>>()?;
-    Ok(deduplicate_archived_codex_rollouts(rollout_candidates))
+    Ok(group_archived_codex_rollouts(rollout_candidates))
 }
 
 /// Discovers archived Codex rollout paths below one project archive root.
@@ -400,30 +417,35 @@ fn archived_codex_rollout_session_id(path: &Path) -> Result<String> {
     )
 }
 
-/// Keeps one archived rollout candidate per logical Codex session id.
-fn deduplicate_archived_codex_rollouts(
+/// Groups archived rollout duplicates by session id and orders each group by priority.
+fn group_archived_codex_rollouts(
     rollout_candidates: Vec<ArchivedCodexRolloutCandidate>,
-) -> Vec<ArchivedCodexRolloutCandidate> {
-    let mut unique_rollouts = BTreeMap::<String, ArchivedCodexRolloutCandidate>::new();
+) -> Vec<ArchivedCodexRolloutGroup> {
+    let mut grouped_rollouts = BTreeMap::<String, Vec<ArchivedCodexRolloutCandidate>>::new();
 
     for candidate in rollout_candidates {
-        let session_id = candidate.session_id.clone();
-        match unique_rollouts.get(&session_id) {
-            Some(existing) if !prefer_archived_codex_rollout(&candidate, existing) => {}
-            _ => {
-                unique_rollouts.insert(session_id, candidate);
-            }
-        }
+        grouped_rollouts
+            .entry(candidate.session_id.clone())
+            .or_default()
+            .push(candidate);
     }
 
-    unique_rollouts.into_values().collect()
+    grouped_rollouts
+        .into_values()
+        .map(|mut candidates| {
+            candidates.sort_by(|left, right| {
+                compare_archived_codex_rollout_candidates(left, right).reverse()
+            });
+            ArchivedCodexRolloutGroup { candidates }
+        })
+        .collect()
 }
 
-/// Returns whether the left archived rollout should replace the right duplicate.
-fn prefer_archived_codex_rollout(
+/// Compares two archived rollout candidates using the shared duplicate priority rules.
+fn compare_archived_codex_rollout_candidates(
     left: &ArchivedCodexRolloutCandidate,
     right: &ArchivedCodexRolloutCandidate,
-) -> bool {
+) -> Ordering {
     compare_rollout_priority(
         left.size,
         left.mtime_ms,
@@ -432,7 +454,6 @@ fn prefer_archived_codex_rollout(
         right.mtime_ms,
         &right.source_path,
     )
-    .is_gt()
 }
 
 /// Reads stable comparison metadata from one archived rollout file.
@@ -456,15 +477,15 @@ fn file_snapshot(path: &Path) -> Result<(u64, u64)> {
 fn update_project_codex_turns(
     connection: &mut Connection,
     project_id: &str,
-    archived_rollouts: &[ArchivedCodexRolloutCandidate],
+    archived_rollouts: &[ArchivedCodexRolloutGroup],
 ) -> Result<usize> {
-    let transaction = connection
+    let mut transaction = connection
         .transaction()
         .context("failed to begin SQLite transaction")?;
     let indexed_snapshots = load_indexed_codex_session_snapshots(&transaction, project_id)?;
     let archived_session_ids = archived_rollouts
         .iter()
-        .map(|archived| archived.session_id.clone())
+        .map(|archived| archived.session_id().to_owned())
         .collect::<BTreeSet<_>>();
 
     for session_id in indexed_snapshots.keys() {
@@ -473,18 +494,13 @@ fn update_project_codex_turns(
         }
     }
 
-    for archived in archived_rollouts {
-        if indexed_snapshots
-            .get(&archived.session_id)
-            .is_some_and(|snapshot| snapshot.matches_candidate(archived))
-        {
-            continue;
-        }
-
-        delete_indexed_codex_session(&transaction, project_id, &archived.session_id)?;
-        let mut sink = SqliteRolloutSink::new(&transaction, project_id, archived);
-        parse_rollout_file_into(&archived.source_path, &mut sink)
-            .with_context(|| format!("failed to parse {}", archived.source_path.display()))?;
+    for archived_group in archived_rollouts {
+        update_archived_codex_rollout_group(
+            &mut transaction,
+            project_id,
+            indexed_snapshots.get(archived_group.session_id()),
+            archived_group,
+        )?;
     }
 
     transaction
@@ -494,12 +510,67 @@ fn update_project_codex_turns(
     project_codex_turn_count(connection, project_id)
 }
 
+/// Parses the first valid archived duplicate for one logical Codex session id.
+fn update_archived_codex_rollout_group(
+    transaction: &mut Transaction<'_>,
+    project_id: &str,
+    indexed_snapshot: Option<&IndexedCodexSessionSnapshot>,
+    archived_group: &ArchivedCodexRolloutGroup,
+) -> Result<()> {
+    let mut last_error = None;
+
+    for archived in &archived_group.candidates {
+        if indexed_snapshot.is_some_and(|snapshot| snapshot.matches_candidate(archived)) {
+            return Ok(());
+        }
+
+        let savepoint = transaction
+            .savepoint()
+            .with_context(|| format!("failed to begin savepoint for {}", archived.session_id))?;
+        match index_archived_codex_rollout_candidate(&savepoint, project_id, archived) {
+            Ok(()) => {
+                savepoint.commit().with_context(|| {
+                    format!(
+                        "failed to commit archived Codex savepoint for {}",
+                        archived.source_path.display()
+                    )
+                })?;
+                return Ok(());
+            }
+            Err(error) => {
+                last_error = Some(error);
+            }
+        }
+    }
+
+    if let Some(error) = last_error {
+        return Err(error);
+    }
+
+    anyhow::bail!(
+        "missing archived Codex rollout candidates for session {}",
+        archived_group.session_id()
+    );
+}
+
+/// Deletes and reparses one archived rollout candidate into the SQLite index.
+fn index_archived_codex_rollout_candidate(
+    connection: &Connection,
+    project_id: &str,
+    archived: &ArchivedCodexRolloutCandidate,
+) -> Result<()> {
+    delete_indexed_codex_session(connection, project_id, &archived.session_id)?;
+    let mut sink = SqliteRolloutSink::new(connection, project_id, archived);
+    parse_rollout_file_into(&archived.source_path, &mut sink)
+        .with_context(|| format!("failed to parse {}", archived.source_path.display()))
+}
+
 /// Loads the indexed session snapshots used to detect unchanged archived rollouts.
 fn load_indexed_codex_session_snapshots(
-    transaction: &Transaction<'_>,
+    connection: &Connection,
     project_id: &str,
 ) -> Result<BTreeMap<String, IndexedCodexSessionSnapshot>> {
-    let mut statement = transaction
+    let mut statement = connection
         .prepare(
             "
             SELECT session_id, archive_path, source_size, source_mtime_ms
@@ -549,11 +620,11 @@ fn load_indexed_codex_session_snapshots(
 
 /// Deletes one indexed Codex session and cascades any stored turns.
 fn delete_indexed_codex_session(
-    transaction: &Transaction<'_>,
+    connection: &Connection,
     project_id: &str,
     session_id: &str,
 ) -> Result<()> {
-    transaction
+    connection
         .execute(
             "
             DELETE FROM codex_sessions
@@ -1262,7 +1333,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_project_fails_when_selected_duplicate_is_corrupt() -> Result<()> {
+    fn parse_project_falls_back_when_selected_duplicate_is_corrupt() -> Result<()> {
         let memstack_root = unique_test_dir("parse-corrupt-winner");
         let project_root = memstack_root.join("repo");
         let sessions_root = memstack_root.join("projects/repo-abc123/sessions");
@@ -1289,10 +1360,111 @@ mod tests {
             &format!("{{not-json\n{}\n", "x".repeat(4096)),
         )?;
 
+        let report = parse_project_codex_turns_from(&project_root, memstack_root.clone())?;
+        let connection = Connection::open(memstack_root.join(INDEX_DB_FILE_NAME))?;
+        let indexed_row: (String, String, String) = connection.query_row(
+            "
+            SELECT s.archive_path, t.user_message, t.final_answer_text
+            FROM codex_sessions s
+            JOIN codex_turns t
+              ON t.project_id = s.project_id
+             AND t.session_id = s.session_id
+             AND t.turn_ordinal = 0
+            WHERE s.project_id = ?1 AND s.session_id = ?2
+            ",
+            ["repo-abc123", "019d3415-0b9c-7dc3-88e0-e9cb7a789e3f"],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+
+        assert_eq!(report.sessions_indexed, 1);
+        assert_eq!(report.turns_indexed, 1);
+        assert_eq!(
+            indexed_row.0,
+            "codex/rollout-2026-04-01T09-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"
+        );
+        assert_eq!(indexed_row.1, "Stale task");
+        assert_eq!(indexed_row.2, "Stale reply");
+
+        Ok(())
+    }
+
+    #[test]
+    fn parse_project_fails_when_all_duplicate_candidates_are_corrupt() -> Result<()> {
+        let memstack_root = unique_test_dir("parse-all-corrupt-duplicates");
+        let project_root = memstack_root.join("repo");
+        let sessions_root = memstack_root.join("projects/repo-abc123/sessions");
+        let codex_root = sessions_root.join("codex");
+        fs::create_dir_all(&project_root)?;
+        write_parse_config(&memstack_root, &project_root, &sessions_root)?;
+
+        write_file(
+            &codex_root
+                .join("rollout-2026-04-01T09-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
+            "{not-json\n",
+        )?;
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        write_file(
+            &codex_root
+                .join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
+            &format!("{{not-json\n{}\n", "x".repeat(4096)),
+        )?;
+
         let error =
             parse_project_codex_turns_from(&project_root, memstack_root).expect_err("parse fails");
 
         assert!(error.to_string().contains("failed to parse"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn parse_project_skips_unchanged_fallback_candidate_after_corrupt_higher_duplicate()
+    -> Result<()> {
+        let memstack_root = unique_test_dir("parse-skip-fallback-duplicate");
+        let project_root = memstack_root.join("repo");
+        let sessions_root = memstack_root.join("projects/repo-abc123/sessions");
+        let codex_root = sessions_root.join("codex");
+        let fallback_path = codex_root
+            .join("rollout-2026-04-01T09-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl");
+        fs::create_dir_all(&project_root)?;
+        write_parse_config(&memstack_root, &project_root, &sessions_root)?;
+
+        let original = format!(
+            concat!(
+                "{{\"timestamp\":\"2026-04-01T09:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T09:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Original task\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T09:00:02Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Original reply\"}}]}}}}\n"
+            ),
+            project_root.display()
+        );
+        write_file(&fallback_path, &original)?;
+        touch_file_timestamp(&fallback_path, "202604010900.00")?;
+        write_file(
+            &codex_root
+                .join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
+            &format!("{{not-json\n{}\n", "x".repeat(4096)),
+        )?;
+        parse_project_codex_turns_from(&project_root, memstack_root.clone())?;
+
+        write_file(&fallback_path, &"{".repeat(original.len()))?;
+        touch_file_timestamp(&fallback_path, "202604010900.00")?;
+
+        let report = parse_project_codex_turns_from(&project_root, memstack_root.clone())?;
+        let connection = Connection::open(memstack_root.join(INDEX_DB_FILE_NAME))?;
+        let indexed_turn: (String, String) = connection.query_row(
+            "
+            SELECT user_message, final_answer_text
+            FROM codex_turns
+            WHERE project_id = ?1 AND session_id = ?2 AND turn_ordinal = 0
+            ",
+            ["repo-abc123", "019d3415-0b9c-7dc3-88e0-e9cb7a789e3f"],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+
+        assert_eq!(report.sessions_indexed, 1);
+        assert_eq!(report.turns_indexed, 1);
+        assert_eq!(indexed_turn.0, "Original task");
+        assert_eq!(indexed_turn.1, "Original reply");
 
         Ok(())
     }
