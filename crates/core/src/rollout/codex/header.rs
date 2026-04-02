@@ -12,6 +12,13 @@ use super::version::{CodexSchemaId, resolve_codex_schema};
 use crate::project_paths::normalize_project_path;
 use crate::rollout::ParseDeterminism;
 
+/// Stores the tolerant session-level metadata needed for rollout discovery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CodexRolloutSessionMeta {
+    pub(crate) session_id: String,
+    pub(crate) cwd: PathBuf,
+}
+
 /// Stores the parsed session-level metadata needed before schema dispatch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CodexRolloutHeader {
@@ -29,26 +36,43 @@ struct RawHeaderLine {
     payload: Value,
 }
 
+/// Stores the raw `session_meta` payload before strict schema validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedSessionMeta {
+    session_id: String,
+    cwd: PathBuf,
+    cli_version: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct RawSessionMetaPayload {
     id: String,
     cwd: String,
     #[serde(default)]
-    cli_version: String,
+    cli_version: Option<String>,
 }
 
-/// Reads the first rollout line and extracts the shared Codex header metadata.
-pub(crate) fn read_rollout_header(path: &Path) -> Result<Option<CodexRolloutHeader>> {
+/// Extracts the logical Codex session id from one rollout filename.
+pub(crate) fn parse_rollout_file_session_id(file_name: &str) -> Option<String> {
+    let trimmed = file_name.strip_prefix("rollout-")?.strip_suffix(".jsonl")?;
+    let start = trimmed.len().checked_sub(36)?;
+    (start > 0 && trimmed.as_bytes().get(start - 1) == Some(&b'-'))
+        .then(|| trimmed[start..].to_owned())
+}
+
+/// Reads the first rollout line and extracts tolerant metadata for session discovery.
+pub(crate) fn read_rollout_session_meta(path: &Path) -> Result<Option<CodexRolloutSessionMeta>> {
     let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     let mut reader = BufReader::new(file);
     let mut line = String::new();
     if reader.read_line(&mut line)? == 0 {
         return Ok(None);
     }
-    parse_rollout_header_line(&line, path)
+    parse_rollout_session_meta_line(&line, path)
 }
 
 /// Parses one raw JSONL line into a Codex rollout header.
+#[cfg(test)]
 pub(crate) fn parse_rollout_header_line(
     line: &str,
     source_path: &Path,
@@ -62,12 +86,60 @@ pub(crate) fn parse_rollout_header_line(
     parse_rollout_header_parts(&raw.kind, raw.payload, source_path)
 }
 
+/// Parses one raw JSONL line into tolerant Codex session metadata.
+pub(crate) fn parse_rollout_session_meta_line(
+    line: &str,
+    source_path: &Path,
+) -> Result<Option<CodexRolloutSessionMeta>> {
+    let raw: RawHeaderLine = serde_json::from_str(line).with_context(|| {
+        format!(
+            "failed to deserialize the first JSONL line in {}",
+            source_path.display()
+        )
+    })?;
+    parse_rollout_session_meta_parts(&raw.kind, raw.payload, source_path).map(|meta| {
+        meta.map(|meta| CodexRolloutSessionMeta {
+            session_id: meta.session_id,
+            cwd: meta.cwd,
+        })
+    })
+}
+
 /// Parses one already-deserialized first rollout line into a Codex rollout header.
 pub(crate) fn parse_rollout_header_parts(
     kind: &str,
     payload: Value,
     source_path: &Path,
 ) -> Result<Option<CodexRolloutHeader>> {
+    let Some(meta) = parse_rollout_session_meta_parts(kind, payload, source_path)? else {
+        return Ok(None);
+    };
+    let Some(cli_version) = meta.cli_version else {
+        bail!("missing Codex cli_version in {}", source_path.display());
+    };
+    let resolution = resolve_codex_schema(&cli_version).with_context(|| {
+        format!(
+            "unsupported Codex rollout schema for cli_version `{}` in {}",
+            cli_version,
+            source_path.display()
+        )
+    })?;
+
+    Ok(Some(CodexRolloutHeader {
+        session_id: meta.session_id,
+        cwd: meta.cwd,
+        cli_version,
+        schema_id: resolution.schema_id,
+        determinism: resolution.determinism,
+    }))
+}
+
+/// Parses one already-deserialized first rollout line into tolerant session metadata.
+fn parse_rollout_session_meta_parts(
+    kind: &str,
+    payload: Value,
+    source_path: &Path,
+) -> Result<Option<ParsedSessionMeta>> {
     if kind != "session_meta" {
         return Ok(None);
     }
@@ -78,31 +150,30 @@ pub(crate) fn parse_rollout_header_parts(
             source_path.display()
         )
     })?;
-    if payload.cli_version.trim().is_empty() {
-        bail!("missing Codex cli_version in {}", source_path.display());
-    }
-    let resolution = resolve_codex_schema(&payload.cli_version).with_context(|| {
-        format!(
-            "unsupported Codex rollout schema for cli_version `{}` in {}",
-            payload.cli_version,
-            source_path.display()
-        )
-    })?;
 
-    Ok(Some(CodexRolloutHeader {
+    Ok(Some(ParsedSessionMeta {
         session_id: payload.id,
         cwd: normalize_project_path(Path::new(&payload.cwd)),
-        cli_version: payload.cli_version,
-        schema_id: resolution.schema_id,
-        determinism: resolution.determinism,
+        cli_version: payload.cli_version.and_then(non_empty_text),
     }))
+}
+
+/// Trims optional header text and drops empty values.
+fn non_empty_text(text: String) -> Option<String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    Some(text.to_owned())
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
-    use super::parse_rollout_header_line;
+    use super::{
+        parse_rollout_file_session_id, parse_rollout_header_line, parse_rollout_session_meta_line,
+    };
     use crate::rollout::ParseDeterminism;
     use crate::rollout::codex::version::CodexSchemaId;
 
@@ -119,5 +190,40 @@ mod tests {
         assert_eq!(header.cli_version, "0.118.0");
         assert_eq!(header.schema_id, CodexSchemaId::TurnLifecycle);
         assert_eq!(header.determinism, ParseDeterminism::Exact);
+    }
+
+    #[test]
+    fn parses_tolerant_session_meta_without_cli_version() {
+        let meta = parse_rollout_session_meta_line(
+            r#"{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"session-1","cwd":"/tmp/repo"}}"#,
+            Path::new("fixture.jsonl"),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(meta.session_id, "session-1");
+        assert_eq!(meta.cwd, PathBuf::from("/tmp/repo"));
+    }
+
+    #[test]
+    fn strict_header_parse_requires_cli_version() {
+        let error = parse_rollout_header_line(
+            r#"{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"session-1","cwd":"/tmp/repo"}}"#,
+            Path::new("fixture.jsonl"),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("missing Codex cli_version"));
+    }
+
+    #[test]
+    fn parses_rollout_file_session_ids() {
+        assert_eq!(
+            parse_rollout_file_session_id(
+                "rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"
+            ),
+            Some("019d3415-0b9c-7dc3-88e0-e9cb7a789e3f".to_owned())
+        );
+        assert_eq!(parse_rollout_file_session_id("rollout-invalid.jsonl"), None);
     }
 }

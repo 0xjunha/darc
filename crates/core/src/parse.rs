@@ -10,8 +10,15 @@ use serde::Serialize;
 use walkdir::WalkDir;
 
 use crate::{
-    SourceKind, active_project::load_active_project, constants::INDEX_DB_FILE_NAME,
-    default_root_path, index_db::open_index_database, rollout::ParseDeterminism,
+    SourceKind,
+    active_project::load_active_project,
+    constants::INDEX_DB_FILE_NAME,
+    default_root_path,
+    index_db::open_index_database,
+    rollout::ParseDeterminism,
+    rollout::codex::{
+        compare_rollout_priority, parse_rollout_file_session_id, read_rollout_session_meta,
+    },
 };
 
 /// Parses one Codex rollout file into user-visible turns.
@@ -118,11 +125,12 @@ pub enum CodexTurnStep {
     },
 }
 
-/// Stores one parsed archived rollout before SQLite insertion.
+/// Stores one selected archived rollout before it is parsed and indexed.
 #[derive(Debug, Clone)]
-struct IndexedCodexRollout {
+struct ArchivedCodexRolloutCandidate {
+    source_path: PathBuf,
     archive_path: String,
-    rollout: CodexRollout,
+    session_id: String,
     size: u64,
     mtime_ms: u64,
 }
@@ -134,23 +142,17 @@ fn parse_project_codex_turns_from(current_dir: &Path, root: PathBuf) -> Result<P
         .project
         .sessions_root
         .join(SourceKind::Codex.directory_name());
-    let rollout_paths = discover_archived_codex_rollouts(&codex_archive_root)?;
-    let parsed_rollouts = rollout_paths
-        .iter()
-        .map(|path| parse_indexed_codex_rollout(path, &active_project.project.sessions_root))
-        .collect::<Result<Vec<_>>>()?;
-    let parsed_rollouts = deduplicate_indexed_codex_rollouts(parsed_rollouts);
-    let turns_indexed = parsed_rollouts
-        .iter()
-        .map(|indexed| indexed.rollout.turns.len())
-        .sum();
+    let archived_rollouts = discover_archived_codex_rollouts(
+        &codex_archive_root,
+        &active_project.project.sessions_root,
+    )?;
     let index_db_path = root.join(INDEX_DB_FILE_NAME);
     let mut connection = open_index_database(&index_db_path)?;
 
-    rewrite_project_codex_turns(
+    let turns_indexed = rewrite_project_codex_turns(
         &mut connection,
         &active_project.project.id,
-        &parsed_rollouts,
+        &archived_rollouts,
     )?;
 
     Ok(ParseReport {
@@ -158,13 +160,26 @@ fn parse_project_codex_turns_from(current_dir: &Path, root: PathBuf) -> Result<P
         project_root: active_project.current_root,
         codex_archive_root,
         index_db_path,
-        sessions_indexed: parsed_rollouts.len(),
+        sessions_indexed: archived_rollouts.len(),
         turns_indexed,
     })
 }
 
-/// Discovers archived Codex rollout files below one project archive root.
-fn discover_archived_codex_rollouts(root: &Path) -> Result<Vec<PathBuf>> {
+/// Discovers and deduplicates archived Codex rollout files below one project archive root.
+fn discover_archived_codex_rollouts(
+    root: &Path,
+    sessions_root: &Path,
+) -> Result<Vec<ArchivedCodexRolloutCandidate>> {
+    let rollout_paths = discover_archived_codex_rollout_paths(root)?;
+    let rollout_candidates = rollout_paths
+        .iter()
+        .map(|path| inspect_archived_codex_rollout(path, sessions_root))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(deduplicate_archived_codex_rollouts(rollout_candidates))
+}
+
+/// Discovers archived Codex rollout paths below one project archive root.
+fn discover_archived_codex_rollout_paths(root: &Path) -> Result<Vec<PathBuf>> {
     if !root.exists() {
         return Ok(Vec::new());
     }
@@ -190,8 +205,11 @@ fn is_archived_codex_rollout(path: &Path) -> bool {
             .is_some_and(|name| name.starts_with("rollout-"))
 }
 
-/// Parses one archived rollout and records its project-relative archive path.
-fn parse_indexed_codex_rollout(path: &Path, sessions_root: &Path) -> Result<IndexedCodexRollout> {
+/// Reads lightweight metadata for one archived rollout before deep parsing.
+fn inspect_archived_codex_rollout(
+    path: &Path,
+    sessions_root: &Path,
+) -> Result<ArchivedCodexRolloutCandidate> {
     let (size, mtime_ms) = file_snapshot(path)?;
     let archive_path = path
         .strip_prefix(sessions_root)
@@ -204,28 +222,62 @@ fn parse_indexed_codex_rollout(path: &Path, sessions_root: &Path) -> Result<Inde
         })?
         .to_string_lossy()
         .into_owned();
-    let rollout = parse_codex_rollout(path)?;
+    let session_id = archived_codex_rollout_session_id(path)?;
 
-    Ok(IndexedCodexRollout {
+    Ok(ArchivedCodexRolloutCandidate {
+        source_path: path.to_path_buf(),
         archive_path,
-        rollout,
+        session_id,
         size,
         mtime_ms,
     })
 }
 
-/// Keeps one archived rollout per logical Codex session id.
-fn deduplicate_indexed_codex_rollouts(
-    parsed_rollouts: Vec<IndexedCodexRollout>,
-) -> Vec<IndexedCodexRollout> {
-    let mut unique_rollouts = BTreeMap::<String, IndexedCodexRollout>::new();
+/// Reads the logical session id used to group archived rollout duplicates.
+fn archived_codex_rollout_session_id(path: &Path) -> Result<String> {
+    let filename_session_id = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(parse_rollout_file_session_id);
+    let payload_session_id = match read_rollout_session_meta(path) {
+        Ok(Some(meta)) => Some(meta.session_id),
+        Ok(None) => None,
+        Err(_) if filename_session_id.is_some() => None,
+        Err(error) => return Err(error),
+    };
 
-    for indexed in parsed_rollouts {
-        let session_id = indexed.rollout.session_id.clone();
+    match (filename_session_id, payload_session_id) {
+        (Some(filename_session_id), Some(payload_session_id))
+            if filename_session_id != payload_session_id =>
+        {
+            anyhow::bail!(
+                "mismatched Codex session ids in {}: filename={} payload={}",
+                path.display(),
+                filename_session_id,
+                payload_session_id
+            );
+        }
+        (Some(filename_session_id), _) => Ok(filename_session_id),
+        (None, Some(payload_session_id)) => Ok(payload_session_id),
+        (None, None) => anyhow::bail!(
+            "failed to derive archived Codex session id from {}",
+            path.display()
+        ),
+    }
+}
+
+/// Keeps one archived rollout candidate per logical Codex session id.
+fn deduplicate_archived_codex_rollouts(
+    rollout_candidates: Vec<ArchivedCodexRolloutCandidate>,
+) -> Vec<ArchivedCodexRolloutCandidate> {
+    let mut unique_rollouts = BTreeMap::<String, ArchivedCodexRolloutCandidate>::new();
+
+    for candidate in rollout_candidates {
+        let session_id = candidate.session_id.clone();
         match unique_rollouts.get(&session_id) {
-            Some(existing) if !prefer_indexed_codex_rollout(&indexed, existing) => {}
+            Some(existing) if !prefer_archived_codex_rollout(&candidate, existing) => {}
             _ => {
-                unique_rollouts.insert(session_id, indexed);
+                unique_rollouts.insert(session_id, candidate);
             }
         }
     }
@@ -234,12 +286,19 @@ fn deduplicate_indexed_codex_rollouts(
 }
 
 /// Returns whether the left archived rollout should replace the right duplicate.
-fn prefer_indexed_codex_rollout(left: &IndexedCodexRollout, right: &IndexedCodexRollout) -> bool {
-    left.size
-        .cmp(&right.size)
-        .then_with(|| left.mtime_ms.cmp(&right.mtime_ms))
-        .then_with(|| left.archive_path.cmp(&right.archive_path))
-        .is_gt()
+fn prefer_archived_codex_rollout(
+    left: &ArchivedCodexRolloutCandidate,
+    right: &ArchivedCodexRolloutCandidate,
+) -> bool {
+    compare_rollout_priority(
+        left.size,
+        left.mtime_ms,
+        &left.source_path,
+        right.size,
+        right.mtime_ms,
+        &right.source_path,
+    )
+    .is_gt()
 }
 
 /// Reads stable comparison metadata from one archived rollout file.
@@ -263,8 +322,8 @@ fn file_snapshot(path: &Path) -> Result<(u64, u64)> {
 fn rewrite_project_codex_turns(
     connection: &mut Connection,
     project_id: &str,
-    parsed_rollouts: &[IndexedCodexRollout],
-) -> Result<()> {
+    archived_rollouts: &[ArchivedCodexRolloutCandidate],
+) -> Result<usize> {
     let transaction = connection
         .transaction()
         .context("failed to begin SQLite transaction")?;
@@ -275,7 +334,7 @@ fn rewrite_project_codex_turns(
         )
         .context("failed to clear existing indexed Codex sessions")?;
 
-    {
+    let turns_indexed = {
         let mut insert_session = transaction
             .prepare(
                 "
@@ -311,25 +370,28 @@ fn rewrite_project_codex_turns(
             )
             .context("failed to prepare Codex turn insert")?;
 
-        for indexed in parsed_rollouts {
+        let mut turns_indexed = 0usize;
+
+        for archived in archived_rollouts {
+            let rollout = parse_codex_rollout(&archived.source_path)
+                .with_context(|| format!("failed to parse {}", archived.source_path.display()))?;
             insert_session
                 .execute(params![
                     project_id,
-                    indexed.rollout.session_id,
-                    indexed.archive_path,
-                    indexed.rollout.cwd.to_string_lossy(),
-                    indexed.rollout.cli_version,
-                    indexed.rollout.schema_id,
-                    indexed.rollout.determinism.as_sql_text(),
+                    rollout.session_id,
+                    archived.archive_path,
+                    rollout.cwd.to_string_lossy(),
+                    rollout.cli_version,
+                    rollout.schema_id,
+                    rollout.determinism.as_sql_text(),
                 ])
                 .with_context(|| {
-                    format!(
-                        "failed to insert Codex session {}",
-                        indexed.rollout.session_id
-                    )
+                    format!("failed to insert Codex session {}", rollout.session_id)
                 })?;
 
-            for (turn_ordinal, turn) in indexed.rollout.turns.iter().enumerate() {
+            turns_indexed += rollout.turns.len();
+
+            for (turn_ordinal, turn) in rollout.turns.iter().enumerate() {
                 let steps_json = serde_json::to_string(&turn.steps)
                     .context("failed to serialize Codex turn steps")?;
                 let final_answer_at = turn.final_answer.as_ref().map(|message| &message.timestamp);
@@ -338,7 +400,7 @@ fn rewrite_project_codex_turns(
                 insert_turn
                     .execute(params![
                         project_id,
-                        indexed.rollout.session_id,
+                        rollout.session_id,
                         turn_ordinal as i64,
                         turn.turn_id,
                         turn.started_at,
@@ -352,17 +414,19 @@ fn rewrite_project_codex_turns(
                     .with_context(|| {
                         format!(
                             "failed to insert Codex turn {} for session {}",
-                            turn_ordinal, indexed.rollout.session_id
+                            turn_ordinal, rollout.session_id
                         )
                     })?;
             }
         }
-    }
+
+        turns_indexed
+    };
 
     transaction
         .commit()
         .context("failed to commit SQLite parse transaction")?;
-    Ok(())
+    Ok(turns_indexed)
 }
 
 #[cfg(test)]
@@ -880,6 +944,120 @@ mod tests {
             "codex/rollout-2026-04-01T11-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"
         );
         assert_eq!(indexed_row.1, "Fresh task");
+
+        Ok(())
+    }
+
+    #[test]
+    fn parse_project_rejects_mismatched_filename_and_payload_session_ids() -> Result<()> {
+        let memstack_root = unique_test_dir("parse-id-mismatch");
+        let project_root = memstack_root.join("repo");
+        let sessions_root = memstack_root.join("projects/repo-abc123/sessions");
+        let codex_root = sessions_root.join("codex");
+        fs::create_dir_all(&project_root)?;
+        write_parse_config(&memstack_root, &project_root, &sessions_root)?;
+
+        write_file(
+            &codex_root
+                .join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
+            &format!(
+                concat!(
+                    "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e40\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
+                    "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Task\"}}}}\n",
+                    "{{\"timestamp\":\"2026-04-01T10:00:02Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Reply\"}}]}}}}\n"
+                ),
+                project_root.display()
+            ),
+        )?;
+
+        let error =
+            parse_project_codex_turns_from(&project_root, memstack_root).expect_err("mismatch");
+
+        assert!(error.to_string().contains("mismatched Codex session ids"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn parse_project_ignores_corrupt_losing_duplicate() -> Result<()> {
+        let memstack_root = unique_test_dir("parse-corrupt-loser");
+        let project_root = memstack_root.join("repo");
+        let sessions_root = memstack_root.join("projects/repo-abc123/sessions");
+        let codex_root = sessions_root.join("codex");
+        fs::create_dir_all(&project_root)?;
+        write_parse_config(&memstack_root, &project_root, &sessions_root)?;
+
+        write_file(
+            &codex_root
+                .join("rollout-2026-04-01T09-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
+            "{not-json\n",
+        )?;
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        write_file(
+            &codex_root
+                .join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
+            &format!(
+                concat!(
+                    "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
+                    "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Fresh task\"}}}}\n",
+                    "{{\"timestamp\":\"2026-04-01T10:00:02Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Fresh reply\"}}]}}}}\n"
+                ),
+                project_root.display()
+            ),
+        )?;
+
+        let report = parse_project_codex_turns_from(&project_root, memstack_root.clone())?;
+        let connection = Connection::open(memstack_root.join(INDEX_DB_FILE_NAME))?;
+        let indexed_turn: (String, String) = connection.query_row(
+            "
+            SELECT user_message, final_answer_text
+            FROM codex_turns
+            WHERE project_id = ?1 AND session_id = ?2 AND turn_ordinal = 0
+            ",
+            ["repo-abc123", "019d3415-0b9c-7dc3-88e0-e9cb7a789e3f"],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+
+        assert_eq!(report.sessions_indexed, 1);
+        assert_eq!(report.turns_indexed, 1);
+        assert_eq!(indexed_turn.0, "Fresh task");
+        assert_eq!(indexed_turn.1, "Fresh reply");
+
+        Ok(())
+    }
+
+    #[test]
+    fn parse_project_fails_when_selected_duplicate_is_corrupt() -> Result<()> {
+        let memstack_root = unique_test_dir("parse-corrupt-winner");
+        let project_root = memstack_root.join("repo");
+        let sessions_root = memstack_root.join("projects/repo-abc123/sessions");
+        let codex_root = sessions_root.join("codex");
+        fs::create_dir_all(&project_root)?;
+        write_parse_config(&memstack_root, &project_root, &sessions_root)?;
+
+        write_file(
+            &codex_root
+                .join("rollout-2026-04-01T09-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
+            &format!(
+                concat!(
+                    "{{\"timestamp\":\"2026-04-01T09:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
+                    "{{\"timestamp\":\"2026-04-01T09:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Stale task\"}}}}\n",
+                    "{{\"timestamp\":\"2026-04-01T09:00:02Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Stale reply\"}}]}}}}\n"
+                ),
+                project_root.display()
+            ),
+        )?;
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        write_file(
+            &codex_root
+                .join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
+            &format!("{{not-json\n{}\n", "x".repeat(4096)),
+        )?;
+
+        let error =
+            parse_project_codex_turns_from(&project_root, memstack_root).expect_err("parse fails");
+
+        assert!(error.to_string().contains("failed to parse"));
 
         Ok(())
     }

@@ -1,4 +1,5 @@
 use std::{
+    cmp::Ordering,
     fs::File,
     io::{BufRead, BufReader},
     path::Path,
@@ -16,9 +17,26 @@ use crate::{
 mod header;
 mod version;
 
-use header::parse_rollout_header_parts;
-pub(crate) use header::{CodexRolloutHeader, read_rollout_header};
+use header::{CodexRolloutHeader, parse_rollout_header_parts};
+pub(crate) use header::{
+    CodexRolloutSessionMeta, parse_rollout_file_session_id, read_rollout_session_meta,
+};
 use version::{CodexCliVersion, CodexSchemaFeature, supports_feature, supports_response_item};
+
+/// Compares duplicate rollout copies by completeness, recency, and a stable path tie-break.
+pub(crate) fn compare_rollout_priority<T: Ord>(
+    left_size: u64,
+    left_mtime_ms: u64,
+    left_tie_break: &T,
+    right_size: u64,
+    right_mtime_ms: u64,
+    right_tie_break: &T,
+) -> Ordering {
+    left_size
+        .cmp(&right_size)
+        .then_with(|| left_mtime_ms.cmp(&right_mtime_ms))
+        .then_with(|| left_tie_break.cmp(right_tie_break))
+}
 
 #[derive(Debug)]
 struct NumberedRawLine {

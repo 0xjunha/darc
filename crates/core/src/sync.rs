@@ -20,7 +20,10 @@ use crate::{
         current_project_root, encode_path_for_claude, normalize_project_path,
         normalized_known_paths, project_path_set, try_git_output,
     },
-    rollout::codex::read_rollout_header,
+    rollout::codex::{
+        CodexRolloutSessionMeta, compare_rollout_priority, parse_rollout_file_session_id,
+        read_rollout_session_meta,
+    },
 };
 
 static UNIQUE_PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -596,7 +599,7 @@ fn discover_codex_sessions(
                 ));
                 continue;
             };
-            let Some(session_id) = parse_codex_session_id(file_name) else {
+            let Some(session_id) = parse_rollout_file_session_id(file_name) else {
                 continue;
             };
             let snapshot = match file_snapshot(path) {
@@ -609,12 +612,12 @@ fn discover_codex_sessions(
 
             let (repo_root, matches_project) = match extract_codex_session_meta(path) {
                 Ok(Some(meta)) => {
-                    if meta.id != session_id {
+                    if meta.session_id != session_id {
                         warnings.push(format!(
                             "skipped Codex session with mismatched ids in {}: filename={} payload={}",
                             path.display(),
                             session_id,
-                            meta.id
+                            meta.session_id
                         ));
                         continue;
                     }
@@ -699,30 +702,21 @@ fn select_codex_candidate(candidates: &[CodexCandidate]) -> Option<CodexCandidat
         .iter()
         .filter(|candidate| candidate.matches_project)
         .max_by(|left, right| {
-            left.size
-                .cmp(&right.size)
-                .then_with(|| left.mtime_ms.cmp(&right.mtime_ms))
+            compare_rollout_priority(
+                left.size,
+                left.mtime_ms,
+                &left.source_path,
+                right.size,
+                right.mtime_ms,
+                &right.source_path,
+            )
         })
         .cloned()
 }
 
 /// Extracts the Codex `session_meta` id and cwd from the first rollout line.
-fn extract_codex_session_meta(path: &Path) -> Result<Option<CodexSessionMeta>> {
-    let Some(header) = read_rollout_header(path)? else {
-        return Ok(None);
-    };
-    Ok(Some(CodexSessionMeta {
-        id: header.session_id,
-        cwd: normalize_project_path(&header.cwd),
-    }))
-}
-
-/// Extracts the logical Codex session id from a rollout filename.
-fn parse_codex_session_id(file_name: &str) -> Option<String> {
-    let trimmed = file_name.strip_prefix("rollout-")?.strip_suffix(".jsonl")?;
-    let start = trimmed.len().checked_sub(36)?;
-    (start > 0 && trimmed.as_bytes().get(start - 1) == Some(&b'-'))
-        .then(|| trimmed[start..].to_owned())
+fn extract_codex_session_meta(path: &Path) -> Result<Option<CodexRolloutSessionMeta>> {
+    read_rollout_session_meta(path)
 }
 
 /// Reads stable copy-comparison metadata from a source file.
@@ -1003,13 +997,6 @@ impl ManifestArtifact for DiscoveredAuxiliary {
             destination_path: sessions_root.join(self.archive_path),
         }
     }
-}
-
-/// Stores the first-line Codex metadata needed for project matching.
-#[derive(Debug, Clone, Eq, PartialEq)]
-struct CodexSessionMeta {
-    id: String,
-    cwd: PathBuf,
 }
 
 /// Stores one Codex rollout candidate before duplicate resolution.
@@ -1336,8 +1323,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_codex_session_id_reads_logical_id() {
-        let id = parse_codex_session_id(
+    fn parse_rollout_file_session_id_reads_logical_id() {
+        let id = parse_rollout_file_session_id(
             "rollout-2026-03-27T17-53-08-019d2e7f-4e07-7940-8d37-0a04e9aeb621.jsonl",
         );
 
@@ -1356,7 +1343,24 @@ mod tests {
         let meta = extract_codex_session_meta(&rollout)?.context("missing meta")?;
 
         assert_eq!(meta.cwd, PathBuf::from("/tmp/demo/repo"));
-        assert_eq!(meta.id, "x");
+        assert_eq!(meta.session_id, "x");
+
+        Ok(())
+    }
+
+    #[test]
+    fn extract_codex_session_meta_accepts_legacy_rollouts_without_cli_version() -> Result<()> {
+        let dir = unique_test_dir("codex-meta-legacy");
+        let rollout = dir.join("rollout.jsonl");
+        write_file(
+            &rollout,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"x\",\"cwd\":\"/tmp/demo/repo\"}}\n",
+        )?;
+
+        let meta = extract_codex_session_meta(&rollout)?.context("missing meta")?;
+
+        assert_eq!(meta.session_id, "x");
+        assert_eq!(meta.cwd, PathBuf::from("/tmp/demo/repo"));
 
         Ok(())
     }
@@ -1464,6 +1468,28 @@ mod tests {
         let winner = select_codex_candidate(&candidates).expect("winner");
 
         assert_eq!(winner.size, larger.size);
+    }
+
+    #[test]
+    fn codex_duplicate_resolution_uses_stable_source_path_tie_break() {
+        let left = CodexCandidate {
+            session_id: "id".into(),
+            source_path: PathBuf::from("/tmp/a"),
+            archive_path: PathBuf::from("codex/a.jsonl"),
+            repo_root: PathBuf::from("/tmp/project"),
+            matches_project: true,
+            size: 10,
+            mtime_ms: 20,
+        };
+        let right = CodexCandidate {
+            source_path: PathBuf::from("/tmp/b"),
+            archive_path: PathBuf::from("codex/b.jsonl"),
+            ..left.clone()
+        };
+
+        let winner = select_codex_candidate(&[left, right.clone()]).expect("winner");
+
+        assert_eq!(winner.source_path, right.source_path);
     }
 
     #[test]
@@ -1659,6 +1685,44 @@ mod tests {
         assert_eq!(second_plan.auxiliary_unchanged, 1);
         assert!(!second_plan.manifest_written());
         assert!(!second_plan.config_written());
+
+        Ok(())
+    }
+
+    #[test]
+    fn prepare_sync_copies_legacy_codex_rollout_without_cli_version() -> Result<()> {
+        let ws = TestWorkspace::new("sync-codex-legacy-cli-version")?;
+        let codex_sessions = ws.codex_sessions_root.join("2026/04/01");
+        fs::create_dir_all(&codex_sessions)?;
+        ws.write_config(&ws.default_config())?;
+
+        let rollout_name = "rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl";
+        write_file(
+            &codex_sessions.join(rollout_name),
+            &format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\"}}}}\n{{\"type\":\"message\"}}\n",
+                ws.canonical_project_root.display()
+            ),
+        )?;
+
+        let plan = prepare_sync_from(
+            &ws.project_root,
+            ws.memstack_root.clone(),
+            SyncOptions::default(),
+        )?;
+
+        assert_eq!(plan.sessions_to_copy(), 1);
+        assert!(plan.warnings.is_empty());
+
+        let report = execute_sync(plan)?;
+        assert_eq!(report.sessions_copied, 1);
+        assert!(
+            ws.memstack_root
+                .join(format!(
+                    "projects/memstack-abc123/sessions/codex/{rollout_name}"
+                ))
+                .exists()
+        );
 
         Ok(())
     }
