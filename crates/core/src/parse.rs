@@ -17,14 +17,10 @@ use crate::{
     index_db::open_index_database,
     rollout::ParseDeterminism,
     rollout::codex::{
-        compare_rollout_priority, parse_rollout_file_session_id, read_rollout_session_meta,
+        compare_rollout_priority, parse_rollout_file, parse_rollout_file_session_id,
+        read_rollout_session_meta,
     },
 };
-
-/// Parses one Codex rollout file into user-visible turns.
-pub fn parse_codex_rollout(path: &Path) -> Result<CodexRollout> {
-    crate::rollout::codex::parse_rollout_file(path)
-}
 
 /// Reports the results of indexing archived Codex turns for one project.
 #[derive(Debug, Clone)]
@@ -373,7 +369,7 @@ fn rewrite_project_codex_turns(
         let mut turns_indexed = 0usize;
 
         for archived in archived_rollouts {
-            let rollout = parse_codex_rollout(&archived.source_path)
+            let rollout = parse_rollout_file(&archived.source_path)
                 .with_context(|| format!("failed to parse {}", archived.source_path.display()))?;
             insert_session
                 .execute(params![

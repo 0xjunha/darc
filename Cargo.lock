@@ -280,7 +280,6 @@ dependencies = [
  "anyhow",
  "clap",
  "memstack-core",
- "serde_json",
 ]
 
 [[package]]

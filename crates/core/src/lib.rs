@@ -13,7 +13,7 @@ pub use config::SourceKind;
 pub use init::{DetectedRolloutSource, InitDraft, default_root_path, prepare_init, write_init};
 pub use parse::{
     CodexRollout, CodexTurn, CodexTurnMessage, CodexTurnStatus, CodexTurnStep, ParseReport,
-    parse_codex_rollout, parse_project_codex_turns,
+    parse_project_codex_turns,
 };
 pub use rollout::ParseDeterminism;
 pub use sync::{SyncOptions, SyncPlan, SyncReport, execute_sync, prepare_sync};
