@@ -21,8 +21,8 @@ use crate::{
         normalized_known_paths, project_path_set, try_git_output,
     },
     rollout::codex::{
-        CodexRolloutSessionMeta, compare_rollout_priority, parse_rollout_file_session_id,
-        read_rollout_session_meta,
+        CodexRolloutSessionMeta, compare_rollout_priority, read_rollout_session_meta,
+        reconcile_rollout_session_id,
     },
 };
 
@@ -599,9 +599,9 @@ fn discover_codex_sessions(
                 ));
                 continue;
             };
-            let Some(session_id) = parse_rollout_file_session_id(file_name) else {
+            if !file_name.starts_with("rollout-") || !file_name.ends_with(".jsonl") {
                 continue;
-            };
+            }
             let snapshot = match file_snapshot(path) {
                 Ok(snapshot) => snapshot,
                 Err(error) => {
@@ -610,17 +610,26 @@ fn discover_codex_sessions(
                 }
             };
 
-            let (repo_root, matches_project) = match extract_codex_session_meta(path) {
+            let (session_id, repo_root, matches_project) = match extract_codex_session_meta(path) {
                 Ok(Some(meta)) => {
-                    if meta.session_id != session_id {
-                        warnings.push(format!(
-                            "skipped Codex session with mismatched ids in {}: filename={} payload={}",
-                            path.display(),
-                            session_id,
-                            meta.session_id
-                        ));
-                        continue;
-                    }
+                    let session_id = match reconcile_rollout_session_id(
+                        path,
+                        Some(file_name),
+                        Some(meta.session_id.as_str()),
+                    ) {
+                        Ok(Some(session_id)) => session_id,
+                        Ok(None) => {
+                            warnings.push(format!(
+                                "skipped Codex session without filename or payload id in {}",
+                                path.display()
+                            ));
+                            continue;
+                        }
+                        Err(error) => {
+                            warnings.push(error.to_string());
+                            continue;
+                        }
+                    };
                     let repo_root = repo_cache.repo_root(&meta.cwd);
                     if !project_paths.contains(&repo_root)
                         && other_project_paths.contains(&repo_root)
@@ -633,7 +642,7 @@ fn discover_codex_sessions(
                         project_upstream,
                         &mut repo_cache,
                     );
-                    (repo_root, matches_project)
+                    (session_id, repo_root, matches_project)
                 }
                 Ok(None) => {
                     warnings.push(format!(
@@ -1324,7 +1333,7 @@ mod tests {
 
     #[test]
     fn parse_rollout_file_session_id_reads_logical_id() {
-        let id = parse_rollout_file_session_id(
+        let id = crate::rollout::codex::parse_rollout_file_session_id(
             "rollout-2026-03-27T17-53-08-019d2e7f-4e07-7940-8d37-0a04e9aeb621.jsonl",
         );
 
@@ -1799,7 +1808,46 @@ mod tests {
         assert!(
             plan.warnings
                 .iter()
-                .any(|warning| warning.contains("mismatched ids"))
+                .any(|warning| warning.contains("mismatched Codex session ids"))
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn prepare_sync_accepts_payload_only_codex_session_id() -> Result<()> {
+        let ws = TestWorkspace::new("sync-codex-payload-only-id")?;
+        let codex_sessions = ws.codex_sessions_root.join("2026/04/01");
+        fs::create_dir_all(&codex_sessions)?;
+        ws.write_config(&ws.default_config())?;
+
+        let rollout_name = "rollout-invalid.jsonl";
+        write_file(
+            &codex_sessions.join(rollout_name),
+            &format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n{{\"type\":\"message\"}}\n",
+                ws.canonical_project_root.display()
+            ),
+        )?;
+
+        let plan = prepare_sync_from(
+            &ws.project_root,
+            ws.memstack_root.clone(),
+            SyncOptions::default(),
+        )?;
+
+        assert_eq!(plan.sessions_to_copy(), 1);
+        assert!(plan.warnings.is_empty());
+
+        let report = execute_sync(plan)?;
+
+        assert_eq!(report.sessions_copied, 1);
+        assert!(
+            ws.memstack_root
+                .join(format!(
+                    "projects/memstack-abc123/sessions/codex/{rollout_name}"
+                ))
+                .exists()
         );
 
         Ok(())

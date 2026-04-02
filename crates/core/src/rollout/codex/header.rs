@@ -60,6 +60,31 @@ pub(crate) fn parse_rollout_file_session_id(file_name: &str) -> Option<String> {
         .then(|| trimmed[start..].to_owned())
 }
 
+/// Reconciles one logical session id from rollout filename and payload metadata.
+pub(crate) fn reconcile_rollout_session_id(
+    source_path: &Path,
+    file_name: Option<&str>,
+    payload_session_id: Option<&str>,
+) -> Result<Option<String>> {
+    let filename_session_id = file_name.and_then(parse_rollout_file_session_id);
+
+    match (filename_session_id, payload_session_id) {
+        (Some(filename_session_id), Some(payload_session_id))
+            if filename_session_id != payload_session_id =>
+        {
+            bail!(
+                "mismatched Codex session ids in {}: filename={} payload={}",
+                source_path.display(),
+                filename_session_id,
+                payload_session_id
+            );
+        }
+        (Some(filename_session_id), _) => Ok(Some(filename_session_id)),
+        (None, Some(payload_session_id)) => Ok(Some(payload_session_id.to_owned())),
+        (None, None) => Ok(None),
+    }
+}
+
 /// Reads the first rollout line and extracts the strict header metadata for parsing.
 pub(crate) fn read_rollout_header(path: &Path) -> Result<Option<CodexRolloutHeader>> {
     let Some(line) = read_first_rollout_line(path)? else {
@@ -188,6 +213,7 @@ mod tests {
 
     use super::{
         parse_rollout_file_session_id, parse_rollout_header_line, parse_rollout_session_meta_line,
+        reconcile_rollout_session_id,
     };
     use crate::rollout::ParseDeterminism;
     use crate::rollout::codex::version::CodexSchemaId;
@@ -240,5 +266,29 @@ mod tests {
             Some("019d3415-0b9c-7dc3-88e0-e9cb7a789e3f".to_owned())
         );
         assert_eq!(parse_rollout_file_session_id("rollout-invalid.jsonl"), None);
+    }
+
+    #[test]
+    fn reconciles_rollout_session_ids_from_payload_only_filename() {
+        let session_id = reconcile_rollout_session_id(
+            Path::new("rollout-invalid.jsonl"),
+            Some("rollout-invalid.jsonl"),
+            Some("session-1"),
+        )
+        .unwrap();
+
+        assert_eq!(session_id.as_deref(), Some("session-1"));
+    }
+
+    #[test]
+    fn rejects_mismatched_rollout_session_ids() {
+        let error = reconcile_rollout_session_id(
+            Path::new("rollout.jsonl"),
+            Some("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
+            Some("019d3415-0b9c-7dc3-88e0-e9cb7a789e40"),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("mismatched Codex session ids"));
     }
 }
