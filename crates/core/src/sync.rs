@@ -1,8 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     env,
-    fs::{self, File},
-    io::{BufRead, BufReader},
+    fs::{self},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
@@ -21,6 +20,7 @@ use crate::{
         current_project_root, encode_path_for_claude, normalize_project_path,
         normalized_known_paths, project_path_set, try_git_output,
     },
+    rollout::codex::read_rollout_header,
 };
 
 static UNIQUE_PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -708,24 +708,12 @@ fn select_codex_candidate(candidates: &[CodexCandidate]) -> Option<CodexCandidat
 
 /// Extracts the Codex `session_meta` id and cwd from the first rollout line.
 fn extract_codex_session_meta(path: &Path) -> Result<Option<CodexSessionMeta>> {
-    let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-    let mut reader = BufReader::new(file);
-    let mut line = String::new();
-    if reader.read_line(&mut line)? == 0 {
+    let Some(header) = read_rollout_header(path)? else {
         return Ok(None);
-    }
-
-    let envelope: CodexSessionMetaEnvelope =
-        serde_json::from_str(&line).context("failed to deserialize the first JSONL line")?;
-    if envelope.event_type.as_deref() != Some("session_meta") {
-        return Ok(None);
-    }
-    let payload: CodexSessionMetaPayload = serde_json::from_value(envelope.payload)
-        .context("failed to deserialize session_meta payload")?;
-
+    };
     Ok(Some(CodexSessionMeta {
-        id: payload.id,
-        cwd: normalize_project_path(&payload.cwd),
+        id: header.session_id,
+        cwd: normalize_project_path(&header.cwd),
     }))
 }
 
@@ -1207,22 +1195,6 @@ impl ManifestAuxiliaryEntry {
     }
 }
 
-/// Deserializes the first line of a Codex rollout.
-#[derive(Debug, Deserialize)]
-struct CodexSessionMetaEnvelope {
-    #[serde(rename = "type")]
-    event_type: Option<String>,
-    #[serde(default)]
-    payload: serde_json::Value,
-}
-
-/// Deserializes the `payload` field from a Codex `session_meta` line.
-#[derive(Debug, Deserialize)]
-struct CodexSessionMetaPayload {
-    id: String,
-    cwd: PathBuf,
-}
-
 #[cfg(test)]
 mod tests {
     use std::process::Command;
@@ -1378,7 +1350,7 @@ mod tests {
         let rollout = dir.join("rollout.jsonl");
         write_file(
             &rollout,
-            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"x\",\"cwd\":\"/tmp/demo/./worktree/../repo/\"}}\n",
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"x\",\"cwd\":\"/tmp/demo/./worktree/../repo/\",\"cli_version\":\"0.118.0\"}}\n",
         )?;
 
         let meta = extract_codex_session_meta(&rollout)?.context("missing meta")?;
@@ -1611,14 +1583,14 @@ mod tests {
         write_file(
             &active_rollout,
             &format!(
-                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\"}}}}\n",
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
                 ws.canonical_project_root.display()
             ),
         )?;
         write_file(
             &archived_rollout,
             &format!(
-                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\"}}}}\n{{\"type\":\"message\"}}\n",
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n{{\"type\":\"message\"}}\n",
                 ws.canonical_project_root.display()
             ),
         )?;
@@ -1712,7 +1684,7 @@ mod tests {
         write_file(
             &codex_sessions.join(rollout_name),
             &format!(
-                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\"}}}}\n{{\"type\":\"message\"}}\n",
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n{{\"type\":\"message\"}}\n",
                 related_subdir.display()
             ),
         )?;
@@ -1751,7 +1723,7 @@ mod tests {
             &codex_sessions
                 .join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
             &format!(
-                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e40\",\"cwd\":\"{}\"}}}}\n{{\"type\":\"message\"}}\n",
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e40\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n{{\"type\":\"message\"}}\n",
                 ws.canonical_project_root.display()
             ),
         )?;
@@ -1812,7 +1784,7 @@ mod tests {
             &codex_sessions
                 .join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
             &format!(
-                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\"}}}}\n{{\"type\":\"message\"}}\n",
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n{{\"type\":\"message\"}}\n",
                 canonical_worktree.display()
             ),
         )?;
@@ -1854,7 +1826,7 @@ mod tests {
             &codex_sessions
                 .join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
             &format!(
-                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\"}}}}\n{{\"type\":\"message\"}}\n",
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n{{\"type\":\"message\"}}\n",
                 related_subdir.display()
             ),
         )?;

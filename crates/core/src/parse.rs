@@ -1,27 +1,22 @@
 use std::{
     collections::BTreeMap,
     env, fs,
-    fs::File,
-    io::{BufRead, BufReader},
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, params};
-use serde::{Deserialize, Deserializer, Serialize};
-use serde_json::Value;
+use serde::Serialize;
 use walkdir::WalkDir;
 
 use crate::{
     SourceKind, active_project::load_active_project, constants::INDEX_DB_FILE_NAME,
-    default_root_path, index_db::open_index_database, project_paths::normalize_project_path,
+    default_root_path, index_db::open_index_database, rollout::ParseDeterminism,
 };
 
 /// Parses one Codex rollout file into user-visible turns.
 pub fn parse_codex_rollout(path: &Path) -> Result<CodexRollout> {
-    let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-    let reader = BufReader::new(file);
-    parse_codex_rollout_reader(reader, path)
+    crate::rollout::codex::parse_rollout_file(path)
 }
 
 /// Reports the results of indexing archived Codex turns for one project.
@@ -47,6 +42,9 @@ pub fn parse_project_codex_turns(root: Option<PathBuf>) -> Result<ParseReport> {
 pub struct CodexRollout {
     pub session_id: String,
     pub cwd: PathBuf,
+    pub cli_version: String,
+    pub schema_id: String,
+    pub determinism: ParseDeterminism,
     pub turns: Vec<CodexTurn>,
 }
 
@@ -113,71 +111,11 @@ pub enum CodexTurnStep {
         call_id: String,
         output: String,
     },
-}
-
-#[derive(Debug)]
-struct NumberedRawLine {
-    line_no: usize,
-    line: RawLine,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawLine {
-    timestamp: String,
-    #[serde(rename = "type")]
-    kind: String,
-    #[serde(default)]
-    payload: Value,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawSessionMetaPayload {
-    id: String,
-    cwd: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawEventPayload {
-    #[serde(rename = "type")]
-    kind: String,
-    #[serde(default)]
-    message: Option<String>,
-    #[serde(default)]
-    turn_id: Option<String>,
-    #[serde(default)]
-    last_agent_message: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawResponseItemPayload {
-    #[serde(rename = "type")]
-    kind: String,
-    #[serde(default)]
-    role: Option<String>,
-    #[serde(default)]
-    phase: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_message_content")]
-    content: Vec<RawMessageContent>,
-    #[serde(default)]
-    call_id: Option<String>,
-    #[serde(default)]
-    name: Option<String>,
-    #[serde(default)]
-    arguments: Option<Value>,
-    #[serde(default)]
-    input: Option<Value>,
-    #[serde(default)]
-    output: Option<Value>,
-    #[serde(default)]
-    summary: Vec<Value>,
-    #[serde(default)]
-    encrypted_content: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawMessageContent {
-    #[serde(default)]
-    text: Option<String>,
+    ProviderResponseItem {
+        timestamp: String,
+        item_type: String,
+        payload_json: String,
+    },
 }
 
 /// Stores one parsed archived rollout before SQLite insertion.
@@ -223,329 +161,6 @@ fn parse_project_codex_turns_from(current_dir: &Path, root: PathBuf) -> Result<P
         sessions_indexed: parsed_rollouts.len(),
         turns_indexed,
     })
-}
-
-/// Parses one Codex rollout reader into user-visible turns.
-fn parse_codex_rollout_reader<R: BufRead>(reader: R, source_path: &Path) -> Result<CodexRollout> {
-    let raw_lines = read_raw_lines(reader)?;
-    let has_event_user_boundaries = raw_lines.iter().any(|line| {
-        line.line.kind == "event_msg"
-            && line.line.payload.get("type").and_then(Value::as_str) == Some("user_message")
-    });
-
-    let mut session_id = None;
-    let mut cwd = None;
-    let mut pending_turn_id = None;
-    let mut current_turn = None;
-    let mut turns = Vec::new();
-
-    for numbered_line in raw_lines {
-        let line_no = numbered_line.line_no;
-        let RawLine {
-            timestamp,
-            kind,
-            payload,
-        } = numbered_line.line;
-
-        match kind.as_str() {
-            "session_meta" => {
-                let meta: RawSessionMetaPayload = serde_json::from_value(payload)
-                    .with_context(|| format!("failed to parse session_meta on line {line_no}"))?;
-                session_id = Some(meta.id);
-                cwd = Some(normalize_project_path(Path::new(&meta.cwd)));
-            }
-            "event_msg" => {
-                let event: RawEventPayload = serde_json::from_value(payload)
-                    .with_context(|| format!("failed to parse event_msg on line {line_no}"))?;
-                match event.kind.as_str() {
-                    "task_started" => pending_turn_id = event.turn_id,
-                    "user_message" => {
-                        if let Some(message) = event.message {
-                            close_open_turn(&mut current_turn, &mut turns);
-                            current_turn =
-                                Some(start_turn(timestamp, pending_turn_id.take(), message));
-                        }
-                    }
-                    "task_complete" => {
-                        if let Some(mut turn) = current_turn.take() {
-                            if !turn_has_final_answer(&turn)
-                                && let Some(message) = non_empty_text(event.last_agent_message)
-                            {
-                                turn.final_answer = Some(CodexTurnMessage {
-                                    timestamp: timestamp.clone(),
-                                    text: message,
-                                });
-                            }
-                            turn.completed_at = Some(timestamp);
-                            turn.status = CodexTurnStatus::Completed;
-                            turns.push(turn);
-                        }
-                    }
-                    "turn_aborted" => {
-                        if let Some(mut turn) = current_turn.take() {
-                            turn.completed_at = Some(timestamp);
-                            turn.status = CodexTurnStatus::Aborted;
-                            turns.push(turn);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            "response_item" => {
-                let item: RawResponseItemPayload = serde_json::from_value(payload)
-                    .with_context(|| format!("failed to parse response_item on line {line_no}"))?;
-                match item.kind.as_str() {
-                    "message" => {
-                        let Some(role) = item.role else {
-                            continue;
-                        };
-                        let Some(text) = non_empty_text(message_text(item.content)) else {
-                            continue;
-                        };
-
-                        if role == "user" {
-                            if !has_event_user_boundaries && !is_user_boilerplate(&text) {
-                                close_open_turn(&mut current_turn, &mut turns);
-                                current_turn =
-                                    Some(start_turn(timestamp, pending_turn_id.take(), text));
-                            }
-                            continue;
-                        }
-
-                        if let Some(turn) = current_turn.as_mut()
-                            && role == "assistant"
-                        {
-                            record_assistant_message(turn, timestamp, item.phase.as_deref(), text);
-                        }
-                    }
-                    "function_call" | "custom_tool_call" => {
-                        let Some(call_id) = item.call_id else {
-                            continue;
-                        };
-                        let Some(name) = item.name else {
-                            continue;
-                        };
-                        let Some(arguments) =
-                            item.arguments.or(item.input).and_then(json_value_text)
-                        else {
-                            continue;
-                        };
-                        if let Some(turn) = current_turn.as_mut() {
-                            turn.steps.push(CodexTurnStep::ToolCall {
-                                timestamp,
-                                call_id,
-                                name,
-                                arguments,
-                            });
-                        }
-                    }
-                    "function_call_output" | "custom_tool_call_output" => {
-                        let Some(call_id) = item.call_id else {
-                            continue;
-                        };
-                        let Some(output) = item.output.and_then(json_value_text) else {
-                            continue;
-                        };
-                        if let Some(turn) = current_turn.as_mut() {
-                            turn.steps.push(CodexTurnStep::ToolCallOutput {
-                                timestamp,
-                                call_id,
-                                output,
-                            });
-                        }
-                    }
-                    "reasoning" => {
-                        if let Some(turn) = current_turn.as_mut() {
-                            turn.steps.push(CodexTurnStep::Reasoning {
-                                timestamp,
-                                summary: reasoning_summary(item.summary),
-                                encrypted: item.encrypted_content.is_some(),
-                            });
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            _ => {}
-        }
-    }
-
-    close_open_turn(&mut current_turn, &mut turns);
-
-    let session_id = session_id
-        .with_context(|| format!("missing session_meta id in {}", source_path.display()))?;
-    let cwd =
-        cwd.with_context(|| format!("missing session_meta cwd in {}", source_path.display()))?;
-
-    Ok(CodexRollout {
-        session_id,
-        cwd,
-        turns,
-    })
-}
-
-/// Records one assistant message using phased or legacy rollout semantics.
-fn record_assistant_message(
-    turn: &mut CodexTurn,
-    timestamp: String,
-    phase: Option<&str>,
-    text: String,
-) {
-    match phase {
-        Some("commentary") => {
-            turn.steps
-                .push(CodexTurnStep::Commentary { timestamp, text });
-        }
-        Some("final_answer") => {
-            turn.final_answer = Some(CodexTurnMessage { timestamp, text });
-        }
-        None => {
-            // Older Codex rollouts stored the final reply as an unphased assistant message.
-            turn.final_answer = Some(CodexTurnMessage { timestamp, text });
-        }
-        Some(_) => {}
-    }
-}
-
-/// Reads and deserializes every JSONL line with source line numbers.
-fn read_raw_lines<R: BufRead>(reader: R) -> Result<Vec<NumberedRawLine>> {
-    let mut raw_lines = Vec::new();
-    for (index, line) in reader.lines().enumerate() {
-        let line_no = index + 1;
-        let line = line.with_context(|| format!("failed to read line {line_no}"))?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let raw: RawLine = serde_json::from_str(&line)
-            .with_context(|| format!("failed to deserialize JSONL line {line_no}"))?;
-        raw_lines.push(NumberedRawLine { line_no, line: raw });
-    }
-    Ok(raw_lines)
-}
-
-/// Starts a new Codex turn from a parsed user message boundary.
-fn start_turn(timestamp: String, turn_id: Option<String>, user_message: String) -> CodexTurn {
-    CodexTurn {
-        turn_id,
-        user_message,
-        final_answer: None,
-        started_at: timestamp,
-        completed_at: None,
-        status: CodexTurnStatus::Incomplete,
-        steps: Vec::new(),
-    }
-}
-
-/// Finalizes the current turn before a new boundary or end-of-file.
-fn close_open_turn(current_turn: &mut Option<CodexTurn>, turns: &mut Vec<CodexTurn>) {
-    if let Some(turn) = current_turn.take() {
-        turns.push(normalize_turn(turn));
-    }
-}
-
-/// Normalizes implicit completion for turns closed without an explicit event.
-fn normalize_turn(mut turn: CodexTurn) -> CodexTurn {
-    if turn.status == CodexTurnStatus::Incomplete && turn_has_final_answer(&turn) {
-        turn.status = CodexTurnStatus::Completed;
-        if turn.completed_at.is_none()
-            && let Some(timestamp) = final_answer_timestamp(&turn)
-        {
-            turn.completed_at = Some(timestamp.to_owned());
-        }
-    }
-    turn
-}
-
-/// Returns whether a turn already has a parsed final answer.
-fn turn_has_final_answer(turn: &CodexTurn) -> bool {
-    turn.final_answer.is_some()
-}
-
-/// Returns the final-answer timestamp recorded for a turn.
-fn final_answer_timestamp(turn: &CodexTurn) -> Option<&str> {
-    turn.final_answer
-        .as_ref()
-        .map(|answer| answer.timestamp.as_str())
-}
-
-/// Joins all text fragments from a message content array.
-fn message_text(content: Vec<RawMessageContent>) -> Option<String> {
-    let text: Vec<String> = content.into_iter().filter_map(|part| part.text).collect();
-    if text.is_empty() {
-        return None;
-    }
-    Some(text.join("\n"))
-}
-
-/// Deserializes message content from missing, null, strings, one object, or an array.
-fn deserialize_message_content<'de, D>(
-    deserializer: D,
-) -> std::result::Result<Vec<RawMessageContent>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = Option::<Value>::deserialize(deserializer)?;
-    let Some(value) = value else {
-        return Ok(Vec::new());
-    };
-
-    match value {
-        Value::Null => Ok(Vec::new()),
-        Value::String(text) => Ok(vec![RawMessageContent { text: Some(text) }]),
-        Value::Object(_) => {
-            serde_json::from_value(Value::Array(vec![value])).map_err(serde::de::Error::custom)
-        }
-        Value::Array(_) => serde_json::from_value(value).map_err(serde::de::Error::custom),
-        other => Err(serde::de::Error::custom(format!(
-            "invalid message content: expected string, object, or array, got {other}"
-        ))),
-    }
-}
-
-/// Extracts string summaries from a reasoning payload.
-fn reasoning_summary(summary: Vec<Value>) -> Vec<String> {
-    summary
-        .into_iter()
-        .filter_map(|value| match value {
-            Value::String(text) => non_empty_text(Some(text)),
-            Value::Object(map) => map
-                .get("text")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .and_then(|text| non_empty_text(Some(text))),
-            _ => None,
-        })
-        .collect()
-}
-
-/// Converts one JSON field into plain text, preserving strings and JSON-encoding structure.
-fn json_value_text(value: Value) -> Option<String> {
-    match value {
-        Value::Null => None,
-        Value::String(text) => non_empty_text(Some(text)),
-        other => serde_json::to_string(&other)
-            .ok()
-            .and_then(|text| non_empty_text(Some(text))),
-    }
-}
-
-/// Returns a trimmed string when the source text is not empty.
-fn non_empty_text(text: Option<String>) -> Option<String> {
-    let text = text?;
-    let text = text.trim();
-    if text.is_empty() {
-        return None;
-    }
-    Some(text.to_owned())
-}
-
-/// Filters legacy response-item user messages that only repeat setup boilerplate.
-fn is_user_boilerplate(text: &str) -> bool {
-    let trimmed = text.trim();
-    trimmed.is_empty()
-        || trimmed.starts_with("# AGENTS.md instructions for ")
-        || trimmed.starts_with("<environment_context>")
-        || trimmed.starts_with("<turn_aborted>")
 }
 
 /// Discovers archived Codex rollout files below one project archive root.
@@ -758,16 +373,17 @@ mod tests {
     use serde_json::Value;
 
     use super::{
-        CodexRollout, CodexTurnMessage, CodexTurnStatus, CodexTurnStep, parse_codex_rollout_reader,
+        CodexRollout, CodexTurnMessage, CodexTurnStatus, CodexTurnStep,
         parse_project_codex_turns_from,
     };
     use crate::config::{ProjectConfig, SharedConfig, SourcesConfig};
     use crate::constants::{CONFIG_FILE_NAME, INDEX_DB_FILE_NAME};
+    use crate::rollout::{ParseDeterminism, codex::parse_rollout_reader};
 
     #[test]
     fn parses_two_turns_with_event_boundaries() -> Result<()> {
         let rollout = parse_fixture(
-            r#"{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"fixture-two-turns","cwd":"/tmp/repo"}}
+            r#"{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"fixture-two-turns","cwd":"/tmp/repo","cli_version":"0.118.0"}}
 {"timestamp":"2026-01-01T00:00:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}
 {"timestamp":"2026-01-01T00:00:02Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"duplicate"}]}}
 {"timestamp":"2026-01-01T00:00:03Z","type":"event_msg","payload":{"type":"user_message","message":"First task"}}
@@ -788,6 +404,9 @@ mod tests {
             CodexRollout {
                 session_id: "fixture-two-turns".to_owned(),
                 cwd: Path::new("/tmp/repo").to_path_buf(),
+                cli_version: "0.118.0".to_owned(),
+                schema_id: "codex.turn_lifecycle".to_owned(),
+                determinism: ParseDeterminism::Exact,
                 turns: vec![
                     super::CodexTurn {
                         turn_id: Some("turn-1".to_owned()),
@@ -844,7 +463,7 @@ mod tests {
     #[test]
     fn falls_back_to_non_boilerplate_response_item_user_messages() -> Result<()> {
         let rollout = parse_fixture(
-            r##"{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"fixture-fallback","cwd":"/tmp/repo"}}
+            r##"{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"fixture-fallback","cwd":"/tmp/repo","cli_version":"0.118.0"}}
 {"timestamp":"2026-01-01T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for /tmp/repo"}]}}
 {"timestamp":"2026-01-01T00:00:02Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n  <cwd>/tmp/repo</cwd>\n</environment_context>"}]}}
 {"timestamp":"2026-01-01T00:00:03Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Summarize the build output"}]}}
@@ -869,7 +488,7 @@ mod tests {
     #[test]
     fn uses_task_complete_when_no_final_answer_message_exists() -> Result<()> {
         let rollout = parse_fixture(
-            r#"{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"fixture-complete","cwd":"/tmp/repo"}}
+            r#"{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"fixture-complete","cwd":"/tmp/repo","cli_version":"0.118.0"}}
 {"timestamp":"2026-01-01T00:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"Run the checks"}}
 {"timestamp":"2026-01-01T00:00:02Z","type":"response_item","payload":{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"Running checks."}]}}
 {"timestamp":"2026-01-01T00:00:03Z","type":"event_msg","payload":{"type":"task_complete","last_agent_message":"Checks passed."}}
@@ -889,7 +508,7 @@ mod tests {
     #[test]
     fn marks_aborted_turns() -> Result<()> {
         let rollout = parse_fixture(
-            r#"{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"fixture-aborted","cwd":"/tmp/repo"}}
+            r#"{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"fixture-aborted","cwd":"/tmp/repo","cli_version":"0.118.0"}}
 {"timestamp":"2026-01-01T00:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"Inspect the repo"}}
 {"timestamp":"2026-01-01T00:00:02Z","type":"response_item","payload":{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"Reading files."}]}}
 {"timestamp":"2026-01-01T00:00:03Z","type":"event_msg","payload":{"type":"turn_aborted","turn_id":"turn-1","reason":"interrupted"}}
@@ -910,7 +529,7 @@ mod tests {
     #[test]
     fn treats_legacy_unphased_assistant_messages_as_final_answers() -> Result<()> {
         let rollout = parse_fixture(
-            r##"{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"fixture-legacy-final","cwd":"/tmp/repo"}}
+            r##"{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"fixture-legacy-final","cwd":"/tmp/repo","cli_version":"0.118.0"}}
 {"timestamp":"2026-01-01T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for /tmp/repo"}]}}
 {"timestamp":"2026-01-01T00:00:02Z","type":"event_msg","payload":{"type":"user_message","message":"Legacy prompt"}}
 {"timestamp":"2026-01-01T00:00:03Z","type":"event_msg","payload":{"type":"agent_message","message":"Legacy final reply"}}
@@ -934,19 +553,19 @@ mod tests {
     #[test]
     fn parses_structured_tool_payloads_and_custom_tool_items() -> Result<()> {
         let rollout = parse_fixture(
-            r#"{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"fixture-structured-tools","cwd":"/tmp/repo"}}
+            r#"{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"fixture-structured-tools","cwd":"/tmp/repo","cli_version":"0.118.0"}}
 {"timestamp":"2026-01-01T00:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"Inspect the rollout"}}
-{"timestamp":"2026-01-01T00:00:02Z","type":"response_item","payload":{"type":"function_call","call_id":"call-1","name":"screenshot","arguments":{"pageno":0,"mode":"page"}}}
+{"timestamp":"2026-01-01T00:00:02Z","type":"response_item","payload":{"type":"function_call","call_id":"call-1","name":"screenshot","arguments":"{\"pageno\":0,\"mode\":\"page\"}"}}
 {"timestamp":"2026-01-01T00:00:03Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-1","output":[{"type":"input_image","image_url":"data:image/png;base64,abc"}]}}
 {"timestamp":"2026-01-01T00:00:04Z","type":"response_item","payload":{"type":"custom_tool_call","call_id":"call-2","name":"apply_patch","input":"*** Begin Patch\n*** End Patch\n"}}
-{"timestamp":"2026-01-01T00:00:05Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call-2","output":{"output":"Success","metadata":{"exit_code":0}}}}
+{"timestamp":"2026-01-01T00:00:05Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call-2","output":"{\"output\":\"Success\",\"metadata\":{\"exit_code\":0}}"}}
 {"timestamp":"2026-01-01T00:00:06Z","type":"response_item","payload":{"type":"web_search_call","status":"completed","action":{"type":"open_page","url":"https://example.com"}}}
 {"timestamp":"2026-01-01T00:00:07Z","type":"response_item","payload":{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"Parsed."}]}}
 "#,
         )?;
 
         assert_eq!(rollout.turns.len(), 1);
-        assert_eq!(rollout.turns[0].steps.len(), 4);
+        assert_eq!(rollout.turns[0].steps.len(), 5);
 
         let CodexTurnStep::ToolCall { arguments, .. } = &rollout.turns[0].steps[0] else {
             panic!("expected structured function_call step");
@@ -977,11 +596,23 @@ mod tests {
         assert_eq!(output["output"], "Success");
         assert_eq!(output["metadata"]["exit_code"], 0);
 
+        let CodexTurnStep::ProviderResponseItem {
+            item_type,
+            payload_json,
+            ..
+        } = &rollout.turns[0].steps[4]
+        else {
+            panic!("expected preserved provider response item");
+        };
+        assert_eq!(item_type, "web_search_call");
+        let payload: Value = serde_json::from_str(payload_json)?;
+        assert_eq!(payload["action"]["url"], "https://example.com");
+
         Ok(())
     }
 
     fn parse_fixture(input: &str) -> Result<CodexRollout> {
-        parse_codex_rollout_reader(Cursor::new(input), Path::new("fixture.jsonl"))
+        parse_rollout_reader(Cursor::new(input), Path::new("fixture.jsonl"))
     }
 
     /// Builds a unique temporary directory for one parse test fixture.
@@ -1043,7 +674,7 @@ mod tests {
                 .join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
             &format!(
                 concat!(
-                    "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\"}}}}\n",
+                    "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
                     "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}}}\n",
                     "{{\"timestamp\":\"2026-04-01T10:00:02Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"First task\"}}}}\n",
                     "{{\"timestamp\":\"2026-04-01T10:00:03Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"First reply\"}}]}}}}\n",
@@ -1084,7 +715,6 @@ mod tests {
             ["repo-abc123", "019d3415-0b9c-7dc3-88e0-e9cb7a789e3f"],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-
         assert_eq!(indexed_sessions, 1);
         assert_eq!(indexed_turns, 2);
         assert_eq!(second_turn.0, "Second task");
@@ -1108,7 +738,7 @@ mod tests {
             &rollout_path,
             &format!(
                 concat!(
-                    "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\"}}}}\n",
+                    "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
                     "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}}}\n",
                     "{{\"timestamp\":\"2026-04-01T10:00:02Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Original task\"}}}}\n",
                     "{{\"timestamp\":\"2026-04-01T10:00:03Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Original reply\"}}]}}}}\n"
@@ -1122,7 +752,7 @@ mod tests {
             &rollout_path,
             &format!(
                 concat!(
-                    "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\"}}}}\n",
+                    "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
                     "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}}}\n",
                     "{{\"timestamp\":\"2026-04-01T10:00:02Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Updated task\"}}}}\n",
                     "{{\"timestamp\":\"2026-04-01T10:00:03Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Updated reply\"}}]}}}}\n",
@@ -1173,7 +803,7 @@ mod tests {
                 .join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
             &format!(
                 concat!(
-                    "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\"}}}}\n",
+                    "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
                     "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}}}\n",
                     "{{\"timestamp\":\"2026-04-01T10:00:02Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Stale task\"}}}}\n",
                     "{{\"timestamp\":\"2026-04-01T10:00:03Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Stale reply\"}}]}}}}\n"
@@ -1187,7 +817,7 @@ mod tests {
                 .join("rollout-2026-04-01T11-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
             &format!(
                 concat!(
-                    "{{\"timestamp\":\"2026-04-01T11:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\"}}}}\n",
+                    "{{\"timestamp\":\"2026-04-01T11:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
                     "{{\"timestamp\":\"2026-04-01T11:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}}}\n",
                     "{{\"timestamp\":\"2026-04-01T11:00:02Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Fresh task\"}}}}\n",
                     "{{\"timestamp\":\"2026-04-01T11:00:03Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"commentary\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Checking\"}}]}}}}\n",

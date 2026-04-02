@@ -217,6 +217,9 @@ fn run_inspect_codex(args: InspectCodexArgs) -> Result<()> {
     println!("Session: {}", rollout.session_id);
     println!("Source: {}", args.rollout.display());
     println!("Cwd: {}", rollout.cwd.display());
+    println!("CLI Version: {}", rollout.cli_version);
+    println!("Schema: {}", rollout.schema_id);
+    println!("Determinism: {:?}", rollout.determinism);
     println!("Turns: {}", rollout.turns.len());
 
     for (index, turn) in rollout.turns.iter().enumerate() {
@@ -306,6 +309,14 @@ fn print_turn(index: usize, turn: &CodexTurn) {
             } => {
                 println!("Tool Output: {call_id}");
                 print_text_block("Output", output);
+            }
+            CodexTurnStep::ProviderResponseItem {
+                item_type,
+                payload_json,
+                ..
+            } => {
+                println!("Provider Response Item: {item_type}");
+                print_text_block("Payload", payload_json);
             }
         }
     }
