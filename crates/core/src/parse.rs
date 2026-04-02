@@ -325,6 +325,7 @@ impl CodexRolloutSink for SqliteRolloutSink<'_> {
 #[derive(Debug, Clone)]
 struct DiscoveredArchivedCodexRollouts {
     groups: Vec<ArchivedCodexRolloutGroup>,
+    retained_session_ids: BTreeSet<String>,
     skipped_rollouts: Vec<SkippedCodexRollout>,
 }
 
@@ -374,6 +375,7 @@ fn parse_project_codex_turns_from(current_dir: &Path, root: PathBuf) -> Result<P
         &mut connection,
         &active_project.project.id,
         &discovered_rollouts.groups,
+        &discovered_rollouts.retained_session_ids,
     )?;
     let mut skipped_rollouts = discovered_rollouts.skipped_rollouts;
     skipped_rollouts.extend(parse_outcome.skipped_rollouts);
@@ -399,17 +401,28 @@ fn discover_archived_codex_rollouts(
 ) -> Result<DiscoveredArchivedCodexRollouts> {
     let rollout_paths = discover_archived_codex_rollout_paths(root)?;
     let mut rollout_candidates = Vec::new();
+    let mut retained_session_ids = BTreeSet::new();
     let mut skipped_rollouts = Vec::new();
 
     for path in &rollout_paths {
         match inspect_archived_codex_rollout(path, sessions_root)? {
-            Some(candidate) => rollout_candidates.push(candidate),
-            None => skipped_rollouts.push(discover_archived_codex_rollout_skip(path)?),
+            Some(candidate) => {
+                retained_session_ids.insert(candidate.session_id.clone());
+                rollout_candidates.push(candidate);
+            }
+            None => {
+                let skipped = discover_archived_codex_rollout_skip(path)?;
+                if let Some(session_id) = &skipped.logical_session_id {
+                    retained_session_ids.insert(session_id.clone());
+                }
+                skipped_rollouts.push(skipped);
+            }
         }
     }
 
     Ok(DiscoveredArchivedCodexRollouts {
         groups: group_archived_codex_rollouts(rollout_candidates),
+        retained_session_ids,
         skipped_rollouts,
     })
 }
@@ -676,18 +689,15 @@ fn update_project_codex_turns(
     connection: &mut Connection,
     project_id: &str,
     archived_rollouts: &[ArchivedCodexRolloutGroup],
+    retained_session_ids: &BTreeSet<String>,
 ) -> Result<IndexedCodexParseOutcome> {
     let mut transaction = connection
         .transaction()
         .context("failed to begin SQLite transaction")?;
     let indexed_snapshots = load_indexed_codex_session_snapshots(&transaction, project_id)?;
-    let archived_session_ids = archived_rollouts
-        .iter()
-        .map(|archived| archived.session_id().to_owned())
-        .collect::<BTreeSet<_>>();
 
     for session_id in indexed_snapshots.keys() {
-        if !archived_session_ids.contains(session_id) {
+        if !retained_session_ids.contains(session_id) {
             delete_indexed_codex_session(&transaction, project_id, session_id)?;
         }
     }
@@ -1807,6 +1817,69 @@ mod tests {
             report.skipped_rollouts[0]
                 .reason
                 .contains("failed to parse")
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn parse_project_preserves_previous_index_when_replacement_header_mismatches() -> Result<()> {
+        let memstack_root = unique_test_dir("parse-preserve-index-on-mismatch");
+        let project_root = memstack_root.join("repo");
+        let sessions_root = memstack_root.join("projects/repo-abc123/sessions");
+        let codex_root = sessions_root.join("codex");
+        let rollout_path = codex_root
+            .join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl");
+        fs::create_dir_all(&project_root)?;
+        write_parse_config(&memstack_root, &project_root, &sessions_root)?;
+
+        let original = format!(
+            concat!(
+                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Original task\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:02Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Original reply\"}}]}}}}\n"
+            ),
+            project_root.display()
+        );
+        write_file(&rollout_path, &original)?;
+        parse_project_codex_turns_from(&project_root, memstack_root.clone())?;
+
+        let mismatched = format!(
+            concat!(
+                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"different-session-id\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Broken task\"}}}}\n"
+            ),
+            project_root.display()
+        );
+        write_file(&rollout_path, &mismatched)?;
+
+        let report = parse_project_codex_turns_from(&project_root, memstack_root.clone())?;
+        let connection = Connection::open(memstack_root.join(INDEX_DB_FILE_NAME))?;
+        let indexed_turn: (String, String) = connection.query_row(
+            "
+            SELECT user_message, final_answer_text
+            FROM codex_turns
+            WHERE project_id = ?1 AND session_id = ?2 AND turn_ordinal = 0
+            ",
+            ["repo-abc123", "019d3415-0b9c-7dc3-88e0-e9cb7a789e3f"],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+
+        assert_eq!(report.sessions_discovered, 0);
+        assert_eq!(report.sessions_indexed, 1);
+        assert_eq!(report.sessions_skipped, 0);
+        assert_eq!(report.turns_indexed, 1);
+        assert_eq!(indexed_turn.0, "Original task");
+        assert_eq!(indexed_turn.1, "Original reply");
+        assert_eq!(report.skipped_rollouts.len(), 1);
+        assert_eq!(
+            report.skipped_rollouts[0].logical_session_id.as_deref(),
+            Some("019d3415-0b9c-7dc3-88e0-e9cb7a789e3f")
+        );
+        assert!(
+            report.skipped_rollouts[0]
+                .reason
+                .contains("mismatched Codex session ids")
         );
 
         Ok(())
