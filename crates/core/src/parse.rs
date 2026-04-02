@@ -1,11 +1,11 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     env, fs,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, Transaction, params};
 use serde::Serialize;
 use walkdir::WalkDir;
 
@@ -17,10 +17,15 @@ use crate::{
     index_db::open_index_database,
     rollout::ParseDeterminism,
     rollout::codex::{
-        compare_rollout_priority, parse_rollout_file, parse_rollout_file_session_id,
-        read_rollout_session_meta,
+        CodexRolloutHeader, CodexRolloutSink, compare_rollout_priority, parse_rollout_file,
+        parse_rollout_file_into, parse_rollout_file_session_id, read_rollout_session_meta,
     },
 };
+
+/// Parses one Codex rollout file into user-visible turns.
+pub fn parse_codex_rollout(path: &Path) -> Result<CodexRollout> {
+    parse_rollout_file(path)
+}
 
 /// Reports the results of indexing archived Codex turns for one project.
 #[derive(Debug, Clone)]
@@ -131,6 +136,146 @@ struct ArchivedCodexRolloutCandidate {
     mtime_ms: u64,
 }
 
+/// Stores the indexed snapshot used to skip unchanged archived sessions.
+#[derive(Debug, Clone)]
+struct IndexedCodexSessionSnapshot {
+    archive_path: String,
+    source_size: Option<u64>,
+    source_mtime_ms: Option<u64>,
+}
+
+impl IndexedCodexSessionSnapshot {
+    /// Returns whether one archived rollout still matches the indexed session snapshot.
+    fn matches_candidate(&self, candidate: &ArchivedCodexRolloutCandidate) -> bool {
+        self.archive_path == candidate.archive_path
+            && self.source_size == Some(candidate.size)
+            && self.source_mtime_ms == Some(candidate.mtime_ms)
+    }
+}
+
+/// Streams one parsed rollout directly into SQLite session and turn rows.
+struct SqliteRolloutSink<'tx, 'conn> {
+    transaction: &'tx Transaction<'conn>,
+    project_id: String,
+    archive_path: String,
+    source_size: u64,
+    source_mtime_ms: u64,
+    session_id: Option<String>,
+    turn_ordinal: i64,
+}
+
+impl<'tx, 'conn> SqliteRolloutSink<'tx, 'conn> {
+    /// Creates one SQLite sink for a selected archived rollout candidate.
+    fn new(
+        transaction: &'tx Transaction<'conn>,
+        project_id: &str,
+        archived: &ArchivedCodexRolloutCandidate,
+    ) -> Self {
+        Self {
+            transaction,
+            project_id: project_id.to_owned(),
+            archive_path: archived.archive_path.clone(),
+            source_size: archived.size,
+            source_mtime_ms: archived.mtime_ms,
+            session_id: None,
+            turn_ordinal: 0,
+        }
+    }
+}
+
+impl CodexRolloutSink for SqliteRolloutSink<'_, '_> {
+    fn begin_rollout(&mut self, header: &CodexRolloutHeader) -> Result<()> {
+        let source_size = i64::try_from(self.source_size)
+            .context("Codex source_size exceeds SQLite INTEGER range")?;
+        let source_mtime_ms = i64::try_from(self.source_mtime_ms)
+            .context("Codex source_mtime_ms exceeds SQLite INTEGER range")?;
+
+        self.transaction
+            .execute(
+                "
+                INSERT INTO codex_sessions (
+                    project_id,
+                    session_id,
+                    archive_path,
+                    cwd,
+                    cli_version,
+                    schema_id,
+                    determinism,
+                    source_size,
+                    source_mtime_ms
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                ",
+                params![
+                    self.project_id.as_str(),
+                    header.session_id.as_str(),
+                    self.archive_path.as_str(),
+                    header.cwd.to_string_lossy(),
+                    header.cli_version.as_str(),
+                    header.schema_id.as_str(),
+                    header.determinism.as_sql_text(),
+                    source_size,
+                    source_mtime_ms,
+                ],
+            )
+            .with_context(|| format!("failed to insert Codex session {}", header.session_id))?;
+        self.session_id = Some(header.session_id.clone());
+        self.turn_ordinal = 0;
+        Ok(())
+    }
+
+    fn push_turn(&mut self, turn: CodexTurn) -> Result<()> {
+        let session_id = self
+            .session_id
+            .as_deref()
+            .context("missing active Codex session id while inserting turn")?;
+        let steps_json =
+            serde_json::to_string(&turn.steps).context("failed to serialize Codex turn steps")?;
+        let final_answer_at = turn.final_answer.as_ref().map(|message| &message.timestamp);
+        let final_answer_text = turn.final_answer.as_ref().map(|message| &message.text);
+
+        self.transaction
+            .execute(
+                "
+                INSERT INTO codex_turns (
+                    project_id,
+                    session_id,
+                    turn_ordinal,
+                    turn_id,
+                    started_at,
+                    completed_at,
+                    status,
+                    user_message,
+                    final_answer_at,
+                    final_answer_text,
+                    steps_json
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                ",
+                params![
+                    self.project_id.as_str(),
+                    session_id,
+                    self.turn_ordinal,
+                    turn.turn_id,
+                    turn.started_at,
+                    turn.completed_at,
+                    turn.status.as_sql_text(),
+                    turn.user_message,
+                    final_answer_at,
+                    final_answer_text,
+                    steps_json,
+                ],
+            )
+            .with_context(|| {
+                format!(
+                    "failed to insert Codex turn {} for session {}",
+                    self.turn_ordinal, session_id
+                )
+            })?;
+        self.turn_ordinal += 1;
+
+        Ok(())
+    }
+}
+
 /// Parses archived Codex rollouts for one explicit current directory and memstack root.
 fn parse_project_codex_turns_from(current_dir: &Path, root: PathBuf) -> Result<ParseReport> {
     let active_project = load_active_project(current_dir, &root)?;
@@ -145,7 +290,7 @@ fn parse_project_codex_turns_from(current_dir: &Path, root: PathBuf) -> Result<P
     let index_db_path = root.join(INDEX_DB_FILE_NAME);
     let mut connection = open_index_database(&index_db_path)?;
 
-    let turns_indexed = rewrite_project_codex_turns(
+    let turns_indexed = update_project_codex_turns(
         &mut connection,
         &active_project.project.id,
         &archived_rollouts,
@@ -314,8 +459,8 @@ fn file_snapshot(path: &Path) -> Result<(u64, u64)> {
     Ok((metadata.len(), mtime_ms))
 }
 
-/// Rewrites one project's indexed Codex sessions and turns inside SQLite.
-fn rewrite_project_codex_turns(
+/// Updates one project's indexed Codex sessions and turns inside SQLite.
+fn update_project_codex_turns(
     connection: &mut Connection,
     project_id: &str,
     archived_rollouts: &[ArchivedCodexRolloutCandidate],
@@ -323,106 +468,134 @@ fn rewrite_project_codex_turns(
     let transaction = connection
         .transaction()
         .context("failed to begin SQLite transaction")?;
-    transaction
-        .execute(
-            "DELETE FROM codex_sessions WHERE project_id = ?1",
-            params![project_id],
-        )
-        .context("failed to clear existing indexed Codex sessions")?;
+    let indexed_snapshots = load_indexed_codex_session_snapshots(&transaction, project_id)?;
+    let archived_session_ids = archived_rollouts
+        .iter()
+        .map(|archived| archived.session_id.clone())
+        .collect::<BTreeSet<_>>();
 
-    let turns_indexed = {
-        let mut insert_session = transaction
-            .prepare(
-                "
-                INSERT INTO codex_sessions (
-                    project_id,
-                    session_id,
-                    archive_path,
-                    cwd,
-                    cli_version,
-                    schema_id,
-                    determinism
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                ",
-            )
-            .context("failed to prepare Codex session insert")?;
-        let mut insert_turn = transaction
-            .prepare(
-                "
-                INSERT INTO codex_turns (
-                    project_id,
-                    session_id,
-                    turn_ordinal,
-                    turn_id,
-                    started_at,
-                    completed_at,
-                    status,
-                    user_message,
-                    final_answer_at,
-                    final_answer_text,
-                    steps_json
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
-                ",
-            )
-            .context("failed to prepare Codex turn insert")?;
+    for session_id in indexed_snapshots.keys() {
+        if !archived_session_ids.contains(session_id) {
+            delete_indexed_codex_session(&transaction, project_id, session_id)?;
+        }
+    }
 
-        let mut turns_indexed = 0usize;
-
-        for archived in archived_rollouts {
-            let rollout = parse_rollout_file(&archived.source_path)
-                .with_context(|| format!("failed to parse {}", archived.source_path.display()))?;
-            insert_session
-                .execute(params![
-                    project_id,
-                    rollout.session_id,
-                    archived.archive_path,
-                    rollout.cwd.to_string_lossy(),
-                    rollout.cli_version,
-                    rollout.schema_id,
-                    rollout.determinism.as_sql_text(),
-                ])
-                .with_context(|| {
-                    format!("failed to insert Codex session {}", rollout.session_id)
-                })?;
-
-            turns_indexed += rollout.turns.len();
-
-            for (turn_ordinal, turn) in rollout.turns.iter().enumerate() {
-                let steps_json = serde_json::to_string(&turn.steps)
-                    .context("failed to serialize Codex turn steps")?;
-                let final_answer_at = turn.final_answer.as_ref().map(|message| &message.timestamp);
-                let final_answer_text = turn.final_answer.as_ref().map(|message| &message.text);
-
-                insert_turn
-                    .execute(params![
-                        project_id,
-                        rollout.session_id,
-                        turn_ordinal as i64,
-                        turn.turn_id,
-                        turn.started_at,
-                        turn.completed_at,
-                        turn.status.as_sql_text(),
-                        turn.user_message,
-                        final_answer_at,
-                        final_answer_text,
-                        steps_json,
-                    ])
-                    .with_context(|| {
-                        format!(
-                            "failed to insert Codex turn {} for session {}",
-                            turn_ordinal, rollout.session_id
-                        )
-                    })?;
-            }
+    for archived in archived_rollouts {
+        if indexed_snapshots
+            .get(&archived.session_id)
+            .is_some_and(|snapshot| snapshot.matches_candidate(archived))
+        {
+            continue;
         }
 
-        turns_indexed
-    };
+        delete_indexed_codex_session(&transaction, project_id, &archived.session_id)?;
+        let mut sink = SqliteRolloutSink::new(&transaction, project_id, archived);
+        parse_rollout_file_into(&archived.source_path, &mut sink)
+            .with_context(|| format!("failed to parse {}", archived.source_path.display()))?;
+    }
 
     transaction
         .commit()
         .context("failed to commit SQLite parse transaction")?;
-    Ok(turns_indexed)
+
+    project_codex_turn_count(connection, project_id)
+}
+
+/// Loads the indexed session snapshots used to detect unchanged archived rollouts.
+fn load_indexed_codex_session_snapshots(
+    transaction: &Transaction<'_>,
+    project_id: &str,
+) -> Result<BTreeMap<String, IndexedCodexSessionSnapshot>> {
+    let mut statement = transaction
+        .prepare(
+            "
+            SELECT session_id, archive_path, source_size, source_mtime_ms
+            FROM codex_sessions
+            WHERE project_id = ?1
+            ",
+        )
+        .context("failed to prepare indexed Codex session snapshot query")?;
+    let mut rows = statement
+        .query(params![project_id])
+        .context("failed to query indexed Codex session snapshots")?;
+    let mut snapshots = BTreeMap::new();
+
+    while let Some(row) = rows
+        .next()
+        .context("failed to read indexed Codex session snapshot row")?
+    {
+        let session_id: String = row
+            .get(0)
+            .context("failed to read indexed Codex session id")?;
+        let archive_path: String = row
+            .get(1)
+            .context("failed to read indexed Codex archive path")?;
+        let source_size = optional_sql_i64_to_u64(
+            row.get(2)
+                .context("failed to read indexed Codex source_size")?,
+            "source_size",
+        )?;
+        let source_mtime_ms = optional_sql_i64_to_u64(
+            row.get(3)
+                .context("failed to read indexed Codex source_mtime_ms")?,
+            "source_mtime_ms",
+        )?;
+
+        snapshots.insert(
+            session_id,
+            IndexedCodexSessionSnapshot {
+                archive_path,
+                source_size,
+                source_mtime_ms,
+            },
+        );
+    }
+
+    Ok(snapshots)
+}
+
+/// Deletes one indexed Codex session and cascades any stored turns.
+fn delete_indexed_codex_session(
+    transaction: &Transaction<'_>,
+    project_id: &str,
+    session_id: &str,
+) -> Result<()> {
+    transaction
+        .execute(
+            "
+            DELETE FROM codex_sessions
+            WHERE project_id = ?1 AND session_id = ?2
+            ",
+            params![project_id, session_id],
+        )
+        .with_context(|| format!("failed to delete indexed Codex session {session_id}"))?;
+    Ok(())
+}
+
+/// Returns the total number of indexed Codex turns for one project after parsing completes.
+fn project_codex_turn_count(connection: &Connection, project_id: &str) -> Result<usize> {
+    let turns_indexed: i64 = connection
+        .query_row(
+            "
+            SELECT COUNT(*)
+            FROM codex_turns
+            WHERE project_id = ?1
+            ",
+            params![project_id],
+            |row| row.get(0),
+        )
+        .context("failed to count indexed Codex turns")?;
+    usize::try_from(turns_indexed).context("indexed Codex turn count exceeds usize range")
+}
+
+/// Converts one nullable SQLite integer into an unsigned snapshot value.
+fn optional_sql_i64_to_u64(value: Option<i64>, column_name: &str) -> Result<Option<u64>> {
+    value
+        .map(|value| {
+            u64::try_from(value)
+                .with_context(|| format!("indexed `{column_name}` value {value} is negative"))
+        })
+        .transpose()
 }
 
 #[cfg(test)]
@@ -431,10 +604,11 @@ mod tests {
         env, fs,
         io::Cursor,
         path::{Path, PathBuf},
+        process::Command,
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use anyhow::Result;
+    use anyhow::{Context, Result};
     use rusqlite::Connection;
     use serde_json::Value;
 
@@ -699,6 +873,20 @@ mod tests {
         Ok(())
     }
 
+    /// Sets one file's modified timestamp to a fixed value for snapshot-based parse tests.
+    fn touch_file_timestamp(path: &Path, timestamp: &str) -> Result<()> {
+        let status = Command::new("touch")
+            .arg("-t")
+            .arg(timestamp)
+            .arg(path)
+            .status()
+            .with_context(|| format!("failed to run touch for {}", path.display()))?;
+        if !status.success() {
+            anyhow::bail!("touch -t {timestamp} failed for {}", path.display());
+        }
+        Ok(())
+    }
+
     /// Writes a minimal shared config for one parse indexing test.
     fn write_parse_config(
         root: &Path,
@@ -732,12 +920,13 @@ mod tests {
         let sessions_root = memstack_root.join("projects/repo-abc123/sessions");
         let codex_root = sessions_root.join("codex");
         let index_db_path = memstack_root.join(INDEX_DB_FILE_NAME);
+        let rollout_path = codex_root
+            .join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl");
         fs::create_dir_all(&project_root)?;
         write_parse_config(&memstack_root, &project_root, &sessions_root)?;
 
         write_file(
-            &codex_root
-                .join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
+            &rollout_path,
             &format!(
                 concat!(
                     "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
@@ -752,6 +941,7 @@ mod tests {
                 project_root.display()
             ),
         )?;
+        let (source_size, source_mtime_ms) = super::file_snapshot(&rollout_path)?;
 
         let report = parse_project_codex_turns_from(&project_root, memstack_root.clone())?;
 
@@ -781,14 +971,22 @@ mod tests {
             ["repo-abc123", "019d3415-0b9c-7dc3-88e0-e9cb7a789e3f"],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        let session_metadata: (String, String, String) = connection.query_row(
+        let session_metadata: (String, String, String, i64, i64) = connection.query_row(
             "
-            SELECT cli_version, schema_id, determinism
+            SELECT cli_version, schema_id, determinism, source_size, source_mtime_ms
             FROM codex_sessions
             WHERE project_id = ?1 AND session_id = ?2
             ",
             ["repo-abc123", "019d3415-0b9c-7dc3-88e0-e9cb7a789e3f"],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
         )?;
         assert_eq!(indexed_sessions, 1);
         assert_eq!(indexed_turns, 2);
@@ -797,6 +995,8 @@ mod tests {
         assert_eq!(session_metadata.0, "0.118.0");
         assert_eq!(session_metadata.1, "codex.turn_lifecycle");
         assert_eq!(session_metadata.2, "exact");
+        assert_eq!(u64::try_from(session_metadata.3)?, source_size);
+        assert_eq!(u64::try_from(session_metadata.4)?, source_mtime_ms);
 
         Ok(())
     }
@@ -863,6 +1063,52 @@ mod tests {
         assert_eq!(indexed_turns, 2);
         assert_eq!(first_turn.0, "Updated task");
         assert_eq!(first_turn.1, "Updated reply");
+
+        Ok(())
+    }
+
+    #[test]
+    fn parse_project_skips_unchanged_sessions_when_snapshot_matches() -> Result<()> {
+        let memstack_root = unique_test_dir("parse-skip-unchanged");
+        let project_root = memstack_root.join("repo");
+        let sessions_root = memstack_root.join("projects/repo-abc123/sessions");
+        let codex_root = sessions_root.join("codex");
+        let rollout_path = codex_root
+            .join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl");
+        fs::create_dir_all(&project_root)?;
+        write_parse_config(&memstack_root, &project_root, &sessions_root)?;
+
+        let original = format!(
+            concat!(
+                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Original task\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:02Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Original reply\"}}]}}}}\n"
+            ),
+            project_root.display()
+        );
+        write_file(&rollout_path, &original)?;
+        touch_file_timestamp(&rollout_path, "202604011000.00")?;
+        parse_project_codex_turns_from(&project_root, memstack_root.clone())?;
+
+        write_file(&rollout_path, &"{".repeat(original.len()))?;
+        touch_file_timestamp(&rollout_path, "202604011000.00")?;
+
+        let report = parse_project_codex_turns_from(&project_root, memstack_root.clone())?;
+        let connection = Connection::open(memstack_root.join(INDEX_DB_FILE_NAME))?;
+        let indexed_turn: (String, String) = connection.query_row(
+            "
+            SELECT user_message, final_answer_text
+            FROM codex_turns
+            WHERE project_id = ?1 AND session_id = ?2 AND turn_ordinal = 0
+            ",
+            ["repo-abc123", "019d3415-0b9c-7dc3-88e0-e9cb7a789e3f"],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+
+        assert_eq!(report.sessions_indexed, 1);
+        assert_eq!(report.turns_indexed, 1);
+        assert_eq!(indexed_turn.0, "Original task");
+        assert_eq!(indexed_turn.1, "Original reply");
 
         Ok(())
     }

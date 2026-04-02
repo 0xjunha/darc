@@ -17,9 +17,11 @@ use crate::{
 mod header;
 mod version;
 
-use header::{CodexRolloutHeader, parse_rollout_header_parts};
+#[cfg(test)]
+use header::parse_rollout_header_parts;
 pub(crate) use header::{
-    CodexRolloutSessionMeta, parse_rollout_file_session_id, read_rollout_session_meta,
+    CodexRolloutHeader, CodexRolloutSessionMeta, parse_rollout_file_session_id,
+    read_rollout_header, read_rollout_session_meta,
 };
 use version::{CodexCliVersion, CodexSchemaFeature, supports_feature, supports_response_item};
 
@@ -36,6 +38,49 @@ pub(crate) fn compare_rollout_priority<T: Ord>(
         .cmp(&right_size)
         .then_with(|| left_mtime_ms.cmp(&right_mtime_ms))
         .then_with(|| left_tie_break.cmp(right_tie_break))
+}
+
+/// Receives parsed rollout metadata and completed turns incrementally.
+pub(crate) trait CodexRolloutSink {
+    /// Starts one parsed rollout session before any turns are emitted.
+    fn begin_rollout(&mut self, header: &CodexRolloutHeader) -> Result<()>;
+
+    /// Stores one completed parsed turn.
+    fn push_turn(&mut self, turn: CodexTurn) -> Result<()>;
+}
+
+/// Collects parsed rollout data into the in-memory inspect representation.
+#[derive(Debug, Default)]
+struct CollectingRolloutSink {
+    header: Option<CodexRolloutHeader>,
+    turns: Vec<CodexTurn>,
+}
+
+impl CollectingRolloutSink {
+    /// Finishes one collected rollout after parsing completes.
+    fn finish(self) -> Result<CodexRollout> {
+        let header = self.header.context("missing collected rollout header")?;
+        Ok(CodexRollout {
+            session_id: header.session_id,
+            cwd: header.cwd,
+            cli_version: header.cli_version,
+            schema_id: header.schema_id.as_str().to_owned(),
+            determinism: header.determinism,
+            turns: self.turns,
+        })
+    }
+}
+
+impl CodexRolloutSink for CollectingRolloutSink {
+    fn begin_rollout(&mut self, header: &CodexRolloutHeader) -> Result<()> {
+        self.header = Some(header.clone());
+        Ok(())
+    }
+
+    fn push_turn(&mut self, turn: CodexTurn) -> Result<()> {
+        self.turns.push(turn);
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -99,20 +144,48 @@ struct RawMessageContent {
 
 /// Parses one Codex rollout file into user-visible turns with schema metadata.
 pub(crate) fn parse_rollout_file(path: &Path) -> Result<CodexRollout> {
+    let mut sink = CollectingRolloutSink::default();
+    parse_rollout_file_into(path, &mut sink)?;
+    sink.finish()
+}
+
+/// Parses one Codex rollout file and emits turns incrementally to a sink.
+pub(crate) fn parse_rollout_file_into<S: CodexRolloutSink>(
+    path: &Path,
+    sink: &mut S,
+) -> Result<()> {
+    let header = read_rollout_header(path)?
+        .with_context(|| format!("missing session_meta line in {}", path.display()))?;
+    let has_event_user_boundaries = scan_rollout_for_event_user_boundaries(path)?;
     let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-    parse_rollout_reader(BufReader::new(file), path)
+    let reader = BufReader::new(file);
+
+    parse_rollout_stream(reader, path, header, has_event_user_boundaries, sink)
 }
 
 /// Parses one Codex rollout reader into user-visible turns with version-based schema dispatch.
+#[cfg(test)]
 pub(crate) fn parse_rollout_reader<R: BufRead>(
     reader: R,
     source_path: &Path,
 ) -> Result<CodexRollout> {
     let raw_lines = read_raw_lines(reader)?;
     let header = parse_rollout_header_from_lines(&raw_lines, source_path)?;
-    parse_rollout_lines(raw_lines, source_path, header)
+    let has_event_user_boundaries = raw_lines
+        .iter()
+        .any(|line| raw_line_has_event_user_boundary(&line.line));
+    let mut sink = CollectingRolloutSink::default();
+    parse_rollout_lines(
+        raw_lines,
+        source_path,
+        header,
+        has_event_user_boundaries,
+        &mut sink,
+    )?;
+    sink.finish()
 }
 
+#[cfg(test)]
 fn parse_rollout_header_from_lines(
     raw_lines: &[NumberedRawLine],
     source_path: &Path,
@@ -124,29 +197,86 @@ fn parse_rollout_header_from_lines(
         .with_context(|| format!("missing session_meta line in {}", source_path.display()))
 }
 
-fn parse_rollout_lines(
+#[cfg(test)]
+fn parse_rollout_lines<S: CodexRolloutSink>(
     raw_lines: Vec<NumberedRawLine>,
     source_path: &Path,
     header: CodexRolloutHeader,
-) -> Result<CodexRollout> {
-    let cli_version = CodexCliVersion::parse(&header.cli_version).with_context(|| {
-        format!(
-            "failed to parse Codex cli_version `{}` in {}",
-            header.cli_version,
-            source_path.display()
-        )
-    })?;
-
-    let has_event_user_boundaries = raw_lines.iter().any(|line| {
-        line.line.kind == "event_msg"
-            && line.line.payload.get("type").and_then(Value::as_str) == Some("user_message")
-    });
-
-    let mut pending_turn_id = None;
-    let mut current_turn = None;
-    let mut turns = Vec::new();
-
+    has_event_user_boundaries: bool,
+    sink: &mut S,
+) -> Result<()> {
+    let mut parser = RolloutLineParser::new(source_path, header, has_event_user_boundaries, sink)?;
     for numbered_line in raw_lines {
+        parser.process_line(numbered_line)?;
+    }
+    parser.finish()
+}
+
+/// Streams one rollout reader into a sink without buffering the whole file.
+fn parse_rollout_stream<R: BufRead, S: CodexRolloutSink>(
+    reader: R,
+    source_path: &Path,
+    header: CodexRolloutHeader,
+    has_event_user_boundaries: bool,
+    sink: &mut S,
+) -> Result<()> {
+    let mut parser = RolloutLineParser::new(source_path, header, has_event_user_boundaries, sink)?;
+
+    for (index, line) in reader.lines().enumerate() {
+        let line_no = index + 1;
+        let line = line.with_context(|| format!("failed to read line {line_no}"))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let raw: RawLine = serde_json::from_str(&line)
+            .with_context(|| format!("failed to deserialize JSONL line {line_no}"))?;
+        parser.process_line(NumberedRawLine { line_no, line: raw })?;
+    }
+
+    parser.finish()
+}
+
+/// Tracks parser state while streaming one rollout into a sink.
+struct RolloutLineParser<'a, S> {
+    source_path: &'a Path,
+    header: CodexRolloutHeader,
+    cli_version: CodexCliVersion,
+    has_event_user_boundaries: bool,
+    pending_turn_id: Option<String>,
+    current_turn: Option<CodexTurn>,
+    sink: &'a mut S,
+}
+
+impl<'a, S: CodexRolloutSink> RolloutLineParser<'a, S> {
+    /// Creates one rollout parser and initializes the sink with session metadata.
+    fn new(
+        source_path: &'a Path,
+        header: CodexRolloutHeader,
+        has_event_user_boundaries: bool,
+        sink: &'a mut S,
+    ) -> Result<Self> {
+        let cli_version = CodexCliVersion::parse(&header.cli_version).with_context(|| {
+            format!(
+                "failed to parse Codex cli_version `{}` in {}",
+                header.cli_version,
+                source_path.display()
+            )
+        })?;
+        sink.begin_rollout(&header)?;
+
+        Ok(Self {
+            source_path,
+            header,
+            cli_version,
+            has_event_user_boundaries,
+            pending_turn_id: None,
+            current_turn: None,
+            sink,
+        })
+    }
+
+    /// Applies one raw rollout line to the current parser state.
+    fn process_line(&mut self, numbered_line: NumberedRawLine) -> Result<()> {
         let line_no = numbered_line.line_no;
         let RawLine {
             timestamp,
@@ -162,32 +292,32 @@ fn parse_rollout_lines(
                 match event.kind.as_str() {
                     "task_started" | "turn_started" => {
                         ensure_feature_support(
-                            &cli_version,
+                            &self.cli_version,
                             CodexSchemaFeature::TaskLifecycleEvents,
-                            header.determinism,
-                            source_path,
+                            self.header.determinism,
+                            self.source_path,
                             line_no,
                             "task lifecycle events",
                         )?;
-                        pending_turn_id = event.turn_id;
+                        self.pending_turn_id = event.turn_id;
                     }
                     "user_message" => {
                         if let Some(message) = event.message {
-                            close_open_turn(&mut current_turn, &mut turns);
-                            current_turn =
-                                Some(start_turn(timestamp, pending_turn_id.take(), message));
+                            self.close_open_turn()?;
+                            self.current_turn =
+                                Some(start_turn(timestamp, self.pending_turn_id.take(), message));
                         }
                     }
                     "task_complete" | "turn_complete" => {
                         ensure_feature_support(
-                            &cli_version,
+                            &self.cli_version,
                             CodexSchemaFeature::TaskLifecycleEvents,
-                            header.determinism,
-                            source_path,
+                            self.header.determinism,
+                            self.source_path,
                             line_no,
                             "task lifecycle events",
                         )?;
-                        if let Some(mut turn) = current_turn.take() {
+                        if let Some(mut turn) = self.current_turn.take() {
                             if !turn_has_final_answer(&turn)
                                 && let Some(message) = non_empty_text(event.last_agent_message)
                             {
@@ -198,14 +328,14 @@ fn parse_rollout_lines(
                             }
                             turn.completed_at = Some(timestamp);
                             turn.status = CodexTurnStatus::Completed;
-                            turns.push(turn);
+                            self.sink.push_turn(turn)?;
                         }
                     }
                     "turn_aborted" => {
-                        if let Some(mut turn) = current_turn.take() {
+                        if let Some(mut turn) = self.current_turn.take() {
                             turn.completed_at = Some(timestamp);
                             turn.status = CodexTurnStatus::Aborted;
-                            turns.push(turn);
+                            self.sink.push_turn(turn)?;
                         }
                     }
                     _ => {}
@@ -217,47 +347,51 @@ fn parse_rollout_lines(
                 })?;
                 let item: RawResponseItemPayload = serde_json::from_value(payload)
                     .with_context(|| format!("failed to parse response_item on line {line_no}"))?;
-                if header.determinism.is_exact()
-                    && !supports_response_item(&cli_version, &item.kind)
+                if self.header.determinism.is_exact()
+                    && !supports_response_item(&self.cli_version, &item.kind)
                 {
                     bail!(
                         "unsupported response_item `{}` on line {line_no} for cli_version `{}` in {}",
                         item.kind,
-                        header.cli_version,
-                        source_path.display()
+                        self.header.cli_version,
+                        self.source_path.display()
                     );
                 }
                 match item.kind.as_str() {
                     "message" => {
                         if item.phase.is_some() {
                             ensure_feature_support(
-                                &cli_version,
+                                &self.cli_version,
                                 CodexSchemaFeature::MessagePhase,
-                                header.determinism,
-                                source_path,
+                                self.header.determinism,
+                                self.source_path,
                                 line_no,
                                 "message phases",
                             )?;
                         }
                         let Some(role) = item.role else {
-                            continue;
+                            return Ok(());
                         };
-                        let Some(text) =
-                            message_text(item.content, source_path, line_no, header.determinism)?
+                        let Some(text) = message_text(
+                            item.content,
+                            self.source_path,
+                            line_no,
+                            self.header.determinism,
+                        )?
                         else {
-                            continue;
+                            return Ok(());
                         };
 
                         if role == "user" {
-                            if !has_event_user_boundaries && !is_user_boilerplate(&text) {
-                                close_open_turn(&mut current_turn, &mut turns);
-                                current_turn =
-                                    Some(start_turn(timestamp, pending_turn_id.take(), text));
+                            if !self.has_event_user_boundaries && !is_user_boilerplate(&text) {
+                                self.close_open_turn()?;
+                                self.current_turn =
+                                    Some(start_turn(timestamp, self.pending_turn_id.take(), text));
                             }
-                            continue;
+                            return Ok(());
                         }
 
-                        if let Some(turn) = current_turn.as_mut()
+                        if let Some(turn) = self.current_turn.as_mut()
                             && role == "assistant"
                         {
                             record_assistant_message(turn, timestamp, item.phase.as_deref(), text);
@@ -265,22 +399,22 @@ fn parse_rollout_lines(
                     }
                     "function_call" => {
                         let Some(call_id) = item.call_id else {
-                            continue;
+                            return Ok(());
                         };
                         let Some(name) = item.name else {
-                            continue;
+                            return Ok(());
                         };
                         let Some(arguments) = string_field(
                             item.arguments,
-                            source_path,
+                            self.source_path,
                             line_no,
-                            header.determinism,
+                            self.header.determinism,
                             "function_call.arguments",
                         )?
                         else {
-                            continue;
+                            return Ok(());
                         };
-                        if let Some(turn) = current_turn.as_mut() {
+                        if let Some(turn) = self.current_turn.as_mut() {
                             turn.steps.push(CodexTurnStep::ToolCall {
                                 timestamp,
                                 call_id,
@@ -291,22 +425,22 @@ fn parse_rollout_lines(
                     }
                     "custom_tool_call" => {
                         let Some(call_id) = item.call_id else {
-                            continue;
+                            return Ok(());
                         };
                         let Some(name) = item.name else {
-                            continue;
+                            return Ok(());
                         };
                         let Some(arguments) = string_field(
                             item.input,
-                            source_path,
+                            self.source_path,
                             line_no,
-                            header.determinism,
+                            self.header.determinism,
                             "custom_tool_call.input",
                         )?
                         else {
-                            continue;
+                            return Ok(());
                         };
-                        if let Some(turn) = current_turn.as_mut() {
+                        if let Some(turn) = self.current_turn.as_mut() {
                             turn.steps.push(CodexTurnStep::ToolCall {
                                 timestamp,
                                 call_id,
@@ -317,19 +451,19 @@ fn parse_rollout_lines(
                     }
                     "function_call_output" | "custom_tool_call_output" => {
                         let Some(call_id) = item.call_id else {
-                            continue;
+                            return Ok(());
                         };
                         let Some(output) = output_field(
                             item.output,
-                            source_path,
+                            self.source_path,
                             line_no,
-                            &cli_version,
-                            header.determinism,
+                            &self.cli_version,
+                            self.header.determinism,
                         )?
                         else {
-                            continue;
+                            return Ok(());
                         };
-                        if let Some(turn) = current_turn.as_mut() {
+                        if let Some(turn) = self.current_turn.as_mut() {
                             turn.steps.push(CodexTurnStep::ToolCallOutput {
                                 timestamp,
                                 call_id,
@@ -338,7 +472,7 @@ fn parse_rollout_lines(
                         }
                     }
                     "reasoning" => {
-                        if let Some(turn) = current_turn.as_mut() {
+                        if let Some(turn) = self.current_turn.as_mut() {
                             turn.steps.push(CodexTurnStep::Reasoning {
                                 timestamp,
                                 summary: reasoning_summary(item.summary),
@@ -347,7 +481,7 @@ fn parse_rollout_lines(
                         }
                     }
                     _ => {
-                        if let Some(turn) = current_turn.as_mut() {
+                        if let Some(turn) = self.current_turn.as_mut() {
                             turn.steps.push(CodexTurnStep::ProviderResponseItem {
                                 timestamp,
                                 item_type: item.kind,
@@ -358,43 +492,73 @@ fn parse_rollout_lines(
                 }
             }
             "turn_context" => ensure_feature_support(
-                &cli_version,
+                &self.cli_version,
                 CodexSchemaFeature::TurnContextLine,
-                header.determinism,
-                source_path,
+                self.header.determinism,
+                self.source_path,
                 line_no,
                 "turn_context lines",
             )?,
             "compacted" => ensure_feature_support(
-                &cli_version,
+                &self.cli_version,
                 CodexSchemaFeature::CompactedLine,
-                header.determinism,
-                source_path,
+                self.header.determinism,
+                self.source_path,
                 line_no,
                 "compacted lines",
             )?,
             _ => {
-                if header.determinism.is_exact() {
+                if self.header.determinism.is_exact() {
                     bail!(
                         "unsupported rollout item `{kind}` on line {line_no} for schema {} in {}",
-                        header.schema_id.as_str(),
-                        source_path.display()
+                        self.header.schema_id.as_str(),
+                        self.source_path.display()
                     );
                 }
             }
         }
+
+        Ok(())
     }
 
-    close_open_turn(&mut current_turn, &mut turns);
+    /// Flushes any unfinished turn after all rollout lines have been processed.
+    fn finish(mut self) -> Result<()> {
+        self.close_open_turn()
+    }
 
-    Ok(CodexRollout {
-        session_id: header.session_id,
-        cwd: header.cwd,
-        cli_version: header.cli_version,
-        schema_id: header.schema_id.as_str().to_owned(),
-        determinism: header.determinism,
-        turns,
-    })
+    /// Closes the current turn and emits it to the sink when present.
+    fn close_open_turn(&mut self) -> Result<()> {
+        if let Some(turn) = self.current_turn.take() {
+            self.sink.push_turn(normalize_turn(turn))?;
+        }
+        Ok(())
+    }
+}
+
+/// Scans one rollout file to decide whether event-based user boundaries are present.
+fn scan_rollout_for_event_user_boundaries(path: &Path) -> Result<bool> {
+    let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+
+    for (index, line) in BufReader::new(file).lines().enumerate() {
+        let line_no = index + 1;
+        let line = line.with_context(|| format!("failed to read line {line_no}"))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let raw: RawLine = serde_json::from_str(&line)
+            .with_context(|| format!("failed to deserialize JSONL line {line_no}"))?;
+        if raw_line_has_event_user_boundary(&raw) {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+/// Returns whether one raw line is an event-based user-message boundary.
+fn raw_line_has_event_user_boundary(raw_line: &RawLine) -> bool {
+    raw_line.kind == "event_msg"
+        && raw_line.payload.get("type").and_then(Value::as_str) == Some("user_message")
 }
 
 fn ensure_feature_support(
@@ -414,6 +578,7 @@ fn ensure_feature_support(
     )
 }
 
+#[cfg(test)]
 fn read_raw_lines<R: BufRead>(reader: R) -> Result<Vec<NumberedRawLine>> {
     let mut raw_lines = Vec::new();
     for (index, line) in reader.lines().enumerate() {
@@ -438,12 +603,6 @@ fn start_turn(timestamp: String, turn_id: Option<String>, user_message: String) 
         completed_at: None,
         status: CodexTurnStatus::Incomplete,
         steps: Vec::new(),
-    }
-}
-
-fn close_open_turn(current_turn: &mut Option<CodexTurn>, turns: &mut Vec<CodexTurn>) {
-    if let Some(turn) = current_turn.take() {
-        turns.push(normalize_turn(turn));
     }
 }
 

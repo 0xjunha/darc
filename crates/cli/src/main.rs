@@ -184,8 +184,8 @@ fn run_parse(args: ParseArgs) -> Result<()> {
     println!("Project Root: {}", report.project_root.display());
     println!("Archive: {}", report.codex_archive_root.display());
     println!("Index DB: {}", report.index_db_path.display());
-    println!("Sessions indexed: {}", report.sessions_indexed);
-    println!("Turns indexed: {}", report.turns_indexed);
+    println!("Sessions discovered: {}", report.sessions_indexed);
+    println!("Turns currently indexed: {}", report.turns_indexed);
 
     Ok(())
 }

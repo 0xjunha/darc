@@ -37,6 +37,8 @@ fn initialize_index_database(connection: &Connection) -> Result<()> {
                 cli_version TEXT,
                 schema_id TEXT,
                 determinism TEXT,
+                source_size INTEGER,
+                source_mtime_ms INTEGER,
                 PRIMARY KEY (project_id, session_id),
                 UNIQUE (project_id, archive_path)
             );
@@ -64,16 +66,18 @@ fn initialize_index_database(connection: &Connection) -> Result<()> {
             ",
         )
         .context("failed to initialize index database schema")?;
-    ensure_codex_session_metadata_columns(connection)?;
+    ensure_codex_session_columns(connection)?;
     Ok(())
 }
 
-/// Ensures `codex_sessions` contains the rollout-schema metadata columns for old databases.
-fn ensure_codex_session_metadata_columns(connection: &Connection) -> Result<()> {
+/// Ensures `codex_sessions` contains all columns required by the current parser schema.
+fn ensure_codex_session_columns(connection: &Connection) -> Result<()> {
     for (column, sql_type) in [
         ("cli_version", "TEXT"),
         ("schema_id", "TEXT"),
         ("determinism", "TEXT"),
+        ("source_size", "INTEGER"),
+        ("source_mtime_ms", "INTEGER"),
     ] {
         if has_table_column(connection, "codex_sessions", column)? {
             continue;
@@ -139,7 +143,7 @@ mod tests {
     }
 
     #[test]
-    fn open_index_database_migrates_codex_session_metadata_columns() -> Result<()> {
+    fn open_index_database_migrates_codex_session_columns() -> Result<()> {
         let path = unique_db_path("index-db-migrate");
         let connection = Connection::open(&path)?;
         connection.execute_batch(
@@ -160,16 +164,22 @@ mod tests {
         drop(connection);
 
         let migrated = open_index_database(&path)?;
-        let columns = ["cli_version", "schema_id", "determinism"]
-            .into_iter()
-            .map(|column| {
-                migrated.query_row(
-                    "SELECT COUNT(*) FROM pragma_table_info('codex_sessions') WHERE name = ?1",
-                    [column],
-                    |row| row.get::<_, i64>(0),
-                )
-            })
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let columns = [
+            "cli_version",
+            "schema_id",
+            "determinism",
+            "source_size",
+            "source_mtime_ms",
+        ]
+        .into_iter()
+        .map(|column| {
+            migrated.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('codex_sessions') WHERE name = ?1",
+                [column],
+                |row| row.get::<_, i64>(0),
+            )
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
         let preserved_row: (String, String, String, String) = migrated.query_row(
             "
             SELECT project_id, session_id, archive_path, cwd
@@ -180,7 +190,7 @@ mod tests {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )?;
 
-        assert_eq!(columns, vec![1, 1, 1]);
+        assert_eq!(columns, vec![1, 1, 1, 1, 1]);
         assert_eq!(
             preserved_row,
             (
