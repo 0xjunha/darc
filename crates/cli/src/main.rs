@@ -4,8 +4,8 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use memstack_core::{
     CodexSchemaAuditOptions, CodexSchemaAuditOutcome, CodexSchemaAuditReport, InitDraft,
-    SkippedCodexRollout, SourceKind, SyncOptions, default_root_path, execute_sync,
-    parse_project_codex_turns, prepare_init, prepare_sync, run_codex_schema_audit_with_progress,
+    ParseOptions, SkippedRollout, SourceKind, SyncOptions, default_root_path, execute_sync,
+    parse_project_sessions, prepare_init, prepare_sync, run_codex_schema_audit_with_progress,
     write_init,
 };
 
@@ -23,7 +23,7 @@ enum Commands {
     Init(InitArgs),
     /// Sync matching Claude and Codex sessions into the project archive.
     Sync(SyncArgs),
-    /// Parse archived Codex rollouts for the active project into SQLite.
+    /// Parse archived sessions from selected providers for the active project into SQLite.
     Parse(ParseArgs),
     #[command(
         hide = true,
@@ -53,14 +53,17 @@ struct SyncArgs {
     dry_run: bool,
 
     #[arg(long = "source", value_enum)]
-    source: Vec<SourceArg>,
+    source: Vec<ProviderArg>,
 }
 
-/// Parse archived Codex rollouts for the active project into SQLite.
+/// Parse archived sessions from selected providers for the active project into SQLite.
 #[derive(Debug, Args)]
 struct ParseArgs {
     #[arg(long, default_value_os_t = default_root_path())]
     root: PathBuf,
+
+    #[arg(long = "provider", value_enum)]
+    provider: Vec<ProviderArg>,
 }
 
 /// Audit Codex rollout schema compatibility against stable release tags.
@@ -70,9 +73,9 @@ struct CodexSchemaAuditArgs {
     cache_dir: Option<PathBuf>,
 }
 
-/// Represents the supported source filters for `sync`.
+/// Represents the supported provider filters for parse and sync.
 #[derive(Debug, Clone, Copy, ValueEnum)]
-enum SourceArg {
+enum ProviderArg {
     Claude,
     Codex,
 }
@@ -155,7 +158,7 @@ fn run_sync(args: SyncArgs) -> Result<()> {
     let plan = prepare_sync(
         Some(args.root),
         SyncOptions {
-            source_filter: args.source.into_iter().map(SourceArg::into).collect(),
+            source_filter: args.source.into_iter().map(ProviderArg::into).collect(),
         },
     )?;
 
@@ -200,9 +203,14 @@ fn run_sync(args: SyncArgs) -> Result<()> {
     Ok(())
 }
 
-/// Parses archived Codex rollouts for the active project into SQLite.
+/// Parses archived sessions for the active project into SQLite.
 fn run_parse(args: ParseArgs) -> Result<()> {
-    let report = parse_project_codex_turns(Some(args.root))?;
+    let report = parse_project_sessions(
+        Some(args.root),
+        ParseOptions {
+            provider_filter: args.provider.into_iter().map(ProviderArg::into).collect(),
+        },
+    )?;
 
     for skipped in &report.skipped_rollouts {
         eprintln!("warning: {}", format_skipped_rollout(skipped));
@@ -210,7 +218,8 @@ fn run_parse(args: ParseArgs) -> Result<()> {
 
     println!("Project: {}", report.project_name);
     println!("Project Root: {}", report.project_root.display());
-    println!("Archive: {}", report.codex_archive_root.display());
+    println!("Archive: {}", report.sessions_root.display());
+    println!("Providers: {}", format_sources(&report.providers));
     println!("Index DB: {}", report.index_db_path.display());
     println!("Sessions discovered: {}", report.sessions_discovered);
     println!(
@@ -249,11 +258,11 @@ fn run_codex_schema_audit_command(args: CodexSchemaAuditArgs) -> i32 {
     }
 }
 
-impl From<SourceArg> for SourceKind {
-    fn from(value: SourceArg) -> Self {
+impl From<ProviderArg> for SourceKind {
+    fn from(value: ProviderArg) -> Self {
         match value {
-            SourceArg::Claude => SourceKind::Claude,
-            SourceArg::Codex => SourceKind::Codex,
+            ProviderArg::Claude => SourceKind::Claude,
+            ProviderArg::Codex => SourceKind::Codex,
         }
     }
 }
@@ -268,7 +277,7 @@ fn format_sources(sources: &[SourceKind]) -> String {
 }
 
 /// Formats one skipped rollout warning for `memstack parse`.
-fn format_skipped_rollout(skipped: &SkippedCodexRollout) -> String {
+fn format_skipped_rollout(skipped: &SkippedRollout) -> String {
     let mut details = Vec::new();
     if let Some(session_id) = &skipped.logical_session_id {
         details.push(format!("session_id={session_id}"));
@@ -278,13 +287,15 @@ fn format_skipped_rollout(skipped: &SkippedCodexRollout) -> String {
     }
     if details.is_empty() {
         format!(
-            "skipped Codex rollout {}: {}",
+            "skipped {} rollout {}: {}",
+            skipped.provider.title(),
             skipped.source_path.display(),
             skipped.reason
         )
     } else {
         format!(
-            "skipped Codex rollout {} ({}): {}",
+            "skipped {} rollout {} ({}): {}",
+            skipped.provider.title(),
             skipped.source_path.display(),
             details.join(", "),
             skipped.reason
@@ -377,6 +388,15 @@ mod tests {
         assert!(matches!(
             cli.command,
             Commands::CodexSchemaAudit(super::CodexSchemaAuditArgs { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_command_accepts_provider_filters() {
+        let cli = Cli::try_parse_from(["memstack", "parse", "--provider", "claude"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Parse(super::ParseArgs { provider, .. }) if provider.len() == 1
         ));
     }
 

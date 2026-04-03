@@ -12,8 +12,9 @@ pub(crate) mod versions;
 pub use config::SourceKind;
 pub use init::{DetectedRolloutSource, InitDraft, default_root_path, prepare_init, write_init};
 pub use parse::{
-    CodexRollout, CodexTurn, CodexTurnMessage, CodexTurnStatus, CodexTurnStep, ParseReport,
-    SkippedCodexRollout, parse_codex_rollout, parse_project_codex_turns,
+    CodexRollout, CodexTurn, CodexTurnMessage, CodexTurnStatus, CodexTurnStep, ParseOptions,
+    ParseReport, SkippedCodexRollout, SkippedRollout, parse_codex_rollout,
+    parse_project_codex_turns, parse_project_sessions,
 };
 pub use rollout::ParseDeterminism;
 pub use rollout::codex::{

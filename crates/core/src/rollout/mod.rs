@@ -1,5 +1,6 @@
 use serde::Serialize;
 
+pub(crate) mod claude;
 pub(crate) mod codex;
 
 /// Describes whether one parsed rollout used an exact schema match or a forward-compatible fallback.

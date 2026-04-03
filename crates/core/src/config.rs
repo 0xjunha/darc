@@ -87,6 +87,14 @@ pub enum SourceKind {
 }
 
 impl SourceKind {
+    /// Returns the stable lowercase value used in persisted SQLite rows.
+    pub(crate) const fn as_sql_text(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+        }
+    }
+
     /// Returns the stable directory name used for archived sessions.
     pub fn directory_name(self) -> &'static str {
         match self {
@@ -100,6 +108,15 @@ impl SourceKind {
         match self {
             Self::Claude => "Claude",
             Self::Codex => "Codex",
+        }
+    }
+
+    /// Parses one persisted lowercase SQLite value back into a source kind.
+    pub(crate) fn from_sql_text(value: &str) -> Result<Self> {
+        match value {
+            "claude" => Ok(Self::Claude),
+            "codex" => Ok(Self::Codex),
+            other => anyhow::bail!("unsupported source kind `{other}` in SQLite index"),
         }
     }
 }
