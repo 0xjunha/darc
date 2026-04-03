@@ -26,7 +26,7 @@ const GITHUB_RELEASE_SOURCE: &str = "GitHub Releases (openai/codex)";
 const RELEASE_TAG_PREFIX: &str = "rust-v";
 const ROLLOUT_SCHEMA_FILE_NAME: &str = "RolloutLine.json";
 const SCHEMA_DIFF_LIMIT: usize = 8;
-const DIGEST_MARKER_FILE_NAME: &str = ".asset-sha256";
+const ORDER_INSENSITIVE_SCHEMA_ARRAY_KEYS: &[&str] = &["enum", "required", "type"];
 const LIKELY_UPDATE_PATHS: &[&str] = &[
     "crates/core/src/rollout/codex/version.rs",
     "crates/core/src/rollout/codex/header.rs",
@@ -288,40 +288,63 @@ impl GitHubCodexSchemaAuditProvider {
     {
         let asset = self.release_asset_for_tag(tag_name)?;
         let digest = parse_sha256_digest(asset.digest.as_deref(), &asset.name)?;
-        let cache_root = self.cache_root_for_tag(tag_name);
-        let executable_path = cache_root.join(self.host_platform.package_binary_path());
-        let digest_path = cache_root.join(DIGEST_MARKER_FILE_NAME);
+        let cached_archive_path = self.cached_archive_path(&asset.name, &digest);
 
-        if executable_path.is_file()
-            && read_cached_digest(&digest_path).is_some_and(|cached| cached == digest)
-        {
-            report_progress(&format!("Using cached released binary for {tag_name}."));
-            return Ok(executable_path);
+        if cached_archive_path.is_file() {
+            report_progress(&format!(
+                "Verifying cached released binary package for {tag_name}..."
+            ));
+            if let Err(error) = verify_file_sha256(&cached_archive_path, &digest) {
+                report_progress(&format!(
+                    "Cached package for {tag_name} failed integrity verification; refreshing cache."
+                ));
+                let cache_root = self.cache_root_for_digest(&digest);
+                if cache_root.exists() {
+                    fs::remove_dir_all(&cache_root)
+                        .with_context(|| format!("failed to remove {}", cache_root.display()))?;
+                }
+                report_progress(&format!(
+                    "Discarded invalid cache for {tag_name}: {error:#}"
+                ));
+            }
         }
 
-        report_progress(&format!(
-            "Downloading released binary asset `{}`...",
-            asset.name
-        ));
-        let archive_path = self.scratch_dir.path().join(format!(
-            "download-{}-{}",
-            sanitize_for_path(&asset.name),
+        if !cached_archive_path.is_file() {
+            report_progress(&format!(
+                "Downloading released binary asset `{}`...",
+                asset.name
+            ));
+            let archive_path = self.scratch_dir.path().join(format!(
+                "download-{}-{}",
+                sanitize_for_path(&asset.name),
+                unique_suffix()
+            ));
+            download_to_path(
+                &self.http,
+                &asset.browser_download_url,
+                &archive_path,
+                &format!("download released Codex asset `{}`", asset.name),
+            )?;
+
+            report_progress(&format!("Verifying SHA-256 digest for `{}`...", asset.name));
+            verify_file_sha256(&archive_path, &digest)?;
+
+            report_progress(&format!(
+                "Caching verified released binary package for {tag_name}..."
+            ));
+            stage_cached_archive_package(&archive_path, &cached_archive_path)?;
+        }
+
+        let extraction_root = self.scratch_dir.path().join(format!(
+            "package-{}-{}",
+            sanitize_for_path(tag_name),
             unique_suffix()
         ));
-        download_to_path(
-            &self.http,
-            &asset.browser_download_url,
-            &archive_path,
-            &format!("download released Codex asset `{}`", asset.name),
-        )?;
-
-        report_progress(&format!("Verifying SHA-256 digest for `{}`...", asset.name));
-        verify_file_sha256(&archive_path, &digest)?;
-
         report_progress(&format!(
-            "Extracting released binary package for {tag_name}..."
+            "Extracting verified released binary package for {tag_name}..."
         ));
-        stage_cached_binary_package(&archive_path, &cache_root, &digest)?;
+        extract_verified_binary_package(&cached_archive_path, &digest, &extraction_root)?;
+        let executable_path = extraction_root.join(self.host_platform.package_binary_path());
         ensure!(
             executable_path.is_file(),
             "extracted package for `{tag_name}` did not contain {}",
@@ -335,10 +358,15 @@ impl GitHubCodexSchemaAuditProvider {
     }
 
     /// Returns the cache directory root for one released Codex tag on this host.
-    fn cache_root_for_tag(&self, tag_name: &str) -> PathBuf {
+    fn cache_root_for_digest(&self, digest: &str) -> PathBuf {
         self.cache_dir
             .join(self.host_platform.release_asset_suffix())
-            .join(tag_name)
+            .join(digest)
+    }
+
+    /// Returns the cached verified archive path for one released asset digest.
+    fn cached_archive_path(&self, asset_name: &str, digest: &str) -> PathBuf {
+        self.cache_root_for_digest(digest).join(asset_name)
     }
 }
 
@@ -686,13 +714,6 @@ fn parse_sha256_digest(digest: Option<&str>, asset_name: &str) -> Result<String>
     Ok(digest.to_owned())
 }
 
-/// Reads one cached digest marker file if it exists.
-fn read_cached_digest(path: &Path) -> Option<String> {
-    fs::read_to_string(path)
-        .ok()
-        .map(|content| content.trim().to_owned())
-}
-
 /// Verifies one file against an expected SHA-256 hex digest.
 fn verify_file_sha256(path: &Path, expected_digest: &str) -> Result<()> {
     let mut file =
@@ -721,8 +742,11 @@ fn verify_file_sha256(path: &Path, expected_digest: &str) -> Result<()> {
     Ok(())
 }
 
-/// Extracts one downloaded npm package archive into the released-binary cache.
-fn stage_cached_binary_package(archive_path: &Path, cache_root: &Path, digest: &str) -> Result<()> {
+/// Copies one verified package archive into the persistent cache atomically.
+fn stage_cached_archive_package(archive_path: &Path, cached_archive_path: &Path) -> Result<()> {
+    let cache_root = cached_archive_path
+        .parent()
+        .context("cached archive unexpectedly had no parent directory")?;
     let parent_dir = cache_root
         .parent()
         .context("cached binary root unexpectedly had no parent directory")?;
@@ -736,19 +760,18 @@ fn stage_cached_binary_package(archive_path: &Path, cache_root: &Path, digest: &
     }
     fs::create_dir_all(&staged_root)
         .with_context(|| format!("failed to create {}", staged_root.display()))?;
-
-    let archive_file = File::open(archive_path)
-        .with_context(|| format!("failed to open {}", archive_path.display()))?;
-    let decoder = GzDecoder::new(archive_file);
-    let mut archive = Archive::new(decoder);
-    archive
-        .unpack(&staged_root)
-        .with_context(|| format!("failed to unpack {}", archive_path.display()))?;
-    fs::write(
-        staged_root.join(DIGEST_MARKER_FILE_NAME),
-        format!("{digest}\n"),
-    )
-    .with_context(|| format!("failed to write {}", staged_root.display()))?;
+    let staged_archive_path = staged_root.join(
+        cached_archive_path
+            .file_name()
+            .context("cached archive unexpectedly had no file name")?,
+    );
+    fs::copy(archive_path, &staged_archive_path).with_context(|| {
+        format!(
+            "failed to copy verified archive from {} to {}",
+            archive_path.display(),
+            staged_archive_path.display()
+        )
+    })?;
 
     if cache_root.exists() {
         fs::remove_dir_all(cache_root)
@@ -762,6 +785,34 @@ fn stage_cached_binary_package(archive_path: &Path, cache_root: &Path, digest: &
         )
     })?;
     Ok(())
+}
+
+/// Extracts one verified npm package archive into a destination directory.
+fn extract_verified_binary_package(
+    archive_path: &Path,
+    expected_digest: &str,
+    destination_root: &Path,
+) -> Result<()> {
+    verify_file_sha256(archive_path, expected_digest)?;
+    extract_binary_package(archive_path, destination_root)
+}
+
+/// Extracts one npm package archive into a destination directory.
+fn extract_binary_package(archive_path: &Path, destination_root: &Path) -> Result<()> {
+    if destination_root.exists() {
+        fs::remove_dir_all(destination_root)
+            .with_context(|| format!("failed to remove {}", destination_root.display()))?;
+    }
+    fs::create_dir_all(destination_root)
+        .with_context(|| format!("failed to create {}", destination_root.display()))?;
+
+    let archive_file = File::open(archive_path)
+        .with_context(|| format!("failed to open {}", archive_path.display()))?;
+    let decoder = GzDecoder::new(archive_file);
+    let mut archive = Archive::new(decoder);
+    archive
+        .unpack(destination_root)
+        .with_context(|| format!("failed to unpack {}", archive_path.display()))
 }
 
 /// Creates one temporary sibling path next to a final destination path.
@@ -966,9 +1017,21 @@ fn select_audited_release_tags(
 
 /// Normalizes one JSON Schema value to ignore irrelevant key and schema-array ordering noise.
 fn normalize_json(value: Value) -> Value {
+    normalize_json_at_path(value, "$")
+}
+
+/// Normalizes one JSON Schema value with path-aware array handling.
+fn normalize_json_at_path(value: Value, path: &str) -> Value {
     match value {
         Value::Array(items) => {
-            let items = items.into_iter().map(normalize_json).collect::<Vec<_>>();
+            let items = items
+                .into_iter()
+                .enumerate()
+                .map(|(index, item)| normalize_json_at_path(item, &format!("{path}[{index}]")))
+                .collect::<Vec<_>>();
+            if !schema_array_order_is_irrelevant(path) {
+                return Value::Array(items);
+            }
             let mut sortable = Vec::with_capacity(items.len());
             for item in &items {
                 let Some(sort_key) = schema_array_item_sort_key(item) else {
@@ -993,12 +1056,20 @@ fn normalize_json(value: Value) -> Value {
             entries.sort_by(|(left, _), (right, _)| left.cmp(right));
             let mut sorted = Map::with_capacity(entries.len());
             for (key, child) in entries {
-                sorted.insert(key, normalize_json(child));
+                let child_path = format!("{path}/{key}");
+                sorted.insert(key, normalize_json_at_path(child, &child_path));
             }
             Value::Object(sorted)
         }
         other => other,
     }
+}
+
+/// Returns whether one schema array path is semantically order-insensitive.
+fn schema_array_order_is_irrelevant(path: &str) -> bool {
+    path.rsplit('/')
+        .next()
+        .is_some_and(|key| ORDER_INSENSITIVE_SCHEMA_ARRAY_KEYS.contains(&key))
 }
 
 /// Returns a stable sort key for array items whose ordering is schema-irrelevant.
@@ -1180,14 +1251,23 @@ fn sanitize_for_path(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, ffi::OsString, path::PathBuf};
+    use std::{
+        collections::BTreeMap,
+        ffi::OsString,
+        fs::File,
+        path::{Path, PathBuf},
+    };
 
     use anyhow::anyhow;
+    use flate2::{Compression, write::GzEncoder};
     use serde_json::json;
+    use sha2::{Digest, Sha256};
+    use tar::{Builder, Header};
 
     use super::{
         CodexSchemaAuditOutcome, ScopedTempDir, StableCodexReleaseTag,
-        build_released_binary_command, collect_stable_release_tags, host_platform_from_parts,
+        build_released_binary_command, collect_stable_release_tags,
+        extract_verified_binary_package, host_platform_from_parts,
         latest_exact_supported_codex_cli_version, parse_stable_release_tag,
         run_codex_schema_audit_with_provider, run_codex_schema_audit_with_provider_and_progress,
         select_audited_release_tags,
@@ -1240,6 +1320,34 @@ mod tests {
             .get_envs()
             .map(|(name, value)| (name.to_owned(), value.map(|value| value.to_owned())))
             .collect()
+    }
+
+    fn write_test_release_archive(archive_path: &Path, relative_path: &Path, contents: &[u8]) {
+        let archive_file = File::create(archive_path).unwrap();
+        let encoder = GzEncoder::new(archive_file, Compression::default());
+        let mut builder = Builder::new(encoder);
+        let mut header = Header::new_gnu();
+        header.set_mode(0o644);
+        header.set_size(contents.len() as u64);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, relative_path, contents)
+            .unwrap();
+        let encoder = builder.into_inner().unwrap();
+        encoder.finish().unwrap();
+    }
+
+    fn file_sha256(path: &Path) -> String {
+        let bytes = std::fs::read(path).unwrap();
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        let mut digest = String::new();
+        for byte in hasher.finalize() {
+            use std::fmt::Write as _;
+
+            write!(&mut digest, "{byte:02x}").unwrap();
+        }
+        digest
     }
 
     #[test]
@@ -1469,6 +1577,63 @@ mod tests {
     }
 
     #[test]
+    fn detects_order_sensitive_prefix_items_drift() {
+        let provider = FakeSchemaAuditProvider::new(
+            &["rust-v0.120.0", "rust-v0.119.0", "rust-v0.118.0"],
+            &[
+                (
+                    "rust-v0.120.0",
+                    json!({
+                        "type": "array",
+                        "prefixItems": [
+                            { "title": "second", "type": "number" },
+                            { "title": "first", "type": "string" }
+                        ],
+                    }),
+                ),
+                (
+                    "rust-v0.119.0",
+                    json!({
+                        "type": "array",
+                        "prefixItems": [
+                            { "title": "second", "type": "number" },
+                            { "title": "first", "type": "string" }
+                        ],
+                    }),
+                ),
+                (
+                    "rust-v0.118.0",
+                    json!({
+                        "type": "array",
+                        "prefixItems": [
+                            { "title": "first", "type": "string" },
+                            { "title": "second", "type": "number" }
+                        ],
+                    }),
+                ),
+            ],
+        );
+
+        let report = run_codex_schema_audit_with_provider(
+            "GitHub Releases".to_owned(),
+            PathBuf::from("/tmp/memstack-cache"),
+            &provider,
+        )
+        .unwrap();
+
+        let CodexSchemaAuditOutcome::Drift(drift) = report.outcome else {
+            panic!("expected schema drift");
+        };
+        assert_eq!(drift.first_drift_tag, "rust-v0.119.0");
+        assert!(
+            drift
+                .difference_summary
+                .iter()
+                .any(|line| line.contains("prefixItems"))
+        );
+    }
+
+    #[test]
     fn resolves_expected_release_asset_names_for_supported_platforms() {
         let mac = host_platform_from_parts("macos", "aarch64").unwrap();
         assert_eq!(
@@ -1519,5 +1684,27 @@ mod tests {
         assert!(!envs.contains_key(&OsString::from("GH_TOKEN")));
         assert!(!envs.contains_key(&OsString::from("GITHUB_TOKEN")));
         assert!(!envs.contains_key(&OsString::from("PATH")));
+    }
+
+    #[test]
+    fn verified_binary_package_extraction_rejects_tampered_cached_archive() {
+        let scratch_dir = ScopedTempDir::new("memstack-codex-schema-audit-test").unwrap();
+        let archive_path = scratch_dir.path().join("release.tgz");
+        let extraction_root = scratch_dir.path().join("extract");
+        let relative_binary_path =
+            PathBuf::from("package/vendor/x86_64-unknown-linux-musl/codex/codex");
+
+        write_test_release_archive(&archive_path, &relative_binary_path, b"trusted-binary");
+        let digest = file_sha256(&archive_path);
+        extract_verified_binary_package(&archive_path, &digest, &extraction_root).unwrap();
+        assert_eq!(
+            std::fs::read(extraction_root.join(&relative_binary_path)).unwrap(),
+            b"trusted-binary"
+        );
+
+        std::fs::write(&archive_path, b"tampered").unwrap();
+        let error =
+            extract_verified_binary_package(&archive_path, &digest, &extraction_root).unwrap_err();
+        assert!(error.to_string().contains("SHA-256 mismatch"));
     }
 }
