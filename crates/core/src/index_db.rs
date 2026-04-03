@@ -107,7 +107,7 @@ fn migrate_legacy_codex_tables(connection: &mut Connection) -> Result<()> {
         return Ok(());
     }
 
-    let should_import_legacy_rows = normalized_index_is_empty(connection)?;
+    let should_import_legacy_rows = normalized_codex_index_is_empty(connection)?;
     let transaction = connection
         .transaction()
         .context("failed to begin legacy Codex migration transaction")?;
@@ -205,19 +205,19 @@ fn migrate_legacy_codex_tables(connection: &mut Connection) -> Result<()> {
     Ok(())
 }
 
-/// Returns whether the normalized provider-neutral index still has no cached rows.
-fn normalized_index_is_empty(connection: &Connection) -> Result<bool> {
+/// Returns whether the normalized index still has no cached Codex rows.
+fn normalized_codex_index_is_empty(connection: &Connection) -> Result<bool> {
     let has_rows: i64 = connection
         .query_row(
             "
             SELECT
-                EXISTS(SELECT 1 FROM sessions LIMIT 1)
-                OR EXISTS(SELECT 1 FROM turns LIMIT 1)
+                EXISTS(SELECT 1 FROM sessions WHERE provider = 'codex' LIMIT 1)
+                OR EXISTS(SELECT 1 FROM turns WHERE provider = 'codex' LIMIT 1)
             ",
             [],
             |row| row.get(0),
         )
-        .context("failed to inspect normalized index rows")?;
+        .context("failed to inspect normalized Codex index rows")?;
     Ok(has_rows == 0)
 }
 
@@ -408,7 +408,7 @@ mod tests {
     }
 
     #[test]
-    fn open_index_database_prefers_existing_normalized_rows_over_legacy_tables() -> Result<()>
+    fn open_index_database_prefers_existing_normalized_codex_rows_over_legacy_tables() -> Result<()>
     {
         let path = unique_db_path("index-db-prefer-normalized");
         let connection = open_index_database(&path)?;
@@ -431,14 +431,14 @@ mod tests {
             ",
             (
                 "project",
-                "claude",
-                "claude-session",
+                "codex",
+                "session-1",
                 Option::<String>::None,
                 "primary",
-                "claude/claude-session/claude-session.jsonl",
+                "codex/session-1.jsonl",
                 "/tmp/repo",
-                Some("2.1.87"),
-                "claude.primary_transcript",
+                Some("0.118.0"),
+                "codex.turn_lifecycle",
                 "exact",
                 Some(10_i64),
                 Some(20_i64),
@@ -480,6 +480,125 @@ mod tests {
         assert_eq!(normalized_count, 1);
         assert_eq!(stale_count, 0);
         assert!(!sqlite_table_exists(&reopened, "codex_sessions")?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn open_index_database_imports_legacy_codex_rows_when_only_other_provider_rows_exist()
+    -> Result<()> {
+        let path = unique_db_path("index-db-import-with-claude-only");
+        let connection = open_index_database(&path)?;
+        connection.execute(
+            "
+            INSERT INTO sessions (
+                project_id,
+                provider,
+                session_id,
+                parent_session_id,
+                session_kind,
+                archive_path,
+                cwd,
+                cli_version,
+                schema_id,
+                determinism,
+                source_size,
+                source_mtime_ms
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            ",
+            (
+                "project",
+                "claude",
+                "claude-session",
+                Option::<String>::None,
+                "primary",
+                "claude/claude-session/claude-session.jsonl",
+                "/tmp/repo",
+                Some("2.1.87"),
+                "claude.primary_transcript",
+                "exact",
+                Some(11_i64),
+                Some(21_i64),
+            ),
+        )?;
+        drop(connection);
+
+        let legacy = Connection::open(&path)?;
+        legacy.execute_batch(
+            "
+            CREATE TABLE codex_sessions (
+                project_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                archive_path TEXT NOT NULL,
+                cwd TEXT NOT NULL,
+                PRIMARY KEY (project_id, session_id),
+                UNIQUE (project_id, archive_path)
+            );
+
+            CREATE TABLE codex_turns (
+                project_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                turn_ordinal INTEGER NOT NULL,
+                turn_id TEXT,
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                status TEXT NOT NULL,
+                user_message TEXT NOT NULL,
+                final_answer_at TEXT,
+                final_answer_text TEXT,
+                steps_json TEXT NOT NULL,
+                PRIMARY KEY (project_id, session_id, turn_ordinal)
+            );
+
+            INSERT INTO codex_sessions (project_id, session_id, archive_path, cwd)
+            VALUES ('project', 'legacy-codex', 'codex/legacy-codex.jsonl', '/tmp/repo');
+
+            INSERT INTO codex_turns (
+                project_id,
+                session_id,
+                turn_ordinal,
+                turn_id,
+                started_at,
+                completed_at,
+                status,
+                user_message,
+                final_answer_at,
+                final_answer_text,
+                steps_json
+            )
+            VALUES (
+                'project',
+                'legacy-codex',
+                0,
+                'turn-1',
+                '2026-04-01T00:00:00Z',
+                '2026-04-01T00:00:01Z',
+                'completed',
+                'Legacy task',
+                '2026-04-01T00:00:01Z',
+                'Legacy reply',
+                '[]'
+            );
+            ",
+        )?;
+        drop(legacy);
+
+        let reopened = open_index_database(&path)?;
+        let codex_count: i64 = reopened.query_row(
+            "SELECT COUNT(*) FROM sessions WHERE provider = 'codex' AND session_id = 'legacy-codex'",
+            [],
+            |row| row.get(0),
+        )?;
+        let codex_turn_count: i64 = reopened.query_row(
+            "SELECT COUNT(*) FROM turns WHERE provider = 'codex' AND session_id = 'legacy-codex'",
+            [],
+            |row| row.get(0),
+        )?;
+
+        assert_eq!(codex_count, 1);
+        assert_eq!(codex_turn_count, 1);
+        assert!(!sqlite_table_exists(&reopened, "codex_sessions")?);
+        assert!(!sqlite_table_exists(&reopened, "codex_turns")?);
 
         Ok(())
     }

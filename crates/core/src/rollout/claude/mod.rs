@@ -329,6 +329,7 @@ impl<'a> ClaudeRolloutParser<'a> {
                         .map(str::to_owned)
                 });
             self.current_turn = Some(ClaudeTurnBuilder::new(turn_id, user_message, timestamp));
+            self.push_prompt_payload_items(&content)?;
             return Ok(());
         }
 
@@ -495,6 +496,42 @@ impl<'a> ClaudeRolloutParser<'a> {
                 timestamp: timestamp.to_owned(),
                 call_id,
                 output: payload,
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Preserves non-text prompt content items on the newly opened Claude turn.
+    fn push_prompt_payload_items(&mut self, content: &Value) -> Result<()> {
+        let Some(turn) = self.current_turn.as_mut() else {
+            return Ok(());
+        };
+        let Some(items) = content.as_array() else {
+            return Ok(());
+        };
+
+        for item in items {
+            let Some(object) = item.as_object() else {
+                self.best_effort = true;
+                continue;
+            };
+            let item_type = object
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if matches!(item_type, "text" | "tool_result") {
+                continue;
+            }
+
+            turn.steps.push(CodexTurnStep::ProviderResponseItem {
+                timestamp: turn.started_at.clone(),
+                item_type: match item_type {
+                    "" => "claude.user_content".to_owned(),
+                    other => format!("claude.user_content.{other}"),
+                },
+                payload_json: serde_json::to_string(item)
+                    .context("failed to serialize Claude user content item")?,
             });
         }
 
@@ -699,6 +736,7 @@ mod tests {
     use std::{io::Cursor, path::Path};
 
     use anyhow::Result;
+    use serde_json::Value;
 
     use super::{ClaudeArchivedContext, ClaudeRollout, ClaudeSessionKind, parse_rollout_reader};
     use crate::parse::{CodexTurnMessage, CodexTurnStatus, CodexTurnStep};
@@ -809,7 +847,7 @@ mod tests {
         let rollout = parse_fixture(
             r#"{"parentUuid":null,"isSidechain":false,"promptId":"prompt-1","type":"user","message":{"role":"user","content":"Inspect the repo"},"uuid":"user-1","timestamp":"2026-04-01T00:00:01Z","userType":"external","entrypoint":"claude-desktop","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.87","gitBranch":"main"}
 {"parentUuid":"user-1","isSidechain":false,"message":{"model":"claude-sonnet-4-6","id":"assistant-1","type":"message","role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{"file_path":"README.md"}}],"stop_reason":"tool_use","stop_sequence":null},"requestId":"req-1","type":"assistant","uuid":"assistant-1","timestamp":"2026-04-01T00:00:02Z","userType":"external","entrypoint":"claude-desktop","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.87","gitBranch":"main"}
-{"parentUuid":"assistant-1","isSidechain":false,"promptId":"prompt-2","type":"user","message":{"role":"user","content":[{"tool_use_id":"tool-1","type":"tool_result","content":"done","is_error":false},{"type":"text","text":"Summarize the result"}]},"uuid":"user-2","timestamp":"2026-04-01T00:00:03Z","userType":"external","entrypoint":"claude-desktop","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.87","gitBranch":"main"}
+{"parentUuid":"assistant-1","isSidechain":false,"promptId":"prompt-2","type":"user","message":{"role":"user","content":[{"tool_use_id":"tool-1","type":"tool_result","content":"done","is_error":false},{"type":"text","text":"Summarize the result"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"abc"}}]},"uuid":"user-2","timestamp":"2026-04-01T00:00:03Z","userType":"external","entrypoint":"claude-desktop","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.87","gitBranch":"main"}
 {"parentUuid":"user-2","isSidechain":false,"message":{"model":"claude-sonnet-4-6","id":"assistant-2","type":"message","role":"assistant","content":[{"type":"text","text":"Summary ready."}],"stop_reason":"end_turn","stop_sequence":null},"requestId":"req-2","type":"assistant","uuid":"assistant-2","timestamp":"2026-04-01T00:00:04Z","userType":"external","entrypoint":"claude-desktop","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.87","gitBranch":"main"}
 "#,
             &ClaudeArchivedContext {
@@ -838,6 +876,19 @@ mod tests {
         assert_eq!(rollout.turns[1].turn_id.as_deref(), Some("prompt-2"));
         assert_eq!(rollout.turns[1].user_message, "Summarize the result");
         assert_eq!(rollout.turns[1].status, CodexTurnStatus::Completed);
+        let CodexTurnStep::ProviderResponseItem {
+            timestamp,
+            item_type,
+            payload_json,
+        } = &rollout.turns[1].steps[0]
+        else {
+            panic!("expected preserved prompt payload step");
+        };
+        assert_eq!(timestamp, "2026-04-01T00:00:03Z");
+        assert_eq!(item_type, "claude.user_content.image");
+        let payload: Value = serde_json::from_str(payload_json)?;
+        assert_eq!(payload["type"], "image");
+        assert_eq!(payload["source"]["media_type"], "image/png");
         assert_eq!(
             rollout.turns[1].final_answer,
             Some(CodexTurnMessage {
@@ -845,6 +896,39 @@ mod tests {
                 text: "Summary ready.".to_owned(),
             })
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn preserves_non_text_prompt_content_on_the_new_turn() -> Result<()> {
+        let rollout = parse_fixture(
+            r#"{"parentUuid":null,"isSidechain":false,"promptId":"prompt-1","type":"user","message":{"role":"user","content":[{"type":"text","text":"Review this screenshot"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"xyz"}}]},"uuid":"user-1","timestamp":"2026-04-01T00:00:01Z","userType":"external","entrypoint":"claude-desktop","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.87","gitBranch":"main"}
+{"parentUuid":"user-1","isSidechain":false,"message":{"model":"claude-sonnet-4-6","id":"assistant-1","type":"message","role":"assistant","content":[{"type":"text","text":"Reviewed."}],"stop_reason":"end_turn","stop_sequence":null},"requestId":"req-1","type":"assistant","uuid":"assistant-1","timestamp":"2026-04-01T00:00:02Z","userType":"external","entrypoint":"claude-desktop","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.87","gitBranch":"main"}
+"#,
+            &ClaudeArchivedContext {
+                session_id: "parent-session".to_owned(),
+                parent_session_id: None,
+                session_kind: ClaudeSessionKind::Primary,
+                expected_rollout_session_id: "parent-session".to_owned(),
+                expected_agent_id: None,
+            },
+        )?;
+
+        assert_eq!(rollout.turns.len(), 1);
+        assert_eq!(rollout.turns[0].user_message, "Review this screenshot");
+        let CodexTurnStep::ProviderResponseItem {
+            timestamp,
+            item_type,
+            payload_json,
+        } = &rollout.turns[0].steps[0]
+        else {
+            panic!("expected preserved prompt content step");
+        };
+        assert_eq!(timestamp, "2026-04-01T00:00:01Z");
+        assert_eq!(item_type, "claude.user_content.image");
+        let payload: Value = serde_json::from_str(payload_json)?;
+        assert_eq!(payload["type"], "image");
 
         Ok(())
     }
