@@ -479,7 +479,7 @@ fn inspect_archived_codex_rollout(
     };
     let first_line = match String::from_utf8(first_line) {
         Ok(first_line) => first_line,
-        Err(error) if filename_session_id.is_some() => {
+        Err(_error) if filename_session_id.is_some() => {
             return Ok(ArchivedCodexRolloutInspection::Candidate(
                 build_archived_codex_rollout_candidate(
                     path,
@@ -521,7 +521,7 @@ fn inspect_archived_codex_rollout(
                 ),
             ));
         }
-        Err(error) if filename_session_id.is_some() => {
+        Err(_error) if filename_session_id.is_some() => {
             return Ok(ArchivedCodexRolloutInspection::Candidate(
                 build_archived_codex_rollout_candidate(
                     path,
