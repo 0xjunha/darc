@@ -26,7 +26,8 @@ const GITHUB_RELEASE_SOURCE: &str = "GitHub Releases (openai/codex)";
 const RELEASE_TAG_PREFIX: &str = "rust-v";
 const ROLLOUT_SCHEMA_FILE_NAME: &str = "RolloutLine.json";
 const SCHEMA_DIFF_LIMIT: usize = 8;
-const ORDER_INSENSITIVE_SCHEMA_ARRAY_KEYS: &[&str] = &["enum", "required", "type"];
+const ORDER_INSENSITIVE_SCHEMA_ARRAY_KEYS: &[&str] =
+    &["allOf", "anyOf", "enum", "oneOf", "required", "type"];
 const LIKELY_UPDATE_PATHS: &[&str] = &[
     "crates/core/src/rollout/codex/version.rs",
     "crates/core/src/rollout/codex/header.rs",
@@ -1032,23 +1033,14 @@ fn normalize_json_at_path(value: Value, path: &str) -> Value {
             if !schema_array_order_is_irrelevant(path) {
                 return Value::Array(items);
             }
-            let mut sortable = Vec::with_capacity(items.len());
-            for item in &items {
-                let Some(sort_key) = schema_array_item_sort_key(item) else {
-                    return Value::Array(items);
-                };
-                let stable = serde_json::to_string(item).unwrap_or_default();
-                sortable.push((sort_key, stable));
-            }
-
-            let mut items = items.into_iter().zip(sortable).collect::<Vec<_>>();
-            items.sort_by(
-                |(_, (left_key, left_stable)), (_, (right_key, right_stable))| {
-                    left_key
-                        .cmp(right_key)
-                        .then_with(|| left_stable.cmp(right_stable))
-                },
-            );
+            let mut items = items
+                .into_iter()
+                .map(|item| {
+                    let stable = serde_json::to_string(&item).unwrap_or_default();
+                    (item, stable)
+                })
+                .collect::<Vec<_>>();
+            items.sort_by(|(_, left_stable), (_, right_stable)| left_stable.cmp(right_stable));
             Value::Array(items.into_iter().map(|(item, _)| item).collect())
         }
         Value::Object(map) => {
@@ -1070,26 +1062,6 @@ fn schema_array_order_is_irrelevant(path: &str) -> bool {
     path.rsplit('/')
         .next()
         .is_some_and(|key| ORDER_INSENSITIVE_SCHEMA_ARRAY_KEYS.contains(&key))
-}
-
-/// Returns a stable sort key for array items whose ordering is schema-irrelevant.
-fn schema_array_item_sort_key(value: &Value) -> Option<String> {
-    match value {
-        Value::Null => Some("null".to_owned()),
-        Value::Bool(boolean) => Some(format!("bool:{boolean}")),
-        Value::Number(number) => Some(format!("number:{number}")),
-        Value::String(string) => Some(format!("string:{string}")),
-        Value::Object(map) => {
-            if let Some(Value::String(reference)) = map.get("$ref") {
-                Some(format!("ref:{reference}"))
-            } else if let Some(Value::String(title)) = map.get("title") {
-                Some(format!("title:{title}"))
-            } else {
-                None
-            }
-        }
-        Value::Array(_) => None,
-    }
 }
 
 /// Summarizes the first few relevant normalized schema differences.
@@ -1631,6 +1603,144 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("prefixItems"))
         );
+    }
+
+    #[test]
+    fn ignores_order_only_one_of_reorders() {
+        let provider = FakeSchemaAuditProvider::new(
+            &["rust-v0.120.0", "rust-v0.119.0", "rust-v0.118.0"],
+            &[
+                (
+                    "rust-v0.120.0",
+                    json!({
+                        "oneOf": [
+                            {
+                                "properties": {
+                                    "kind": { "const": "b" },
+                                    "value": { "type": "number" }
+                                },
+                                "required": ["value", "kind"],
+                                "type": "object"
+                            },
+                            {
+                                "properties": {
+                                    "kind": { "const": "a" },
+                                    "value": { "type": "string" }
+                                },
+                                "required": ["kind", "value"],
+                                "type": "object"
+                            }
+                        ]
+                    }),
+                ),
+                (
+                    "rust-v0.119.0",
+                    json!({
+                        "oneOf": [
+                            {
+                                "properties": {
+                                    "kind": { "const": "b" },
+                                    "value": { "type": "number" }
+                                },
+                                "required": ["kind", "value"],
+                                "type": "object"
+                            },
+                            {
+                                "properties": {
+                                    "kind": { "const": "a" },
+                                    "value": { "type": "string" }
+                                },
+                                "required": ["value", "kind"],
+                                "type": "object"
+                            }
+                        ]
+                    }),
+                ),
+                (
+                    "rust-v0.118.0",
+                    json!({
+                        "oneOf": [
+                            {
+                                "properties": {
+                                    "kind": { "const": "a" },
+                                    "value": { "type": "string" }
+                                },
+                                "required": ["kind", "value"],
+                                "type": "object"
+                            },
+                            {
+                                "properties": {
+                                    "kind": { "const": "b" },
+                                    "value": { "type": "number" }
+                                },
+                                "required": ["kind", "value"],
+                                "type": "object"
+                            }
+                        ]
+                    }),
+                ),
+            ],
+        );
+
+        let report = run_codex_schema_audit_with_provider(
+            "GitHub Releases".to_owned(),
+            PathBuf::from("/tmp/memstack-cache"),
+            &provider,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            report.outcome,
+            CodexSchemaAuditOutcome::Compatible
+        ));
+    }
+
+    #[test]
+    fn ignores_order_only_all_of_reorders() {
+        let provider = FakeSchemaAuditProvider::new(
+            &["rust-v0.120.0", "rust-v0.119.0", "rust-v0.118.0"],
+            &[
+                (
+                    "rust-v0.120.0",
+                    json!({
+                        "allOf": [
+                            { "properties": { "kind": { "const": "x" } }, "type": "object" },
+                            { "properties": { "value": { "type": "string" } }, "type": "object" }
+                        ]
+                    }),
+                ),
+                (
+                    "rust-v0.119.0",
+                    json!({
+                        "allOf": [
+                            { "properties": { "kind": { "const": "x" } }, "type": "object" },
+                            { "properties": { "value": { "type": "string" } }, "type": "object" }
+                        ]
+                    }),
+                ),
+                (
+                    "rust-v0.118.0",
+                    json!({
+                        "allOf": [
+                            { "properties": { "value": { "type": "string" } }, "type": "object" },
+                            { "properties": { "kind": { "const": "x" } }, "type": "object" }
+                        ]
+                    }),
+                ),
+            ],
+        );
+
+        let report = run_codex_schema_audit_with_provider(
+            "GitHub Releases".to_owned(),
+            PathBuf::from("/tmp/memstack-cache"),
+            &provider,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            report.outcome,
+            CodexSchemaAuditOutcome::Compatible
+        ));
     }
 
     #[test]
