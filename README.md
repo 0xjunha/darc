@@ -1,5 +1,9 @@
 # memstack
 
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![CI](https://github.com/0xjunha/memstack/actions/workflows/ci.yml/badge.svg)](https://github.com/0xjunha/memstack/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/github/0xjunha/memstack/graph/badge.svg?token=J5ZVVBJ3U9)](https://codecov.io/github/0xjunha/memstack)
+
 ## Maintainer checks
 
 Run the hidden Codex rollout schema audit before cutting a Memstack patch release when the Codex rollout parser may need a compatibility review:
