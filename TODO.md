@@ -14,3 +14,40 @@
 - Current parse skip detection trusts `archive_path`, file size, and mtime.
 - If rollout contents become corrupt without changing those values, parse can incorrectly skip reparsing and keep stale indexed data.
 - Consider storing or deriving a stronger content identity for changed-rollout detection.
+
+### Claude Code Support
+- Add a Claude schema audit workflow similar to `codex-schema-audit`.
+  - Fetch official Claude Code releases or other upstream-distributed binaries in a reproducible way.
+  - Run deterministic fixture-generation scenarios against released Claude Code builds.
+  - Derive transcript schema manifests from emitted local session JSONL.
+  - Diff derived transcript schemas across versions and report exact coverage, first drift version, and likely parser files to update.
+  - Keep SDK / typed JSON API schema auditing separate from local transcript JSONL auditing unless they are proven equivalent.
+- Build a Claude rollout schema epoch model instead of the current observed-version allowlist.
+  - Expand fixture coverage across more Claude Code versions and transcript variants.
+  - Define stable schema families / epochs for archived local transcript JSONL, not just SDK message types.
+  - Codify parser families and exact version coverage from the Claude audit output.
+  - Keep exact vs best-effort compatibility decisions explicit and reproducible.
+- Strengthen Claude turn-boundary extraction in `crates/core/src/rollout/claude/mod.rs`.
+  - Refine parsing per schema family / epoch instead of relying on one heuristic parser for every Claude version.
+  - Audit whether any additional explicit completion / abort / handoff markers exist in observed transcripts.
+  - Reduce reliance on prompt-like `user` heuristics where possible.
+  - Preserve current safe behavior for ambiguous boundaries rather than inventing brittle merges.
+
+#### Other Claude follow-ups
+- Normalize more Claude provider events into the shared turn model.
+  - Map more `system`, `progress`, `origin`, and assistant content variants into structured steps instead of raw preserved payloads where that materially improves indexing.
+  - Keep raw preserved payload support for forward-compatible unknown variants.
+- Improve Claude tool-result fidelity.
+  - Preserve better timestamps and linkage for tool results currently reconstructed from later `user` tool-result lines.
+  - Investigate whether archived auxiliary files can improve reconstruction without adding brittle coupling.
+- Harden Claude boilerplate / meta filtering.
+  - Distinguish real user prompts from command wrappers, task notifications, local-command caveats, and other meta-only transcript lines.
+  - Avoid dropping legitimate prompts when the format is only partially understood.
+- Index archived Claude auxiliary artifacts when useful.
+  - Ingest subagent `.meta.json` fields such as `agentType` and `description`.
+  - Decide whether any archived auxiliary text outputs should be indexed directly, linked from turns, or left archive-only.
+- Add a public standalone Claude parser API if external callers will need it.
+  - Mirror the ergonomics of `parse_codex_rollout` only if the Claude parser contract is stable enough to expose.
+- Improve Claude pre-parse inspection.
+  - Add a lightweight inspection path that can validate Claude session identity, version hints, and candidate kind before full parse.
+  - Keep it soft-fail for unknown variants so one bad Claude rollout never crashes the whole parse run.
