@@ -1237,6 +1237,12 @@ mod tests {
     fn init_git_repo(path: &Path, remote: &str) -> Result<()> {
         fs::create_dir_all(path)?;
         run_git(path, &["init"])?;
+        run_git(path, &["config", "user.name", "Memstack Test"])?;
+        run_git(
+            path,
+            &["config", "user.email", "memstack-tests@example.com"],
+        )?;
+        run_git(path, &["config", "commit.gpgsign", "false"])?;
         run_git(path, &["remote", "add", "origin", remote])
     }
 
