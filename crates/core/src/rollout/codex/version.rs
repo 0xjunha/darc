@@ -1,4 +1,4 @@
-use std::cmp::Ordering;
+use std::{cmp::Ordering, fmt};
 
 use anyhow::{Result, bail};
 
@@ -61,6 +61,11 @@ impl CodexCliVersion {
             prerelease,
         })
     }
+
+    /// Returns whether this parsed version is a stable release.
+    pub(crate) const fn is_stable(&self) -> bool {
+        self.prerelease.is_none()
+    }
 }
 
 /// Enumerates version-gated Codex rollout features that matter to memstack parsing.
@@ -89,6 +94,11 @@ impl CodexSchemaFeature {
 /// Returns whether one version supports a specific rollout feature.
 pub(crate) fn supports_feature(version: &CodexCliVersion, feature: CodexSchemaFeature) -> bool {
     version >= &feature.introduced_in()
+}
+
+/// Returns the latest Codex CLI version covered exactly by memstack.
+pub(crate) const fn latest_exact_supported_codex_cli_version() -> CodexCliVersion {
+    CodexCliVersion::stable(0, 118, 0)
 }
 
 /// Returns whether one `response_item.type` variant is expected for the given Codex CLI version.
@@ -137,6 +147,16 @@ impl PartialOrd for CodexCliVersion {
     }
 }
 
+impl fmt::Display for CodexCliVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)?;
+        if let Some(prerelease) = &self.prerelease {
+            write!(f, "-{prerelease}")?;
+        }
+        Ok(())
+    }
+}
+
 /// Stores one parsed prerelease suffix.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CodexPrerelease {
@@ -170,6 +190,15 @@ impl Ord for CodexPrerelease {
 impl PartialOrd for CodexPrerelease {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
+    }
+}
+
+impl fmt::Display for CodexPrerelease {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Alpha(number) => write!(f, "alpha.{number}"),
+            Self::Other(value) => f.write_str(value),
+        }
     }
 }
 
@@ -251,7 +280,7 @@ pub(crate) fn resolve_codex_schema(cli_version: &str) -> Result<CodexSchemaResol
         CodexSchemaId::TurnLifecycle
     };
 
-    let determinism = if version <= CodexCliVersion::stable(0, 118, 0) {
+    let determinism = if version <= latest_exact_supported_codex_cli_version() {
         ParseDeterminism::Exact
     } else {
         ParseDeterminism::BestEffortForward
@@ -275,7 +304,8 @@ fn parse_numeric_part(part: Option<&str>, raw_version: &str, label: &str) -> Res
 #[cfg(test)]
 mod tests {
     use super::{
-        CodexCliVersion, CodexSchemaFeature, CodexSchemaId, resolve_codex_schema, supports_feature,
+        CodexCliVersion, CodexSchemaFeature, CodexSchemaId,
+        latest_exact_supported_codex_cli_version, resolve_codex_schema, supports_feature,
         supports_response_item,
     };
     use crate::rollout::ParseDeterminism;
@@ -334,6 +364,14 @@ mod tests {
                 schema_id: CodexSchemaId::TurnLifecycle,
                 determinism: ParseDeterminism::BestEffortForward,
             }
+        );
+    }
+
+    #[test]
+    fn exposes_latest_exact_supported_codex_cli_version() {
+        assert_eq!(
+            latest_exact_supported_codex_cli_version().to_string(),
+            "0.118.0"
         );
     }
 

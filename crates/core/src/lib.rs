@@ -16,4 +16,8 @@ pub use parse::{
     SkippedCodexRollout, parse_codex_rollout, parse_project_codex_turns,
 };
 pub use rollout::ParseDeterminism;
+pub use rollout::codex::{
+    CodexSchemaAuditOptions, CodexSchemaAuditOutcome, CodexSchemaAuditReport, CodexSchemaDrift,
+    run_codex_schema_audit, run_codex_schema_audit_with_progress,
+};
 pub use sync::{SyncOptions, SyncPlan, SyncReport, execute_sync, prepare_sync};
