@@ -46,7 +46,6 @@ impl ClaudeCliVersion {
                 .map(str::to_owned),
         })
     }
-
 }
 
 /// Identifies one provisional Claude transcript parser family derived from coarse survey data.

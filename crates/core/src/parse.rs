@@ -1951,7 +1951,10 @@ mod tests {
         assert_eq!(claude_parent_answer, "Claude reply");
         assert_eq!(claude_subagent_row.0, claude_session_id);
         assert_eq!(claude_subagent_row.1, "subagent");
-        assert_eq!(claude_subagent_row.2, "claude.subagent_transcript");
+        assert_eq!(
+            claude_subagent_row.2,
+            "claude.subagent_transcript.2_1_84_to_2_1_89"
+        );
 
         Ok(())
     }
