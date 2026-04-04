@@ -1,4 +1,5 @@
 mod active_project;
+mod analytics;
 pub mod config;
 pub(crate) mod constants;
 mod index_db;
@@ -10,6 +11,9 @@ mod sync;
 mod turn_metrics;
 pub(crate) mod versions;
 
+pub use analytics::{
+    ClaudeRolloutAnalyticsReport, ClaudeSchemaAnalytics, report_claude_rollout_analytics,
+};
 pub use config::SourceKind;
 pub use init::{DetectedRolloutSource, InitDraft, default_root_path, prepare_init, write_init};
 pub use parse::{

@@ -48,3 +48,15 @@ GitHub Releases are missing the stable release tag `rust-v0.118.0`
 ```
 
 the published release catalog no longer contains the exact-support boundary tag that Memstack needs as the audit baseline. Memstack cannot advance the audit until that release remains available or the exact-support boundary is updated.
+
+## Claude analytics helper
+
+After indexing archived sessions with `memstack parse`, library consumers can summarize the indexed Claude rollout corpus with:
+
+```rust
+use memstack_core::report_claude_rollout_analytics;
+
+let report = report_claude_rollout_analytics(None)?;
+```
+
+The report aggregates indexed Claude sessions and turns by schema family, determinism, completion status, tool usage, delegation events, attachments, hook summaries, and turn durations from the normalized SQLite index.
