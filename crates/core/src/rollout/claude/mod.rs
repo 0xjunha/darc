@@ -12,8 +12,14 @@ use crate::{
     rollout::ParseDeterminism,
 };
 
+mod schema_audit;
 mod version;
 
+pub use schema_audit::{
+    ClaudeSchemaAuditOptions, ClaudeSchemaAuditOutcome, ClaudeSchemaAuditReport, ClaudeSchemaDrift,
+    ClaudeSchemaDriftWindow, ClaudeSchemaSurveyMode, ClaudeSdkSchemaDrift, run_claude_schema_audit,
+    run_claude_schema_audit_with_progress,
+};
 use version::{ClaudeSchemaEpoch, resolve_claude_schema};
 
 /// Identifies whether one archived Claude rollout is a parent session or a subagent session.
