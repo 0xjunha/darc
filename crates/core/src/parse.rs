@@ -28,6 +28,7 @@ use crate::{
             parse_rollout_file as parse_claude_rollout_file,
         },
     },
+    turn_metrics::summarize_turn_metrics,
 };
 
 /// Parses one Codex rollout file into user-visible turns.
@@ -403,6 +404,7 @@ impl<'conn> SqliteSessionWriter<'conn> {
             .as_deref()
             .context("missing active session id while inserting turn")
             .context(CandidateIndexInfrastructureError)?;
+        let metrics = summarize_turn_metrics(&turn);
         let steps_json = serde_json::to_string(&turn.steps)
             .context("failed to serialize turn steps")
             .context(CandidateIndexInfrastructureError)?;
@@ -424,8 +426,16 @@ impl<'conn> SqliteSessionWriter<'conn> {
                     user_message,
                     final_answer_at,
                     final_answer_text,
-                    steps_json
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                    steps_json,
+                    step_count,
+                    tool_call_count,
+                    tool_output_count,
+                    attachment_count,
+                    delegation_count,
+                    hook_summary_count,
+                    has_final_answer,
+                    duration_ms
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
                 ",
                 params![
                     self.project_id.as_str(),
@@ -440,6 +450,14 @@ impl<'conn> SqliteSessionWriter<'conn> {
                     final_answer_at,
                     final_answer_text,
                     steps_json,
+                    metrics.step_count,
+                    metrics.tool_call_count,
+                    metrics.tool_output_count,
+                    metrics.attachment_count,
+                    metrics.delegation_count,
+                    metrics.hook_summary_count,
+                    metrics.has_final_answer,
+                    metrics.duration_ms,
                 ],
             )
             .with_context(|| {
@@ -545,7 +563,7 @@ fn parse_project_codex_turns_from(current_dir: &Path, root: PathBuf) -> Result<P
 }
 
 /// Parses archived provider rollouts for one explicit current directory and memstack root.
-fn parse_project_sessions_from(
+pub(crate) fn parse_project_sessions_from(
     current_dir: &Path,
     root: PathBuf,
     providers: &[SourceKind],

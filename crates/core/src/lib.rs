@@ -7,6 +7,7 @@ mod parse;
 mod project_paths;
 mod rollout;
 mod sync;
+mod turn_metrics;
 pub(crate) mod versions;
 
 pub use config::SourceKind;
