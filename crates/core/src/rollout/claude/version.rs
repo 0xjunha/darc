@@ -159,7 +159,7 @@ pub(crate) const fn earliest_observed_claude_cli_version() -> ClaudeCliVersion {
     ClaudeCliVersion::stable(1, 0, 88)
 }
 
-/// Returns the latest Claude CLI version covered exactly by memstack.
+/// Returns the latest Claude CLI version covered exactly by darc.
 pub(crate) const fn latest_exact_supported_claude_cli_version() -> ClaudeCliVersion {
     ClaudeCliVersion::stable(2, 1, 87)
 }

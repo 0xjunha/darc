@@ -48,9 +48,9 @@ impl InitDraft {
 impl Display for InitDraft {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.global_config_exists {
-            writeln!(f, "Global Memstack: existing config detected")?;
+            writeln!(f, "Global Darc: existing config detected")?;
         } else {
-            writeln!(f, "Global Memstack: no config detected")?;
+            writeln!(f, "Global Darc: no config detected")?;
             writeln!(f, "Detected sources:")?;
             for source in &self.sources {
                 writeln!(f, "- {}", format_source(source))?;
@@ -523,7 +523,7 @@ mod tests {
         let draft = init_draft_fixture(false, false)?;
         let rendered = draft.to_string();
 
-        assert!(rendered.contains("Global Memstack: no config detected"));
+        assert!(rendered.contains("Global Darc: no config detected"));
         assert!(rendered.contains("Detected sources:"));
         assert!(rendered.contains("Root Path:"));
         assert!(rendered.contains("Config Path:"));
@@ -541,7 +541,7 @@ mod tests {
         let draft = init_draft_fixture(true, false)?;
         let rendered = draft.to_string();
 
-        assert!(rendered.contains("Global Memstack: existing config detected"));
+        assert!(rendered.contains("Global Darc: existing config detected"));
         assert!(!rendered.contains("Detected sources:"));
         assert!(rendered.contains("\nProject:\n"));
 

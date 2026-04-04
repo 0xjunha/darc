@@ -57,7 +57,7 @@ pub struct ParseReport {
     pub skipped_rollouts: Vec<SkippedRollout>,
 }
 
-/// Describes one archived rollout file that memstack skipped during parsing.
+/// Describes one archived rollout file that darc skipped during parsing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkippedRollout {
     pub provider: SourceKind,
@@ -556,13 +556,13 @@ impl std::fmt::Display for CandidateIndexInfrastructureError {
 
 impl std::error::Error for CandidateIndexInfrastructureError {}
 
-/// Parses archived Codex rollouts for one explicit current directory and memstack root.
+/// Parses archived Codex rollouts for one explicit current directory and darc root.
 #[cfg(test)]
 fn parse_project_codex_turns_from(current_dir: &Path, root: PathBuf) -> Result<ParseReport> {
     parse_project_sessions_from(current_dir, root, &[SourceKind::Codex])
 }
 
-/// Parses archived provider rollouts for one explicit current directory and memstack root.
+/// Parses archived provider rollouts for one explicit current directory and darc root.
 pub(crate) fn parse_project_sessions_from(
     current_dir: &Path,
     root: PathBuf,
@@ -1779,15 +1779,15 @@ mod tests {
 
     #[test]
     fn parse_project_indexes_codex_turns_into_sqlite() -> Result<()> {
-        let memstack_root = unique_test_dir("parse-index");
-        let project_root = memstack_root.join("repo");
-        let sessions_root = memstack_root.join("projects/repo-abc123/sessions");
+        let darc_root = unique_test_dir("parse-index");
+        let project_root = darc_root.join("repo");
+        let sessions_root = darc_root.join("projects/repo-abc123/sessions");
         let codex_root = sessions_root.join("codex");
-        let index_db_path = memstack_root.join(INDEX_DB_FILE_NAME);
+        let index_db_path = darc_root.join(INDEX_DB_FILE_NAME);
         let rollout_path = codex_root
             .join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl");
         fs::create_dir_all(&project_root)?;
-        write_parse_config(&memstack_root, &project_root, &sessions_root)?;
+        write_parse_config(&darc_root, &project_root, &sessions_root)?;
 
         write_file(
             &rollout_path,
@@ -1807,7 +1807,7 @@ mod tests {
         )?;
         let (source_size, source_mtime_ms) = super::file_snapshot(&rollout_path)?;
 
-        let report = parse_project_codex_turns_from(&project_root, memstack_root.clone())?;
+        let report = parse_project_codex_turns_from(&project_root, darc_root.clone())?;
 
         assert_eq!(report.project_name, "repo");
         assert_eq!(report.project_root, fs::canonicalize(&project_root)?);
@@ -1862,9 +1862,9 @@ mod tests {
 
     #[test]
     fn parse_project_indexes_codex_and_claude_rollouts_together() -> Result<()> {
-        let memstack_root = unique_test_dir("parse-multi-provider");
-        let project_root = memstack_root.join("repo");
-        let sessions_root = memstack_root.join("projects/repo-abc123/sessions");
+        let darc_root = unique_test_dir("parse-multi-provider");
+        let project_root = darc_root.join("repo");
+        let sessions_root = darc_root.join("projects/repo-abc123/sessions");
         let codex_root = sessions_root.join("codex");
         let claude_root = sessions_root.join("claude");
         let claude_session_id = "885a05b8-f731-4fde-bfdb-a24ce28dc9c3";
@@ -1877,7 +1877,7 @@ mod tests {
         let codex_rollout = codex_root
             .join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl");
         fs::create_dir_all(&project_root)?;
-        write_parse_config(&memstack_root, &project_root, &sessions_root)?;
+        write_parse_config(&darc_root, &project_root, &sessions_root)?;
 
         write_file(
             &codex_rollout,
@@ -1921,7 +1921,7 @@ mod tests {
 
         let report = parse_project_sessions_from(
             &project_root,
-            memstack_root.clone(),
+            darc_root.clone(),
             &[SourceKind::Claude, SourceKind::Codex],
         )?;
 
@@ -1935,7 +1935,7 @@ mod tests {
         assert_eq!(report.turns_currently_indexed, 3);
         assert!(report.skipped_rollouts.is_empty());
 
-        let connection = Connection::open(memstack_root.join(INDEX_DB_FILE_NAME))?;
+        let connection = Connection::open(darc_root.join(INDEX_DB_FILE_NAME))?;
         let indexed_claude_sessions: i64 = connection.query_row(
             "SELECT COUNT(*) FROM sessions WHERE project_id = ?1 AND provider = 'claude'",
             ["repo-abc123"],
@@ -1979,14 +1979,14 @@ mod tests {
 
     #[test]
     fn parse_project_rewrites_existing_indexed_turns() -> Result<()> {
-        let memstack_root = unique_test_dir("parse-rewrite");
-        let project_root = memstack_root.join("repo");
-        let sessions_root = memstack_root.join("projects/repo-abc123/sessions");
+        let darc_root = unique_test_dir("parse-rewrite");
+        let project_root = darc_root.join("repo");
+        let sessions_root = darc_root.join("projects/repo-abc123/sessions");
         let codex_root = sessions_root.join("codex");
         let rollout_path = codex_root
             .join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl");
         fs::create_dir_all(&project_root)?;
-        write_parse_config(&memstack_root, &project_root, &sessions_root)?;
+        write_parse_config(&darc_root, &project_root, &sessions_root)?;
 
         write_file(
             &rollout_path,
@@ -2000,7 +2000,7 @@ mod tests {
                 project_root.display()
             ),
         )?;
-        parse_project_codex_turns_from(&project_root, memstack_root.clone())?;
+        parse_project_codex_turns_from(&project_root, darc_root.clone())?;
 
         write_file(
             &rollout_path,
@@ -2018,8 +2018,8 @@ mod tests {
             ),
         )?;
 
-        let report = parse_project_codex_turns_from(&project_root, memstack_root.clone())?;
-        let connection = Connection::open(memstack_root.join(INDEX_DB_FILE_NAME))?;
+        let report = parse_project_codex_turns_from(&project_root, darc_root.clone())?;
+        let connection = Connection::open(darc_root.join(INDEX_DB_FILE_NAME))?;
         let indexed_turns = indexed_codex_turn_count(&connection, "repo-abc123")?;
         let first_turn: (String, String) = connection.query_row(
             "
@@ -2042,14 +2042,14 @@ mod tests {
 
     #[test]
     fn parse_project_skips_unchanged_sessions_when_snapshot_matches() -> Result<()> {
-        let memstack_root = unique_test_dir("parse-skip-unchanged");
-        let project_root = memstack_root.join("repo");
-        let sessions_root = memstack_root.join("projects/repo-abc123/sessions");
+        let darc_root = unique_test_dir("parse-skip-unchanged");
+        let project_root = darc_root.join("repo");
+        let sessions_root = darc_root.join("projects/repo-abc123/sessions");
         let codex_root = sessions_root.join("codex");
         let rollout_path = codex_root
             .join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl");
         fs::create_dir_all(&project_root)?;
-        write_parse_config(&memstack_root, &project_root, &sessions_root)?;
+        write_parse_config(&darc_root, &project_root, &sessions_root)?;
 
         let original = format!(
             concat!(
@@ -2061,13 +2061,13 @@ mod tests {
         );
         write_file(&rollout_path, &original)?;
         touch_file_timestamp(&rollout_path, "202604011000.00")?;
-        parse_project_codex_turns_from(&project_root, memstack_root.clone())?;
+        parse_project_codex_turns_from(&project_root, darc_root.clone())?;
 
         write_file(&rollout_path, &"{".repeat(original.len()))?;
         touch_file_timestamp(&rollout_path, "202604011000.00")?;
 
-        let report = parse_project_codex_turns_from(&project_root, memstack_root.clone())?;
-        let connection = Connection::open(memstack_root.join(INDEX_DB_FILE_NAME))?;
+        let report = parse_project_codex_turns_from(&project_root, darc_root.clone())?;
+        let connection = Connection::open(darc_root.join(INDEX_DB_FILE_NAME))?;
         let indexed_turn: (String, String) = connection.query_row(
             "
             SELECT user_message, final_answer_text
@@ -2091,12 +2091,12 @@ mod tests {
 
     #[test]
     fn parse_project_deduplicates_archived_rollouts_with_same_session_id() -> Result<()> {
-        let memstack_root = unique_test_dir("parse-deduplicate");
-        let project_root = memstack_root.join("repo");
-        let sessions_root = memstack_root.join("projects/repo-abc123/sessions");
+        let darc_root = unique_test_dir("parse-deduplicate");
+        let project_root = darc_root.join("repo");
+        let sessions_root = darc_root.join("projects/repo-abc123/sessions");
         let codex_root = sessions_root.join("codex");
         fs::create_dir_all(&project_root)?;
-        write_parse_config(&memstack_root, &project_root, &sessions_root)?;
+        write_parse_config(&darc_root, &project_root, &sessions_root)?;
 
         write_file(
             &codex_root
@@ -2127,8 +2127,8 @@ mod tests {
             ),
         )?;
 
-        let report = parse_project_codex_turns_from(&project_root, memstack_root.clone())?;
-        let connection = Connection::open(memstack_root.join(INDEX_DB_FILE_NAME))?;
+        let report = parse_project_codex_turns_from(&project_root, darc_root.clone())?;
+        let connection = Connection::open(darc_root.join(INDEX_DB_FILE_NAME))?;
         let indexed_sessions = indexed_codex_session_count(&connection, "repo-abc123")?;
         let indexed_turns = indexed_codex_turn_count(&connection, "repo-abc123")?;
         let indexed_row: (String, String) = connection.query_row(
@@ -2164,12 +2164,12 @@ mod tests {
 
     #[test]
     fn parse_project_skips_mismatched_filename_and_payload_session_ids() -> Result<()> {
-        let memstack_root = unique_test_dir("parse-id-mismatch");
-        let project_root = memstack_root.join("repo");
-        let sessions_root = memstack_root.join("projects/repo-abc123/sessions");
+        let darc_root = unique_test_dir("parse-id-mismatch");
+        let project_root = darc_root.join("repo");
+        let sessions_root = darc_root.join("projects/repo-abc123/sessions");
         let codex_root = sessions_root.join("codex");
         fs::create_dir_all(&project_root)?;
-        write_parse_config(&memstack_root, &project_root, &sessions_root)?;
+        write_parse_config(&darc_root, &project_root, &sessions_root)?;
 
         write_file(
             &codex_root
@@ -2184,8 +2184,8 @@ mod tests {
             ),
         )?;
 
-        let report = parse_project_codex_turns_from(&project_root, memstack_root.clone())?;
-        let connection = Connection::open(memstack_root.join(INDEX_DB_FILE_NAME))?;
+        let report = parse_project_codex_turns_from(&project_root, darc_root.clone())?;
+        let connection = Connection::open(darc_root.join(INDEX_DB_FILE_NAME))?;
         let indexed_sessions = indexed_codex_session_count(&connection, "repo-abc123")?;
 
         assert_eq!(report.sessions_discovered, 1);
@@ -2213,12 +2213,12 @@ mod tests {
 
     #[test]
     fn parse_project_ignores_corrupt_losing_duplicate() -> Result<()> {
-        let memstack_root = unique_test_dir("parse-corrupt-loser");
-        let project_root = memstack_root.join("repo");
-        let sessions_root = memstack_root.join("projects/repo-abc123/sessions");
+        let darc_root = unique_test_dir("parse-corrupt-loser");
+        let project_root = darc_root.join("repo");
+        let sessions_root = darc_root.join("projects/repo-abc123/sessions");
         let codex_root = sessions_root.join("codex");
         fs::create_dir_all(&project_root)?;
-        write_parse_config(&memstack_root, &project_root, &sessions_root)?;
+        write_parse_config(&darc_root, &project_root, &sessions_root)?;
 
         write_file(
             &codex_root
@@ -2239,8 +2239,8 @@ mod tests {
             ),
         )?;
 
-        let report = parse_project_codex_turns_from(&project_root, memstack_root.clone())?;
-        let connection = Connection::open(memstack_root.join(INDEX_DB_FILE_NAME))?;
+        let report = parse_project_codex_turns_from(&project_root, darc_root.clone())?;
+        let connection = Connection::open(darc_root.join(INDEX_DB_FILE_NAME))?;
         let indexed_turn: (String, String) = connection.query_row(
             "
             SELECT user_message, final_answer_text
@@ -2264,12 +2264,12 @@ mod tests {
 
     #[test]
     fn parse_project_falls_back_when_selected_duplicate_is_corrupt() -> Result<()> {
-        let memstack_root = unique_test_dir("parse-corrupt-winner");
-        let project_root = memstack_root.join("repo");
-        let sessions_root = memstack_root.join("projects/repo-abc123/sessions");
+        let darc_root = unique_test_dir("parse-corrupt-winner");
+        let project_root = darc_root.join("repo");
+        let sessions_root = darc_root.join("projects/repo-abc123/sessions");
         let codex_root = sessions_root.join("codex");
         fs::create_dir_all(&project_root)?;
-        write_parse_config(&memstack_root, &project_root, &sessions_root)?;
+        write_parse_config(&darc_root, &project_root, &sessions_root)?;
 
         write_file(
             &codex_root
@@ -2290,8 +2290,8 @@ mod tests {
             &format!("{{not-json\n{}\n", "x".repeat(4096)),
         )?;
 
-        let report = parse_project_codex_turns_from(&project_root, memstack_root.clone())?;
-        let connection = Connection::open(memstack_root.join(INDEX_DB_FILE_NAME))?;
+        let report = parse_project_codex_turns_from(&project_root, darc_root.clone())?;
+        let connection = Connection::open(darc_root.join(INDEX_DB_FILE_NAME))?;
         let indexed_row: (String, String, String) = connection.query_row(
             "
             SELECT s.archive_path, t.user_message, t.final_answer_text
@@ -2333,12 +2333,12 @@ mod tests {
 
     #[test]
     fn parse_project_skips_session_when_all_duplicate_candidates_are_corrupt() -> Result<()> {
-        let memstack_root = unique_test_dir("parse-all-corrupt-duplicates");
-        let project_root = memstack_root.join("repo");
-        let sessions_root = memstack_root.join("projects/repo-abc123/sessions");
+        let darc_root = unique_test_dir("parse-all-corrupt-duplicates");
+        let project_root = darc_root.join("repo");
+        let sessions_root = darc_root.join("projects/repo-abc123/sessions");
         let codex_root = sessions_root.join("codex");
         fs::create_dir_all(&project_root)?;
-        write_parse_config(&memstack_root, &project_root, &sessions_root)?;
+        write_parse_config(&darc_root, &project_root, &sessions_root)?;
 
         write_file(
             &codex_root
@@ -2352,8 +2352,8 @@ mod tests {
             &format!("{{not-json\n{}\n", "x".repeat(4096)),
         )?;
 
-        let report = parse_project_codex_turns_from(&project_root, memstack_root.clone())?;
-        let connection = Connection::open(memstack_root.join(INDEX_DB_FILE_NAME))?;
+        let report = parse_project_codex_turns_from(&project_root, darc_root.clone())?;
+        let connection = Connection::open(darc_root.join(INDEX_DB_FILE_NAME))?;
         let indexed_sessions = indexed_codex_session_count(&connection, "repo-abc123")?;
 
         assert_eq!(report.sessions_discovered, 1);
@@ -2371,14 +2371,14 @@ mod tests {
 
     #[test]
     fn parse_project_preserves_previous_index_when_replacement_rollout_fails() -> Result<()> {
-        let memstack_root = unique_test_dir("parse-preserve-index-on-failure");
-        let project_root = memstack_root.join("repo");
-        let sessions_root = memstack_root.join("projects/repo-abc123/sessions");
+        let darc_root = unique_test_dir("parse-preserve-index-on-failure");
+        let project_root = darc_root.join("repo");
+        let sessions_root = darc_root.join("projects/repo-abc123/sessions");
         let codex_root = sessions_root.join("codex");
         let rollout_path = codex_root
             .join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl");
         fs::create_dir_all(&project_root)?;
-        write_parse_config(&memstack_root, &project_root, &sessions_root)?;
+        write_parse_config(&darc_root, &project_root, &sessions_root)?;
 
         let original = format!(
             concat!(
@@ -2389,12 +2389,12 @@ mod tests {
             project_root.display()
         );
         write_file(&rollout_path, &original)?;
-        parse_project_codex_turns_from(&project_root, memstack_root.clone())?;
+        parse_project_codex_turns_from(&project_root, darc_root.clone())?;
 
         write_file(&rollout_path, "{not-json\n")?;
 
-        let report = parse_project_codex_turns_from(&project_root, memstack_root.clone())?;
-        let connection = Connection::open(memstack_root.join(INDEX_DB_FILE_NAME))?;
+        let report = parse_project_codex_turns_from(&project_root, darc_root.clone())?;
+        let connection = Connection::open(darc_root.join(INDEX_DB_FILE_NAME))?;
         let indexed_turn: (String, String) = connection.query_row(
             "
             SELECT user_message, final_answer_text
@@ -2423,14 +2423,14 @@ mod tests {
 
     #[test]
     fn parse_project_preserves_previous_index_when_replacement_header_mismatches() -> Result<()> {
-        let memstack_root = unique_test_dir("parse-preserve-index-on-mismatch");
-        let project_root = memstack_root.join("repo");
-        let sessions_root = memstack_root.join("projects/repo-abc123/sessions");
+        let darc_root = unique_test_dir("parse-preserve-index-on-mismatch");
+        let project_root = darc_root.join("repo");
+        let sessions_root = darc_root.join("projects/repo-abc123/sessions");
         let codex_root = sessions_root.join("codex");
         let rollout_path = codex_root
             .join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl");
         fs::create_dir_all(&project_root)?;
-        write_parse_config(&memstack_root, &project_root, &sessions_root)?;
+        write_parse_config(&darc_root, &project_root, &sessions_root)?;
 
         let original = format!(
             concat!(
@@ -2441,7 +2441,7 @@ mod tests {
             project_root.display()
         );
         write_file(&rollout_path, &original)?;
-        parse_project_codex_turns_from(&project_root, memstack_root.clone())?;
+        parse_project_codex_turns_from(&project_root, darc_root.clone())?;
 
         let mismatched = format!(
             concat!(
@@ -2452,8 +2452,8 @@ mod tests {
         );
         write_file(&rollout_path, &mismatched)?;
 
-        let report = parse_project_codex_turns_from(&project_root, memstack_root.clone())?;
-        let connection = Connection::open(memstack_root.join(INDEX_DB_FILE_NAME))?;
+        let report = parse_project_codex_turns_from(&project_root, darc_root.clone())?;
+        let connection = Connection::open(darc_root.join(INDEX_DB_FILE_NAME))?;
         let indexed_turn: (String, String) = connection.query_row(
             "
             SELECT user_message, final_answer_text
@@ -2487,14 +2487,14 @@ mod tests {
     #[test]
     fn parse_project_skips_unchanged_fallback_candidate_after_corrupt_higher_duplicate()
     -> Result<()> {
-        let memstack_root = unique_test_dir("parse-skip-fallback-duplicate");
-        let project_root = memstack_root.join("repo");
-        let sessions_root = memstack_root.join("projects/repo-abc123/sessions");
+        let darc_root = unique_test_dir("parse-skip-fallback-duplicate");
+        let project_root = darc_root.join("repo");
+        let sessions_root = darc_root.join("projects/repo-abc123/sessions");
         let codex_root = sessions_root.join("codex");
         let fallback_path = codex_root
             .join("rollout-2026-04-01T09-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl");
         fs::create_dir_all(&project_root)?;
-        write_parse_config(&memstack_root, &project_root, &sessions_root)?;
+        write_parse_config(&darc_root, &project_root, &sessions_root)?;
 
         let original = format!(
             concat!(
@@ -2511,13 +2511,13 @@ mod tests {
                 .join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
             &format!("{{not-json\n{}\n", "x".repeat(4096)),
         )?;
-        parse_project_codex_turns_from(&project_root, memstack_root.clone())?;
+        parse_project_codex_turns_from(&project_root, darc_root.clone())?;
 
         write_file(&fallback_path, &"{".repeat(original.len()))?;
         touch_file_timestamp(&fallback_path, "202604010900.00")?;
 
-        let report = parse_project_codex_turns_from(&project_root, memstack_root.clone())?;
-        let connection = Connection::open(memstack_root.join(INDEX_DB_FILE_NAME))?;
+        let report = parse_project_codex_turns_from(&project_root, darc_root.clone())?;
+        let connection = Connection::open(darc_root.join(INDEX_DB_FILE_NAME))?;
         let indexed_turn: (String, String) = connection.query_row(
             "
             SELECT user_message, final_answer_text
@@ -2541,12 +2541,12 @@ mod tests {
 
     #[test]
     fn parse_project_skips_unknown_schema_session_while_indexing_other_sessions() -> Result<()> {
-        let memstack_root = unique_test_dir("parse-skip-unknown-schema");
-        let project_root = memstack_root.join("repo");
-        let sessions_root = memstack_root.join("projects/repo-abc123/sessions");
+        let darc_root = unique_test_dir("parse-skip-unknown-schema");
+        let project_root = darc_root.join("repo");
+        let sessions_root = darc_root.join("projects/repo-abc123/sessions");
         let codex_root = sessions_root.join("codex");
         fs::create_dir_all(&project_root)?;
-        write_parse_config(&memstack_root, &project_root, &sessions_root)?;
+        write_parse_config(&darc_root, &project_root, &sessions_root)?;
 
         write_file(
             &codex_root
@@ -2572,8 +2572,8 @@ mod tests {
             ),
         )?;
 
-        let report = parse_project_codex_turns_from(&project_root, memstack_root.clone())?;
-        let connection = Connection::open(memstack_root.join(INDEX_DB_FILE_NAME))?;
+        let report = parse_project_codex_turns_from(&project_root, darc_root.clone())?;
+        let connection = Connection::open(darc_root.join(INDEX_DB_FILE_NAME))?;
         let indexed_sessions = indexed_codex_session_count(&connection, "repo-abc123")?;
         let indexed_turn: (String, String) = connection.query_row(
             "
@@ -2612,12 +2612,12 @@ mod tests {
 
     #[test]
     fn parse_project_skips_bad_duplicate_group_and_continues_other_sessions() -> Result<()> {
-        let memstack_root = unique_test_dir("parse-skip-bad-group");
-        let project_root = memstack_root.join("repo");
-        let sessions_root = memstack_root.join("projects/repo-abc123/sessions");
+        let darc_root = unique_test_dir("parse-skip-bad-group");
+        let project_root = darc_root.join("repo");
+        let sessions_root = darc_root.join("projects/repo-abc123/sessions");
         let codex_root = sessions_root.join("codex");
         fs::create_dir_all(&project_root)?;
-        write_parse_config(&memstack_root, &project_root, &sessions_root)?;
+        write_parse_config(&darc_root, &project_root, &sessions_root)?;
 
         write_file(
             &codex_root
@@ -2643,8 +2643,8 @@ mod tests {
             ),
         )?;
 
-        let report = parse_project_codex_turns_from(&project_root, memstack_root.clone())?;
-        let connection = Connection::open(memstack_root.join(INDEX_DB_FILE_NAME))?;
+        let report = parse_project_codex_turns_from(&project_root, darc_root.clone())?;
+        let connection = Connection::open(darc_root.join(INDEX_DB_FILE_NAME))?;
         let indexed_sessions = indexed_codex_session_count(&connection, "repo-abc123")?;
         let indexed_turn: (String, String) = connection.query_row(
             "
@@ -2674,14 +2674,14 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn parse_project_still_fails_on_rollout_file_read_errors() -> Result<()> {
-        let memstack_root = unique_test_dir("parse-hard-file-read-error");
-        let project_root = memstack_root.join("repo");
-        let sessions_root = memstack_root.join("projects/repo-abc123/sessions");
+        let darc_root = unique_test_dir("parse-hard-file-read-error");
+        let project_root = darc_root.join("repo");
+        let sessions_root = darc_root.join("projects/repo-abc123/sessions");
         let codex_root = sessions_root.join("codex");
         let rollout_path = codex_root
             .join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl");
         fs::create_dir_all(&project_root)?;
-        write_parse_config(&memstack_root, &project_root, &sessions_root)?;
+        write_parse_config(&darc_root, &project_root, &sessions_root)?;
 
         write_file(
             &rollout_path,
@@ -2696,8 +2696,8 @@ mod tests {
         )?;
         fs::set_permissions(&rollout_path, fs::Permissions::from_mode(0o000))?;
 
-        let error = parse_project_codex_turns_from(&project_root, memstack_root)
-            .expect_err("hard read error");
+        let error =
+            parse_project_codex_turns_from(&project_root, darc_root).expect_err("hard read error");
 
         assert!(
             error.to_string().contains("failed") || error.to_string().contains("Permission denied")

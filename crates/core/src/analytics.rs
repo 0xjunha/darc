@@ -51,7 +51,7 @@ pub struct ClaudeSchemaAnalytics {
     pub best_effort_session_count: u64,
 }
 
-/// Reports Claude rollout analytics for the active memstack project.
+/// Reports Claude rollout analytics for the active darc project.
 pub fn report_claude_rollout_analytics(
     root: Option<PathBuf>,
 ) -> Result<ClaudeRolloutAnalyticsReport> {
@@ -60,7 +60,7 @@ pub fn report_claude_rollout_analytics(
     report_claude_rollout_analytics_from(&current_dir, root.unwrap_or_else(default_root_path))
 }
 
-/// Reports Claude rollout analytics for one explicit current directory and memstack root.
+/// Reports Claude rollout analytics for one explicit current directory and darc root.
 pub(crate) fn report_claude_rollout_analytics_from(
     current_dir: &Path,
     root: PathBuf,
@@ -395,16 +395,16 @@ mod tests {
 
     #[test]
     fn reports_indexed_claude_rollout_analytics() -> Result<()> {
-        let memstack_root = unique_test_dir("claude-analytics");
-        let project_root = memstack_root.join("repo");
-        let sessions_root = memstack_root.join("projects/repo-abc123/sessions");
+        let darc_root = unique_test_dir("claude-analytics");
+        let project_root = darc_root.join("repo");
+        let sessions_root = darc_root.join("projects/repo-abc123/sessions");
         let claude_root = sessions_root.join("claude");
         let session_id = "session-analytics";
         let session_path = claude_root
             .join(session_id)
             .join(format!("{session_id}.jsonl"));
         fs::create_dir_all(&project_root)?;
-        write_parse_config(&memstack_root, &project_root, &sessions_root)?;
+        write_parse_config(&darc_root, &project_root, &sessions_root)?;
 
         write_file(
             &session_path,
@@ -421,17 +421,14 @@ mod tests {
 
         let _report = parse_project_sessions_from(
             &project_root,
-            memstack_root.clone(),
+            darc_root.clone(),
             &[crate::SourceKind::Claude],
         )?;
-        let analytics = report_claude_rollout_analytics_from(&project_root, memstack_root.clone())?;
+        let analytics = report_claude_rollout_analytics_from(&project_root, darc_root.clone())?;
 
         assert_eq!(analytics.project_name, "repo");
         assert_eq!(analytics.project_root, fs::canonicalize(&project_root)?);
-        assert_eq!(
-            analytics.index_db_path,
-            memstack_root.join(INDEX_DB_FILE_NAME)
-        );
+        assert_eq!(analytics.index_db_path, darc_root.join(INDEX_DB_FILE_NAME));
         assert_eq!(analytics.sessions_total, 1);
         assert_eq!(analytics.primary_sessions, 1);
         assert_eq!(analytics.subagent_sessions, 0);

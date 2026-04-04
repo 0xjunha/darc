@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use memstack_core::{
+use darc_core::{
     ClaudeSchemaAuditOptions, ClaudeSchemaAuditOutcome, ClaudeSchemaAuditReport,
     ClaudeSchemaSurveyMode, CodexSchemaAuditOptions, CodexSchemaAuditOutcome,
     CodexSchemaAuditReport, InitDraft, ParseOptions, SkippedRollout, SourceKind, SyncOptions,
@@ -11,7 +11,7 @@ use memstack_core::{
 };
 
 #[derive(Debug, Parser)]
-#[command(name = "memstack", version, about = "Memstack CLI")]
+#[command(name = "darc", version, about = "Darc CLI")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -20,7 +20,7 @@ struct Cli {
 /// Supported CLI subcommands.
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Detect local sources and create the shared memstack config.
+    /// Detect local sources and create the shared darc config.
     Init(InitArgs),
     /// Sync matching Claude and Codex sessions into the project archive.
     Sync(SyncArgs),
@@ -35,12 +35,12 @@ enum Commands {
     #[command(
         hide = true,
         about = "Audit Claude rollout transcript compatibility against published npm releases",
-        long_about = "Audit Claude rollout transcript compatibility against published npm releases.\n\nThe audit downloads published @anthropic-ai/claude-code packages from the npm registry, runs deterministic fixture prompts against each audited version, and derives transcript schema manifests from the emitted local JSONL transcripts.\n\nSecurity note:\n- Memstack does not provide an OS-level sandbox for executing published Claude packages.\n- You must pass `--use-host-auth` to run this hidden maintainer command.\n- When you do, the downloaded package executes with your host Claude login state plus an allowlist of Claude/cloud provider auth environment variables, not your full shell environment.\n\nRuntime requirements:\n- A working `node` runtime must be installed locally.\n- A working Python runtime (`python3` or `python`) must be installed locally for hook capture.\n- Claude authentication must be available through an existing local Claude login or the supported auth environment variables."
+        long_about = "Audit Claude rollout transcript compatibility against published npm releases.\n\nThe audit downloads published @anthropic-ai/claude-code packages from the npm registry, runs deterministic fixture prompts against each audited version, and derives transcript schema manifests from the emitted local JSONL transcripts.\n\nSecurity note:\n- Darc does not provide an OS-level sandbox for executing published Claude packages.\n- You must pass `--use-host-auth` to run this hidden maintainer command.\n- When you do, the downloaded package executes with your host Claude login state plus an allowlist of Claude/cloud provider auth environment variables, not your full shell environment.\n\nRuntime requirements:\n- A working `node` runtime must be installed locally.\n- A working Python runtime (`python3` or `python`) must be installed locally for hook capture.\n- Claude authentication must be available through an existing local Claude login or the supported auth environment variables."
     )]
     ClaudeSchemaAudit(ClaudeSchemaAuditArgs),
 }
 
-/// Detect local sources and create the shared memstack config.
+/// Detect local sources and create the shared darc config.
 #[derive(Debug, Args)]
 struct InitArgs {
     #[arg(long, default_value_os_t = default_root_path())]
@@ -165,24 +165,23 @@ fn format_init_status(draft: &InitDraft, dry_run: bool) -> String {
     if dry_run {
         return if draft.global_config_exists {
             if draft.project_exists {
-                "Dry run only. Existing memstack config was left unchanged.".to_owned()
+                "Dry run only. Existing darc config was left unchanged.".to_owned()
             } else {
-                "Dry run only. Project was not added to memstack.".to_owned()
+                "Dry run only. Project was not added to darc.".to_owned()
             }
         } else {
-            "Dry run only. Global memstack config and project registration were not written."
-                .to_owned()
+            "Dry run only. Global darc config and project registration were not written.".to_owned()
         };
     }
 
     let mut lines = Vec::new();
     if !draft.global_config_exists {
-        lines.push("Initialized global memstack config.".to_owned());
+        lines.push("Initialized global darc config.".to_owned());
     }
     lines.push(if draft.project_exists {
-        "Project is already configured in memstack.".to_owned()
+        "Project is already configured in darc.".to_owned()
     } else {
-        "Added project to memstack.".to_owned()
+        "Added project to darc.".to_owned()
     });
     lines.join("\n")
 }
@@ -342,7 +341,7 @@ fn format_sources(sources: &[SourceKind]) -> String {
         .join(", ")
 }
 
-/// Formats one skipped rollout warning for `memstack parse`.
+/// Formats one skipped rollout warning for `darc parse`.
 fn format_skipped_rollout(skipped: &SkippedRollout) -> String {
     let mut details = Vec::new();
     if let Some(session_id) = &skipped.logical_session_id {
@@ -397,7 +396,7 @@ fn format_codex_schema_audit_report(report: &CodexSchemaAuditReport) -> String {
             report.latest_stable_release_tag
         ),
         format!(
-            "Latest Exact-Covered Memstack Version: {}",
+            "Latest Exact-Covered Darc Version: {}",
             report.latest_exact_covered_version
         ),
         format!("Audited Tag Range: {}", report.audited_tag_range()),
@@ -419,7 +418,7 @@ fn format_codex_schema_audit_report(report: &CodexSchemaAuditReport) -> String {
                     .iter()
                     .map(|line| format!("- {line}")),
             );
-            lines.push("Likely Memstack Files To Update:".to_owned());
+            lines.push("Likely Darc Files To Update:".to_owned());
             lines.extend(
                 drift
                     .likely_files_to_update
@@ -450,7 +449,7 @@ fn format_claude_schema_audit_report(report: &ClaudeSchemaAuditReport) -> String
             report.latest_published_version
         ),
         format!(
-            "Latest Exact-Covered Memstack Version: {}",
+            "Latest Exact-Covered Darc Version: {}",
             report.latest_exact_covered_version
         ),
         format!("Audited Version Range: {}", report.audited_version_range()),
@@ -503,7 +502,7 @@ fn format_claude_schema_audit_report(report: &ClaudeSchemaAuditReport) -> String
                     .iter()
                     .map(|line| format!("- {line}")),
             );
-            lines.push("Likely Memstack Files To Update:".to_owned());
+            lines.push("Likely Darc Files To Update:".to_owned());
             lines.extend(
                 drift
                     .likely_files_to_update
@@ -556,7 +555,7 @@ fn format_claude_schema_audit_report(report: &ClaudeSchemaAuditReport) -> String
 #[cfg(test)]
 mod tests {
     use clap::{CommandFactory, Parser};
-    use memstack_core::{
+    use darc_core::{
         ClaudeSchemaAuditReport, ClaudeSchemaDrift, ClaudeSchemaDriftWindow,
         ClaudeSchemaSurveyMode, ClaudeSdkSchemaDrift, CodexSchemaAuditReport, CodexSchemaDrift,
     };
@@ -570,7 +569,7 @@ mod tests {
     fn compatible_report() -> CodexSchemaAuditReport {
         CodexSchemaAuditReport {
             release_source: "GitHub Releases (openai/codex)".to_owned(),
-            binary_cache_dir: "/tmp/memstack-cache".into(),
+            binary_cache_dir: "/tmp/darc-cache".into(),
             latest_stable_release_tag: "rust-v0.118.0".to_owned(),
             latest_exact_covered_version: "0.118.0".to_owned(),
             audited_tags: vec!["rust-v0.118.0".to_owned()],
@@ -581,7 +580,7 @@ mod tests {
     fn compatible_claude_report() -> ClaudeSchemaAuditReport {
         ClaudeSchemaAuditReport {
             release_source: "npm registry (@anthropic-ai/claude-code)".to_owned(),
-            binary_cache_dir: "/tmp/memstack-claude-cache".into(),
+            binary_cache_dir: "/tmp/darc-claude-cache".into(),
             latest_published_version: "2.1.92".to_owned(),
             latest_exact_covered_version: "2.1.87".to_owned(),
             audited_versions: vec!["2.1.92".to_owned(), "2.1.87".to_owned()],
@@ -603,7 +602,7 @@ mod tests {
 
     #[test]
     fn parses_hidden_codex_schema_audit_command() {
-        let cli = Cli::try_parse_from(["memstack", "codex-schema-audit"]).unwrap();
+        let cli = Cli::try_parse_from(["darc", "codex-schema-audit"]).unwrap();
         assert!(matches!(
             cli.command,
             Commands::CodexSchemaAudit(super::CodexSchemaAuditArgs { .. })
@@ -613,7 +612,7 @@ mod tests {
     #[test]
     fn parses_hidden_claude_schema_audit_command() {
         let cli = Cli::try_parse_from([
-            "memstack",
+            "darc",
             "claude-schema-audit",
             "--sample-stride",
             "10",
@@ -641,7 +640,7 @@ mod tests {
 
     #[test]
     fn parse_command_accepts_provider_filters() {
-        let cli = Cli::try_parse_from(["memstack", "parse", "--provider", "claude"]).unwrap();
+        let cli = Cli::try_parse_from(["darc", "parse", "--provider", "claude"]).unwrap();
         assert!(matches!(
             cli.command,
             Commands::Parse(super::ParseArgs { provider, .. }) if provider.len() == 1
@@ -704,7 +703,7 @@ mod tests {
         assert_eq!(codex_schema_audit_exit_code(&report), 1);
         assert!(output.contains("Status: schema drift detected"));
         assert!(output.contains("First Drift Tag: rust-v0.119.0"));
-        assert!(output.contains("Likely Memstack Files To Update:"));
+        assert!(output.contains("Likely Darc Files To Update:"));
     }
 
     #[test]
@@ -753,7 +752,7 @@ mod tests {
         assert_eq!(claude_schema_audit_exit_code(&report), 1);
         assert!(output.contains("Status: schema drift detected"));
         assert!(output.contains("First Drift Version: 2.1.90"));
-        assert!(output.contains("Likely Memstack Files To Update:"));
+        assert!(output.contains("Likely Darc Files To Update:"));
         assert!(output.contains("Survey Mode: coarse"));
         assert!(output.contains("Sampled Transcript Drift Windows:"));
     }

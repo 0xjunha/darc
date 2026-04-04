@@ -200,6 +200,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "darc-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "darc-core",
+]
+
+[[package]]
+name = "darc-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "directories",
+ "flate2",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "toml",
+ "walkdir",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -722,32 +748,6 @@ name = "memchr"
 version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
-
-[[package]]
-name = "memstack-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "memstack-core",
-]
-
-[[package]]
-name = "memstack-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "directories",
- "flate2",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "tar",
- "toml",
- "walkdir",
-]
 
 [[package]]
 name = "miniz_oxide"

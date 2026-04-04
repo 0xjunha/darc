@@ -840,9 +840,9 @@ fn unique_sibling_path(path: &Path, kind: &str) -> PathBuf {
     let file_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "memstack-temp".to_owned());
+        .unwrap_or_else(|| "darc-temp".to_owned());
     path.with_file_name(format!(
-        ".{file_name}.memstack-{kind}-{}-{}",
+        ".{file_name}.darc-{kind}-{}-{}",
         std::process::id(),
         UNIQUE_PATH_COUNTER.fetch_add(1, Ordering::Relaxed),
     ))
@@ -1237,11 +1237,8 @@ mod tests {
     fn init_git_repo(path: &Path, remote: &str) -> Result<()> {
         fs::create_dir_all(path)?;
         run_git(path, &["init"])?;
-        run_git(path, &["config", "user.name", "Memstack Test"])?;
-        run_git(
-            path,
-            &["config", "user.email", "memstack-tests@example.com"],
-        )?;
+        run_git(path, &["config", "user.name", "Darc Test"])?;
+        run_git(path, &["config", "user.email", "darc-tests@example.com"])?;
         run_git(path, &["config", "commit.gpgsign", "false"])?;
         run_git(path, &["remote", "add", "origin", remote])
     }
@@ -1257,11 +1254,11 @@ mod tests {
         SharedConfig::new(
             root.to_path_buf(),
             vec![ProjectConfig {
-                id: "memstack-abc123".into(),
-                name: "memstack".into(),
+                id: "darc-abc123".into(),
+                name: "darc".into(),
                 local_path: project_root.to_path_buf(),
                 git_upstream: None,
-                sessions_root: root.join("projects/memstack-abc123/sessions"),
+                sessions_root: root.join("projects/darc-abc123/sessions"),
                 known_paths: Vec::new(),
             }],
             crate::config::SourcesConfig {
@@ -1284,7 +1281,7 @@ mod tests {
     struct TestWorkspace {
         root: PathBuf,
         project_root: PathBuf,
-        memstack_root: PathBuf,
+        darc_root: PathBuf,
         claude_home: PathBuf,
         claude_projects: PathBuf,
         codex_home: PathBuf,
@@ -1296,7 +1293,7 @@ mod tests {
         fn new(prefix: &str) -> Result<Self> {
             let root = unique_test_dir(prefix);
             let project_root = root.join("repo");
-            let memstack_root = root.join("memstack");
+            let darc_root = root.join("darc");
             let claude_home = root.join("claude");
             let claude_projects = claude_home.join("projects");
             let codex_home = root.join("codex");
@@ -1308,7 +1305,7 @@ mod tests {
             Ok(Self {
                 root,
                 project_root,
-                memstack_root,
+                darc_root,
                 claude_home,
                 claude_projects,
                 codex_home,
@@ -1319,7 +1316,7 @@ mod tests {
 
         fn default_config(&self) -> SharedConfig {
             sample_config(
-                &self.memstack_root,
+                &self.darc_root,
                 &self.project_root,
                 &self.claude_home,
                 &self.claude_projects,
@@ -1329,9 +1326,9 @@ mod tests {
         }
 
         fn write_config(&self, config: &SharedConfig) -> Result<()> {
-            fs::create_dir_all(&self.memstack_root)?;
+            fs::create_dir_all(&self.darc_root)?;
             write_file(
-                &self.memstack_root.join(CONFIG_FILE_NAME),
+                &self.darc_root.join(CONFIG_FILE_NAME),
                 &toml::to_string_pretty(config)?,
             )
         }
@@ -1583,7 +1580,7 @@ mod tests {
 
         let plan = prepare_sync_from(
             &ws.project_root,
-            ws.memstack_root.clone(),
+            ws.darc_root.clone(),
             SyncOptions::default(),
         )?;
 
@@ -1595,7 +1592,7 @@ mod tests {
         assert!(report.new_known_paths.is_empty());
         assert!(report.config_written);
 
-        let config_after = load_config(&ws.memstack_root.join(CONFIG_FILE_NAME))?;
+        let config_after = load_config(&ws.darc_root.join(CONFIG_FILE_NAME))?;
         assert!(config_after.projects[0].known_paths.is_empty());
 
         Ok(())
@@ -1638,7 +1635,7 @@ mod tests {
 
         let plan = prepare_sync_from(
             &ws.project_root,
-            ws.memstack_root.clone(),
+            ws.darc_root.clone(),
             SyncOptions::default(),
         )?;
 
@@ -1654,8 +1651,8 @@ mod tests {
         assert!(!report.config_written);
 
         let manifest_path = ws
-            .memstack_root
-            .join("projects/memstack-abc123/sessions/.manifest.json");
+            .darc_root
+            .join("projects/darc-abc123/sessions/.manifest.json");
         let manifest: Manifest = serde_json::from_str(&fs::read_to_string(&manifest_path)?)?;
         let claude_entry = manifest
             .sessions
@@ -1677,23 +1674,23 @@ mod tests {
             "duplicate resolution should keep the larger archived rollout",
         );
         assert!(ws
-            .memstack_root
+            .darc_root
             .join(format!(
-                "projects/memstack-abc123/sessions/claude/{claude_session_id}/{claude_session_id}.jsonl"
+                "projects/darc-abc123/sessions/claude/{claude_session_id}/{claude_session_id}.jsonl"
             ))
             .exists());
         assert!(ws
-            .memstack_root
+            .darc_root
             .join(format!(
-                "projects/memstack-abc123/sessions/claude/{claude_session_id}/subagents/agent-a1.jsonl"
+                "projects/darc-abc123/sessions/claude/{claude_session_id}/subagents/agent-a1.jsonl"
             ))
             .exists());
 
-        let config_after = load_config(&ws.memstack_root.join(CONFIG_FILE_NAME))?;
+        let config_after = load_config(&ws.darc_root.join(CONFIG_FILE_NAME))?;
         assert!(config_after.projects[0].known_paths.is_empty());
 
         let second_plan =
-            prepare_sync_from(&ws.project_root, ws.memstack_root, SyncOptions::default())?;
+            prepare_sync_from(&ws.project_root, ws.darc_root, SyncOptions::default())?;
         assert_eq!(second_plan.sessions_to_copy(), 0);
         assert_eq!(second_plan.auxiliary_to_copy(), 0);
         assert_eq!(second_plan.sessions_unchanged, 2);
@@ -1722,7 +1719,7 @@ mod tests {
 
         let plan = prepare_sync_from(
             &ws.project_root,
-            ws.memstack_root.clone(),
+            ws.darc_root.clone(),
             SyncOptions::default(),
         )?;
 
@@ -1732,9 +1729,9 @@ mod tests {
         let report = execute_sync(plan)?;
         assert_eq!(report.sessions_copied, 1);
         assert!(
-            ws.memstack_root
+            ws.darc_root
                 .join(format!(
-                    "projects/memstack-abc123/sessions/codex/{rollout_name}"
+                    "projects/darc-abc123/sessions/codex/{rollout_name}"
                 ))
                 .exists()
         );
@@ -1745,7 +1742,7 @@ mod tests {
     #[test]
     fn prepare_sync_learns_codex_checkout_with_same_upstream() -> Result<()> {
         let ws = TestWorkspace::new("sync-codex-known-path")?;
-        let remote = "https://example.com/acme/memstack.git";
+        let remote = "https://example.com/acme/darc.git";
         let related_root = ws.root.join("repo-b");
         let related_subdir = related_root.join("nested");
         let codex_sessions = ws.codex_sessions_root.join("2026/04/01");
@@ -1770,7 +1767,7 @@ mod tests {
 
         let plan = prepare_sync_from(
             &ws.project_root,
-            ws.memstack_root.clone(),
+            ws.darc_root.clone(),
             SyncOptions::default(),
         )?;
 
@@ -1782,7 +1779,7 @@ mod tests {
 
         assert_eq!(report.new_known_paths, vec![canonical_related_root.clone()]);
 
-        let config_after = load_config(&ws.memstack_root.join(CONFIG_FILE_NAME))?;
+        let config_after = load_config(&ws.darc_root.join(CONFIG_FILE_NAME))?;
         assert_eq!(
             config_after.projects[0].known_paths,
             vec![canonical_related_root]
@@ -1807,7 +1804,7 @@ mod tests {
             ),
         )?;
 
-        let plan = prepare_sync_from(&ws.project_root, ws.memstack_root, SyncOptions::default())?;
+        let plan = prepare_sync_from(&ws.project_root, ws.darc_root, SyncOptions::default())?;
 
         assert_eq!(plan.sessions_to_copy(), 0);
         assert_eq!(plan.sessions_unchanged, 0);
@@ -1838,7 +1835,7 @@ mod tests {
 
         let plan = prepare_sync_from(
             &ws.project_root,
-            ws.memstack_root.clone(),
+            ws.darc_root.clone(),
             SyncOptions::default(),
         )?;
 
@@ -1849,9 +1846,9 @@ mod tests {
 
         assert_eq!(report.sessions_copied, 1);
         assert!(
-            ws.memstack_root
+            ws.darc_root
                 .join(format!(
-                    "projects/memstack-abc123/sessions/codex/{rollout_name}"
+                    "projects/darc-abc123/sessions/codex/{rollout_name}"
                 ))
                 .exists()
         );
@@ -1862,7 +1859,7 @@ mod tests {
     #[test]
     fn prepare_sync_skips_codex_session_in_other_projects_live_worktree() -> Result<()> {
         let ws = TestWorkspace::new("sync-codex-other-worktree")?;
-        let remote = "https://example.com/acme/memstack.git";
+        let remote = "https://example.com/acme/darc.git";
         let repo_b_root = ws.root.join("repo-b");
         let repo_b_worktree = ws.root.join("repo-b-wt");
         let codex_sessions = ws.codex_sessions_root.join("2026/04/01");
@@ -1892,7 +1889,7 @@ mod tests {
             name: "repo-b".into(),
             local_path: repo_b_root.clone(),
             git_upstream: Some(remote.into()),
-            sessions_root: ws.memstack_root.join("projects/repo-b-def456/sessions"),
+            sessions_root: ws.darc_root.join("projects/repo-b-def456/sessions"),
             known_paths: Vec::new(),
         });
         ws.write_config(&config)?;
@@ -1907,7 +1904,7 @@ mod tests {
             ),
         )?;
 
-        let plan = prepare_sync_from(&ws.project_root, ws.memstack_root, SyncOptions::default())?;
+        let plan = prepare_sync_from(&ws.project_root, ws.darc_root, SyncOptions::default())?;
 
         assert_eq!(plan.sessions_to_copy(), 0);
         assert!(plan.new_known_paths.is_empty());
@@ -1919,7 +1916,7 @@ mod tests {
     #[test]
     fn prepare_sync_skips_codex_checkout_owned_by_other_project() -> Result<()> {
         let ws = TestWorkspace::new("sync-codex-other-project")?;
-        let remote = "https://example.com/acme/memstack.git";
+        let remote = "https://example.com/acme/darc.git";
         let related_root = ws.root.join("repo-b");
         let related_subdir = related_root.join("nested");
         let codex_sessions = ws.codex_sessions_root.join("2026/04/01");
@@ -1935,7 +1932,7 @@ mod tests {
             name: "repo-b".into(),
             local_path: related_root.clone(),
             git_upstream: Some(remote.into()),
-            sessions_root: ws.memstack_root.join("projects/repo-b-def456/sessions"),
+            sessions_root: ws.darc_root.join("projects/repo-b-def456/sessions"),
             known_paths: Vec::new(),
         });
         ws.write_config(&config)?;
@@ -1949,7 +1946,7 @@ mod tests {
             ),
         )?;
 
-        let plan = prepare_sync_from(&ws.project_root, ws.memstack_root, SyncOptions::default())?;
+        let plan = prepare_sync_from(&ws.project_root, ws.darc_root, SyncOptions::default())?;
 
         assert_eq!(plan.sessions_to_copy(), 0);
         assert!(plan.new_known_paths.is_empty());

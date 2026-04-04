@@ -51,7 +51,7 @@ pub struct CodexSchemaAuditReport {
 }
 
 impl CodexSchemaAuditReport {
-    /// Returns whether the audited stable Codex tags are schema-compatible with memstack.
+    /// Returns whether the audited stable Codex tags are schema-compatible with darc.
     pub fn is_compatible(&self) -> bool {
         matches!(self.outcome, CodexSchemaAuditOutcome::Compatible)
     }
@@ -74,7 +74,7 @@ pub enum CodexSchemaAuditOutcome {
     Drift(CodexSchemaDrift),
 }
 
-/// Stores the first detected rollout schema drift against memstack's exact coverage baseline.
+/// Stores the first detected rollout schema drift against darc's exact coverage baseline.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CodexSchemaDrift {
     pub first_drift_tag: String,
@@ -254,7 +254,7 @@ impl GitHubCodexSchemaAuditProvider {
             cache_dir,
             host_platform,
             http: build_http_client()?,
-            scratch_dir: ScopedTempDir::new("memstack-codex-schema-audit")?,
+            scratch_dir: ScopedTempDir::new("darc-codex-schema-audit")?,
         })
     }
 
@@ -597,7 +597,7 @@ fn build_http_client() -> Result<Client> {
     let mut headers = HeaderMap::new();
     headers.insert(
         USER_AGENT,
-        HeaderValue::from_str(&format!("memstack/{}", env!("CARGO_PKG_VERSION")))
+        HeaderValue::from_str(&format!("darc/{}", env!("CARGO_PKG_VERSION")))
             .context("failed to build GitHub API user agent header")?,
     );
     if let Some(token) = github_api_token() {
@@ -680,7 +680,7 @@ fn resolve_binary_cache_dir(cache_dir: Option<&Path>) -> Result<PathBuf> {
     BaseDirs::new()
         .map(|dirs| {
             dirs.cache_dir()
-                .join("memstack")
+                .join("darc")
                 .join("schema-audit")
                 .join("codex")
         })
@@ -987,14 +987,14 @@ fn parse_stable_release_tag(tag_name: &str) -> Option<StableCodexReleaseTag> {
     })
 }
 
-/// Selects the audited stable tag range from latest stable down to memstack's exact cutoff tag.
+/// Selects the audited stable tag range from latest stable down to darc's exact cutoff tag.
 fn select_audited_release_tags(
     stable_tags: &[StableCodexReleaseTag],
 ) -> Result<Vec<StableCodexReleaseTag>> {
     let exact_version = latest_exact_supported_codex_cli_version();
     ensure!(
         exact_version.is_stable(),
-        "memstack's latest exact-covered Codex version `{exact_version}` is not a stable release"
+        "darc's latest exact-covered Codex version `{exact_version}` is not a stable release"
     );
     ensure!(
         !stable_tags.is_empty(),
@@ -1006,7 +1006,7 @@ fn select_audited_release_tags(
         .position(|tag| tag.version == exact_version)
         .with_context(|| {
             format!(
-                "GitHub Releases are missing the stable release tag `{}{}` required by memstack's exact coverage boundary",
+                "GitHub Releases are missing the stable release tag `{}{}` required by darc's exact coverage boundary",
                 RELEASE_TAG_PREFIX, exact_version
             )
         })?;
@@ -1237,7 +1237,7 @@ mod tests {
 
         let report = run_codex_schema_audit_with_provider(
             "GitHub Releases".to_owned(),
-            PathBuf::from("/tmp/memstack-cache"),
+            PathBuf::from("/tmp/darc-cache"),
             &provider,
         )
         .unwrap();
@@ -1288,7 +1288,7 @@ mod tests {
 
         let report = run_codex_schema_audit_with_provider(
             "GitHub Releases".to_owned(),
-            PathBuf::from("/tmp/memstack-cache"),
+            PathBuf::from("/tmp/darc-cache"),
             &provider,
         )
         .unwrap();
@@ -1337,7 +1337,7 @@ mod tests {
 
         let report = run_codex_schema_audit_with_provider_and_progress(
             "GitHub Releases".to_owned(),
-            PathBuf::from("/tmp/memstack-cache"),
+            PathBuf::from("/tmp/darc-cache"),
             &provider,
             &mut |message| progress.push(message.to_owned()),
         )
@@ -1407,7 +1407,7 @@ mod tests {
 
         let report = run_codex_schema_audit_with_provider(
             "GitHub Releases".to_owned(),
-            PathBuf::from("/tmp/memstack-cache"),
+            PathBuf::from("/tmp/darc-cache"),
             &provider,
         )
         .unwrap();
@@ -1503,7 +1503,7 @@ mod tests {
 
         let report = run_codex_schema_audit_with_provider(
             "GitHub Releases".to_owned(),
-            PathBuf::from("/tmp/memstack-cache"),
+            PathBuf::from("/tmp/darc-cache"),
             &provider,
         )
         .unwrap();
@@ -1551,7 +1551,7 @@ mod tests {
 
         let report = run_codex_schema_audit_with_provider(
             "GitHub Releases".to_owned(),
-            PathBuf::from("/tmp/memstack-cache"),
+            PathBuf::from("/tmp/darc-cache"),
             &provider,
         )
         .unwrap();
@@ -1587,7 +1587,7 @@ mod tests {
 
     #[test]
     fn released_binary_command_uses_scrubbed_runtime_environment() {
-        let scratch_dir = ScopedTempDir::new("memstack-codex-schema-audit-test").unwrap();
+        let scratch_dir = ScopedTempDir::new("darc-codex-schema-audit-test").unwrap();
         let runtime_root = scratch_dir.path().join("runtime");
         let working_dir = scratch_dir.path().join("work");
         std::fs::create_dir_all(&working_dir).unwrap();
@@ -1617,7 +1617,7 @@ mod tests {
 
     #[test]
     fn verified_binary_package_extraction_rejects_tampered_cached_archive() {
-        let scratch_dir = ScopedTempDir::new("memstack-codex-schema-audit-test").unwrap();
+        let scratch_dir = ScopedTempDir::new("darc-codex-schema-audit-test").unwrap();
         let archive_path = scratch_dir.path().join("release.tgz");
         let extraction_root = scratch_dir.path().join("extract");
         let relative_binary_path =

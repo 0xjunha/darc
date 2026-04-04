@@ -11,7 +11,7 @@ use crate::{
     project_paths::{current_project_root, normalize_project_path, project_path_set},
 };
 
-/// Stores the resolved memstack project for the current working directory.
+/// Stores the resolved darc project for the current working directory.
 #[derive(Debug, Clone)]
 pub(crate) struct ActiveProject {
     pub config: SharedConfig,
@@ -22,12 +22,12 @@ pub(crate) struct ActiveProject {
     pub project: ProjectConfig,
 }
 
-/// Loads the active memstack project from the shared config.
+/// Loads the active darc project from the shared config.
 pub(crate) fn load_active_project(current_dir: &Path, root: &Path) -> Result<ActiveProject> {
     let config_path = root.join(CONFIG_FILE_NAME);
     if !config_path.exists() {
         bail!(
-            "shared config not found at {}\nrun `memstack init --root {}` from your project root first",
+            "shared config not found at {}\nrun `darc init --root {}` from your project root first",
             config_path.display(),
             root.display()
         );
@@ -68,7 +68,7 @@ fn find_project_index(
     }
 
     match matches.as_slice() {
-        [] => bail!("current directory does not match any configured memstack project"),
+        [] => bail!("current directory does not match any configured darc project"),
         [index] => Ok(*index),
         _ => {
             let names = matches
