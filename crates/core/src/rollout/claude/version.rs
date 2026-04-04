@@ -46,6 +46,11 @@ impl ClaudeCliVersion {
                 .map(str::to_owned),
         })
     }
+
+    /// Returns whether this parsed version is a stable release.
+    pub(crate) const fn is_stable(&self) -> bool {
+        self.prerelease.is_none()
+    }
 }
 
 /// Identifies one provisional Claude transcript parser family derived from coarse survey data.
@@ -152,6 +157,11 @@ pub(crate) struct ClaudeSchemaResolution {
 /// Returns the earliest Claude CLI version observed well enough to anchor transcript epochs.
 pub(crate) const fn earliest_observed_claude_cli_version() -> ClaudeCliVersion {
     ClaudeCliVersion::stable(1, 0, 88)
+}
+
+/// Returns the latest Claude CLI version covered exactly by memstack.
+pub(crate) const fn latest_exact_supported_claude_cli_version() -> ClaudeCliVersion {
+    ClaudeCliVersion::stable(2, 1, 87)
 }
 
 /// Resolves the parser epoch for one Claude CLI version string.
@@ -263,7 +273,7 @@ fn parse_numeric_part(part: Option<&str>, raw_version: &str, label: &str) -> any
 mod tests {
     use super::{
         ClaudeCliVersion, ClaudeSchemaEpoch, earliest_observed_claude_cli_version,
-        resolve_claude_schema,
+        latest_exact_supported_claude_cli_version, resolve_claude_schema,
     };
     use crate::rollout::ParseDeterminism;
 
@@ -365,5 +375,9 @@ mod tests {
     #[test]
     fn exposes_exact_coverage_boundaries() {
         assert_eq!(earliest_observed_claude_cli_version().to_string(), "1.0.88");
+        assert_eq!(
+            latest_exact_supported_claude_cli_version().to_string(),
+            "2.1.87"
+        );
     }
 }

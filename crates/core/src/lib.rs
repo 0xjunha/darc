@@ -22,6 +22,11 @@ pub use parse::{
     parse_project_codex_turns, parse_project_sessions,
 };
 pub use rollout::ParseDeterminism;
+pub use rollout::claude::{
+    ClaudeSchemaAuditOptions, ClaudeSchemaAuditOutcome, ClaudeSchemaAuditReport, ClaudeSchemaDrift,
+    ClaudeSchemaDriftWindow, ClaudeSchemaSurveyMode, ClaudeSdkSchemaDrift, run_claude_schema_audit,
+    run_claude_schema_audit_with_progress,
+};
 pub use rollout::codex::{
     CodexSchemaAuditOptions, CodexSchemaAuditOutcome, CodexSchemaAuditReport, CodexSchemaDrift,
     run_codex_schema_audit, run_codex_schema_audit_with_progress,

@@ -3,10 +3,11 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use memstack_core::{
-    CodexSchemaAuditOptions, CodexSchemaAuditOutcome, CodexSchemaAuditReport, InitDraft,
-    ParseOptions, SkippedRollout, SourceKind, SyncOptions, default_root_path, execute_sync,
-    parse_project_sessions, prepare_init, prepare_sync, run_codex_schema_audit_with_progress,
-    write_init,
+    ClaudeSchemaAuditOptions, ClaudeSchemaAuditOutcome, ClaudeSchemaAuditReport,
+    ClaudeSchemaSurveyMode, CodexSchemaAuditOptions, CodexSchemaAuditOutcome,
+    CodexSchemaAuditReport, InitDraft, ParseOptions, SkippedRollout, SourceKind, SyncOptions,
+    default_root_path, execute_sync, parse_project_sessions, prepare_init, prepare_sync,
+    run_claude_schema_audit_with_progress, run_codex_schema_audit_with_progress, write_init,
 };
 
 #[derive(Debug, Parser)]
@@ -31,6 +32,12 @@ enum Commands {
         long_about = "Audit Codex rollout schema compatibility against stable release tags.\n\nThe audit fetches release metadata from GitHub Releases and may hit GitHub API rate limits when run anonymously.\n\nGitHub API authentication:\n- Prefer GH_TOKEN when it is set.\n- Otherwise use GITHUB_TOKEN.\n- Personal access tokens are accepted."
     )]
     CodexSchemaAudit(CodexSchemaAuditArgs),
+    #[command(
+        hide = true,
+        about = "Audit Claude rollout transcript compatibility against published npm releases",
+        long_about = "Audit Claude rollout transcript compatibility against published npm releases.\n\nThe audit downloads published @anthropic-ai/claude-code packages from the npm registry, runs deterministic fixture prompts against each audited version, and derives transcript schema manifests from the emitted local JSONL transcripts.\n\nSecurity note:\n- Memstack does not provide an OS-level sandbox for executing published Claude packages.\n- You must pass `--use-host-auth` to run this hidden maintainer command.\n- When you do, the downloaded package executes with your host Claude login state plus an allowlist of Claude/cloud provider auth environment variables, not your full shell environment.\n\nRuntime requirements:\n- A working `node` runtime must be installed locally.\n- A working Python runtime (`python3` or `python`) must be installed locally for hook capture.\n- Claude authentication must be available through an existing local Claude login or the supported auth environment variables."
+    )]
+    ClaudeSchemaAudit(ClaudeSchemaAuditArgs),
 }
 
 /// Detect local sources and create the shared memstack config.
@@ -73,11 +80,37 @@ struct CodexSchemaAuditArgs {
     cache_dir: Option<PathBuf>,
 }
 
+/// Audit Claude rollout transcript compatibility against published npm releases.
+#[derive(Debug, Args)]
+struct ClaudeSchemaAuditArgs {
+    #[arg(long, value_name = "DIR")]
+    cache_dir: Option<PathBuf>,
+
+    #[arg(long, default_value_t = 1, value_name = "N")]
+    sample_stride: usize,
+
+    #[arg(long)]
+    use_host_auth: bool,
+
+    #[arg(long, value_name = "VERSION")]
+    from_version: Option<String>,
+
+    #[arg(long, value_enum, default_value_t = ClaudeSurveyModeArg::Refine)]
+    survey_mode: ClaudeSurveyModeArg,
+}
+
 /// Represents the supported provider filters for parse and sync.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ProviderArg {
     Claude,
     Codex,
+}
+
+/// Represents the supported Claude schema audit survey modes.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ClaudeSurveyModeArg {
+    Refine,
+    Coarse,
 }
 
 fn main() {
@@ -92,6 +125,7 @@ fn run() -> i32 {
         Commands::Sync(args) => standard_exit(run_sync(args)),
         Commands::Parse(args) => standard_exit(run_parse(args)),
         Commands::CodexSchemaAudit(args) => run_codex_schema_audit_command(args),
+        Commands::ClaudeSchemaAudit(args) => run_claude_schema_audit_command(args),
     }
 }
 
@@ -258,11 +292,43 @@ fn run_codex_schema_audit_command(args: CodexSchemaAuditArgs) -> i32 {
     }
 }
 
+/// Runs the hidden Claude rollout schema audit command with dedicated exit codes.
+fn run_claude_schema_audit_command(args: ClaudeSchemaAuditArgs) -> i32 {
+    match run_claude_schema_audit_with_progress(
+        ClaudeSchemaAuditOptions {
+            cache_dir: args.cache_dir,
+            use_host_auth: args.use_host_auth,
+            sample_stride: args.sample_stride,
+            from_version: args.from_version,
+            survey_mode: args.survey_mode.into(),
+        },
+        |message| eprintln!("[claude-schema-audit] {message}"),
+    ) {
+        Ok(report) => {
+            println!("{}", format_claude_schema_audit_report(&report));
+            claude_schema_audit_exit_code(&report)
+        }
+        Err(error) => {
+            eprintln!("error: {error:#}");
+            2
+        }
+    }
+}
+
 impl From<ProviderArg> for SourceKind {
     fn from(value: ProviderArg) -> Self {
         match value {
             ProviderArg::Claude => SourceKind::Claude,
             ProviderArg::Codex => SourceKind::Codex,
+        }
+    }
+}
+
+impl From<ClaudeSurveyModeArg> for ClaudeSchemaSurveyMode {
+    fn from(value: ClaudeSurveyModeArg) -> Self {
+        match value {
+            ClaudeSurveyModeArg::Refine => ClaudeSchemaSurveyMode::Refine,
+            ClaudeSurveyModeArg::Coarse => ClaudeSchemaSurveyMode::Coarse,
         }
     }
 }
@@ -305,6 +371,11 @@ fn format_skipped_rollout(skipped: &SkippedRollout) -> String {
 
 /// Returns the CLI exit code for one Codex schema audit report.
 fn codex_schema_audit_exit_code(report: &CodexSchemaAuditReport) -> i32 {
+    if report.is_compatible() { 0 } else { 1 }
+}
+
+/// Returns the CLI exit code for one Claude schema audit report.
+fn claude_schema_audit_exit_code(report: &ClaudeSchemaAuditReport) -> i32 {
     if report.is_compatible() { 0 } else { 1 }
 }
 
@@ -361,14 +432,139 @@ fn format_codex_schema_audit_report(report: &CodexSchemaAuditReport) -> String {
     lines.join("\n")
 }
 
+/// Formats one Claude schema audit report for the hidden CLI command.
+fn format_claude_schema_audit_report(report: &ClaudeSchemaAuditReport) -> String {
+    let mut lines = vec![
+        format!(
+            "Status: {}",
+            if report.is_compatible() {
+                "compatible"
+            } else {
+                "schema drift detected"
+            }
+        ),
+        format!("Release Source: {}", report.release_source),
+        format!("Binary Cache: {}", report.binary_cache_dir.display()),
+        format!(
+            "Latest Published Claude Version: {}",
+            report.latest_published_version
+        ),
+        format!(
+            "Latest Exact-Covered Memstack Version: {}",
+            report.latest_exact_covered_version
+        ),
+        format!("Audited Version Range: {}", report.audited_version_range()),
+        format!(
+            "Inspected Versions: {}",
+            report.inspected_versions.join(", ")
+        ),
+        format!("Sampling Stride: {}", report.sample_stride),
+        format!(
+            "Survey Mode: {}",
+            match report.survey_mode {
+                ClaudeSchemaSurveyMode::Refine => "refine",
+                ClaudeSchemaSurveyMode::Coarse => "coarse",
+            }
+        ),
+        format!(
+            "Auth Mode: {}",
+            if report.used_host_auth {
+                "host (explicit opt-in)"
+            } else {
+                "isolated (no auth)"
+            }
+        ),
+    ];
+
+    match &report.outcome {
+        ClaudeSchemaAuditOutcome::Compatible => {
+            if report.sample_stride == 1 {
+                lines.push(format!(
+                    "Compatible across {} audited Claude version(s).",
+                    report.audited_versions.len()
+                ));
+            } else {
+                lines.push(format!(
+                    "Compatible across {} Claude version(s) in range with {} directly inspected version(s).",
+                    report.audited_versions.len(),
+                    report.inspected_versions.len()
+                ));
+            }
+        }
+        ClaudeSchemaAuditOutcome::Drift(drift) => {
+            lines.push(format!(
+                "First Drift Version: {}",
+                drift.first_drift_version
+            ));
+            lines.push("Transcript Differences:".to_owned());
+            lines.extend(
+                drift
+                    .difference_summary
+                    .iter()
+                    .map(|line| format!("- {line}")),
+            );
+            lines.push("Likely Memstack Files To Update:".to_owned());
+            lines.extend(
+                drift
+                    .likely_files_to_update
+                    .iter()
+                    .map(|path| format!("- {path}")),
+            );
+        }
+    }
+
+    if let Some(drift) = &report.supplementary_sdk_drift {
+        lines.push(format!(
+            "Supplementary Agent SDK Drift Version: {}",
+            drift.first_drift_version
+        ));
+        lines.push("Supplementary Agent SDK Differences:".to_owned());
+        lines.extend(
+            drift
+                .difference_summary
+                .iter()
+                .map(|line| format!("- {line}")),
+        );
+    }
+
+    if !report.assumed_compatible_intervals.is_empty() {
+        lines.push("Assumed Compatible Unsampled Intervals:".to_owned());
+        lines.extend(
+            report
+                .assumed_compatible_intervals
+                .iter()
+                .map(|line| format!("- {line}")),
+        );
+    }
+
+    if !report.transcript_drift_windows.is_empty() {
+        lines.push("Sampled Transcript Drift Windows:".to_owned());
+        lines.extend(report.transcript_drift_windows.iter().map(|window| {
+            format!(
+                "- {} ..= {} (sampled compatible {}, sampled drift {})",
+                window.window_start_version,
+                window.window_end_version,
+                window.sampled_compatible_version,
+                window.sampled_drift_version
+            )
+        }));
+    }
+
+    lines.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use clap::{CommandFactory, Parser};
-    use memstack_core::{CodexSchemaAuditReport, CodexSchemaDrift};
+    use memstack_core::{
+        ClaudeSchemaAuditReport, ClaudeSchemaDrift, ClaudeSchemaDriftWindow,
+        ClaudeSchemaSurveyMode, ClaudeSdkSchemaDrift, CodexSchemaAuditReport, CodexSchemaDrift,
+    };
 
     use super::{
-        Cli, CodexSchemaAuditOutcome, Commands, codex_schema_audit_exit_code,
-        format_codex_schema_audit_report,
+        ClaudeSchemaAuditOutcome, Cli, CodexSchemaAuditOutcome, Commands,
+        claude_schema_audit_exit_code, codex_schema_audit_exit_code,
+        format_claude_schema_audit_report, format_codex_schema_audit_report,
     };
 
     fn compatible_report() -> CodexSchemaAuditReport {
@@ -382,12 +578,64 @@ mod tests {
         }
     }
 
+    fn compatible_claude_report() -> ClaudeSchemaAuditReport {
+        ClaudeSchemaAuditReport {
+            release_source: "npm registry (@anthropic-ai/claude-code)".to_owned(),
+            binary_cache_dir: "/tmp/memstack-claude-cache".into(),
+            latest_published_version: "2.1.92".to_owned(),
+            latest_exact_covered_version: "2.1.87".to_owned(),
+            audited_versions: vec!["2.1.92".to_owned(), "2.1.87".to_owned()],
+            inspected_versions: vec!["2.1.92".to_owned(), "2.1.87".to_owned()],
+            assumed_compatible_intervals: Vec::new(),
+            sample_stride: 1,
+            used_host_auth: false,
+            survey_mode: ClaudeSchemaSurveyMode::Refine,
+            transcript_drift_windows: Vec::new(),
+            outcome: ClaudeSchemaAuditOutcome::Compatible,
+            supplementary_sdk_drift: Some(ClaudeSdkSchemaDrift {
+                first_drift_version: "2.1.92".to_owned(),
+                difference_summary: vec![
+                    "$/agent_sdk_version: changed from \"0.2.87\" to \"0.2.92\"".to_owned(),
+                ],
+            }),
+        }
+    }
+
     #[test]
     fn parses_hidden_codex_schema_audit_command() {
         let cli = Cli::try_parse_from(["memstack", "codex-schema-audit"]).unwrap();
         assert!(matches!(
             cli.command,
             Commands::CodexSchemaAudit(super::CodexSchemaAuditArgs { .. })
+        ));
+    }
+
+    #[test]
+    fn parses_hidden_claude_schema_audit_command() {
+        let cli = Cli::try_parse_from([
+            "memstack",
+            "claude-schema-audit",
+            "--sample-stride",
+            "10",
+            "--use-host-auth",
+            "--from-version",
+            "2.1.84",
+            "--survey-mode",
+            "coarse",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::ClaudeSchemaAudit(super::ClaudeSchemaAuditArgs {
+                sample_stride,
+                use_host_auth,
+                from_version,
+                survey_mode,
+                ..
+            }) if sample_stride == 10
+                && use_host_auth
+                && from_version.as_deref() == Some("2.1.84")
+                && matches!(survey_mode, super::ClaudeSurveyModeArg::Coarse)
         ));
     }
 
@@ -412,6 +660,19 @@ mod tests {
         assert!(help.contains("GH_TOKEN"));
         assert!(help.contains("GITHUB_TOKEN"));
         assert!(help.contains("Personal access tokens are accepted."));
+    }
+
+    #[test]
+    fn claude_schema_audit_help_mentions_explicit_host_auth() {
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("claude-schema-audit")
+            .expect("hidden subcommand should still be present")
+            .render_long_help()
+            .to_string();
+
+        assert!(help.contains("--use-host-auth"));
+        assert!(help.contains("does not provide an OS-level sandbox"));
     }
 
     #[test]
@@ -444,5 +705,56 @@ mod tests {
         assert!(output.contains("Status: schema drift detected"));
         assert!(output.contains("First Drift Tag: rust-v0.119.0"));
         assert!(output.contains("Likely Memstack Files To Update:"));
+    }
+
+    #[test]
+    fn formats_compatible_claude_schema_audit_report() {
+        let report = compatible_claude_report();
+        let output = format_claude_schema_audit_report(&report);
+
+        assert_eq!(claude_schema_audit_exit_code(&report), 0);
+        assert!(output.contains("Status: compatible"));
+        assert!(output.contains("Latest Published Claude Version: 2.1.92"));
+        assert!(output.contains("Compatible across 2 audited Claude version(s)."));
+        assert!(output.contains("Supplementary Agent SDK Drift Version: 2.1.92"));
+        assert!(output.contains("Sampling Stride: 1"));
+        assert!(output.contains("Survey Mode: refine"));
+        assert!(output.contains("Auth Mode: isolated (no auth)"));
+    }
+
+    #[test]
+    fn formats_drift_claude_schema_audit_report() {
+        let report = ClaudeSchemaAuditReport {
+            survey_mode: ClaudeSchemaSurveyMode::Coarse,
+            transcript_drift_windows: vec![ClaudeSchemaDriftWindow {
+                window_start_version: "2.1.88".to_owned(),
+                window_end_version: "2.1.90".to_owned(),
+                sampled_compatible_version: "2.1.87".to_owned(),
+                sampled_drift_version: "2.1.90".to_owned(),
+                difference_summary: vec![
+                    "$/line_types: array length changed from 4 to 5".to_owned(),
+                ],
+            }],
+            outcome: ClaudeSchemaAuditOutcome::Drift(ClaudeSchemaDrift {
+                first_drift_version: "2.1.90".to_owned(),
+                difference_summary: vec![
+                    "$/line_types[2]: changed from \"system\" to \"mystery-event\"".to_owned(),
+                ],
+                likely_files_to_update: vec![
+                    "crates/core/src/rollout/claude/version.rs".to_owned(),
+                    "crates/core/src/rollout/claude/mod.rs".to_owned(),
+                ],
+            }),
+            supplementary_sdk_drift: None,
+            ..compatible_claude_report()
+        };
+        let output = format_claude_schema_audit_report(&report);
+
+        assert_eq!(claude_schema_audit_exit_code(&report), 1);
+        assert!(output.contains("Status: schema drift detected"));
+        assert!(output.contains("First Drift Version: 2.1.90"));
+        assert!(output.contains("Likely Memstack Files To Update:"));
+        assert!(output.contains("Survey Mode: coarse"));
+        assert!(output.contains("Sampled Transcript Drift Windows:"));
     }
 }
