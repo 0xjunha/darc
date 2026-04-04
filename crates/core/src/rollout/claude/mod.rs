@@ -12,9 +12,9 @@ use crate::{
     rollout::ParseDeterminism,
 };
 
-const EXACT_CLAUDE_VERSIONS: &[&str] = &["2.1.81", "2.1.84", "2.1.87"];
-const PRIMARY_SCHEMA_ID: &str = "claude.primary_transcript";
-const SUBAGENT_SCHEMA_ID: &str = "claude.subagent_transcript";
+mod version;
+
+use version::{ClaudeSchemaEpoch, resolve_claude_schema};
 
 /// Identifies whether one archived Claude rollout is a parent session or a subagent session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,29 +158,37 @@ impl<'a> ClaudeRolloutParser<'a> {
         })?;
 
         self.capture_metadata(object)?;
+        self.process_epoch_line(self.current_epoch(), object)
+    }
+
+    /// Returns the currently selected Claude schema resolution from observed metadata.
+    fn schema_resolution(&self) -> version::ClaudeSchemaResolution {
+        resolve_claude_schema(self.cli_version.as_deref())
+    }
+
+    /// Returns the currently selected Claude epoch from observed metadata.
+    fn current_epoch(&self) -> ClaudeSchemaEpoch {
+        self.schema_resolution().epoch
+    }
+
+    /// Dispatches one Claude line through the parser rules for the observed epoch.
+    fn process_epoch_line(
+        &mut self,
+        epoch: ClaudeSchemaEpoch,
+        object: &Map<String, Value>,
+    ) -> Result<()> {
         let line_type = object
             .get("type")
             .and_then(Value::as_str)
             .unwrap_or_default();
         match line_type {
             "user" => self.process_user_line(object)?,
-            "assistant" => self.process_assistant_line(object)?,
-            "progress" => self.push_provider_item(
-                object
-                    .get("timestamp")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default(),
-                progress_item_type(object),
-                object.get("data").cloned().unwrap_or(Value::Null),
-            )?,
-            "system" => self.push_provider_item(
-                object
-                    .get("timestamp")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default(),
-                system_item_type(object),
-                Value::Object(object.clone()),
-            )?,
+            "assistant" => self.process_assistant_line(epoch, object)?,
+            "progress" => self.process_progress_line(object)?,
+            "system" => self.process_system_line(object)?,
+            "attachment" if epoch.supports_attachment_line() => {
+                self.process_attachment_line(object)?
+            }
             "queue-operation" | "file-history-snapshot" | "last-prompt" => {}
             _ => {
                 self.best_effort = true;
@@ -198,6 +206,52 @@ impl<'a> ClaudeRolloutParser<'a> {
         Ok(())
     }
 
+    /// Preserves one Claude `progress` line on the active turn when present.
+    fn process_progress_line(&mut self, object: &Map<String, Value>) -> Result<()> {
+        if let Some(step) = progress_step(object)? {
+            return self.push_step(step);
+        }
+        self.push_provider_item(
+            object
+                .get("timestamp")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            progress_item_type(object),
+            object.get("data").cloned().unwrap_or(Value::Null),
+        )
+    }
+
+    /// Preserves one Claude `system` line on the active turn when present.
+    fn process_system_line(&mut self, object: &Map<String, Value>) -> Result<()> {
+        if let Some(step) = system_step(object)? {
+            return self.push_step(step);
+        }
+        self.push_provider_item(
+            object
+                .get("timestamp")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            system_item_type(object),
+            Value::Object(object.clone()),
+        )
+    }
+
+    /// Preserves one Claude `attachment` line on the active turn when present.
+    fn process_attachment_line(&mut self, object: &Map<String, Value>) -> Result<()> {
+        if let Some(step) = attachment_step(object)? {
+            self.push_step(step)
+        } else {
+            self.push_provider_item(
+                object
+                    .get("timestamp")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+                "claude.attachment".to_owned(),
+                object.get("attachment").cloned().unwrap_or(Value::Null),
+            )
+        }
+    }
+
     /// Finishes the rollout after the last input line has been processed.
     fn finish(mut self) -> Result<ClaudeRollout> {
         if let Some(turn) = self.current_turn.take() {
@@ -210,11 +264,8 @@ impl<'a> ClaudeRolloutParser<'a> {
                 self.source_path.display()
             )
         })?;
-        let exact_version = self
-            .cli_version
-            .as_deref()
-            .is_some_and(is_exact_supported_claude_version);
-        let determinism = if exact_version && !self.best_effort {
+        let resolution = self.schema_resolution();
+        let determinism = if resolution.determinism.is_exact() && !self.best_effort {
             ParseDeterminism::Exact
         } else {
             ParseDeterminism::BestEffortForward
@@ -226,10 +277,10 @@ impl<'a> ClaudeRolloutParser<'a> {
             session_kind: self.context.session_kind,
             cwd,
             cli_version: self.cli_version.clone(),
-            schema_id: match self.context.session_kind {
-                ClaudeSessionKind::Primary => PRIMARY_SCHEMA_ID.to_owned(),
-                ClaudeSessionKind::Subagent => SUBAGENT_SCHEMA_ID.to_owned(),
-            },
+            schema_id: resolution
+                .epoch
+                .schema_id(self.context.session_kind)
+                .to_owned(),
             determinism,
             turns: self.turns,
         })
@@ -306,12 +357,11 @@ impl<'a> ClaudeRolloutParser<'a> {
         let is_prompt = is_prompt_message(object, &content);
 
         if let Some(tool_results) = tool_results {
-            self.push_tool_results(&timestamp, tool_results)?;
+            self.push_tool_results(&timestamp, object, tool_results)?;
         }
 
         if is_prompt {
-            let Some(user_message) = extract_prompt_text(&content).filter(|text| !text.is_empty())
-            else {
+            let Some(user_message) = prompt_user_message(&content) else {
                 self.best_effort = true;
                 return Ok(());
             };
@@ -345,7 +395,11 @@ impl<'a> ClaudeRolloutParser<'a> {
     }
 
     /// Handles one Claude `assistant` line and maps it into normalized turn steps.
-    fn process_assistant_line(&mut self, object: &Map<String, Value>) -> Result<()> {
+    fn process_assistant_line(
+        &mut self,
+        epoch: ClaudeSchemaEpoch,
+        object: &Map<String, Value>,
+    ) -> Result<()> {
         let Some(turn) = self.current_turn.as_mut() else {
             self.best_effort = true;
             return Ok(());
@@ -381,7 +435,8 @@ impl<'a> ClaudeRolloutParser<'a> {
             self.best_effort = true;
         }
 
-        let mut terminal_text = Vec::new();
+        let mut text_items = Vec::new();
+        let mut saw_tool_use = false;
         for item in content.into_iter().flatten() {
             let Some(item_object) = item.as_object() else {
                 self.best_effort = true;
@@ -407,21 +462,16 @@ impl<'a> ClaudeRolloutParser<'a> {
                     });
                 }
                 "text" => {
-                    let text = item_object
-                        .get("text")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_owned();
-                    if is_terminal_stop_reason(stop_reason) {
-                        terminal_text.push(text);
-                    } else {
-                        turn.steps.push(CodexTurnStep::Commentary {
-                            timestamp: timestamp.clone(),
-                            text,
-                        });
-                    }
+                    text_items.push(
+                        item_object
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                    );
                 }
                 "tool_use" => {
+                    saw_tool_use = true;
                     let call_id = item_object
                         .get("id")
                         .and_then(Value::as_str)
@@ -453,19 +503,29 @@ impl<'a> ClaudeRolloutParser<'a> {
             }
         }
 
-        if !terminal_text.is_empty() {
-            let text = terminal_text.join("\n\n");
+        if assistant_text_is_terminal(epoch, stop_reason, saw_tool_use) && !text_items.is_empty() {
+            let text = text_items.join("\n\n");
             turn.final_answer = Some(CodexTurnMessage {
                 timestamp: timestamp.clone(),
                 text: text.clone(),
             });
-            turn.completed_at = Some(timestamp);
+            turn.completed_at = Some(timestamp.clone());
             turn.status = terminal_stop_status(object, stop_reason, &text);
-        } else if object.get("error").is_some()
-            || object
-                .get("isApiErrorMessage")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
+        } else {
+            for text in text_items {
+                turn.steps.push(CodexTurnStep::Commentary {
+                    timestamp: timestamp.clone(),
+                    text,
+                });
+            }
+        }
+
+        if turn.final_answer.is_none()
+            && (object.get("error").is_some()
+                || object
+                    .get("isApiErrorMessage")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false))
         {
             turn.completed_at = Some(timestamp);
             turn.status = CodexTurnStatus::Incomplete;
@@ -478,6 +538,7 @@ impl<'a> ClaudeRolloutParser<'a> {
     fn push_tool_results(
         &mut self,
         timestamp: &str,
+        user_line: &Map<String, Value>,
         tool_results: Vec<&Map<String, Value>>,
     ) -> Result<()> {
         let Some(turn) = self.current_turn.as_mut() else {
@@ -491,12 +552,15 @@ impl<'a> ClaudeRolloutParser<'a> {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
-            let payload = tool_result_output(result)?;
+            let payload = tool_result_output(result, user_line)?;
             turn.steps.push(CodexTurnStep::ToolCallOutput {
                 timestamp: timestamp.to_owned(),
                 call_id,
                 output: payload,
             });
+            if let Some(step) = delegation_result_step(timestamp, user_line, result)? {
+                turn.steps.push(step);
+            }
         }
 
         Ok(())
@@ -557,11 +621,15 @@ impl<'a> ClaudeRolloutParser<'a> {
         });
         Ok(())
     }
-}
 
-/// Returns whether one Claude version string is covered exactly by observed fixtures.
-fn is_exact_supported_claude_version(version: &str) -> bool {
-    EXACT_CLAUDE_VERSIONS.contains(&version)
+    /// Adds one already-normalized step to the active turn when possible.
+    fn push_step(&mut self, step: CodexTurnStep) -> Result<()> {
+        let Some(turn) = self.current_turn.as_mut() else {
+            return Ok(());
+        };
+        turn.steps.push(step);
+        Ok(())
+    }
 }
 
 /// Normalizes one Claude subagent id across filename and rollout payload variants.
@@ -582,11 +650,16 @@ fn is_prompt_message(object: &Map<String, Value>, content: &Value) -> bool {
 
     match content {
         Value::String(_) => true,
-        Value::Array(items) => {
-            items.iter().any(is_text_item) && !items.iter().all(is_tool_result_item)
-        }
+        Value::Array(items) => items.iter().any(|item| !is_tool_result_item(item)),
         _ => false,
     }
+}
+
+/// Returns one stable user-message summary for a Claude prompt payload.
+fn prompt_user_message(content: &Value) -> Option<String> {
+    extract_prompt_text(content)
+        .filter(|text| !text.is_empty())
+        .or_else(|| summarize_non_text_prompt(content))
 }
 
 /// Extracts one user-visible prompt string from a Claude `message.content` value.
@@ -606,6 +679,23 @@ fn extract_prompt_text(content: &Value) -> Option<String> {
             Some(text)
         }
         _ => None,
+    }
+}
+
+/// Builds one synthetic user-message summary for prompts that contain no plain text.
+fn summarize_non_text_prompt(content: &Value) -> Option<String> {
+    let items = content.as_array()?;
+    let item_types = items
+        .iter()
+        .filter_map(Value::as_object)
+        .filter_map(|object| object.get("type").and_then(Value::as_str))
+        .filter(|item_type| *item_type != "tool_result" && !item_type.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if item_types.is_empty() {
+        None
+    } else {
+        Some(format!("<{} prompt>", item_types.join(" + ")))
     }
 }
 
@@ -629,6 +719,15 @@ fn is_terminal_stop_reason(stop_reason: Option<&str>) -> bool {
     matches!(stop_reason, Some("end_turn") | Some("stop_sequence"))
 }
 
+/// Returns whether one assistant text payload should terminate the current Claude turn.
+fn assistant_text_is_terminal(
+    epoch: ClaudeSchemaEpoch,
+    stop_reason: Option<&str>,
+    saw_tool_use: bool,
+) -> bool {
+    is_terminal_stop_reason(stop_reason) || (epoch.uses_text_completion_fallback() && !saw_tool_use)
+}
+
 /// Resolves the normalized turn status for one terminal Claude assistant line.
 fn terminal_stop_status(
     object: &Map<String, Value>,
@@ -649,14 +748,6 @@ fn terminal_stop_status(
     } else {
         CodexTurnStatus::Completed
     }
-}
-
-/// Returns whether one Claude array item is a plain prompt text payload.
-fn is_text_item(value: &Value) -> bool {
-    value
-        .as_object()
-        .and_then(|object| object.get("type").and_then(Value::as_str))
-        == Some("text")
 }
 
 /// Returns whether one Claude array item is a tool-result payload.
@@ -706,8 +797,17 @@ fn user_item_type(object: &Map<String, Value>) -> String {
 }
 
 /// Serializes one Claude tool-result payload into the shared string column shape.
-fn tool_result_output(result: &Map<String, Value>) -> Result<String> {
+fn tool_result_output(
+    result: &Map<String, Value>,
+    user_line: &Map<String, Value>,
+) -> Result<String> {
     let content = result.get("content").cloned().unwrap_or(Value::Null);
+    if let Some(tool_use_result) = user_line.get("toolUseResult").cloned()
+        && (tool_use_result.get("agentId").is_some() || tool_use_result.get("agentType").is_some())
+    {
+        return serde_json::to_string(&tool_use_result)
+            .context("failed to serialize Claude delegated tool payload");
+    }
     if result
         .get("is_error")
         .and_then(Value::as_bool)
@@ -723,6 +823,197 @@ fn tool_result_output(result: &Map<String, Value>) -> Result<String> {
     }
 }
 
+/// Normalizes one Claude top-level `attachment` line when the payload is recognized.
+fn attachment_step(object: &Map<String, Value>) -> Result<Option<CodexTurnStep>> {
+    let Some(attachment) = object.get("attachment").and_then(Value::as_object) else {
+        return Ok(None);
+    };
+    Ok(Some(CodexTurnStep::Attachment {
+        timestamp: object
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        attachment_type: attachment
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        payload_json: serde_json::to_string(&Value::Object(attachment.clone()))
+            .context("failed to serialize Claude attachment payload")?,
+    }))
+}
+
+/// Normalizes one Claude `progress` line when it carries stable delegation analytics signals.
+fn progress_step(object: &Map<String, Value>) -> Result<Option<CodexTurnStep>> {
+    let Some(data) = object.get("data").and_then(Value::as_object) else {
+        return Ok(None);
+    };
+    let Some(kind) = data.get("type").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    if kind != "agent_progress" {
+        return Ok(None);
+    }
+
+    Ok(Some(CodexTurnStep::Delegation {
+        timestamp: object
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        call_id: object
+            .get("parentToolUseID")
+            .or_else(|| object.get("toolUseID"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        task_id: None,
+        event: "agent_progress".to_owned(),
+        agent_id: data
+            .get("agentId")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        agent_type: None,
+        status: None,
+        summary: data
+            .get("prompt")
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned),
+        payload_json: serde_json::to_string(&Value::Object(data.clone()))
+            .context("failed to serialize Claude agent progress payload")?,
+    }))
+}
+
+/// Normalizes one Claude `system` line when it carries stable task or hook-summary structure.
+fn system_step(object: &Map<String, Value>) -> Result<Option<CodexTurnStep>> {
+    let Some(subtype) = object.get("subtype").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+
+    if matches!(
+        subtype,
+        "task_started" | "task_progress" | "task_notification"
+    ) {
+        return Ok(Some(CodexTurnStep::Delegation {
+            timestamp: object
+                .get("timestamp")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            call_id: object
+                .get("tool_use_id")
+                .or_else(|| object.get("toolUseID"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            task_id: object
+                .get("task_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            event: subtype.to_owned(),
+            agent_id: object
+                .get("agentId")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            agent_type: object
+                .get("task_type")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            status: object
+                .get("status")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            summary: object
+                .get("summary")
+                .or_else(|| object.get("description"))
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty())
+                .map(str::to_owned),
+            payload_json: serde_json::to_string(&Value::Object(object.clone()))
+                .context("failed to serialize Claude task lifecycle payload")?,
+        }));
+    }
+
+    if subtype == "stop_hook_summary" {
+        let hook_count = object
+            .get("hookCount")
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or_default();
+        return Ok(Some(CodexTurnStep::HookSummary {
+            timestamp: object
+                .get("timestamp")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            call_id: object
+                .get("toolUseID")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            hook_count,
+            prevented_continuation: object
+                .get("preventedContinuation")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            has_output: object
+                .get("hasOutput")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            level: object
+                .get("level")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            payload_json: serde_json::to_string(&Value::Object(object.clone()))
+                .context("failed to serialize Claude hook summary payload")?,
+        }));
+    }
+
+    Ok(None)
+}
+
+/// Normalizes one delegated Claude tool result into a stable analytics-facing step.
+fn delegation_result_step(
+    timestamp: &str,
+    user_line: &Map<String, Value>,
+    result: &Map<String, Value>,
+) -> Result<Option<CodexTurnStep>> {
+    let Some(tool_use_result) = user_line.get("toolUseResult").and_then(Value::as_object) else {
+        return Ok(None);
+    };
+    if tool_use_result.get("agentId").is_none() && tool_use_result.get("agentType").is_none() {
+        return Ok(None);
+    }
+
+    Ok(Some(CodexTurnStep::Delegation {
+        timestamp: timestamp.to_owned(),
+        call_id: result
+            .get("tool_use_id")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        task_id: None,
+        event: "completed".to_owned(),
+        agent_id: tool_use_result
+            .get("agentId")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        agent_type: tool_use_result
+            .get("agentType")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        status: tool_use_result
+            .get("status")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        summary: tool_use_result
+            .get("summary")
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned),
+        payload_json: serde_json::to_string(&Value::Object(tool_use_result.clone()))
+            .context("failed to serialize Claude delegated tool result payload")?,
+    }))
+}
+
 /// Serializes one JSON value as plain text when possible and JSON otherwise.
 fn value_to_text(value: &Value) -> Result<String> {
     match value {
@@ -731,228 +1022,3 @@ fn value_to_text(value: &Value) -> Result<String> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use std::{io::Cursor, path::Path};
-
-    use anyhow::Result;
-    use serde_json::Value;
-
-    use super::{ClaudeArchivedContext, ClaudeRollout, ClaudeSessionKind, parse_rollout_reader};
-    use crate::parse::{CodexTurnMessage, CodexTurnStatus, CodexTurnStep};
-    use crate::rollout::ParseDeterminism;
-
-    fn parse_fixture(input: &str, context: &ClaudeArchivedContext) -> Result<ClaudeRollout> {
-        parse_rollout_reader(Cursor::new(input), Path::new("fixture.jsonl"), context)
-    }
-
-    #[test]
-    fn parses_parent_rollout_into_normalized_turns() -> Result<()> {
-        let rollout = parse_fixture(
-            r#"{"type":"queue-operation","operation":"enqueue","timestamp":"2026-04-01T00:00:00Z","sessionId":"parent-session"}
-{"parentUuid":null,"isSidechain":false,"promptId":"prompt-1","type":"user","message":{"role":"user","content":"Inspect sync.rs"},"uuid":"user-1","timestamp":"2026-04-01T00:00:01Z","permissionMode":"acceptEdits","userType":"external","entrypoint":"claude-desktop","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.87","gitBranch":"main"}
-{"parentUuid":"user-1","isSidechain":false,"message":{"model":"claude-sonnet-4-6","id":"assistant-1","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"Check files","signature":"sig"}],"stop_reason":null,"stop_sequence":null},"requestId":"req-1","type":"assistant","uuid":"assistant-msg-1","timestamp":"2026-04-01T00:00:02Z","userType":"external","entrypoint":"claude-desktop","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.87","gitBranch":"main"}
-{"parentUuid":"assistant-msg-1","isSidechain":false,"message":{"model":"claude-sonnet-4-6","id":"assistant-2","type":"message","role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{"file_path":"sync.rs"}}],"stop_reason":"tool_use","stop_sequence":null},"requestId":"req-2","type":"assistant","uuid":"assistant-msg-2","timestamp":"2026-04-01T00:00:03Z","userType":"external","entrypoint":"claude-desktop","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.87","gitBranch":"main"}
-{"parentUuid":"assistant-msg-2","isSidechain":false,"promptId":"prompt-1","type":"user","message":{"role":"user","content":[{"tool_use_id":"tool-1","type":"tool_result","content":"ok","is_error":false}]},"uuid":"user-2","timestamp":"2026-04-01T00:00:04Z","toolUseResult":"ok","sourceToolAssistantUUID":"assistant-msg-2","userType":"external","entrypoint":"claude-desktop","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.87","gitBranch":"main"}
-{"parentUuid":"assistant-msg-2","isSidechain":false,"type":"progress","data":{"type":"hook_progress","hookEvent":"PostToolUse","hookName":"PostToolUse:Read","command":"callback"},"parentToolUseID":"tool-1","toolUseID":"hook-1","timestamp":"2026-04-01T00:00:05Z","uuid":"progress-1","userType":"external","entrypoint":"claude-desktop","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.87","gitBranch":"main"}
-{"parentUuid":"assistant-msg-2","isSidechain":false,"message":{"model":"claude-sonnet-4-6","id":"assistant-3","type":"message","role":"assistant","content":[{"type":"text","text":"Done."}],"stop_reason":"end_turn","stop_sequence":null},"requestId":"req-3","type":"assistant","uuid":"assistant-msg-3","timestamp":"2026-04-01T00:00:06Z","userType":"external","entrypoint":"claude-desktop","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.87","gitBranch":"main"}
-"#,
-            &ClaudeArchivedContext {
-                session_id: "parent-session".to_owned(),
-                parent_session_id: None,
-                session_kind: ClaudeSessionKind::Primary,
-                expected_rollout_session_id: "parent-session".to_owned(),
-                expected_agent_id: None,
-            },
-        )?;
-
-        assert_eq!(rollout.session_id, "parent-session");
-        assert_eq!(rollout.session_kind, ClaudeSessionKind::Primary);
-        assert_eq!(rollout.cwd, Path::new("/tmp/repo"));
-        assert_eq!(rollout.cli_version.as_deref(), Some("2.1.87"));
-        assert_eq!(rollout.schema_id, "claude.primary_transcript");
-        assert_eq!(rollout.determinism, ParseDeterminism::Exact);
-        assert_eq!(rollout.turns.len(), 1);
-        assert_eq!(rollout.turns[0].turn_id.as_deref(), Some("prompt-1"));
-        assert_eq!(rollout.turns[0].user_message, "Inspect sync.rs");
-        assert_eq!(rollout.turns[0].status, CodexTurnStatus::Completed);
-        assert_eq!(
-            rollout.turns[0].final_answer,
-            Some(CodexTurnMessage {
-                timestamp: "2026-04-01T00:00:06Z".to_owned(),
-                text: "Done.".to_owned(),
-            })
-        );
-        assert_eq!(rollout.turns[0].steps.len(), 4);
-        assert!(matches!(
-            rollout.turns[0].steps[0],
-            CodexTurnStep::Reasoning { .. }
-        ));
-        assert!(matches!(
-            rollout.turns[0].steps[1],
-            CodexTurnStep::ToolCall { .. }
-        ));
-        let CodexTurnStep::ToolCallOutput {
-            timestamp,
-            call_id,
-            output,
-        } = &rollout.turns[0].steps[2]
-        else {
-            panic!("expected tool result step");
-        };
-        assert_eq!(timestamp, "2026-04-01T00:00:04Z");
-        assert_eq!(call_id, "tool-1");
-        assert_eq!(output, "ok");
-        assert!(matches!(
-            rollout.turns[0].steps[3],
-            CodexTurnStep::ProviderResponseItem { .. }
-        ));
-
-        Ok(())
-    }
-
-    #[test]
-    fn parses_subagent_rollout_as_separate_session() -> Result<()> {
-        let rollout = parse_fixture(
-            r#"{"parentUuid":null,"isSidechain":true,"promptId":"prompt-1","agentId":"a487e2adbf00a7a09","type":"user","message":{"role":"user","content":"Explore the codebase"},"uuid":"user-1","timestamp":"2026-04-01T00:00:01Z","userType":"external","entrypoint":"claude-desktop","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.87","gitBranch":"main"}
-{"parentUuid":"user-1","isSidechain":true,"agentId":"a487e2adbf00a7a09","message":{"model":"claude-haiku-4-5-20251001","id":"assistant-1","type":"message","role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"rg todo"}}],"stop_reason":"tool_use","stop_sequence":null},"requestId":"req-1","type":"assistant","uuid":"assistant-1","timestamp":"2026-04-01T00:00:02Z","userType":"external","entrypoint":"claude-desktop","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.87","gitBranch":"main"}
-{"parentUuid":"assistant-1","isSidechain":true,"promptId":"prompt-1","agentId":"a487e2adbf00a7a09","type":"user","message":{"role":"user","content":[{"tool_use_id":"tool-1","type":"tool_result","content":"done","is_error":false}]},"uuid":"user-2","timestamp":"2026-04-01T00:00:03Z","userType":"external","entrypoint":"claude-desktop","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.87","gitBranch":"main"}
-{"parentUuid":"assistant-1","isSidechain":true,"agentId":"a487e2adbf00a7a09","message":{"model":"claude-haiku-4-5-20251001","id":"assistant-2","type":"message","role":"assistant","content":[{"type":"text","text":"Mapped the repo."}],"stop_reason":"end_turn","stop_sequence":null},"requestId":"req-2","type":"assistant","uuid":"assistant-2","timestamp":"2026-04-01T00:00:04Z","userType":"external","entrypoint":"claude-desktop","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.87","gitBranch":"main"}
-"#,
-            &ClaudeArchivedContext {
-                session_id: "parent-session/subagents/agent-a487e2adbf00a7a09".to_owned(),
-                parent_session_id: Some("parent-session".to_owned()),
-                session_kind: ClaudeSessionKind::Subagent,
-                expected_rollout_session_id: "parent-session".to_owned(),
-                expected_agent_id: Some("agent-a487e2adbf00a7a09".to_owned()),
-            },
-        )?;
-
-        assert_eq!(
-            rollout.session_id,
-            "parent-session/subagents/agent-a487e2adbf00a7a09"
-        );
-        assert_eq!(rollout.parent_session_id.as_deref(), Some("parent-session"));
-        assert_eq!(rollout.session_kind, ClaudeSessionKind::Subagent);
-        assert_eq!(rollout.schema_id, "claude.subagent_transcript");
-        assert_eq!(rollout.determinism, ParseDeterminism::Exact);
-        assert_eq!(rollout.turns.len(), 1);
-        assert_eq!(rollout.turns[0].status, CodexTurnStatus::Completed);
-
-        Ok(())
-    }
-
-    #[test]
-    fn parses_mixed_tool_result_and_prompt_user_lines_as_two_turns() -> Result<()> {
-        let rollout = parse_fixture(
-            r#"{"parentUuid":null,"isSidechain":false,"promptId":"prompt-1","type":"user","message":{"role":"user","content":"Inspect the repo"},"uuid":"user-1","timestamp":"2026-04-01T00:00:01Z","userType":"external","entrypoint":"claude-desktop","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.87","gitBranch":"main"}
-{"parentUuid":"user-1","isSidechain":false,"message":{"model":"claude-sonnet-4-6","id":"assistant-1","type":"message","role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{"file_path":"README.md"}}],"stop_reason":"tool_use","stop_sequence":null},"requestId":"req-1","type":"assistant","uuid":"assistant-1","timestamp":"2026-04-01T00:00:02Z","userType":"external","entrypoint":"claude-desktop","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.87","gitBranch":"main"}
-{"parentUuid":"assistant-1","isSidechain":false,"promptId":"prompt-2","type":"user","message":{"role":"user","content":[{"tool_use_id":"tool-1","type":"tool_result","content":"done","is_error":false},{"type":"text","text":"Summarize the result"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"abc"}}]},"uuid":"user-2","timestamp":"2026-04-01T00:00:03Z","userType":"external","entrypoint":"claude-desktop","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.87","gitBranch":"main"}
-{"parentUuid":"user-2","isSidechain":false,"message":{"model":"claude-sonnet-4-6","id":"assistant-2","type":"message","role":"assistant","content":[{"type":"text","text":"Summary ready."}],"stop_reason":"end_turn","stop_sequence":null},"requestId":"req-2","type":"assistant","uuid":"assistant-2","timestamp":"2026-04-01T00:00:04Z","userType":"external","entrypoint":"claude-desktop","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.87","gitBranch":"main"}
-"#,
-            &ClaudeArchivedContext {
-                session_id: "parent-session".to_owned(),
-                parent_session_id: None,
-                session_kind: ClaudeSessionKind::Primary,
-                expected_rollout_session_id: "parent-session".to_owned(),
-                expected_agent_id: None,
-            },
-        )?;
-
-        assert_eq!(rollout.turns.len(), 2);
-        assert_eq!(rollout.turns[0].user_message, "Inspect the repo");
-        assert_eq!(rollout.turns[0].status, CodexTurnStatus::Incomplete);
-        let CodexTurnStep::ToolCallOutput {
-            timestamp,
-            call_id,
-            output,
-        } = &rollout.turns[0].steps[1]
-        else {
-            panic!("expected first-turn tool result step");
-        };
-        assert_eq!(timestamp, "2026-04-01T00:00:03Z");
-        assert_eq!(call_id, "tool-1");
-        assert_eq!(output, "done");
-        assert_eq!(rollout.turns[1].turn_id.as_deref(), Some("prompt-2"));
-        assert_eq!(rollout.turns[1].user_message, "Summarize the result");
-        assert_eq!(rollout.turns[1].status, CodexTurnStatus::Completed);
-        let CodexTurnStep::ProviderResponseItem {
-            timestamp,
-            item_type,
-            payload_json,
-        } = &rollout.turns[1].steps[0]
-        else {
-            panic!("expected preserved prompt payload step");
-        };
-        assert_eq!(timestamp, "2026-04-01T00:00:03Z");
-        assert_eq!(item_type, "claude.user_content.image");
-        let payload: Value = serde_json::from_str(payload_json)?;
-        assert_eq!(payload["type"], "image");
-        assert_eq!(payload["source"]["media_type"], "image/png");
-        assert_eq!(
-            rollout.turns[1].final_answer,
-            Some(CodexTurnMessage {
-                timestamp: "2026-04-01T00:00:04Z".to_owned(),
-                text: "Summary ready.".to_owned(),
-            })
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn preserves_non_text_prompt_content_on_the_new_turn() -> Result<()> {
-        let rollout = parse_fixture(
-            r#"{"parentUuid":null,"isSidechain":false,"promptId":"prompt-1","type":"user","message":{"role":"user","content":[{"type":"text","text":"Review this screenshot"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"xyz"}}]},"uuid":"user-1","timestamp":"2026-04-01T00:00:01Z","userType":"external","entrypoint":"claude-desktop","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.87","gitBranch":"main"}
-{"parentUuid":"user-1","isSidechain":false,"message":{"model":"claude-sonnet-4-6","id":"assistant-1","type":"message","role":"assistant","content":[{"type":"text","text":"Reviewed."}],"stop_reason":"end_turn","stop_sequence":null},"requestId":"req-1","type":"assistant","uuid":"assistant-1","timestamp":"2026-04-01T00:00:02Z","userType":"external","entrypoint":"claude-desktop","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.87","gitBranch":"main"}
-"#,
-            &ClaudeArchivedContext {
-                session_id: "parent-session".to_owned(),
-                parent_session_id: None,
-                session_kind: ClaudeSessionKind::Primary,
-                expected_rollout_session_id: "parent-session".to_owned(),
-                expected_agent_id: None,
-            },
-        )?;
-
-        assert_eq!(rollout.turns.len(), 1);
-        assert_eq!(rollout.turns[0].user_message, "Review this screenshot");
-        let CodexTurnStep::ProviderResponseItem {
-            timestamp,
-            item_type,
-            payload_json,
-        } = &rollout.turns[0].steps[0]
-        else {
-            panic!("expected preserved prompt content step");
-        };
-        assert_eq!(timestamp, "2026-04-01T00:00:01Z");
-        assert_eq!(item_type, "claude.user_content.image");
-        let payload: Value = serde_json::from_str(payload_json)?;
-        assert_eq!(payload["type"], "image");
-
-        Ok(())
-    }
-
-    #[test]
-    fn falls_back_to_best_effort_for_unknown_versions_and_line_types() -> Result<()> {
-        let rollout = parse_fixture(
-            r#"{"parentUuid":null,"isSidechain":false,"promptId":"prompt-1","type":"user","message":{"role":"user","content":"What changed?"},"uuid":"user-1","timestamp":"2026-04-01T00:00:01Z","userType":"external","entrypoint":"claude-desktop","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.9.0","gitBranch":"main"}
-{"type":"mystery-event","timestamp":"2026-04-01T00:00:02Z","sessionId":"parent-session","cwd":"/tmp/repo","version":"2.9.0","payload":{"hello":"world"}}
-{"parentUuid":"user-1","isSidechain":false,"type":"assistant","uuid":"assistant-1","timestamp":"2026-04-01T00:00:03Z","message":{"id":"synthetic","container":null,"model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","stop_sequence":"","type":"message","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"No response requested."}],"context_management":null},"isApiErrorMessage":false,"userType":"external","entrypoint":"claude-desktop","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.9.0","gitBranch":"main"}
-"#,
-            &ClaudeArchivedContext {
-                session_id: "parent-session".to_owned(),
-                parent_session_id: None,
-                session_kind: ClaudeSessionKind::Primary,
-                expected_rollout_session_id: "parent-session".to_owned(),
-                expected_agent_id: None,
-            },
-        )?;
-
-        assert_eq!(rollout.determinism, ParseDeterminism::BestEffortForward);
-        assert_eq!(rollout.turns.len(), 1);
-        assert_eq!(rollout.turns[0].status, CodexTurnStatus::Incomplete);
-
-        Ok(())
-    }
-}

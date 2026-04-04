@@ -7,7 +7,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, Transaction, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
 use crate::{
@@ -141,7 +141,7 @@ impl CodexTurnStatus {
 }
 
 /// Stores one ordered assistant-visible step inside a Codex turn.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CodexTurnStep {
     Reasoning {
@@ -163,6 +163,31 @@ pub enum CodexTurnStep {
         timestamp: String,
         call_id: String,
         output: String,
+    },
+    Attachment {
+        timestamp: String,
+        attachment_type: String,
+        payload_json: String,
+    },
+    Delegation {
+        timestamp: String,
+        call_id: Option<String>,
+        task_id: Option<String>,
+        event: String,
+        agent_id: Option<String>,
+        agent_type: Option<String>,
+        status: Option<String>,
+        summary: Option<String>,
+        payload_json: String,
+    },
+    HookSummary {
+        timestamp: String,
+        call_id: Option<String>,
+        hook_count: u32,
+        prevented_continuation: bool,
+        has_output: bool,
+        level: Option<String>,
+        payload_json: String,
     },
     ProviderResponseItem {
         timestamp: String,
