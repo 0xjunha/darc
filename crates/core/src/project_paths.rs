@@ -183,8 +183,8 @@ mod tests {
 
     #[test]
     fn claude_encoding_replaces_path_separators() {
-        let encoded = encode_path_for_claude(Path::new("/Users/example/src/memstack"));
-        assert_eq!(encoded, "-Users-example-src-memstack");
+        let encoded = encode_path_for_claude(Path::new("/Users/example/src/darc"));
+        assert_eq!(encoded, "-Users-example-src-darc");
     }
 
     #[test]

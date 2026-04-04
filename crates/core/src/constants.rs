@@ -1,5 +1,5 @@
 /// The default shared root directory name created under the user's home folder.
-pub(crate) const DEFAULT_ROOT_DIR_NAME: &str = ".memstack";
+pub(crate) const DEFAULT_ROOT_DIR_NAME: &str = ".darc";
 
 pub(crate) const CONFIG_FILE_NAME: &str = "config.toml";
 

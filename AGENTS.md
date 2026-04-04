@@ -1,4 +1,4 @@
-# memstack
+# Darc
 
 1. Follow idiomatic Rust and standard library-first design.
 2. Prefer less code when behavior stays equally clear and correct.

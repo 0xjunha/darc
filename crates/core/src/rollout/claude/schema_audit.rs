@@ -79,7 +79,7 @@ const HOST_RUNTIME_ENV_NAMES: &[&str] = &[
 ];
 const SETTINGS_FILE_NAME: &str = "claude-audit-settings.json";
 const HOOK_CAPTURE_FILE_NAME: &str = "claude-audit-hooks.jsonl";
-const FIXTURE_WORKSPACE_DIR_NAME: &str = ".memstack-claude-audit";
+const FIXTURE_WORKSPACE_DIR_NAME: &str = ".darc-claude-audit";
 
 /// Stores the input options for a Claude rollout schema compatibility audit.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -110,7 +110,7 @@ pub struct ClaudeSchemaAuditReport {
 }
 
 impl ClaudeSchemaAuditReport {
-    /// Returns whether the audited Claude versions are transcript-compatible with memstack.
+    /// Returns whether the audited Claude versions are transcript-compatible with darc.
     pub fn is_compatible(&self) -> bool {
         matches!(self.outcome, ClaudeSchemaAuditOutcome::Compatible)
     }
@@ -142,7 +142,7 @@ pub enum ClaudeSchemaSurveyMode {
     Coarse,
 }
 
-/// Stores the first detected Claude transcript schema drift against memstack's baseline.
+/// Stores the first detected Claude transcript schema drift against darc's baseline.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ClaudeSchemaDrift {
     pub first_drift_version: String,
@@ -185,7 +185,7 @@ where
 {
     ensure!(
         options.use_host_auth,
-        "Claude schema audit requires --use-host-auth because memstack does not provide an OS-level sandbox for safely executing published Claude packages"
+        "Claude schema audit requires --use-host-auth because darc does not provide an OS-level sandbox for safely executing published Claude packages"
     );
     report_progress("Resolving schema audit cache directory...");
     let cache_dir = resolve_binary_cache_dir(options.cache_dir.as_deref())?;
@@ -421,10 +421,10 @@ impl NpmClaudeSchemaAuditProvider {
             sdk_catalog,
             cache_dir,
             http: build_http_client()?,
-            scratch_dir: ScopedTempDir::new("memstack-claude-schema-audit")?,
+            scratch_dir: ScopedTempDir::new("darc-claude-schema-audit")?,
             fixture_run_dir: ScopedTempDir::new_in(
                 &fixture_workspace_root,
-                "memstack-claude-schema-audit-run",
+                "darc-claude-schema-audit-run",
             )?,
             use_host_auth,
             runtime,
@@ -1374,7 +1374,7 @@ fn parse_stable_release_version(version: &str) -> Option<StableClaudeReleaseVers
     })
 }
 
-/// Selects the audited Claude version range from latest published down to memstack's cutoff.
+/// Selects the audited Claude version range from latest published down to darc's cutoff.
 fn select_audited_release_versions(
     stable_versions: &[StableClaudeReleaseVersion],
     from_version: Option<&str>,
@@ -1948,7 +1948,7 @@ fn build_http_client() -> Result<Client> {
     let mut headers = HeaderMap::new();
     headers.insert(
         USER_AGENT,
-        HeaderValue::from_str(&format!("memstack/{}", env!("CARGO_PKG_VERSION")))
+        HeaderValue::from_str(&format!("darc/{}", env!("CARGO_PKG_VERSION")))
             .context("failed to build npm registry user agent header")?,
     );
 
@@ -1967,7 +1967,7 @@ fn resolve_binary_cache_dir(cache_dir: Option<&Path>) -> Result<PathBuf> {
     BaseDirs::new()
         .map(|dirs| {
             dirs.cache_dir()
-                .join("memstack")
+                .join("darc")
                 .join("schema-audit")
                 .join("claude")
         })
@@ -2693,7 +2693,7 @@ mod tests {
 
         let report = run_claude_schema_audit_with_provider(
             "npm".to_owned(),
-            PathBuf::from("/tmp/memstack-claude-cache"),
+            PathBuf::from("/tmp/darc-claude-cache"),
             &provider,
             1,
             None,
@@ -2750,7 +2750,7 @@ mod tests {
 
         let report = run_claude_schema_audit_with_provider(
             "npm".to_owned(),
-            PathBuf::from("/tmp/memstack-claude-cache"),
+            PathBuf::from("/tmp/darc-claude-cache"),
             &provider,
             2,
             None,
@@ -2847,7 +2847,7 @@ mod tests {
 
         let report = run_claude_schema_audit_with_provider(
             "npm".to_owned(),
-            PathBuf::from("/tmp/memstack-claude-cache"),
+            PathBuf::from("/tmp/darc-claude-cache"),
             &provider,
             5,
             None,
@@ -3202,10 +3202,8 @@ export declare type SessionEndHookInput = BaseHookInput & {
     }
 
     fn tempfile_dir() -> PathBuf {
-        let root = env::temp_dir().join(format!(
-            "memstack-claude-audit-test-{}",
-            super::unique_suffix()
-        ));
+        let root =
+            env::temp_dir().join(format!("darc-claude-audit-test-{}", super::unique_suffix()));
         fs::create_dir_all(&root).unwrap();
         root
     }

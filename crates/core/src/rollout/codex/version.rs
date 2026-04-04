@@ -68,7 +68,7 @@ impl CodexCliVersion {
     }
 }
 
-/// Enumerates version-gated Codex rollout features that matter to memstack parsing.
+/// Enumerates version-gated Codex rollout features that matter to darc parsing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CodexSchemaFeature {
     CompactedLine,
@@ -96,7 +96,7 @@ pub(crate) fn supports_feature(version: &CodexCliVersion, feature: CodexSchemaFe
     version >= &feature.introduced_in()
 }
 
-/// Returns the latest Codex CLI version covered exactly by memstack.
+/// Returns the latest Codex CLI version covered exactly by darc.
 pub(crate) const fn latest_exact_supported_codex_cli_version() -> CodexCliVersion {
     CodexCliVersion::stable(0, 118, 0)
 }
@@ -202,7 +202,7 @@ impl fmt::Display for CodexPrerelease {
     }
 }
 
-/// Identifies the coarse Codex rollout parser families recorded in memstack metadata.
+/// Identifies the coarse Codex rollout parser families recorded in darc metadata.
 ///
 /// These schema ids are intentionally broad parser families, not the sole source of exact
 /// compatibility truth. Fine-grained support for rollout features and response-item variants is

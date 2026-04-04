@@ -96,7 +96,7 @@ fn indexed_timestamp_duration_ms(started_at: &str, completed_at: &str) -> Option
         .filter(|duration| *duration >= 0)
 }
 
-/// Parses one memstack UTC timestamp into Unix milliseconds.
+/// Parses one darc UTC timestamp into Unix milliseconds.
 fn parse_utc_timestamp_millis(value: &str) -> Option<i64> {
     let value = value.strip_suffix('Z')?;
     let (date, time) = value.split_once('T')?;
