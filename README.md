@@ -4,205 +4,52 @@
 [![CI](https://github.com/0xjunha/darc/actions/workflows/ci.yml/badge.svg)](https://github.com/0xjunha/darc/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/github/0xjunha/darc/graph/badge.svg?token=J5ZVVBJ3U9)](https://codecov.io/github/0xjunha/darc)
 
-## Project rename and linking
+Darc archives local Claude and Codex session history by project, then parses the archived rollouts into a normalized SQLite index for inspection, analytics, and downstream tooling.
 
-Darc has three project-management commands for renamed or merged checkouts:
+## What it does
 
-- `darc link <project>` links one old project's paths into the current project.
-- `darc remove <project>` removes one configured project plus its archived and indexed data.
-- `darc rename-from <project>` is the full rename migration workflow.
+- Detects and registers local projects in a shared `~/.darc` workspace.
+- Syncs matching Claude and Codex session data into a per-project archive.
+- Parses archived rollouts into a normalized SQLite index.
+- Preserves project history across checkout moves, merges, and renames.
 
-### `darc link`
+## Quickstart
 
-Use `link` when you want the current project to recognize another configured project's old paths, but you do not want to remove the old project yet.
-
-Run it from the target project directory. The argument is the old or source project name stored in `~/.darc/config.toml`.
-
-Example:
+Install the CLI from this repository:
 
 ```bash
-cd /path/to/new-project
-darc link old-project
+cargo install --path crates/cli
 ```
 
-This means:
-
-- current directory `/path/to/new-project` is the target project
-- `old-project` is the old or source project already known to Darc
-
-`link` only updates config. It does not run `sync`, does not run `parse`, and does not remove the source project.
-
-### `darc remove`
-
-Use `remove` when you want to delete a configured project entirely.
-
-Example:
+Initialize Darc for a project, archive matching sessions, then parse them:
 
 ```bash
-darc remove old-project
-```
-
-`remove` matches the configured project by its `name` in `~/.darc/config.toml`. The name must match exactly one project.
-
-It deletes:
-
-- the project entry from `config.toml`
-- the project's archived sessions directory under `~/.darc/projects/...`
-- the project's indexed SQLite rows
-
-You can run `remove` from any directory.
-
-### `darc rename-from`
-
-Use `rename-from` when you just renamed a project from one name to another and want Darc to move future history under the new project identity.
-
-Example:
-
-```bash
-cd /path/to/new-project
-darc rename-from old-project
-```
-
-This is the intended workflow when:
-
-- the old project was named `old-project`
-- the new checkout path is now `/path/to/new-project`
-- Darc config still only knows the old project name `old-project`
-
-In that example:
-
-- current directory `/path/to/new-project` is the new or target project
-- `old-project` is the old or source project name
-
-`rename-from` does all of this:
-
-1. creates or reuses the target project from the current checkout
-2. links the old project's paths into the target project
-3. runs `darc sync`
-4. runs `darc parse`
-5. removes the old source project if the previous steps succeed
-
-So it is the safe built-in version of:
-
-```bash
-cd /path/to/new-project
-darc link old-project
+cd /path/to/project
+darc init
 darc sync
 darc parse
-darc remove old-project
 ```
 
-If you have not initialized Darc yet and `~/.darc/config.toml` does not exist, run:
+Use provider filters when you only want one source:
 
 ```bash
-darc init
+darc sync --source claude
+darc parse --provider claude
 ```
 
-## Maintainer checks
+## Commands
 
-Run the hidden Codex rollout schema audit before cutting a Darc patch release when the Codex rollout parser may need a compatibility review:
+- `darc init` detects local sources and creates the shared Darc config.
+- `darc sync` archives matching Claude and Codex sessions for the active project.
+- `darc parse` parses archived sessions into SQLite.
+- `darc link`, `darc remove`, and `darc rename-from` manage renamed or merged projects.
 
-```bash
-darc codex-schema-audit
-```
+Run `darc --help` for the visible CLI surface. Hidden maintainer commands are documented separately.
 
-If you want to override the default released-binary cache location, pass it explicitly:
+## Documentation
 
-```bash
-darc codex-schema-audit --cache-dir /path/to/cache
-```
-
-What the audit checks:
-
-- Darc's current exact Codex rollout support boundary is defined in `crates/core/src/rollout/codex/version.rs` by `latest_exact_supported_codex_cli_version()`.
-- The audit queries Codex GitHub Releases and walks stable release tags from the latest stable tag down to that exact-support boundary.
-- For each audited tag, it downloads that release's published platform binary package, caches it locally, runs `codex app-server generate-internal-json-schema`, and compares the exported `RolloutLine.json` schema against the boundary tag's schema.
-- If the schema is unchanged across the audited range, the command reports compatibility. It does not update code or docs automatically.
-- If the schema drifts, the command exits `1` and reports the first drifting tag plus likely Darc files to review.
-
-What the audit does not do:
-
-- It does not inspect a local Codex source checkout.
-- It does not build Codex from source.
-- It only audits stable releases that are currently published on Codex GitHub Releases.
-- It does not bump Darc's exact-support boundary automatically.
-
-What the audit caches locally:
-
-```bash
-~/Library/Caches/darc/schema-audit/codex
-```
-
-On Linux and Windows, the default cache root follows the platform cache directory returned by the OS.
-
-If you see an error like:
-
-```text
-GitHub Releases are missing the stable release tag `rust-v0.118.0`
-```
-
-the published release catalog no longer contains the exact-support boundary tag that Darc needs as the audit baseline. Darc cannot advance the audit until that release remains available or the exact-support boundary is updated.
-
-Run the hidden Claude rollout schema audit before cutting a Darc patch release when the Claude rollout parser may need a compatibility review:
-
-```bash
-darc claude-schema-audit --use-host-auth
-```
-
-If you want to override the default released-package cache location, pass it explicitly:
-
-```bash
-darc claude-schema-audit --use-host-auth --cache-dir /path/to/cache
-```
-
-What the Claude audit checks:
-
-- Darc's current exact Claude rollout support boundary is defined in `crates/core/src/rollout/claude/version.rs` by `latest_exact_supported_claude_cli_version()`.
-- The audit queries the npm registry for published `@anthropic-ai/claude-code` releases and walks stable package versions from the latest published version down to that exact-support boundary.
-- For each audited version, it downloads the published package tarball, caches it locally, runs deterministic fixture prompts against the released CLI, and derives a normalized transcript schema manifest from the emitted local transcript JSONL plus hook and stream-json output.
-- Darc does not provide an OS-level sandbox for executing published Claude packages. The audit therefore requires explicit `--use-host-auth` opt-in and runs the released CLI with your host Claude login state plus an allowlist of Claude/cloud auth environment variables, not your full shell environment.
-- Each fixture run uses a dedicated workspace under `~/src/.darc-claude-audit`, so Claude session logs never record your actual Darc repository path as the audited project.
-- The command also derives a supplementary Agent SDK surface manifest from published `.d.ts` files when a matching `@anthropic-ai/claude-agent-sdk` package advertises compatibility with that Claude Code version.
-- If the transcript manifest is unchanged across the audited range, the command reports compatibility. It does not update code or docs automatically.
-- If the transcript manifest drifts, the command exits `1` and reports the first drifting version plus likely Darc files to review. Supplementary Agent SDK drift is reported separately and does not determine compatibility by itself.
-
-Claude audit runtime requirements:
-
-- A working local `node` runtime.
-- A working local `python3` or `python` runtime for hook capture.
-- Claude authentication that the released CLI can use.
-
-What the Claude audit does not do:
-
-- It does not inspect a local Claude Code source checkout.
-- It does not build Claude Code from source.
-- It does not claim that Agent SDK types and local transcript JSONL are equivalent.
-- It does not bump Darc's exact-support boundary automatically.
-
-What the Claude audit caches locally:
-
-```bash
-~/Library/Caches/darc/schema-audit/claude
-```
-
-## Claude support policy
-
-Darc tracks Claude rollout support at three levels:
-
-- `exact`: versions backed by checked fixtures and explicit parser coverage. Darc's current exact Claude rollout support boundary is still anchored by `latest_exact_supported_claude_cli_version()` in `crates/core/src/rollout/claude/version.rs`. Today that exact set is the observed fixture-backed releases `2.1.81`, `2.1.84`, and `2.1.87`.
-- `best_effort_forward`: versions that map onto a known Claude schema epoch but are not fixture-backed exact matches. Darc preserves unknown payloads instead of dropping them, so parsing continues with degraded certainty rather than failing fast.
-- `unsupported`: versions earlier than the practical Claude audit floor (`1.0.88`) or malformed rollouts that cannot be parsed safely. Individual unsupported rollout files are skipped during `darc parse`; they do not abort the entire parse run.
-
-The current parser epochs are broader than the exact set. Exactness is intentionally narrower than epoch membership.
-
-## Claude analytics helper
-
-After indexing archived sessions with `darc parse`, library consumers can summarize the indexed Claude rollout corpus with:
-
-```rust
-use darc_core::report_claude_rollout_analytics;
-
-let report = report_claude_rollout_analytics(None)?;
-```
-
-The report aggregates indexed Claude sessions and turns by schema family, determinism, completion status, tool usage, delegation events, attachments, hook summaries, and turn durations from the normalized SQLite index.
+- [Documentation index](docs/README.md)
+- [Project rename and linking](docs/project-rename.md)
+- [Schema audits](docs/schema-audits.md)
+- [Claude support and analytics](docs/claude-support.md)
+- [Backlog](docs/todo.md)

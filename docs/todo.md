@@ -15,7 +15,7 @@
 - If rollout contents become corrupt without changing those values, parse can incorrectly skip reparsing and keep stale indexed data.
 - Consider storing or deriving a stronger content identity for changed-rollout detection.
 
-### Claude Code Support
+### Claude Code support
 - Add a Claude schema audit workflow similar to `codex-schema-audit`.
   - Fetch official Claude Code releases or other upstream-distributed binaries in a reproducible way.
   - Run deterministic fixture-generation scenarios against released Claude Code builds.
