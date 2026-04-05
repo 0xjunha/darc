@@ -11,6 +11,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail, ensure};
+use darc_paths::encode_path_for_claude;
 use darc_rollout::claude::{ClaudeCliVersion, latest_exact_supported_claude_cli_version};
 use directories::BaseDirs;
 use flate2::read::GzDecoder;
@@ -21,7 +22,6 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha512};
 use tar::Archive;
 
-use crate::path_util::encode_path_for_claude;
 use crate::schema_diff::{normalize_json, summarize_schema_differences, truncate_text};
 
 /// Stores the npm package name for released Claude CLI audits.

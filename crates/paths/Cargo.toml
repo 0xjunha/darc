@@ -1,5 +1,5 @@
 [package]
-name = "darc-rollout"
+name = "darc-paths"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,7 +7,3 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
-anyhow = { workspace = true }
-darc-paths = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }

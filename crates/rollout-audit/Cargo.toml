@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+darc-paths = { workspace = true }
 darc-rollout = { workspace = true }
 directories = { workspace = true }
 flate2 = { workspace = true }

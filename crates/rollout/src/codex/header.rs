@@ -5,12 +5,12 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use darc_paths::normalize_project_path;
 use serde::Deserialize;
 use serde_json::Value;
 
 use super::version::{CodexSchemaId, resolve_codex_schema};
 use crate::ParseDeterminism;
-use crate::path_util::normalize_project_path;
 
 /// Stores the tolerant session-level metadata needed for rollout discovery.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1,4 +1,3 @@
-mod path_util;
 mod schema_diff;
 
 /// Audits Claude rollout schema compatibility against published releases.

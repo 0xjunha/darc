@@ -3,8 +3,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Encodes a project path using Claude's directory naming rule.
+pub fn encode_path_for_claude(path: &Path) -> String {
+    path.to_string_lossy().replace('/', "-")
+}
+
 /// Normalizes a project path using canonicalization when possible.
-pub(crate) fn normalize_project_path(path: &Path) -> PathBuf {
+pub fn normalize_project_path(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| normalize_path_textually(path))
 }
 
@@ -38,5 +43,23 @@ fn normalize_path_textually(path: &Path) -> PathBuf {
         }
     } else {
         normalized
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encode_path_for_claude_replaces_path_separators() {
+        let encoded = encode_path_for_claude(Path::new("/Users/example/src/darc"));
+        assert_eq!(encoded, "-Users-example-src-darc");
+    }
+
+    #[test]
+    fn normalize_project_path_removes_dots_and_trailing_slashes() {
+        let normalized = normalize_project_path(Path::new("/tmp/example/./old/../repo/"));
+
+        assert_eq!(normalized, PathBuf::from("/tmp/example/repo"));
     }
 }
