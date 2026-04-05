@@ -1,23 +1,6 @@
 use std::{collections::BTreeSet, path::PathBuf};
 
-use serde::{Deserialize, Serialize};
-
-/// Identifies which upstream tool produced one archived session tree.
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
-pub enum SourceKind {
-    Claude,
-    Codex,
-}
-
-impl SourceKind {
-    /// Returns the stable directory name used for archived sessions.
-    pub fn directory_name(self) -> &'static str {
-        match self {
-            Self::Claude => "claude",
-            Self::Codex => "codex",
-        }
-    }
-}
+pub use darc_paths::SourceKind;
 
 /// Stores the Claude-specific source settings needed for sync discovery.
 #[derive(Debug, Clone)]

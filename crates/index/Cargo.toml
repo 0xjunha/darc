@@ -1,5 +1,5 @@
 [package]
-name = "darc-sync"
+name = "darc-index"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,9 +10,6 @@ repository.workspace = true
 darc-paths = { workspace = true }
 darc-rollout = { workspace = true }
 anyhow = { workspace = true }
-serde = { workspace = true }
+rusqlite = { workspace = true }
 serde_json = { workspace = true }
 walkdir = { workspace = true }
-
-[dev-dependencies]
-darc-test-utils = { workspace = true }

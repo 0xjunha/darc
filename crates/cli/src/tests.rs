@@ -1,13 +1,14 @@
 use clap::{CommandFactory, Parser};
-use darc_core::{
+use darc_rollout_audit::claude::{
     ClaudeSchemaAuditReport, ClaudeSchemaDrift, ClaudeSchemaDriftWindow, ClaudeSchemaSurveyMode,
-    ClaudeSdkSchemaDrift, CodexSchemaAuditReport, CodexSchemaDrift,
+    ClaudeSdkSchemaDrift,
 };
+use darc_rollout_audit::codex::{CodexSchemaAuditReport, CodexSchemaDrift};
+use darc_rollout_audit::{claude::ClaudeSchemaAuditOutcome, codex::CodexSchemaAuditOutcome};
 
 use super::{
-    ClaudeSchemaAuditOutcome, Cli, CodexSchemaAuditOutcome, Commands,
-    claude_schema_audit_exit_code, codex_schema_audit_exit_code, format_claude_schema_audit_report,
-    format_codex_schema_audit_report,
+    Cli, Commands, claude_schema_audit_exit_code, codex_schema_audit_exit_code,
+    format_claude_schema_audit_report, format_codex_schema_audit_report,
 };
 
 fn compatible_report() -> CodexSchemaAuditReport {

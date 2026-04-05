@@ -1,17 +1,10 @@
 [package]
-name = "darc-cli"
+name = "darc-test-utils"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
-[[bin]]
-name = "darc"
-path = "src/main.rs"
-
 [dependencies]
 anyhow = { workspace = true }
-clap = { workspace = true }
-darc-core = { workspace = true }
-darc-rollout-audit = { workspace = true }

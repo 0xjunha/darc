@@ -10,7 +10,7 @@ use crate::turn_metrics::summarize_stored_turn_metrics;
 const INDEX_DB_SCHEMA_VERSION: i32 = 1;
 
 /// Opens the index database and creates the current schema when missing.
-pub(crate) fn open_index_database(path: &Path) -> Result<Connection> {
+pub fn open_index_database(path: &Path) -> Result<Connection> {
     create_parent_dir(path)?;
 
     let mut connection = Connection::open(path)
@@ -23,7 +23,7 @@ pub(crate) fn open_index_database(path: &Path) -> Result<Connection> {
 }
 
 /// Ensures the index database file and schema exist.
-pub(crate) fn ensure_index_database(path: &Path) -> Result<()> {
+pub fn ensure_index_database(path: &Path) -> Result<()> {
     let _connection = open_index_database(path)?;
     Ok(())
 }

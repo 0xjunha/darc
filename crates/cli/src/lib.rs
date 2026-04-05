@@ -6,13 +6,18 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use darc_core::{
-    ClaudeSchemaAuditOptions, ClaudeSchemaAuditOutcome, ClaudeSchemaAuditReport,
-    ClaudeSchemaSurveyMode, CodexSchemaAuditOptions, CodexSchemaAuditOutcome,
-    CodexSchemaAuditReport, IndexOptions, InitDraft, RefreshOptions, RefreshReport, SkippedRollout,
-    SourceKind, SyncOptions, default_root_path, execute_sync, index_project_sessions, link_project,
+    IndexOptions, InitDraft, RefreshOptions, RefreshReport, SkippedRollout, SourceKind,
+    SyncOptions, default_root_path, execute_sync, index_project_sessions, link_project,
     prepare_init, prepare_sync, refresh_all_projects, refresh_project, remove_project,
-    rename_project, run_claude_schema_audit_with_progress, run_codex_schema_audit_with_progress,
-    write_init,
+    rename_project, write_init,
+};
+use darc_rollout_audit::claude::{
+    ClaudeSchemaAuditOptions, ClaudeSchemaAuditOutcome, ClaudeSchemaAuditReport,
+    ClaudeSchemaSurveyMode, run_claude_schema_audit_with_progress,
+};
+use darc_rollout_audit::codex::{
+    CodexSchemaAuditOptions, CodexSchemaAuditOutcome, CodexSchemaAuditReport,
+    run_codex_schema_audit_with_progress,
 };
 
 #[derive(Debug, Parser)]

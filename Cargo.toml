@@ -2,12 +2,15 @@
 resolver = "3"
 
 members = [
+    "crates/analytics",
     "crates/cli",
     "crates/core",
+    "crates/index",
     "crates/paths",
     "crates/rollout-audit",
     "crates/rollout",
     "crates/sync",
+    "crates/test-utils",
 ]
 
 [workspace.package]
@@ -19,11 +22,14 @@ repository = "https://github.com/0xjunha/darc"
 
 [workspace.dependencies]
 # Internal Dependencies
+darc-analytics = { path = "crates/analytics" }
 darc-core = { path = "crates/core" }
+darc-index = { path = "crates/index" }
 darc-paths = { path = "crates/paths" }
 darc-rollout-audit = { path = "crates/rollout-audit" }
 darc-rollout = { path = "crates/rollout" }
 darc-sync = { path = "crates/sync" }
+darc-test-utils = { path = "crates/test-utils" }
 # External Dependencies
 anyhow = "1.0.102"
 clap = { version = "4.6.0", features = ["derive"] }
