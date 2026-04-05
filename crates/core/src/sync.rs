@@ -147,8 +147,12 @@ pub fn execute_sync(plan: SyncPlan) -> Result<SyncReport> {
     })
 }
 
-/// Plans a sync from an explicit working directory for deterministic tests.
-fn prepare_sync_from(current_dir: &Path, root: PathBuf, options: SyncOptions) -> Result<SyncPlan> {
+/// Plans a sync from one explicit working directory and darc root.
+pub(crate) fn prepare_sync_from(
+    current_dir: &Path,
+    root: PathBuf,
+    options: SyncOptions,
+) -> Result<SyncPlan> {
     let active_project = load_active_project(current_dir, &root)?;
     let crate::active_project::ActiveProject {
         mut config,
