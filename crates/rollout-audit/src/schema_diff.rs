@@ -4,6 +4,12 @@ const SCHEMA_DIFF_LIMIT: usize = 8;
 const ORDER_INSENSITIVE_SCHEMA_ARRAY_KEYS: &[&str] =
     &["allOf", "anyOf", "enum", "oneOf", "required", "type"];
 
+/// Stores one human-readable difference inside a schema drift summary.
+struct SchemaDifference {
+    path: String,
+    message: String,
+}
+
 /// Normalizes one JSON-like schema value to ignore irrelevant ordering noise.
 pub(super) fn normalize_json(value: Value) -> Value {
     normalize_json_at_path(value, "$")
@@ -164,12 +170,6 @@ fn collect_schema_differences(
             ),
         }),
     }
-}
-
-/// Stores one human-readable difference inside a schema drift summary.
-struct SchemaDifference {
-    path: String,
-    message: String,
 }
 
 /// Describes one JSON value compactly for drift summaries.

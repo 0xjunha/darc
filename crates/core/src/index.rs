@@ -6,30 +6,25 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use rusqlite::{Connection, Transaction, params};
-use walkdir::WalkDir;
-
-use crate::{
-    SourceKind,
-    active_project::load_active_project,
-    constants::INDEX_DB_FILE_NAME,
-    default_root_path,
-    index_db::open_index_database,
-    rollout::codex::{
+use darc_rollout::{
+    ParseDeterminism,
+    claude::{
+        ClaudeArchivedContext, ClaudeSessionKind, parse_rollout_file as parse_claude_rollout_file,
+    },
+    codex::{
         CodexRollout, CodexRolloutHeader, CodexRolloutSink, compare_rollout_priority,
         parse_rollout_file, parse_rollout_file_into, parse_rollout_file_session_id,
         parse_rollout_session_meta_line, read_first_rollout_line_bytes,
         reconcile_rollout_session_id,
     },
-    rollout::{
-        ParseDeterminism,
-        claude::{
-            ClaudeArchivedContext, ClaudeSessionKind,
-            parse_rollout_file as parse_claude_rollout_file,
-        },
-        model::NormalizedTurn as CodexTurn,
-    },
-    turn_metrics::summarize_turn_metrics,
+    model::NormalizedTurn as CodexTurn,
+};
+use rusqlite::{Connection, Transaction, params};
+use walkdir::WalkDir;
+
+use crate::{
+    SourceKind, active_project::load_active_project, constants::INDEX_DB_FILE_NAME,
+    default_root_path, index_db::open_index_database, turn_metrics::summarize_turn_metrics,
 };
 
 /// Parses one Codex rollout file into user-visible turns.
@@ -1336,23 +1331,25 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::{
         env, fs,
-        io::Cursor,
         path::{Path, PathBuf},
         process::Command,
+        sync::atomic::{AtomicU64, Ordering},
         time::{SystemTime, UNIX_EPOCH},
     };
 
     use anyhow::{Context, Result};
+    use darc_rollout::ParseDeterminism;
     use rusqlite::Connection;
     use serde_json::Value;
 
     use super::{CodexRollout, index_project_codex_turns_from, index_project_sessions_from};
     use crate::constants::{CONFIG_FILE_NAME, INDEX_DB_FILE_NAME};
-    use crate::rollout::{ParseDeterminism, codex::parse_rollout_reader};
     use crate::{
         CodexTurnMessage, CodexTurnStatus, CodexTurnStep, SourceKind,
         config::{ProjectConfig, SharedConfig, SourcesConfig},
     };
+
+    static UNIQUE_TEST_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn parses_two_turns_with_event_boundaries() -> Result<()> {
@@ -1586,7 +1583,13 @@ mod tests {
     }
 
     fn parse_fixture(input: &str) -> Result<CodexRollout> {
-        parse_rollout_reader(Cursor::new(input), Path::new("fixture.jsonl"))
+        let dir = unique_test_dir("parse-fixture");
+        let path = dir.join("rollout.jsonl");
+        fs::create_dir_all(&dir)?;
+        write_file(&path, input)?;
+        let rollout = super::parse_codex_rollout(&path);
+        fs::remove_dir_all(&dir)?;
+        rollout
     }
 
     /// Builds a unique temporary directory for one parse test fixture.
@@ -1595,7 +1598,11 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system clock should be after the Unix epoch")
             .as_nanos();
-        env::temp_dir().join(format!("test-{prefix}-{}-{nanos}", std::process::id()))
+        let counter = UNIQUE_TEST_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+        env::temp_dir().join(format!(
+            "test-{prefix}-{}-{nanos}-{counter}",
+            std::process::id()
+        ))
     }
 
     /// Writes one text file while creating any missing parent directories.

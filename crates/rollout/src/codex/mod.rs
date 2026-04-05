@@ -9,7 +9,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::rollout::{
+use crate::{
     ParseDeterminism,
     model::{
         NormalizedTurn as CodexTurn, NormalizedTurnMessage as CodexTurnMessage,
@@ -18,21 +18,17 @@ use crate::rollout::{
 };
 
 mod header;
-mod schema_audit;
 mod version;
 
 #[cfg(test)]
 use header::parse_rollout_header_parts;
-pub(crate) use header::{
+pub use header::{
     CodexRolloutHeader, CodexRolloutSessionMeta, parse_rollout_file_session_id,
     parse_rollout_session_meta_line, read_first_rollout_line_bytes, read_rollout_header,
     read_rollout_session_meta, reconcile_rollout_session_id,
 };
-pub use schema_audit::{
-    CodexSchemaAuditOptions, CodexSchemaAuditOutcome, CodexSchemaAuditReport, CodexSchemaDrift,
-    run_codex_schema_audit, run_codex_schema_audit_with_progress,
-};
-use version::{CodexCliVersion, CodexSchemaFeature, supports_feature, supports_response_item};
+pub use version::{CodexCliVersion, latest_exact_supported_codex_cli_version};
+use version::{CodexSchemaFeature, supports_feature, supports_response_item};
 
 /// Stores the parsed Codex dialogue for one rollout file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -46,7 +42,7 @@ pub struct CodexRollout {
 }
 
 /// Compares duplicate rollout copies by completeness, recency, and a stable path tie-break.
-pub(crate) fn compare_rollout_priority<T: Ord>(
+pub fn compare_rollout_priority<T: Ord>(
     left_size: u64,
     left_mtime_ms: u64,
     left_tie_break: &T,
@@ -61,7 +57,7 @@ pub(crate) fn compare_rollout_priority<T: Ord>(
 }
 
 /// Receives parsed rollout metadata and completed turns incrementally.
-pub(crate) trait CodexRolloutSink {
+pub trait CodexRolloutSink {
     /// Starts one parsed rollout session before any turns are emitted.
     fn begin_rollout(&mut self, header: &CodexRolloutHeader) -> Result<()>;
 
@@ -163,17 +159,14 @@ struct RawMessageContent {
 }
 
 /// Parses one Codex rollout file into user-visible turns with schema metadata.
-pub(crate) fn parse_rollout_file(path: &Path) -> Result<CodexRollout> {
+pub fn parse_rollout_file(path: &Path) -> Result<CodexRollout> {
     let mut sink = CollectingRolloutSink::default();
     parse_rollout_file_into(path, &mut sink)?;
     sink.finish()
 }
 
 /// Parses one Codex rollout file and emits turns incrementally to a sink.
-pub(crate) fn parse_rollout_file_into<S: CodexRolloutSink>(
-    path: &Path,
-    sink: &mut S,
-) -> Result<()> {
+pub fn parse_rollout_file_into<S: CodexRolloutSink>(path: &Path, sink: &mut S) -> Result<()> {
     let header = read_rollout_header(path)?
         .with_context(|| format!("missing session_meta line in {}", path.display()))?;
     let has_event_user_boundaries = scan_rollout_for_event_user_boundaries(path)?;
@@ -796,8 +789,8 @@ mod tests {
     use anyhow::Result;
 
     use super::parse_rollout_reader;
-    use crate::rollout::ParseDeterminism;
-    use crate::rollout::model::{
+    use crate::ParseDeterminism;
+    use crate::model::{
         NormalizedTurnMessage as CodexTurnMessage, NormalizedTurnStatus as CodexTurnStatus,
         NormalizedTurnStep as CodexTurnStep,
     };

@@ -11,6 +11,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail, ensure};
+use darc_rollout::claude::{ClaudeCliVersion, latest_exact_supported_claude_cli_version};
 use directories::BaseDirs;
 use flate2::read::GzDecoder;
 use reqwest::blocking::{Client, Response};
@@ -20,23 +21,27 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha512};
 use tar::Archive;
 
-use super::version::{ClaudeCliVersion, latest_exact_supported_claude_cli_version};
-use crate::{
-    project_paths::encode_path_for_claude,
-    rollout::schema_diff::{normalize_json, summarize_schema_differences, truncate_text},
-};
+use crate::path_util::encode_path_for_claude;
+use crate::schema_diff::{normalize_json, summarize_schema_differences, truncate_text};
 
+/// Stores the npm package name for released Claude CLI audits.
 const NPM_CLAUDE_CODE_PACKAGE: &str = "@anthropic-ai/claude-code";
+/// Stores the npm package name for released Claude SDK audits.
 const NPM_AGENT_SDK_PACKAGE: &str = "@anthropic-ai/claude-agent-sdk";
+/// Stores the human-readable source label for Claude npm releases.
 const NPM_RELEASE_SOURCE: &str = "npm registry (@anthropic-ai/claude-code)";
+/// Stores the base URL for npm registry metadata requests.
 const NPM_REGISTRY_BASE_URL: &str = "https://registry.npmjs.org";
+/// Stores the timeout used for released Claude CLI command execution.
 const CLI_COMMAND_TIMEOUT: Duration = Duration::from_secs(180);
+/// Lists the Darc files most likely to need updates after Claude schema drift.
 const LIKELY_UPDATE_PATHS: &[&str] = &[
-    "crates/core/src/rollout/claude/version.rs",
-    "crates/core/src/rollout/claude/mod.rs",
-    "crates/core/src/rollout/claude/schema_audit.rs",
-    "crates/cli/src/main.rs",
+    "crates/rollout/src/claude/version.rs",
+    "crates/rollout/src/claude/mod.rs",
+    "crates/rollout-audit/src/claude.rs",
+    "crates/cli/src/lib.rs",
 ];
+/// Lists the exact auth environment variables allowed into host-auth audit runs.
 const AUTH_ENV_NAMES: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "CLAUDE_CODE_OAUTH_TOKEN",
@@ -62,10 +67,13 @@ const AUTH_ENV_NAMES: &[&str] = &[
     "AZURE_OPENAI_API_KEY",
     "AZURE_OPENAI_ENDPOINT",
 ];
+/// Lists auth environment variable prefixes allowed into host-auth audit runs.
 const AUTH_ENV_PREFIXES: &[&str] = &["VERTEX_REGION_"];
+/// Lists benign shell environment variables forwarded to released Claude processes.
 const ENV_PASSTHROUGH_NAMES: &[&str] = &[
     "LANG", "LC_ALL", "PATH", "SHELL", "TERM", "USER", "LOGNAME", "USERNAME",
 ];
+/// Lists host runtime environment variables needed for released Claude processes.
 const HOST_RUNTIME_ENV_NAMES: &[&str] = &[
     "HOME",
     "XDG_CONFIG_HOME",
@@ -77,8 +85,11 @@ const HOST_RUNTIME_ENV_NAMES: &[&str] = &[
     "TMP",
     "TEMP",
 ];
+/// Stores the audit settings file name written into temporary Claude workspaces.
 const SETTINGS_FILE_NAME: &str = "claude-audit-settings.json";
+/// Stores the hook capture file name written during Claude audit runs.
 const HOOK_CAPTURE_FILE_NAME: &str = "claude-audit-hooks.jsonl";
+/// Stores the temporary workspace directory name used for Claude audit fixtures.
 const FIXTURE_WORKSPACE_DIR_NAME: &str = ".darc-claude-audit";
 
 /// Stores the input options for a Claude rollout schema compatibility audit.
@@ -2451,7 +2462,7 @@ mod tests {
         parse_jsonl_text, run_claude_schema_audit_with_provider, run_command_with_timeout,
         select_audited_release_versions, validate_fixture_coverage,
     };
-    use crate::rollout::schema_diff::{normalize_json, summarize_schema_differences};
+    use crate::schema_diff::{normalize_json, summarize_schema_differences};
 
     struct FakeClaudeSchemaAuditProvider {
         versions: Vec<String>,

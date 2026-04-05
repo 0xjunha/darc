@@ -30,7 +30,7 @@ pub enum NormalizedTurnStatus {
 
 impl NormalizedTurnStatus {
     /// Returns the stable SQLite string value for one turn status.
-    pub(crate) fn as_sql_text(self) -> &'static str {
+    pub fn as_sql_text(self) -> &'static str {
         match self {
             Self::Completed => "completed",
             Self::Aborted => "aborted",

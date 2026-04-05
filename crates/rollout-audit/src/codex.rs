@@ -9,6 +9,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail, ensure};
+use darc_rollout::codex::{CodexCliVersion, latest_exact_supported_codex_cli_version};
 use directories::BaseDirs;
 use flate2::read::GzDecoder;
 use reqwest::blocking::{Client, Response};
@@ -18,19 +19,25 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tar::Archive;
 
-use super::version::{CodexCliVersion, latest_exact_supported_codex_cli_version};
-use crate::rollout::schema_diff::{normalize_json, summarize_schema_differences, truncate_text};
+use crate::schema_diff::{normalize_json, summarize_schema_differences, truncate_text};
 
+/// Stores the GitHub Releases page size used for Codex release discovery.
 const GITHUB_RELEASES_PAGE_SIZE: usize = 100;
+/// Stores the GitHub Releases API URL for Codex release discovery.
 const GITHUB_RELEASES_URL: &str = "https://api.github.com/repos/openai/codex/releases";
+/// Stores the human-readable source label for Codex GitHub releases.
 const GITHUB_RELEASE_SOURCE: &str = "GitHub Releases (openai/codex)";
+/// Stores the stable tag prefix expected on released Codex binaries.
 const RELEASE_TAG_PREFIX: &str = "rust-v";
+/// Stores the rollout schema file name exported from released Codex binaries.
 const ROLLOUT_SCHEMA_FILE_NAME: &str = "RolloutLine.json";
+/// Lists the Darc files most likely to need updates after Codex schema drift.
 const LIKELY_UPDATE_PATHS: &[&str] = &[
-    "crates/core/src/rollout/codex/version.rs",
-    "crates/core/src/rollout/codex/header.rs",
-    "crates/core/src/rollout/codex/mod.rs",
-    "crates/cli/src/main.rs",
+    "crates/rollout/src/codex/version.rs",
+    "crates/rollout/src/codex/header.rs",
+    "crates/rollout/src/codex/mod.rs",
+    "crates/rollout-audit/src/codex.rs",
+    "crates/cli/src/lib.rs",
 ];
 
 /// Stores the input options for a Codex rollout schema compatibility audit.

@@ -8,6 +8,10 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use darc_rollout::codex::{
+    CodexRolloutSessionMeta, compare_rollout_priority, read_rollout_session_meta,
+    reconcile_rollout_session_id,
+};
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
@@ -19,10 +23,6 @@ use crate::{
     project_paths::{
         current_project_root, encode_path_for_claude, normalize_project_path,
         normalized_known_paths, project_path_set, try_git_output,
-    },
-    rollout::codex::{
-        CodexRolloutSessionMeta, compare_rollout_priority, read_rollout_session_meta,
-        reconcile_rollout_session_id,
     },
 };
 
@@ -1340,7 +1340,7 @@ mod tests {
 
     #[test]
     fn parse_rollout_file_session_id_reads_logical_id() {
-        let id = crate::rollout::codex::parse_rollout_file_session_id(
+        let id = darc_rollout::codex::parse_rollout_file_session_id(
             "rollout-2026-03-27T17-53-08-019d2e7f-4e07-7940-8d37-0a04e9aeb621.jsonl",
         );
 

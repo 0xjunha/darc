@@ -7,7 +7,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 
-use crate::rollout::{
+use crate::{
     ParseDeterminism,
     model::{
         NormalizedTurn as CodexTurn, NormalizedTurnMessage as CodexTurnMessage,
@@ -15,19 +15,14 @@ use crate::rollout::{
     },
 };
 
-mod schema_audit;
 mod version;
 
-pub use schema_audit::{
-    ClaudeSchemaAuditOptions, ClaudeSchemaAuditOutcome, ClaudeSchemaAuditReport, ClaudeSchemaDrift,
-    ClaudeSchemaDriftWindow, ClaudeSchemaSurveyMode, ClaudeSdkSchemaDrift, run_claude_schema_audit,
-    run_claude_schema_audit_with_progress,
-};
+pub use version::{ClaudeCliVersion, latest_exact_supported_claude_cli_version};
 use version::{ClaudeSchemaEpoch, resolve_claude_schema};
 
 /// Identifies whether one archived Claude rollout is a parent session or a subagent session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ClaudeSessionKind {
+pub enum ClaudeSessionKind {
     Primary,
     Subagent,
 }
@@ -36,32 +31,29 @@ impl ClaudeSessionKind {}
 
 /// Stores the archive-derived identity constraints for one Claude rollout.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ClaudeArchivedContext {
-    pub(crate) session_id: String,
-    pub(crate) parent_session_id: Option<String>,
-    pub(crate) session_kind: ClaudeSessionKind,
-    pub(crate) expected_rollout_session_id: String,
-    pub(crate) expected_agent_id: Option<String>,
+pub struct ClaudeArchivedContext {
+    pub session_id: String,
+    pub parent_session_id: Option<String>,
+    pub session_kind: ClaudeSessionKind,
+    pub expected_rollout_session_id: String,
+    pub expected_agent_id: Option<String>,
 }
 
 /// Stores one parsed Claude rollout in the normalized indexing shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ClaudeRollout {
-    pub(crate) session_id: String,
-    pub(crate) parent_session_id: Option<String>,
-    pub(crate) session_kind: ClaudeSessionKind,
-    pub(crate) cwd: PathBuf,
-    pub(crate) cli_version: Option<String>,
-    pub(crate) schema_id: String,
-    pub(crate) determinism: ParseDeterminism,
-    pub(crate) turns: Vec<CodexTurn>,
+pub struct ClaudeRollout {
+    pub session_id: String,
+    pub parent_session_id: Option<String>,
+    pub session_kind: ClaudeSessionKind,
+    pub cwd: PathBuf,
+    pub cli_version: Option<String>,
+    pub schema_id: String,
+    pub determinism: ParseDeterminism,
+    pub turns: Vec<CodexTurn>,
 }
 
 /// Parses one archived Claude rollout file into normalized turns.
-pub(crate) fn parse_rollout_file(
-    path: &Path,
-    context: &ClaudeArchivedContext,
-) -> Result<ClaudeRollout> {
+pub fn parse_rollout_file(path: &Path, context: &ClaudeArchivedContext) -> Result<ClaudeRollout> {
     let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     parse_rollout_reader(BufReader::new(file), path, context)
 }
@@ -1045,8 +1037,8 @@ mod tests {
         ClaudeArchivedContext, ClaudeRollout, ClaudeSessionKind, parse_rollout_file,
         parse_rollout_reader,
     };
-    use crate::rollout::ParseDeterminism;
-    use crate::rollout::model::{
+    use crate::ParseDeterminism;
+    use crate::model::{
         NormalizedTurnMessage as CodexTurnMessage, NormalizedTurnStatus as CodexTurnStatus,
         NormalizedTurnStep as CodexTurnStep,
     };

@@ -4,6 +4,8 @@ resolver = "3"
 members = [
     "crates/cli",
     "crates/core",
+    "crates/rollout-audit",
+    "crates/rollout",
 ]
 
 [workspace.package]
@@ -16,6 +18,8 @@ repository = "https://github.com/0xjunha/darc"
 [workspace.dependencies]
 # Internal Dependencies
 darc-core = { path = "crates/core" }
+darc-rollout-audit = { path = "crates/rollout-audit" }
+darc-rollout = { path = "crates/rollout" }
 # External Dependencies
 anyhow = "1.0.102"
 clap = { version = "4.6.0", features = ["derive"] }
