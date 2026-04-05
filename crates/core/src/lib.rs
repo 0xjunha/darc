@@ -5,6 +5,7 @@ pub(crate) mod constants;
 mod index_db;
 mod init;
 mod parse;
+mod project;
 mod project_paths;
 mod rollout;
 mod sync;
@@ -20,6 +21,9 @@ pub use parse::{
     CodexRollout, CodexTurn, CodexTurnMessage, CodexTurnStatus, CodexTurnStep, ParseOptions,
     ParseReport, SkippedCodexRollout, SkippedRollout, parse_codex_rollout,
     parse_project_codex_turns, parse_project_sessions,
+};
+pub use project::{
+    LinkReport, RemoveReport, RenameReport, link_project, remove_project, rename_project,
 };
 pub use rollout::ParseDeterminism;
 pub use rollout::claude::{

@@ -327,7 +327,7 @@ fn merge_project_with_existing(
 }
 
 /// Normalizes a loaded project config so legacy entries gain a stable id.
-fn normalize_project_config(mut project: ProjectConfig) -> Result<ProjectConfig> {
+pub(crate) fn normalize_project_config(mut project: ProjectConfig) -> Result<ProjectConfig> {
     project.local_path = canonicalize_if_exists(project.local_path);
     project.known_paths = normalized_known_paths(&project.local_path, &project.known_paths)
         .into_iter()

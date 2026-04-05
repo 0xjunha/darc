@@ -6,8 +6,9 @@ use darc_core::{
     ClaudeSchemaAuditOptions, ClaudeSchemaAuditOutcome, ClaudeSchemaAuditReport,
     ClaudeSchemaSurveyMode, CodexSchemaAuditOptions, CodexSchemaAuditOutcome,
     CodexSchemaAuditReport, InitDraft, ParseOptions, SkippedRollout, SourceKind, SyncOptions,
-    default_root_path, execute_sync, parse_project_sessions, prepare_init, prepare_sync,
-    run_claude_schema_audit_with_progress, run_codex_schema_audit_with_progress, write_init,
+    default_root_path, execute_sync, link_project, parse_project_sessions, prepare_init,
+    prepare_sync, remove_project, rename_project, run_claude_schema_audit_with_progress,
+    run_codex_schema_audit_with_progress, write_init,
 };
 
 #[derive(Debug, Parser)]
@@ -22,6 +23,22 @@ struct Cli {
 enum Commands {
     /// Detect local sources and create the shared darc config.
     Init(InitArgs),
+    #[command(
+        about = "Link one configured project's historical paths into the current project",
+        long_about = "Link one configured project's historical paths into the current project.\n\nRun this command from the target project directory.\nThe PROJECT argument is the old or source project name already stored in ~/.darc/config.toml.\n\nExample:\n- You renamed `/path/to/old-project` to `/path/to/new-project`.\n- Darc still has a configured project named `old-project`.\n- Run `cd /path/to/new-project && darc link old-project`.\n\nThis command is non-destructive.\nIt updates config so the current project knows the source project's old local_path and known_paths.\nIt does not run `darc sync`, `darc parse`, or remove the source project."
+    )]
+    Link(LinkArgs),
+    #[command(
+        about = "Remove one configured project and its archived/indexed data",
+        long_about = "Remove one configured project and its archived/indexed data.\n\nThe PROJECT argument is matched against the configured project `name` in ~/.darc/config.toml.\nThe name must identify exactly one configured project.\n\nThis command deletes:\n- the project entry from config.toml\n- the project's archived sessions directory under ~/.darc/projects/...\n- the project's indexed SQLite rows\n\nYou can run this command from any directory."
+    )]
+    Remove(RemoveArgs),
+    #[command(
+        name = "rename-from",
+        about = "Rebuild one old project's history into the current renamed project",
+        long_about = "Rebuild one old project's history into the current renamed project.\n\nUse this when you just renamed a project from one name to another.\nRun the command from the new project directory, and pass the old project name.\n\nExample:\n- Darc config still contains a project named `old-project`.\n- You renamed the checkout to `/path/to/new-project`.\n- Run `cd /path/to/new-project && darc rename-from old-project`.\n\nThis command bootstraps or reuses the current project as the target, links the old project's paths into it, runs `darc sync`, runs `darc parse`, and removes the old source project after those steps succeed.\n\nIn other words, it is the safe built-in workflow for:\n`darc link <old-project> && darc sync && darc parse && darc remove <old-project>`\n\nIf ~/.darc/config.toml does not exist yet, run `darc init` first."
+    )]
+    RenameFrom(RenameArgs),
     /// Sync matching Claude and Codex sessions into the project archive.
     Sync(SyncArgs),
     /// Parse archived sessions from selected providers for the active project into SQLite.
@@ -61,6 +78,36 @@ struct SyncArgs {
 
     #[arg(long = "source", value_enum)]
     source: Vec<ProviderArg>,
+}
+
+/// Link one configured project's historical paths into the active project.
+#[derive(Debug, Args)]
+struct LinkArgs {
+    #[arg(long, default_value_os_t = default_root_path())]
+    root: PathBuf,
+
+    #[arg(value_name = "PROJECT")]
+    project: String,
+}
+
+/// Remove one configured project and its archived/indexed data.
+#[derive(Debug, Args)]
+struct RemoveArgs {
+    #[arg(long, default_value_os_t = default_root_path())]
+    root: PathBuf,
+
+    #[arg(value_name = "PROJECT")]
+    project: String,
+}
+
+/// Rebuild one configured project's history under the active project's id, then remove the old project.
+#[derive(Debug, Args)]
+struct RenameArgs {
+    #[arg(long, default_value_os_t = default_root_path())]
+    root: PathBuf,
+
+    #[arg(value_name = "PROJECT")]
+    project: String,
 }
 
 /// Parse archived sessions from selected providers for the active project into SQLite.
@@ -122,6 +169,9 @@ fn run() -> i32 {
     let cli = Cli::parse();
     match cli.command {
         Commands::Init(args) => standard_exit(run_init(args)),
+        Commands::Link(args) => standard_exit(run_link(args)),
+        Commands::Remove(args) => standard_exit(run_remove(args)),
+        Commands::RenameFrom(args) => standard_exit(run_rename_from(args)),
         Commands::Sync(args) => standard_exit(run_sync(args)),
         Commands::Parse(args) => standard_exit(run_parse(args)),
         Commands::CodexSchemaAudit(args) => run_codex_schema_audit_command(args),
@@ -184,6 +234,80 @@ fn format_init_status(draft: &InitDraft, dry_run: bool) -> String {
         "Added project to darc.".to_owned()
     });
     lines.join("\n")
+}
+
+/// Links one configured project's historical paths into the active project.
+fn run_link(args: LinkArgs) -> Result<()> {
+    let report = link_project(Some(args.root), &args.project)?;
+
+    println!("Project: {}", report.target_project_name);
+    println!("Linked From: {}", report.source_project_name);
+    println!("Project Root: {}", report.target_project_root.display());
+    println!(
+        "Known paths: {} total, {} added",
+        report.total_known_paths,
+        report.new_known_paths.len()
+    );
+    if report.config_written {
+        println!("Updated config.");
+    } else {
+        println!("Config already covered all linked paths.");
+    }
+
+    Ok(())
+}
+
+/// Removes one configured project and its archived/indexed data.
+fn run_remove(args: RemoveArgs) -> Result<()> {
+    let report = remove_project(Some(args.root), &args.project)?;
+
+    println!("Project: {}", report.project_name);
+    println!("Project ID: {}", report.project_id);
+    println!("Archive: {}", report.sessions_root.display());
+    println!(
+        "Indexed sessions removed: {}",
+        report.indexed_sessions_removed
+    );
+    println!("Indexed turns removed: {}", report.indexed_turns_removed);
+    if report.archive_deleted {
+        println!("Deleted archive.");
+    } else {
+        println!("Archive did not exist.");
+    }
+    if report.config_written {
+        println!("Updated config.");
+    }
+
+    Ok(())
+}
+
+/// Rebuilds one configured project's history under the active project's id.
+fn run_rename_from(args: RenameArgs) -> Result<()> {
+    let report = rename_project(Some(args.root), &args.project)?;
+
+    println!("Project: {}", report.link.target_project_name);
+    println!("Renamed From: {}", report.link.source_project_name);
+    println!(
+        "Known paths: {} total, {} added",
+        report.link.total_known_paths,
+        report.link.new_known_paths.len()
+    );
+    println!(
+        "Synced {} session files and {} auxiliary files.",
+        report.sync.sessions_copied, report.sync.auxiliary_copied
+    );
+    println!(
+        "Parsed {} discovered sessions into {} indexed sessions and {} turns.",
+        report.parse.sessions_discovered,
+        report.parse.sessions_currently_indexed,
+        report.parse.turns_currently_indexed
+    );
+    println!(
+        "Removed old project archive and {} indexed sessions.",
+        report.remove.indexed_sessions_removed
+    );
+
+    Ok(())
 }
 
 /// Prepares and optionally executes the project-scoped sync workflow.
@@ -644,6 +768,33 @@ mod tests {
         assert!(matches!(
             cli.command,
             Commands::Parse(super::ParseArgs { provider, .. }) if provider.len() == 1
+        ));
+    }
+
+    #[test]
+    fn parses_link_command() {
+        let cli = Cli::try_parse_from(["darc", "link", "memstack"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Link(super::LinkArgs { project, .. }) if project == "memstack"
+        ));
+    }
+
+    #[test]
+    fn parses_remove_command() {
+        let cli = Cli::try_parse_from(["darc", "remove", "memstack"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Remove(super::RemoveArgs { project, .. }) if project == "memstack"
+        ));
+    }
+
+    #[test]
+    fn parses_rename_command() {
+        let cli = Cli::try_parse_from(["darc", "rename-from", "memstack"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::RenameFrom(super::RenameArgs { project, .. }) if project == "memstack"
         ));
     }
 

@@ -8,6 +8,7 @@ use anyhow::{Context, Result, bail};
 use crate::{
     config::{ProjectConfig, SharedConfig, load_config},
     constants::CONFIG_FILE_NAME,
+    init::normalize_project_config,
     project_paths::{current_project_root, normalize_project_path, project_path_set},
 };
 
@@ -34,11 +35,16 @@ pub(crate) fn load_active_project(current_dir: &Path, root: &Path) -> Result<Act
     }
 
     let config = load_config(&config_path)?;
+    let normalized_projects = config
+        .projects
+        .iter()
+        .cloned()
+        .map(normalize_project_config)
+        .collect::<Result<Vec<_>>>()?;
     let current_root = current_project_root(current_dir)?;
     let current_live_paths = project_path_set(&current_root, &[])?;
-    let project_index = find_project_index(&config.projects, &current_live_paths)?;
-    let project = config
-        .projects
+    let project_index = find_project_index(&normalized_projects, &current_live_paths)?;
+    let project = normalized_projects
         .get(project_index)
         .cloned()
         .with_context(|| format!("missing project index {project_index}"))?;
