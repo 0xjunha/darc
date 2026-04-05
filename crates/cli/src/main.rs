@@ -25,7 +25,7 @@ enum Commands {
     Init(InitArgs),
     #[command(
         about = "Link one configured project's historical paths into the current project",
-        long_about = "Link one configured project's historical paths into the current project.\n\nRun this command from the target project directory.\nThe PROJECT argument is the old or source project name already stored in ~/.darc/config.toml.\n\nExample:\n- You renamed `/path/to/old-project` to `/path/to/new-project`.\n- Darc still has a configured project named `old-project`.\n- Run `cd /path/to/new-project && darc link old-project`.\n\nThis command is non-destructive.\nIt updates config so the current project knows the source project's old local_path and known_paths.\nIt does not run `darc sync`, `darc parse`, or remove the source project."
+        long_about = "Link one configured project's historical paths into the current project.\n\nRun this command from the target project directory.\nThe PROJECT argument is the old or source project name already stored in ~/.darc/config.toml.\n\nExample:\n- You renamed `/path/to/old-project` to `/path/to/new-project`.\n- Darc still has a configured project named `old-project`.\n- Run `cd /path/to/new-project && darc link old-project`.\n\nThis command is non-destructive.\nIt updates config so the current project knows the source project's old local_path and known_paths.\nIt does not run `darc sync`, `darc index`, or remove the source project."
     )]
     Link(LinkArgs),
     #[command(
@@ -36,13 +36,13 @@ enum Commands {
     #[command(
         name = "rename-from",
         about = "Rebuild one old project's history into the current renamed project",
-        long_about = "Rebuild one old project's history into the current renamed project.\n\nUse this when you just renamed a project from one name to another.\nRun the command from the new project directory, and pass the old project name.\n\nExample:\n- Darc config still contains a project named `old-project`.\n- You renamed the checkout to `/path/to/new-project`.\n- Run `cd /path/to/new-project && darc rename-from old-project`.\n\nThis command bootstraps or reuses the current project as the target, links the old project's paths into it, runs `darc sync`, runs `darc parse`, and removes the old source project after those steps succeed.\n\nIn other words, it is the safe built-in workflow for:\n`darc link <old-project> && darc sync && darc parse && darc remove <old-project>`\n\nIf ~/.darc/config.toml does not exist yet, run `darc init` first."
+        long_about = "Rebuild one old project's history into the current renamed project.\n\nUse this when you just renamed a project from one name to another.\nRun the command from the new project directory, and pass the old project name.\n\nExample:\n- Darc config still contains a project named `old-project`.\n- You renamed the checkout to `/path/to/new-project`.\n- Run `cd /path/to/new-project && darc rename-from old-project`.\n\nThis command bootstraps or reuses the current project as the target, links the old project's paths into it, runs `darc sync`, runs `darc index`, and removes the old source project after those steps succeed.\n\nIn other words, it is the safe built-in workflow for:\n`darc link <old-project> && darc sync && darc index && darc remove <old-project>`\n\nIf ~/.darc/config.toml does not exist yet, run `darc init` first."
     )]
     RenameFrom(RenameArgs),
     /// Sync matching Claude and Codex sessions into the project archive.
     Sync(SyncArgs),
-    /// Parse archived sessions from selected providers for the active project into SQLite.
-    Parse(ParseArgs),
+    /// Index archived sessions from selected providers for the active project into SQLite.
+    Index(IndexArgs),
     #[command(
         hide = true,
         about = "Audit Codex rollout schema compatibility against stable release tags",
@@ -110,9 +110,9 @@ struct RenameArgs {
     project: String,
 }
 
-/// Parse archived sessions from selected providers for the active project into SQLite.
+/// Index archived sessions from selected providers for the active project into SQLite.
 #[derive(Debug, Args)]
-struct ParseArgs {
+struct IndexArgs {
     #[arg(long, default_value_os_t = default_root_path())]
     root: PathBuf,
 
@@ -146,7 +146,7 @@ struct ClaudeSchemaAuditArgs {
     survey_mode: ClaudeSurveyModeArg,
 }
 
-/// Represents the supported provider filters for parse and sync.
+/// Represents the supported provider filters for index and sync.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ProviderArg {
     Claude,
@@ -173,7 +173,7 @@ fn run() -> i32 {
         Commands::Remove(args) => standard_exit(run_remove(args)),
         Commands::RenameFrom(args) => standard_exit(run_rename_from(args)),
         Commands::Sync(args) => standard_exit(run_sync(args)),
-        Commands::Parse(args) => standard_exit(run_parse(args)),
+        Commands::Index(args) => standard_exit(run_index(args)),
         Commands::CodexSchemaAudit(args) => run_codex_schema_audit_command(args),
         Commands::ClaudeSchemaAudit(args) => run_claude_schema_audit_command(args),
     }
@@ -360,8 +360,8 @@ fn run_sync(args: SyncArgs) -> Result<()> {
     Ok(())
 }
 
-/// Parses archived sessions for the active project into SQLite.
-fn run_parse(args: ParseArgs) -> Result<()> {
+/// Indexes archived sessions for the active project into SQLite.
+fn run_index(args: IndexArgs) -> Result<()> {
     let report = parse_project_sessions(
         Some(args.root),
         ParseOptions {
@@ -465,7 +465,7 @@ fn format_sources(sources: &[SourceKind]) -> String {
         .join(", ")
 }
 
-/// Formats one skipped rollout warning for `darc parse`.
+/// Formats one skipped rollout warning for `darc index`.
 fn format_skipped_rollout(skipped: &SkippedRollout) -> String {
     let mut details = Vec::new();
     if let Some(session_id) = &skipped.logical_session_id {
@@ -763,11 +763,11 @@ mod tests {
     }
 
     #[test]
-    fn parse_command_accepts_provider_filters() {
-        let cli = Cli::try_parse_from(["darc", "parse", "--provider", "claude"]).unwrap();
+    fn index_command_accepts_provider_filters() {
+        let cli = Cli::try_parse_from(["darc", "index", "--provider", "claude"]).unwrap();
         assert!(matches!(
             cli.command,
-            Commands::Parse(super::ParseArgs { provider, .. }) if provider.len() == 1
+            Commands::Index(super::IndexArgs { provider, .. }) if provider.len() == 1
         ));
     }
 
