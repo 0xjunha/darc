@@ -21,7 +21,8 @@ Darc is moving toward a small workspace of focused crates with `darc-core` kept 
 
 - `darc-cli`: CLI entrypoint and command surface.
 - `darc-core`: stable public API plus project/workspace orchestration such as `init`, `refresh`, `link`, and `rename-from`.
-- `darc-rollout`: rollout models, provider parsers, schema/version logic, and schema audits.
+- `darc-rollout`: rollout models, provider parsers, and schema/version logic.
+- `darc-rollout-audit`: release/schema compatibility audits and other heavy maintainer-only rollout tooling.
 - `darc-sync`: archive discovery, sync planning, and file copy execution.
 - `darc-index`: normalized session ingestion, SQLite schema/migrations, and indexing metrics.
 - `darc-analytics`: read-only reporting over the indexed SQLite data.
