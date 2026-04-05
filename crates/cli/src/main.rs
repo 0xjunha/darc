@@ -76,8 +76,8 @@ struct SyncArgs {
     #[arg(long)]
     dry_run: bool,
 
-    #[arg(long = "source", value_enum)]
-    source: Vec<ProviderArg>,
+    #[arg(long = "provider", value_enum)]
+    provider: Vec<ProviderArg>,
 }
 
 /// Link one configured project's historical paths into the active project.
@@ -315,14 +315,14 @@ fn run_sync(args: SyncArgs) -> Result<()> {
     let plan = prepare_sync(
         Some(args.root),
         SyncOptions {
-            source_filter: args.source.into_iter().map(ProviderArg::into).collect(),
+            provider_filter: args.provider.into_iter().map(ProviderArg::into).collect(),
         },
     )?;
 
     println!("Project: {}", plan.project_name);
     println!("Project Root: {}", plan.project_root.display());
     println!("Archive: {}", plan.sessions_root.display());
-    println!("Sources: {}", format_sources(&plan.sources));
+    println!("Providers: {}", format_sources(&plan.sources));
     println!(
         "Sessions: {} to copy, {} unchanged",
         plan.sessions_to_copy(),
@@ -768,6 +768,15 @@ mod tests {
         assert!(matches!(
             cli.command,
             Commands::Parse(super::ParseArgs { provider, .. }) if provider.len() == 1
+        ));
+    }
+
+    #[test]
+    fn sync_command_accepts_provider_filters() {
+        let cli = Cli::try_parse_from(["darc", "sync", "--provider", "claude"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Sync(super::SyncArgs { provider, .. }) if provider.len() == 1
         ));
     }
 
