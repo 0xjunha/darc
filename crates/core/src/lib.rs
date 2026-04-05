@@ -6,7 +6,6 @@ mod index;
 mod index_db;
 mod init;
 mod project;
-mod project_paths;
 mod sync;
 mod turn_metrics;
 pub(crate) mod versions;

@@ -7,6 +7,7 @@ members = [
     "crates/paths",
     "crates/rollout-audit",
     "crates/rollout",
+    "crates/sync",
 ]
 
 [workspace.package]
@@ -22,6 +23,7 @@ darc-core = { path = "crates/core" }
 darc-paths = { path = "crates/paths" }
 darc-rollout-audit = { path = "crates/rollout-audit" }
 darc-rollout = { path = "crates/rollout" }
+darc-sync = { path = "crates/sync" }
 # External Dependencies
 anyhow = "1.0.102"
 clap = { version = "4.6.0", features = ["derive"] }

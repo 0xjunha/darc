@@ -1343,10 +1343,10 @@ mod tests {
     use serde_json::Value;
 
     use super::{CodexRollout, index_project_codex_turns_from, index_project_sessions_from};
-    use crate::constants::{CONFIG_FILE_NAME, INDEX_DB_FILE_NAME};
     use crate::{
         CodexTurnMessage, CodexTurnStatus, CodexTurnStep, SourceKind,
         config::{ProjectConfig, SharedConfig, SourcesConfig},
+        constants::{CONFIG_FILE_NAME, INDEX_DB_FILE_NAME},
     };
 
     static UNIQUE_TEST_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);

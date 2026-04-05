@@ -4,12 +4,12 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use darc_paths::{current_project_root, normalize_project_path, project_path_set};
 
 use crate::{
     config::{ProjectConfig, SharedConfig, load_config},
     constants::CONFIG_FILE_NAME,
     init::normalize_project_config,
-    project_paths::{current_project_root, normalize_project_path, project_path_set},
 };
 
 /// Stores the resolved darc project for the current working directory.

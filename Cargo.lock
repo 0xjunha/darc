@@ -216,6 +216,7 @@ dependencies = [
  "darc-paths",
  "darc-rollout",
  "darc-rollout-audit",
+ "darc-sync",
  "directories",
  "rusqlite",
  "serde",
@@ -227,6 +228,9 @@ dependencies = [
 [[package]]
 name = "darc-paths"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+]
 
 [[package]]
 name = "darc-rollout"
@@ -252,6 +256,18 @@ dependencies = [
  "serde_json",
  "sha2",
  "tar",
+ "walkdir",
+]
+
+[[package]]
+name = "darc-sync"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "darc-paths",
+ "darc-rollout",
+ "serde",
+ "serde_json",
  "walkdir",
 ]
 

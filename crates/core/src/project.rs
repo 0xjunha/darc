@@ -5,6 +5,10 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use darc_paths::{
+    current_project_root, normalize_project_path, normalized_known_paths, project_path_set,
+    seed_known_paths, try_git_output,
+};
 use rusqlite::params;
 
 use crate::{
@@ -14,10 +18,6 @@ use crate::{
     index::{IndexReport, index_project_sessions_from, selected_index_providers},
     index_db::open_index_database,
     init::{normalize_project_config, project_id_from_path},
-    project_paths::{
-        current_project_root, normalize_project_path, normalized_known_paths, project_path_set,
-        seed_known_paths, try_git_output,
-    },
     sync::{SyncOptions, SyncReport, execute_sync, prepare_sync_from},
 };
 
@@ -326,7 +326,7 @@ fn registered_projects(root: &Path) -> Result<Vec<ProjectConfig>> {
 }
 
 /// Writes one full shared config back to disk.
-fn write_shared_config(config_path: &Path, config: &SharedConfig) -> Result<()> {
+pub(crate) fn write_shared_config(config_path: &Path, config: &SharedConfig) -> Result<()> {
     let content =
         toml::to_string_pretty(config).context("failed to serialize updated shared config")?;
     fs::write(config_path, content.as_bytes())
