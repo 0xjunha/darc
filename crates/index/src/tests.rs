@@ -24,9 +24,9 @@ use serde_json::Value;
 use crate::{
     INDEX_DB_FILE_NAME,
     engine::{
-        TEST_PROJECT_ID, file_snapshot, index_project_codex_turns_from, index_project_sessions_from,
+        TEST_PROJECT_ID, file_snapshot, index_project_codex_turns_from,
+        index_project_sessions_from, parse_codex_rollout,
     },
-    parse_codex_rollout,
 };
 
 static UNIQUE_TEST_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);

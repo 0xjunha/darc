@@ -7,16 +7,17 @@ use std::{
 
 use anyhow::{Context, Result};
 use darc_paths::SourceKind;
+#[cfg(test)]
+use darc_rollout::codex::CodexRollout;
 use darc_rollout::{
     ParseDeterminism,
     claude::{
         ClaudeArchivedContext, ClaudeSessionKind, parse_rollout_file as parse_claude_rollout_file,
     },
     codex::{
-        CodexRollout, CodexRolloutHeader, CodexRolloutSink, compare_rollout_priority,
-        parse_rollout_file, parse_rollout_file_into, parse_rollout_file_session_id,
-        parse_rollout_session_meta_line, read_first_rollout_line_bytes,
-        reconcile_rollout_session_id,
+        CodexRolloutHeader, CodexRolloutSink, compare_rollout_priority, parse_rollout_file_into,
+        parse_rollout_file_session_id, parse_rollout_session_meta_line,
+        read_first_rollout_line_bytes, reconcile_rollout_session_id,
     },
     model::NormalizedTurn as CodexTurn,
 };
@@ -29,8 +30,9 @@ use crate::{index_db::open_index_database, turn_metrics::summarize_turn_metrics}
 pub const INDEX_DB_FILE_NAME: &str = "index.sqlite";
 
 /// Parses one Codex rollout file into user-visible turns.
-pub fn parse_codex_rollout(path: &Path) -> Result<CodexRollout> {
-    parse_rollout_file(path)
+#[cfg(test)]
+pub(crate) fn parse_codex_rollout(path: &Path) -> Result<CodexRollout> {
+    darc_rollout::codex::parse_rollout_file(path)
 }
 
 /// Reports the results of indexing archived sessions for one project.
