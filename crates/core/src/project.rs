@@ -326,7 +326,7 @@ fn registered_projects(root: &Path) -> Result<Vec<ProjectConfig>> {
 }
 
 /// Writes one full shared config back to disk.
-fn write_shared_config(config_path: &Path, config: &SharedConfig) -> Result<()> {
+pub(crate) fn write_shared_config(config_path: &Path, config: &SharedConfig) -> Result<()> {
     let content =
         toml::to_string_pretty(config).context("failed to serialize updated shared config")?;
     fs::write(config_path, content.as_bytes())
