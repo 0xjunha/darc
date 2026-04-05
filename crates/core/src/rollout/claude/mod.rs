@@ -7,9 +7,12 @@ use std::{
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 
-use crate::{
-    index::{CodexTurn, CodexTurnMessage, CodexTurnStatus, CodexTurnStep},
-    rollout::ParseDeterminism,
+use crate::rollout::{
+    ParseDeterminism,
+    model::{
+        NormalizedTurn as CodexTurn, NormalizedTurnMessage as CodexTurnMessage,
+        NormalizedTurnStatus as CodexTurnStatus, NormalizedTurnStep as CodexTurnStep,
+    },
 };
 
 mod schema_audit;
@@ -1042,8 +1045,11 @@ mod tests {
         ClaudeArchivedContext, ClaudeRollout, ClaudeSessionKind, parse_rollout_file,
         parse_rollout_reader,
     };
-    use crate::index::{CodexTurnMessage, CodexTurnStatus, CodexTurnStep};
     use crate::rollout::ParseDeterminism;
+    use crate::rollout::model::{
+        NormalizedTurnMessage as CodexTurnMessage, NormalizedTurnStatus as CodexTurnStatus,
+        NormalizedTurnStep as CodexTurnStep,
+    };
 
     fn parse_fixture(input: &str, context: &ClaudeArchivedContext) -> Result<ClaudeRollout> {
         parse_rollout_reader(Cursor::new(input), Path::new("fixture.jsonl"), context)

@@ -7,7 +7,6 @@ use std::{
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, Transaction, params};
-use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
 use crate::{
@@ -17,9 +16,10 @@ use crate::{
     default_root_path,
     index_db::open_index_database,
     rollout::codex::{
-        CodexRolloutHeader, CodexRolloutSink, compare_rollout_priority, parse_rollout_file,
-        parse_rollout_file_into, parse_rollout_file_session_id, parse_rollout_session_meta_line,
-        read_first_rollout_line_bytes, reconcile_rollout_session_id,
+        CodexRollout, CodexRolloutHeader, CodexRolloutSink, compare_rollout_priority,
+        parse_rollout_file, parse_rollout_file_into, parse_rollout_file_session_id,
+        parse_rollout_session_meta_line, read_first_rollout_line_bytes,
+        reconcile_rollout_session_id,
     },
     rollout::{
         ParseDeterminism,
@@ -27,6 +27,7 @@ use crate::{
             ClaudeArchivedContext, ClaudeSessionKind,
             parse_rollout_file as parse_claude_rollout_file,
         },
+        model::NormalizedTurn as CodexTurn,
     },
     turn_metrics::summarize_turn_metrics,
 };
@@ -89,112 +90,6 @@ pub fn index_project_codex_turns(root: Option<PathBuf>) -> Result<IndexReport> {
             provider_filter: vec![SourceKind::Codex],
         },
     )
-}
-
-/// Stores the parsed Codex dialogue for one rollout file.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CodexRollout {
-    pub session_id: String,
-    pub cwd: PathBuf,
-    pub cli_version: String,
-    pub schema_id: String,
-    pub determinism: ParseDeterminism,
-    pub turns: Vec<CodexTurn>,
-}
-
-/// Stores one user turn and the assistant activity that followed it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CodexTurn {
-    pub turn_id: Option<String>,
-    pub user_message: String,
-    pub final_answer: Option<CodexTurnMessage>,
-    pub started_at: String,
-    pub completed_at: Option<String>,
-    pub status: CodexTurnStatus,
-    pub steps: Vec<CodexTurnStep>,
-}
-
-/// Stores one top-level assistant message attached to a turn.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CodexTurnMessage {
-    pub timestamp: String,
-    pub text: String,
-}
-
-/// Tracks whether a parsed Codex turn finished normally.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CodexTurnStatus {
-    Completed,
-    Aborted,
-    Incomplete,
-}
-
-impl CodexTurnStatus {
-    /// Returns the stable SQLite string value for one turn status.
-    fn as_sql_text(self) -> &'static str {
-        match self {
-            Self::Completed => "completed",
-            Self::Aborted => "aborted",
-            Self::Incomplete => "incomplete",
-        }
-    }
-}
-
-/// Stores one ordered assistant-visible step inside a Codex turn.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum CodexTurnStep {
-    Reasoning {
-        timestamp: String,
-        summary: Vec<String>,
-        encrypted: bool,
-    },
-    Commentary {
-        timestamp: String,
-        text: String,
-    },
-    ToolCall {
-        timestamp: String,
-        call_id: String,
-        name: String,
-        arguments: String,
-    },
-    ToolCallOutput {
-        timestamp: String,
-        call_id: String,
-        output: String,
-    },
-    Attachment {
-        timestamp: String,
-        attachment_type: String,
-        payload_json: String,
-    },
-    Delegation {
-        timestamp: String,
-        call_id: Option<String>,
-        task_id: Option<String>,
-        event: String,
-        agent_id: Option<String>,
-        agent_type: Option<String>,
-        status: Option<String>,
-        summary: Option<String>,
-        payload_json: String,
-    },
-    HookSummary {
-        timestamp: String,
-        call_id: Option<String>,
-        hook_count: u32,
-        prevented_continuation: bool,
-        has_output: bool,
-        level: Option<String>,
-        payload_json: String,
-    },
-    ProviderResponseItem {
-        timestamp: String,
-        item_type: String,
-        payload_json: String,
-    },
 }
 
 /// Identifies the normalized indexed session shape used by the shared indexing pipeline.
@@ -1451,14 +1346,11 @@ mod tests {
     use rusqlite::Connection;
     use serde_json::Value;
 
-    use super::{
-        CodexRollout, CodexTurnMessage, CodexTurnStatus, CodexTurnStep,
-        index_project_codex_turns_from, index_project_sessions_from,
-    };
+    use super::{CodexRollout, index_project_codex_turns_from, index_project_sessions_from};
     use crate::constants::{CONFIG_FILE_NAME, INDEX_DB_FILE_NAME};
     use crate::rollout::{ParseDeterminism, codex::parse_rollout_reader};
     use crate::{
-        SourceKind,
+        CodexTurnMessage, CodexTurnStatus, CodexTurnStep, SourceKind,
         config::{ProjectConfig, SharedConfig, SourcesConfig},
     };
 

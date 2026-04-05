@@ -2,16 +2,19 @@ use std::{
     cmp::Ordering,
     fs::File,
     io::{BufRead, BufReader},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{
-    index::{CodexRollout, CodexTurn, CodexTurnMessage, CodexTurnStatus, CodexTurnStep},
-    rollout::ParseDeterminism,
+use crate::rollout::{
+    ParseDeterminism,
+    model::{
+        NormalizedTurn as CodexTurn, NormalizedTurnMessage as CodexTurnMessage,
+        NormalizedTurnStatus as CodexTurnStatus, NormalizedTurnStep as CodexTurnStep,
+    },
 };
 
 mod header;
@@ -30,6 +33,17 @@ pub use schema_audit::{
     run_codex_schema_audit, run_codex_schema_audit_with_progress,
 };
 use version::{CodexCliVersion, CodexSchemaFeature, supports_feature, supports_response_item};
+
+/// Stores the parsed Codex dialogue for one rollout file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CodexRollout {
+    pub session_id: String,
+    pub cwd: PathBuf,
+    pub cli_version: String,
+    pub schema_id: String,
+    pub determinism: ParseDeterminism,
+    pub turns: Vec<CodexTurn>,
+}
 
 /// Compares duplicate rollout copies by completeness, recency, and a stable path tie-break.
 pub(crate) fn compare_rollout_priority<T: Ord>(
@@ -782,8 +796,11 @@ mod tests {
     use anyhow::Result;
 
     use super::parse_rollout_reader;
-    use crate::index::{CodexTurnMessage, CodexTurnStatus, CodexTurnStep};
     use crate::rollout::ParseDeterminism;
+    use crate::rollout::model::{
+        NormalizedTurnMessage as CodexTurnMessage, NormalizedTurnStatus as CodexTurnStatus,
+        NormalizedTurnStep as CodexTurnStep,
+    };
 
     #[test]
     fn parses_turn_lifecycle_rollout_and_records_schema_metadata() -> Result<()> {

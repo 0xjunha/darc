@@ -17,8 +17,7 @@ pub use analytics::{
 };
 pub use config::SourceKind;
 pub use index::{
-    CodexRollout, CodexTurn, CodexTurnMessage, CodexTurnStatus, CodexTurnStep, IndexOptions,
-    IndexReport, SkippedCodexRollout, SkippedRollout, index_project_codex_turns,
+    IndexOptions, IndexReport, SkippedCodexRollout, SkippedRollout, index_project_codex_turns,
     index_project_sessions, parse_codex_rollout,
 };
 pub use init::{DetectedRolloutSource, InitDraft, default_root_path, prepare_init, write_init};
@@ -32,8 +31,13 @@ pub use rollout::claude::{
     ClaudeSchemaDriftWindow, ClaudeSchemaSurveyMode, ClaudeSdkSchemaDrift, run_claude_schema_audit,
     run_claude_schema_audit_with_progress,
 };
+pub use rollout::codex::CodexRollout;
 pub use rollout::codex::{
     CodexSchemaAuditOptions, CodexSchemaAuditOutcome, CodexSchemaAuditReport, CodexSchemaDrift,
     run_codex_schema_audit, run_codex_schema_audit_with_progress,
+};
+pub use rollout::model::{
+    NormalizedTurn as CodexTurn, NormalizedTurnMessage as CodexTurnMessage,
+    NormalizedTurnStatus as CodexTurnStatus, NormalizedTurnStep as CodexTurnStep,
 };
 pub use sync::{SyncOptions, SyncPlan, SyncReport, execute_sync, prepare_sync};
