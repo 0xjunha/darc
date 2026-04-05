@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
-    parse::{CodexRollout, CodexTurn, CodexTurnMessage, CodexTurnStatus, CodexTurnStep},
+    index::{CodexRollout, CodexTurn, CodexTurnMessage, CodexTurnStatus, CodexTurnStep},
     rollout::ParseDeterminism,
 };
 
@@ -782,7 +782,7 @@ mod tests {
     use anyhow::Result;
 
     use super::parse_rollout_reader;
-    use crate::parse::{CodexTurnMessage, CodexTurnStatus, CodexTurnStep};
+    use crate::index::{CodexTurnMessage, CodexTurnStatus, CodexTurnStep};
     use crate::rollout::ParseDeterminism;
 
     #[test]

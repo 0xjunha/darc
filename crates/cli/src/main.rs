@@ -5,8 +5,8 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use darc_core::{
     ClaudeSchemaAuditOptions, ClaudeSchemaAuditOutcome, ClaudeSchemaAuditReport,
     ClaudeSchemaSurveyMode, CodexSchemaAuditOptions, CodexSchemaAuditOutcome,
-    CodexSchemaAuditReport, InitDraft, ParseOptions, RefreshOptions, RefreshReport, SkippedRollout,
-    SourceKind, SyncOptions, default_root_path, execute_sync, link_project, parse_project_sessions,
+    CodexSchemaAuditReport, IndexOptions, InitDraft, RefreshOptions, RefreshReport, SkippedRollout,
+    SourceKind, SyncOptions, default_root_path, execute_sync, index_project_sessions, link_project,
     prepare_init, prepare_sync, refresh_all_projects, refresh_project, remove_project,
     rename_project, run_claude_schema_audit_with_progress, run_codex_schema_audit_with_progress,
     write_init,
@@ -325,9 +325,9 @@ fn run_rename_from(args: RenameArgs) -> Result<()> {
     );
     println!(
         "Indexed {} discovered sessions into {} indexed sessions and {} turns.",
-        report.parse.sessions_discovered,
-        report.parse.sessions_currently_indexed,
-        report.parse.turns_currently_indexed
+        report.index.sessions_discovered,
+        report.index.sessions_currently_indexed,
+        report.index.turns_currently_indexed
     );
     println!(
         "Removed old project archive and {} indexed sessions.",
@@ -412,9 +412,9 @@ fn run_sync(args: SyncArgs) -> Result<()> {
 
 /// Indexes archived sessions for the active project into SQLite.
 fn run_index(args: IndexArgs) -> Result<()> {
-    let report = parse_project_sessions(
+    let report = index_project_sessions(
         Some(args.root),
-        ParseOptions {
+        IndexOptions {
             provider_filter: args.provider.into_iter().map(ProviderArg::into).collect(),
         },
     )?;

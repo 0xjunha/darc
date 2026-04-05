@@ -355,7 +355,7 @@ mod tests {
     use crate::{
         config::{ProjectConfig, SharedConfig, SourcesConfig},
         constants::{CONFIG_FILE_NAME, INDEX_DB_FILE_NAME},
-        parse::parse_project_sessions_from,
+        index::index_project_sessions_from,
     };
 
     fn unique_test_dir(prefix: &str) -> PathBuf {
@@ -374,7 +374,7 @@ mod tests {
         Ok(())
     }
 
-    fn write_parse_config(root: &Path, project_root: &Path, sessions_root: &Path) -> Result<()> {
+    fn write_index_config(root: &Path, project_root: &Path, sessions_root: &Path) -> Result<()> {
         let config = SharedConfig::new(
             root.to_path_buf(),
             vec![ProjectConfig {
@@ -404,7 +404,7 @@ mod tests {
             .join(session_id)
             .join(format!("{session_id}.jsonl"));
         fs::create_dir_all(&project_root)?;
-        write_parse_config(&darc_root, &project_root, &sessions_root)?;
+        write_index_config(&darc_root, &project_root, &sessions_root)?;
 
         write_file(
             &session_path,
@@ -419,7 +419,7 @@ mod tests {
             ),
         )?;
 
-        let _report = parse_project_sessions_from(
+        let _report = index_project_sessions_from(
             &project_root,
             darc_root.clone(),
             &[crate::SourceKind::Claude],

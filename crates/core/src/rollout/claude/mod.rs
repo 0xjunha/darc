@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 
 use crate::{
-    parse::{CodexTurn, CodexTurnMessage, CodexTurnStatus, CodexTurnStep},
+    index::{CodexTurn, CodexTurnMessage, CodexTurnStatus, CodexTurnStep},
     rollout::ParseDeterminism,
 };
 
@@ -1042,7 +1042,7 @@ mod tests {
         ClaudeArchivedContext, ClaudeRollout, ClaudeSessionKind, parse_rollout_file,
         parse_rollout_reader,
     };
-    use crate::parse::{CodexTurnMessage, CodexTurnStatus, CodexTurnStep};
+    use crate::index::{CodexTurnMessage, CodexTurnStatus, CodexTurnStep};
     use crate::rollout::ParseDeterminism;
 
     fn parse_fixture(input: &str, context: &ClaudeArchivedContext) -> Result<ClaudeRollout> {

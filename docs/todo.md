@@ -8,11 +8,11 @@
 - In `crates/core/src/rollout/codex/mod.rs`, derive user-turn boundaries during streaming instead of the current pre-scan.
 - Preserve current `event_msg.user_message` vs `response_item.role == "user"` behavior.
 - Keep parser memory bounded to the current turn.
-- Leave incremental reindexing in `crates/core/src/parse.rs` unchanged.
+- Leave incremental reindexing in `crates/core/src/index.rs` unchanged.
 
-### Tighten unchanged-rollout detection before skipping reparse.
-- Current parse skip detection trusts `archive_path`, file size, and mtime.
-- If rollout contents become corrupt without changing those values, parse can incorrectly skip reparsing and keep stale indexed data.
+### Tighten unchanged-rollout detection before skipping reindex.
+- Current index skip detection trusts `archive_path`, file size, and mtime.
+- If rollout contents become corrupt without changing those values, indexing can incorrectly skip reindexing and keep stale indexed data.
 - Consider storing or deriving a stronger content identity for changed-rollout detection.
 
 ### Claude Code support
@@ -48,6 +48,6 @@
   - Decide whether any archived auxiliary text outputs should be indexed directly, linked from turns, or left archive-only.
 - Add a public standalone Claude parser API if external callers will need it.
   - Mirror the ergonomics of `parse_codex_rollout` only if the Claude parser contract is stable enough to expose.
-- Improve Claude pre-parse inspection.
+- Improve Claude pre-index inspection.
   - Add a lightweight inspection path that can validate Claude session identity, version hints, and candidate kind before full parse.
-  - Keep it soft-fail for unknown variants so one bad Claude rollout never crashes the whole parse run.
+  - Keep it soft-fail for unknown variants so one bad Claude rollout never crashes the whole index run.

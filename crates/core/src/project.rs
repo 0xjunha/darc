@@ -11,9 +11,9 @@ use crate::{
     config::{ProjectConfig, SharedConfig, SourceKind, load_config},
     constants::{CONFIG_FILE_NAME, INDEX_DB_FILE_NAME},
     default_root_path,
+    index::{IndexReport, index_project_sessions_from, selected_index_providers},
     index_db::open_index_database,
     init::{normalize_project_config, project_id_from_path},
-    parse::{ParseReport, parse_project_sessions_from, selected_parse_providers},
     project_paths::{
         current_project_root, normalize_project_path, normalized_known_paths, project_path_set,
         seed_known_paths, try_git_output,
@@ -56,7 +56,7 @@ pub struct RefreshOptions {
 #[derive(Debug, Clone)]
 pub struct RefreshReport {
     pub sync: SyncReport,
-    pub index: ParseReport,
+    pub index: IndexReport,
 }
 
 /// Reports one completed multi-project refresh workflow.
@@ -70,7 +70,7 @@ pub struct RefreshAllReport {
 pub struct RenameReport {
     pub link: LinkReport,
     pub sync: SyncReport,
-    pub parse: ParseReport,
+    pub index: IndexReport,
     pub remove: RemoveReport,
 }
 
@@ -197,7 +197,7 @@ pub(crate) fn rename_project_from(
     Ok(RenameReport {
         link,
         sync: refresh.sync,
-        parse: refresh.index,
+        index: refresh.index,
         remove,
     })
 }
@@ -215,10 +215,10 @@ pub(crate) fn refresh_project_from(
             provider_filter: options.provider_filter.clone(),
         },
     )?)?;
-    let index = parse_project_sessions_from(
+    let index = index_project_sessions_from(
         current_dir,
         root,
-        &selected_parse_providers(&options.provider_filter),
+        &selected_index_providers(&options.provider_filter),
     )?;
 
     Ok(RefreshReport { sync, index })
@@ -1135,7 +1135,7 @@ mod tests {
     }
 
     #[test]
-    fn rename_project_links_syncs_parses_and_removes_source() -> Result<()> {
+    fn rename_project_links_syncs_indexes_and_removes_source() -> Result<()> {
         let root = unique_test_dir(&format!("rename-{}", timestamp_seed()));
         let target_root = root.join("darc");
         let source_root = root.join("memstack");
@@ -1206,8 +1206,8 @@ mod tests {
 
         assert_eq!(report.link.source_project_name, "memstack");
         assert_eq!(report.sync.sessions_copied, 1);
-        assert_eq!(report.parse.project_name, "darc");
-        assert_eq!(report.parse.sessions_currently_indexed, 1);
+        assert_eq!(report.index.project_name, "darc");
+        assert_eq!(report.index.sessions_currently_indexed, 1);
         assert_eq!(report.remove.project_name, "memstack");
         assert!(
             target_sessions_root
@@ -1304,7 +1304,7 @@ mod tests {
 
         assert_eq!(report.link.target_project_name, "darc");
         assert_eq!(report.link.source_project_name, "memstack");
-        assert_eq!(report.parse.project_name, "darc");
+        assert_eq!(report.index.project_name, "darc");
         assert_eq!(report.remove.project_name, "memstack");
         assert!(
             target_sessions_root
