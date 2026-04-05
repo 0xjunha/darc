@@ -15,6 +15,19 @@ The daily happy path is `darc refresh`, which runs `sync` and `index` together.
 - Indexes archived rollouts into a normalized SQLite index.
 - Preserves project history across checkout moves, merges, and renames.
 
+## Workspace Architecture
+
+Darc is moving toward a small workspace of focused crates with `darc-core` kept as a thin facade and orchestration layer during the split.
+
+- `darc-cli`: CLI entrypoint and command surface.
+- `darc-core`: stable public API plus project/workspace orchestration such as `init`, `refresh`, `link`, and `rename-from`.
+- `darc-rollout`: rollout models, provider parsers, schema/version logic, and schema audits.
+- `darc-sync`: archive discovery, sync planning, and file copy execution.
+- `darc-index`: normalized session ingestion, SQLite schema/migrations, and indexing metrics.
+- `darc-analytics`: read-only reporting over the indexed SQLite data.
+
+Crate boundaries follow three rules: keep each crate cohesive around one dominant capability, keep dependency direction acyclic, and extract shared models/utilities downward instead of letting lower-level code depend on orchestration crates.
+
 ## Quickstart
 
 Install the CLI from this repository:
