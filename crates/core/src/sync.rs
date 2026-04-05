@@ -5,6 +5,9 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use darc_paths::{
+    normalize_project_path, normalized_known_paths, project_path_set, try_git_output,
+};
 use darc_sync::{ClaudeSource, CodexSource, SyncRequest};
 
 use crate::{
@@ -12,9 +15,6 @@ use crate::{
     config::{ProjectConfig, SharedConfig, SourceKind},
     default_root_path,
     project::write_shared_config,
-    project_paths::{
-        normalize_project_path, normalized_known_paths, project_path_set, try_git_output,
-    },
 };
 
 /// Collects optional filters for the `sync` workflow.

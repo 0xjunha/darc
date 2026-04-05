@@ -5,13 +5,13 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use darc_paths::{normalized_known_paths, seed_known_paths, try_git_output};
 use directories::BaseDirs;
 use walkdir::WalkDir;
 
 use crate::config::*;
 use crate::constants::*;
 use crate::index_db::ensure_index_database;
-use crate::project_paths::{normalized_known_paths, seed_known_paths, try_git_output};
 
 /// Describes the shared config and project directories that `init` will create.
 #[derive(Debug, Clone)]
