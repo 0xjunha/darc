@@ -184,12 +184,13 @@ fn prepare_link(current_dir: &Path, root: &Path, source_name: &str) -> Result<Pr
         );
     }
 
-    let current_live_paths = project_path_set(&current_root, &[])?;
     let target_index =
         find_target_project_index(&config.projects, &source_project.id, &current_root)?;
     let mut target_project = target_index
         .and_then(|index| config.projects.get(index).cloned())
         .unwrap_or(build_project_config(root, current_root.clone())?);
+    let target_owned_paths =
+        project_path_set(&target_project.local_path, &target_project.known_paths)?;
     let previous_known_paths =
         normalized_known_paths(&target_project.local_path, &target_project.known_paths);
     let merged_known_paths = linked_known_paths(&target_project, &source_project);
@@ -208,7 +209,7 @@ fn prepare_link(current_dir: &Path, root: &Path, source_name: &str) -> Result<Pr
     let source_known_paths =
         normalized_known_paths(&source_project.local_path, &source_project.known_paths);
     let trimmed_source_known_paths = source_known_paths
-        .difference(&current_live_paths)
+        .difference(&target_owned_paths)
         .cloned()
         .collect::<BTreeSet<_>>();
     let refreshed_source = config
@@ -589,11 +590,64 @@ mod tests {
         );
         assert_eq!(
             source_project.known_paths,
-            vec![
-                fs::canonicalize(&target_worktree)?,
-                fs::canonicalize(&source_worktree)?,
-            ]
+            vec![fs::canonicalize(&source_worktree)?]
         );
+        let active_project = load_active_project(&target_worktree, &root)?;
+        assert_eq!(active_project.project.name, "darc");
+
+        Ok(())
+    }
+
+    #[test]
+    fn link_project_cleans_source_overlap_when_target_already_knows_paths() -> Result<()> {
+        let root = unique_test_dir(&format!("link-cleanup-{}", timestamp_seed()));
+        let target_root = root.join("darc");
+        let source_root = root.join("memstack");
+        let source_worktree = root.join("memstack-wt");
+        fs::create_dir_all(&target_root)?;
+        fs::create_dir_all(&source_root)?;
+        fs::create_dir_all(&source_worktree)?;
+
+        write_config(
+            &root,
+            &SharedConfig::new(
+                root.clone(),
+                vec![
+                    ProjectConfig {
+                        id: "darc-123".into(),
+                        name: "darc".into(),
+                        local_path: target_root.clone(),
+                        git_upstream: None,
+                        sessions_root: root.join("projects/darc-123/sessions"),
+                        known_paths: vec![source_root.clone(), source_worktree.clone()],
+                    },
+                    ProjectConfig {
+                        id: "memstack-456".into(),
+                        name: "memstack".into(),
+                        local_path: source_root.clone(),
+                        git_upstream: None,
+                        sessions_root: root.join("projects/memstack-456/sessions"),
+                        known_paths: vec![source_worktree.clone()],
+                    },
+                ],
+                SourcesConfig::default(),
+            ),
+        )?;
+
+        let report = link_project_from(&target_root, root.clone(), "memstack")?;
+
+        assert!(report.config_written);
+        assert!(report.new_known_paths.is_empty());
+        assert_eq!(report.total_known_paths, 2);
+        let config = load_normalized_shared_config(&root.join(CONFIG_FILE_NAME))?;
+        let source_project = config
+            .projects
+            .iter()
+            .find(|project| project.name == "memstack")
+            .context("missing source project")?;
+        assert!(source_project.known_paths.is_empty());
+        let active_project = load_active_project(&source_worktree, &root)?;
+        assert_eq!(active_project.project.name, "darc");
 
         Ok(())
     }
@@ -733,6 +787,80 @@ mod tests {
         )?;
         assert_eq!(remaining_source_sessions, 0);
         assert_eq!(remaining_target_sessions, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn remove_project_rejects_ambiguous_names() -> Result<()> {
+        let root = unique_test_dir(&format!("remove-ambiguous-{}", timestamp_seed()));
+        let left_root = root.join("repo-a");
+        let right_root = root.join("repo-b");
+        fs::create_dir_all(&left_root)?;
+        fs::create_dir_all(&right_root)?;
+
+        write_config(
+            &root,
+            &SharedConfig::new(
+                root.clone(),
+                vec![
+                    ProjectConfig {
+                        id: "same-111".into(),
+                        name: "same".into(),
+                        local_path: left_root,
+                        git_upstream: None,
+                        sessions_root: root.join("projects/same-111/sessions"),
+                        known_paths: Vec::new(),
+                    },
+                    ProjectConfig {
+                        id: "same-222".into(),
+                        name: "same".into(),
+                        local_path: right_root,
+                        git_upstream: None,
+                        sessions_root: root.join("projects/same-222/sessions"),
+                        known_paths: Vec::new(),
+                    },
+                ],
+                SourcesConfig::default(),
+            ),
+        )?;
+
+        let error = remove_project(Some(root), "same").expect_err("expected ambiguity error");
+        assert!(error.to_string().contains("project `same` is ambiguous"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn remove_project_handles_missing_archive_and_index() -> Result<()> {
+        let root = unique_test_dir(&format!("remove-empty-{}", timestamp_seed()));
+        let project_root = root.join("repo");
+        fs::create_dir_all(&project_root)?;
+
+        write_config(
+            &root,
+            &SharedConfig::new(
+                root.clone(),
+                vec![ProjectConfig {
+                    id: "repo-123".into(),
+                    name: "repo".into(),
+                    local_path: project_root,
+                    git_upstream: None,
+                    sessions_root: root.join("projects/repo-123/sessions"),
+                    known_paths: Vec::new(),
+                }],
+                SourcesConfig::default(),
+            ),
+        )?;
+
+        let report = remove_project(Some(root.clone()), "repo")?;
+
+        assert_eq!(report.project_name, "repo");
+        assert!(!report.archive_deleted);
+        assert_eq!(report.indexed_sessions_removed, 0);
+        assert_eq!(report.indexed_turns_removed, 0);
+        let config = load_normalized_shared_config(&root.join(CONFIG_FILE_NAME))?;
+        assert!(config.projects.is_empty());
 
         Ok(())
     }
@@ -921,6 +1049,86 @@ mod tests {
         assert_eq!(config.projects[0].name, "darc");
         assert_eq!(config.projects[0].id, report.link.target_project_id);
         assert!(config.projects[0].known_paths.contains(&source_root));
+
+        Ok(())
+    }
+
+    #[test]
+    fn rename_project_keeps_source_when_sync_fails() -> Result<()> {
+        let root = unique_test_dir(&format!("rename-sync-fail-{}", timestamp_seed()));
+        let target_root = root.join("darc");
+        let source_root = root.join("memstack");
+        let source_sessions_root = root.join("projects/memstack-456/sessions");
+        let broken_sessions_root = root.join("broken");
+        let codex_home = root.join(".codex");
+        let codex_sessions_root = codex_home.join("sessions");
+        let rollout_name = "rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl";
+        fs::create_dir_all(&target_root)?;
+        fs::create_dir_all(&source_root)?;
+        write_file(
+            &codex_sessions_root.join(format!("2026/04/01/{rollout_name}")),
+            &format!(
+                concat!(
+                    "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
+                    "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}}}\n",
+                    "{{\"timestamp\":\"2026-04-01T10:00:02Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Copy me\"}}}}\n",
+                    "{{\"timestamp\":\"2026-04-01T10:00:03Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Done\"}}]}}}}\n"
+                ),
+                source_root.display()
+            ),
+        )?;
+        write_file(
+            &source_sessions_root.join("codex/previous.jsonl"),
+            "{\"type\":\"session_meta\"}\n",
+        )?;
+        write_file(&broken_sessions_root, "not-a-directory")?;
+
+        write_config(
+            &root,
+            &SharedConfig::new(
+                root.clone(),
+                vec![
+                    ProjectConfig {
+                        id: "darc-123".into(),
+                        name: "darc".into(),
+                        local_path: target_root.clone(),
+                        git_upstream: None,
+                        sessions_root: broken_sessions_root.clone(),
+                        known_paths: Vec::new(),
+                    },
+                    ProjectConfig {
+                        id: "memstack-456".into(),
+                        name: "memstack".into(),
+                        local_path: source_root.clone(),
+                        git_upstream: None,
+                        sessions_root: source_sessions_root.clone(),
+                        known_paths: Vec::new(),
+                    },
+                ],
+                SourcesConfig {
+                    claude: None,
+                    codex: Some(CodexSourceConfig {
+                        enabled: true,
+                        home: codex_home,
+                        sessions_root: codex_sessions_root,
+                    }),
+                },
+            ),
+        )?;
+
+        let error = rename_project_from(&target_root, root.clone(), "memstack")
+            .expect_err("expected sync failure");
+        assert!(error.to_string().contains("failed to create"));
+
+        let config = load_normalized_shared_config(&root.join(CONFIG_FILE_NAME))?;
+        assert_eq!(config.projects.len(), 2);
+        assert!(
+            config
+                .projects
+                .iter()
+                .any(|project| project.name == "memstack")
+        );
+        assert!(source_sessions_root.exists());
 
         Ok(())
     }
