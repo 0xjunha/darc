@@ -200,6 +200,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "darc-analytics"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "darc-index",
+ "darc-paths",
+ "rusqlite",
+ "serde",
+]
+
+[[package]]
 name = "darc-cli"
 version = "0.1.0"
 dependencies = [
@@ -213,6 +224,7 @@ name = "darc-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "darc-analytics",
  "darc-index",
  "darc-paths",
  "darc-rollout",

@@ -7,6 +7,7 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+darc-analytics = { workspace = true }
 darc-index = { workspace = true }
 darc-paths = { workspace = true }
 darc-rollout-audit = { workspace = true }
