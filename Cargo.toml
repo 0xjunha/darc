@@ -7,6 +7,7 @@ members = [
     "crates/paths",
     "crates/rollout-audit",
     "crates/rollout",
+    "crates/sync",
 ]
 
 [workspace.package]
