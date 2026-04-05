@@ -7,8 +7,8 @@ use std::{
 use anyhow::{Context, Result, bail};
 use darc_sync::{ClaudeSource, CodexSource, SyncRequest};
 
-use crate::active_project::load_active_project;
 use crate::{
+    active_project::load_active_project,
     config::{ProjectConfig, SharedConfig, SourceKind},
     default_root_path,
     project::write_shared_config,

@@ -15,15 +15,13 @@ use darc_rollout::codex::{
 };
 use walkdir::WalkDir;
 
-use crate::utils::{
-    copy_file_atomically, file_snapshot, format_system_time_utc, write_json_atomically,
-};
 use crate::{
     manifest::{
         ManifestArtifact, ManifestAuxiliaryEntry, ManifestSessionEntry, PendingCopy,
         PreparedSyncWrites, load_manifest, plan_manifest_updates,
     },
     types::{ClaudeSource, CodexSource, SourceKind, SyncRequest},
+    utils::{copy_file_atomically, file_snapshot, format_system_time_utc, write_json_atomically},
 };
 
 /// Describes a prepared sync before any writes happen.
