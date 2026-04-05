@@ -1,4 +1,4 @@
-use crate::parse::{CodexTurn, CodexTurnStep};
+use crate::index::{CodexTurn, CodexTurnStep};
 
 /// Stores the derived per-turn analytics counters persisted in the SQLite index.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

@@ -11,9 +11,9 @@ use crate::{
     config::{ProjectConfig, SharedConfig, SourceKind, load_config},
     constants::{CONFIG_FILE_NAME, INDEX_DB_FILE_NAME},
     default_root_path,
+    index::{IndexReport, index_project_sessions_from, selected_index_providers},
     index_db::open_index_database,
     init::{normalize_project_config, project_id_from_path},
-    parse::{ParseReport, parse_project_sessions_from},
     project_paths::{
         current_project_root, normalize_project_path, normalized_known_paths, project_path_set,
         seed_known_paths, try_git_output,
@@ -46,12 +46,31 @@ pub struct RemoveReport {
     pub config_written: bool,
 }
 
-/// Reports one completed rename workflow across config, archive sync, parse, and cleanup.
+/// Collects optional provider filters for the refresh workflow.
+#[derive(Debug, Clone, Default)]
+pub struct RefreshOptions {
+    pub provider_filter: Vec<SourceKind>,
+}
+
+/// Reports one completed refresh workflow across sync and index.
+#[derive(Debug, Clone)]
+pub struct RefreshReport {
+    pub sync: SyncReport,
+    pub index: IndexReport,
+}
+
+/// Reports one completed multi-project refresh workflow.
+#[derive(Debug, Clone)]
+pub struct RefreshAllReport {
+    pub projects: Vec<RefreshReport>,
+}
+
+/// Reports one completed rename workflow across config, archive sync, indexing, and cleanup.
 #[derive(Debug, Clone)]
 pub struct RenameReport {
     pub link: LinkReport,
     pub sync: SyncReport,
-    pub parse: ParseReport,
+    pub index: IndexReport,
     pub remove: RemoveReport,
 }
 
@@ -93,6 +112,39 @@ pub fn rename_project(root: Option<PathBuf>, source_name: &str) -> Result<Rename
         root.unwrap_or_else(default_root_path),
         source_name,
     )
+}
+
+/// Refreshes one active project by running sync and then index.
+pub fn refresh_project(root: Option<PathBuf>, options: RefreshOptions) -> Result<RefreshReport> {
+    let current_dir =
+        env::current_dir().context("unable to resolve the current working directory")?;
+    refresh_project_from(
+        &current_dir,
+        root.unwrap_or_else(default_root_path),
+        &options,
+    )
+}
+
+/// Refreshes every registered project by running sync and then index for each one.
+pub fn refresh_all_projects(
+    root: Option<PathBuf>,
+    options: RefreshOptions,
+) -> Result<RefreshAllReport> {
+    let root = root.unwrap_or_else(default_root_path);
+    let projects = registered_projects(&root)?;
+    if projects.is_empty() {
+        bail!("no configured darc projects found under {}", root.display());
+    }
+
+    let mut reports = Vec::with_capacity(projects.len());
+    for project in projects {
+        reports.push(
+            refresh_project_from(&project.local_path, root.clone(), &options)
+                .with_context(|| format!("failed to refresh project `{}`", project.name))?,
+        );
+    }
+
+    Ok(RefreshAllReport { projects: reports })
 }
 
 /// Links one named project's historical paths into one explicit active project.
@@ -139,24 +191,37 @@ pub(crate) fn rename_project_from(
         new_known_paths: prepared.new_known_paths.clone(),
         config_written: prepared.config_written,
     };
-    let sync = execute_sync(prepare_sync_from(
-        current_dir,
-        root.clone(),
-        SyncOptions::default(),
-    )?)?;
-    let parse = parse_project_sessions_from(
-        current_dir,
-        root.clone(),
-        &[SourceKind::Claude, SourceKind::Codex],
-    )?;
+    let refresh = refresh_project_from(current_dir, root.clone(), &RefreshOptions::default())?;
     let remove = remove_project_by_id(&root, &link.source_project_id)?;
 
     Ok(RenameReport {
         link,
-        sync,
-        parse,
+        sync: refresh.sync,
+        index: refresh.index,
         remove,
     })
+}
+
+/// Runs sync and index for one explicit active project directory.
+pub(crate) fn refresh_project_from(
+    current_dir: &Path,
+    root: PathBuf,
+    options: &RefreshOptions,
+) -> Result<RefreshReport> {
+    let sync = execute_sync(prepare_sync_from(
+        current_dir,
+        root.clone(),
+        SyncOptions {
+            provider_filter: options.provider_filter.clone(),
+        },
+    )?)?;
+    let index = index_project_sessions_from(
+        current_dir,
+        root,
+        &selected_index_providers(&options.provider_filter),
+    )?;
+
+    Ok(RefreshReport { sync, index })
 }
 
 /// Prepares the config changes that link one source project into the current checkout target.
@@ -244,6 +309,20 @@ fn load_normalized_shared_config(config_path: &Path) -> Result<SharedConfig> {
         .map(normalize_project_config)
         .collect::<Result<Vec<_>>>()?;
     Ok(config)
+}
+
+/// Loads the registered project list from the shared config.
+fn registered_projects(root: &Path) -> Result<Vec<ProjectConfig>> {
+    let config_path = root.join(CONFIG_FILE_NAME);
+    if !config_path.exists() {
+        bail!(
+            "shared config not found at {}\nrun `darc init --root {}` from a project root first",
+            config_path.display(),
+            root.display()
+        );
+    }
+
+    Ok(load_normalized_shared_config(&config_path)?.projects)
 }
 
 /// Writes one full shared config back to disk.
@@ -513,6 +592,32 @@ mod tests {
         fs::create_dir_all(root)?;
         fs::write(root.join(CONFIG_FILE_NAME), toml::to_string_pretty(config)?)?;
         Ok(())
+    }
+
+    /// Writes one minimal live Codex rollout fixture for refresh tests.
+    fn write_codex_rollout(
+        sessions_root: &Path,
+        rollout_name: &str,
+        session_id: &str,
+        cwd: &Path,
+        user_message: &str,
+        assistant_reply: &str,
+    ) -> Result<()> {
+        write_file(
+            &sessions_root.join(format!("2026/04/01/{rollout_name}")),
+            &format!(
+                concat!(
+                    "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{session_id}\",\"cwd\":\"{cwd}\",\"cli_version\":\"0.118.0\"}}}}\n",
+                    "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}}}\n",
+                    "{{\"timestamp\":\"2026-04-01T10:00:02Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"{user_message}\"}}}}\n",
+                    "{{\"timestamp\":\"2026-04-01T10:00:03Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"{assistant_reply}\"}}]}}}}\n"
+                ),
+                cwd = cwd.display(),
+                session_id = session_id,
+                user_message = user_message,
+                assistant_reply = assistant_reply,
+            ),
+        )
     }
 
     /// Creates one stable test timestamp seed to keep temp paths distinct.
@@ -866,7 +971,171 @@ mod tests {
     }
 
     #[test]
-    fn rename_project_links_syncs_parses_and_removes_source() -> Result<()> {
+    fn refresh_project_syncs_and_indexes_active_project() -> Result<()> {
+        let root = unique_test_dir(&format!("refresh-{}", timestamp_seed()));
+        let project_root = root.join("repo");
+        let codex_home = root.join(".codex");
+        let codex_sessions_root = codex_home.join("sessions");
+        let project_sessions_root = root.join("projects/repo-123/sessions");
+        let rollout_name = "rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl";
+        fs::create_dir_all(&project_root)?;
+        write_codex_rollout(
+            &codex_sessions_root,
+            rollout_name,
+            "019d3415-0b9c-7dc3-88e0-e9cb7a789e3f",
+            &project_root,
+            "Refresh me",
+            "Done",
+        )?;
+
+        write_config(
+            &root,
+            &SharedConfig::new(
+                root.clone(),
+                vec![ProjectConfig {
+                    id: "repo-123".into(),
+                    name: "repo".into(),
+                    local_path: project_root.clone(),
+                    git_upstream: None,
+                    sessions_root: project_sessions_root.clone(),
+                    known_paths: Vec::new(),
+                }],
+                SourcesConfig {
+                    claude: None,
+                    codex: Some(CodexSourceConfig {
+                        enabled: true,
+                        home: codex_home,
+                        sessions_root: codex_sessions_root,
+                    }),
+                },
+            ),
+        )?;
+
+        let report = refresh_project_from(&project_root, root.clone(), &RefreshOptions::default())?;
+
+        assert_eq!(report.sync.project_name, "repo");
+        assert_eq!(report.sync.sessions_copied, 1);
+        assert_eq!(report.index.project_name, "repo");
+        assert_eq!(report.index.sessions_currently_indexed, 1);
+        assert!(
+            project_sessions_root
+                .join(format!("codex/{rollout_name}"))
+                .exists()
+        );
+
+        let connection = open_index_database(&root.join(INDEX_DB_FILE_NAME))?;
+        let indexed_sessions: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM sessions WHERE project_id = 'repo-123'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(indexed_sessions, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn refresh_all_projects_refreshes_each_registered_project() -> Result<()> {
+        let root = unique_test_dir(&format!("refresh-all-{}", timestamp_seed()));
+        let left_root = root.join("repo-a");
+        let right_root = root.join("repo-b");
+        let codex_home = root.join(".codex");
+        let codex_sessions_root = codex_home.join("sessions");
+        fs::create_dir_all(&left_root)?;
+        fs::create_dir_all(&right_root)?;
+        write_codex_rollout(
+            &codex_sessions_root,
+            "rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl",
+            "019d3415-0b9c-7dc3-88e0-e9cb7a789e3f",
+            &left_root,
+            "Inspect repo-a",
+            "Indexed repo-a",
+        )?;
+        write_codex_rollout(
+            &codex_sessions_root,
+            "rollout-2026-04-01T10-05-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e40.jsonl",
+            "019d3415-0b9c-7dc3-88e0-e9cb7a789e40",
+            &right_root,
+            "Inspect repo-b",
+            "Indexed repo-b",
+        )?;
+
+        write_config(
+            &root,
+            &SharedConfig::new(
+                root.clone(),
+                vec![
+                    ProjectConfig {
+                        id: "repo-a-123".into(),
+                        name: "repo-a".into(),
+                        local_path: left_root.clone(),
+                        git_upstream: None,
+                        sessions_root: root.join("projects/repo-a-123/sessions"),
+                        known_paths: Vec::new(),
+                    },
+                    ProjectConfig {
+                        id: "repo-b-456".into(),
+                        name: "repo-b".into(),
+                        local_path: right_root.clone(),
+                        git_upstream: None,
+                        sessions_root: root.join("projects/repo-b-456/sessions"),
+                        known_paths: Vec::new(),
+                    },
+                ],
+                SourcesConfig {
+                    claude: None,
+                    codex: Some(CodexSourceConfig {
+                        enabled: true,
+                        home: codex_home,
+                        sessions_root: codex_sessions_root,
+                    }),
+                },
+            ),
+        )?;
+
+        let report = refresh_all_projects(Some(root.clone()), RefreshOptions::default())?;
+
+        assert_eq!(report.projects.len(), 2);
+        assert!(
+            report
+                .projects
+                .iter()
+                .all(|project| project.sync.sessions_copied == 1)
+        );
+        assert!(
+            report
+                .projects
+                .iter()
+                .all(|project| project.index.sessions_currently_indexed == 1)
+        );
+        assert_eq!(
+            report
+                .projects
+                .iter()
+                .map(|project| project.sync.project_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["repo-a", "repo-b"]
+        );
+
+        let connection = open_index_database(&root.join(INDEX_DB_FILE_NAME))?;
+        let repo_a_sessions: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM sessions WHERE project_id = 'repo-a-123'",
+            [],
+            |row| row.get(0),
+        )?;
+        let repo_b_sessions: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM sessions WHERE project_id = 'repo-b-456'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(repo_a_sessions, 1);
+        assert_eq!(repo_b_sessions, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn rename_project_links_syncs_indexes_and_removes_source() -> Result<()> {
         let root = unique_test_dir(&format!("rename-{}", timestamp_seed()));
         let target_root = root.join("darc");
         let source_root = root.join("memstack");
@@ -937,8 +1206,8 @@ mod tests {
 
         assert_eq!(report.link.source_project_name, "memstack");
         assert_eq!(report.sync.sessions_copied, 1);
-        assert_eq!(report.parse.project_name, "darc");
-        assert_eq!(report.parse.sessions_currently_indexed, 1);
+        assert_eq!(report.index.project_name, "darc");
+        assert_eq!(report.index.sessions_currently_indexed, 1);
         assert_eq!(report.remove.project_name, "memstack");
         assert!(
             target_sessions_root
@@ -1035,7 +1304,7 @@ mod tests {
 
         assert_eq!(report.link.target_project_name, "darc");
         assert_eq!(report.link.source_project_name, "memstack");
-        assert_eq!(report.parse.project_name, "darc");
+        assert_eq!(report.index.project_name, "darc");
         assert_eq!(report.remove.project_name, "memstack");
         assert!(
             target_sessions_root

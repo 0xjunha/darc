@@ -31,7 +31,7 @@ static UNIQUE_PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// Collects optional filters for the `sync` workflow.
 #[derive(Debug, Clone, Default)]
 pub struct SyncOptions {
-    pub source_filter: Vec<SourceKind>,
+    pub provider_filter: Vec<SourceKind>,
 }
 
 /// Describes a prepared sync before any writes happen.
@@ -167,7 +167,7 @@ pub(crate) fn prepare_sync_from(
     let other_project_paths = other_project_paths(&config.projects, project_index)?;
     let project_upstream = try_git_output(&current_root, &["config", "--get", "remote.origin.url"])
         .or(project.git_upstream.clone());
-    let sources = selected_sources(&config, &options.source_filter)?;
+    let sources = selected_sources(&config, &options.provider_filter)?;
     let manifest_path = project.sessions_root.join(".manifest.json");
     let mut manifest = load_manifest(&manifest_path)?;
     let synced_at = format_system_time_utc(SystemTime::now())?;

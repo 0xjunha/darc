@@ -5,10 +5,11 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use darc_core::{
     ClaudeSchemaAuditOptions, ClaudeSchemaAuditOutcome, ClaudeSchemaAuditReport,
     ClaudeSchemaSurveyMode, CodexSchemaAuditOptions, CodexSchemaAuditOutcome,
-    CodexSchemaAuditReport, InitDraft, ParseOptions, SkippedRollout, SourceKind, SyncOptions,
-    default_root_path, execute_sync, link_project, parse_project_sessions, prepare_init,
-    prepare_sync, remove_project, rename_project, run_claude_schema_audit_with_progress,
-    run_codex_schema_audit_with_progress, write_init,
+    CodexSchemaAuditReport, IndexOptions, InitDraft, RefreshOptions, RefreshReport, SkippedRollout,
+    SourceKind, SyncOptions, default_root_path, execute_sync, index_project_sessions, link_project,
+    prepare_init, prepare_sync, refresh_all_projects, refresh_project, remove_project,
+    rename_project, run_claude_schema_audit_with_progress, run_codex_schema_audit_with_progress,
+    write_init,
 };
 
 #[derive(Debug, Parser)]
@@ -24,8 +25,13 @@ enum Commands {
     /// Detect local sources and create the shared darc config.
     Init(InitArgs),
     #[command(
+        about = "Sync then index archived sessions for the active project",
+        long_about = "Sync then index archived sessions for the active project.\n\nThis is the daily happy path after `darc init`.\nBy default it refreshes the project resolved from the current directory.\nUse `--provider` to limit both sync and index to selected providers.\nUse `--all` to refresh every registered project in the shared darc workspace."
+    )]
+    Refresh(RefreshArgs),
+    #[command(
         about = "Link one configured project's historical paths into the current project",
-        long_about = "Link one configured project's historical paths into the current project.\n\nRun this command from the target project directory.\nThe PROJECT argument is the old or source project name already stored in ~/.darc/config.toml.\n\nExample:\n- You renamed `/path/to/old-project` to `/path/to/new-project`.\n- Darc still has a configured project named `old-project`.\n- Run `cd /path/to/new-project && darc link old-project`.\n\nThis command is non-destructive.\nIt updates config so the current project knows the source project's old local_path and known_paths.\nIt does not run `darc sync`, `darc parse`, or remove the source project."
+        long_about = "Link one configured project's historical paths into the current project.\n\nRun this command from the target project directory.\nThe PROJECT argument is the old or source project name already stored in ~/.darc/config.toml.\n\nExample:\n- You renamed `/path/to/old-project` to `/path/to/new-project`.\n- Darc still has a configured project named `old-project`.\n- Run `cd /path/to/new-project && darc link old-project`.\n\nThis command is non-destructive.\nIt updates config so the current project knows the source project's old local_path and known_paths.\nIt does not run `darc refresh` or remove the source project."
     )]
     Link(LinkArgs),
     #[command(
@@ -36,13 +42,13 @@ enum Commands {
     #[command(
         name = "rename-from",
         about = "Rebuild one old project's history into the current renamed project",
-        long_about = "Rebuild one old project's history into the current renamed project.\n\nUse this when you just renamed a project from one name to another.\nRun the command from the new project directory, and pass the old project name.\n\nExample:\n- Darc config still contains a project named `old-project`.\n- You renamed the checkout to `/path/to/new-project`.\n- Run `cd /path/to/new-project && darc rename-from old-project`.\n\nThis command bootstraps or reuses the current project as the target, links the old project's paths into it, runs `darc sync`, runs `darc parse`, and removes the old source project after those steps succeed.\n\nIn other words, it is the safe built-in workflow for:\n`darc link <old-project> && darc sync && darc parse && darc remove <old-project>`\n\nIf ~/.darc/config.toml does not exist yet, run `darc init` first."
+        long_about = "Rebuild one old project's history into the current renamed project.\n\nUse this when you just renamed a project from one name to another.\nRun the command from the new project directory, and pass the old project name.\n\nExample:\n- Darc config still contains a project named `old-project`.\n- You renamed the checkout to `/path/to/new-project`.\n- Run `cd /path/to/new-project && darc rename-from old-project`.\n\nThis command bootstraps or reuses the current project as the target, links the old project's paths into it, runs `darc refresh`, and removes the old source project after those steps succeed.\n\nIn other words, it is the safe built-in workflow for:\n`darc link <old-project> && darc refresh && darc remove <old-project>`\n\nIf ~/.darc/config.toml does not exist yet, run `darc init` first."
     )]
     RenameFrom(RenameArgs),
     /// Sync matching Claude and Codex sessions into the project archive.
     Sync(SyncArgs),
-    /// Parse archived sessions from selected providers for the active project into SQLite.
-    Parse(ParseArgs),
+    /// Index archived sessions from selected providers for the active project into SQLite.
+    Index(IndexArgs),
     #[command(
         hide = true,
         about = "Audit Codex rollout schema compatibility against stable release tags",
@@ -67,6 +73,26 @@ struct InitArgs {
     dry_run: bool,
 }
 
+/// Syncs then indexes archived sessions for one or all projects.
+#[derive(Debug, Args)]
+struct RefreshArgs {
+    #[arg(long, default_value_os_t = default_root_path())]
+    root: PathBuf,
+
+    #[arg(
+        long = "provider",
+        value_enum,
+        help = "Limit both sync and index to the selected providers"
+    )]
+    provider: Vec<ProviderArg>,
+
+    #[arg(
+        long,
+        help = "Refresh every registered project instead of only the active one"
+    )]
+    all: bool,
+}
+
 /// Sync matching Claude and Codex sessions into the project archive.
 #[derive(Debug, Args)]
 struct SyncArgs {
@@ -76,8 +102,8 @@ struct SyncArgs {
     #[arg(long)]
     dry_run: bool,
 
-    #[arg(long = "source", value_enum)]
-    source: Vec<ProviderArg>,
+    #[arg(long = "provider", value_enum)]
+    provider: Vec<ProviderArg>,
 }
 
 /// Link one configured project's historical paths into the active project.
@@ -110,9 +136,9 @@ struct RenameArgs {
     project: String,
 }
 
-/// Parse archived sessions from selected providers for the active project into SQLite.
+/// Index archived sessions from selected providers for the active project into SQLite.
 #[derive(Debug, Args)]
-struct ParseArgs {
+struct IndexArgs {
     #[arg(long, default_value_os_t = default_root_path())]
     root: PathBuf,
 
@@ -146,7 +172,7 @@ struct ClaudeSchemaAuditArgs {
     survey_mode: ClaudeSurveyModeArg,
 }
 
-/// Represents the supported provider filters for parse and sync.
+/// Represents the supported provider filters for index and sync.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ProviderArg {
     Claude,
@@ -169,11 +195,12 @@ fn run() -> i32 {
     let cli = Cli::parse();
     match cli.command {
         Commands::Init(args) => standard_exit(run_init(args)),
+        Commands::Refresh(args) => standard_exit(run_refresh(args)),
         Commands::Link(args) => standard_exit(run_link(args)),
         Commands::Remove(args) => standard_exit(run_remove(args)),
         Commands::RenameFrom(args) => standard_exit(run_rename_from(args)),
         Commands::Sync(args) => standard_exit(run_sync(args)),
-        Commands::Parse(args) => standard_exit(run_parse(args)),
+        Commands::Index(args) => standard_exit(run_index(args)),
         Commands::CodexSchemaAudit(args) => run_codex_schema_audit_command(args),
         Commands::ClaudeSchemaAudit(args) => run_claude_schema_audit_command(args),
     }
@@ -297,10 +324,10 @@ fn run_rename_from(args: RenameArgs) -> Result<()> {
         report.sync.sessions_copied, report.sync.auxiliary_copied
     );
     println!(
-        "Parsed {} discovered sessions into {} indexed sessions and {} turns.",
-        report.parse.sessions_discovered,
-        report.parse.sessions_currently_indexed,
-        report.parse.turns_currently_indexed
+        "Indexed {} discovered sessions into {} indexed sessions and {} turns.",
+        report.index.sessions_discovered,
+        report.index.sessions_currently_indexed,
+        report.index.turns_currently_indexed
     );
     println!(
         "Removed old project archive and {} indexed sessions.",
@@ -310,19 +337,42 @@ fn run_rename_from(args: RenameArgs) -> Result<()> {
     Ok(())
 }
 
+/// Runs the daily refresh workflow for one or all projects.
+fn run_refresh(args: RefreshArgs) -> Result<()> {
+    let options = RefreshOptions {
+        provider_filter: args.provider.into_iter().map(ProviderArg::into).collect(),
+    };
+
+    if args.all {
+        let report = refresh_all_projects(Some(args.root), options)?;
+        for (index, project) in report.projects.iter().enumerate() {
+            if index > 0 {
+                println!();
+            }
+            print_refresh_report(project);
+        }
+        println!("\nRefreshed {} project(s).", report.projects.len());
+        return Ok(());
+    }
+
+    let report = refresh_project(Some(args.root), options)?;
+    print_refresh_report(&report);
+    Ok(())
+}
+
 /// Prepares and optionally executes the project-scoped sync workflow.
 fn run_sync(args: SyncArgs) -> Result<()> {
     let plan = prepare_sync(
         Some(args.root),
         SyncOptions {
-            source_filter: args.source.into_iter().map(ProviderArg::into).collect(),
+            provider_filter: args.provider.into_iter().map(ProviderArg::into).collect(),
         },
     )?;
 
     println!("Project: {}", plan.project_name);
     println!("Project Root: {}", plan.project_root.display());
     println!("Archive: {}", plan.sessions_root.display());
-    println!("Sources: {}", format_sources(&plan.sources));
+    println!("Providers: {}", format_sources(&plan.sources));
     println!(
         "Sessions: {} to copy, {} unchanged",
         plan.sessions_to_copy(),
@@ -360,11 +410,11 @@ fn run_sync(args: SyncArgs) -> Result<()> {
     Ok(())
 }
 
-/// Parses archived sessions for the active project into SQLite.
-fn run_parse(args: ParseArgs) -> Result<()> {
-    let report = parse_project_sessions(
+/// Indexes archived sessions for the active project into SQLite.
+fn run_index(args: IndexArgs) -> Result<()> {
+    let report = index_project_sessions(
         Some(args.root),
-        ParseOptions {
+        IndexOptions {
             provider_filter: args.provider.into_iter().map(ProviderArg::into).collect(),
         },
     )?;
@@ -394,6 +444,69 @@ fn run_parse(args: ParseArgs) -> Result<()> {
     println!("Skipped rollout files: {}", report.skipped_rollouts.len());
 
     Ok(())
+}
+
+/// Prints the combined sync and index summary for one refreshed project.
+fn print_refresh_report(report: &RefreshReport) {
+    for warning in &report.sync.warnings {
+        eprintln!("warning [{}]: {warning}", report.sync.project_name);
+    }
+    for skipped in &report.index.skipped_rollouts {
+        eprintln!(
+            "warning [{}]: {}",
+            report.sync.project_name,
+            format_skipped_rollout(skipped)
+        );
+    }
+
+    println!("Project: {}", report.sync.project_name);
+    println!("Project Root: {}", report.sync.project_root.display());
+    println!("Archive: {}", report.sync.sessions_root.display());
+    match format_refresh_provider_lines(report) {
+        RefreshProviderLines::Shared(providers) => println!("Providers: {providers}"),
+        RefreshProviderLines::Split {
+            sync_providers,
+            index_providers,
+        } => {
+            println!("Sync Providers: {sync_providers}");
+            println!("Index Providers: {index_providers}");
+        }
+    }
+    println!("Index DB: {}", report.index.index_db_path.display());
+    println!(
+        "Sync Sessions: {} copied, {} unchanged",
+        report.sync.sessions_copied, report.sync.sessions_unchanged
+    );
+    println!(
+        "Sync Auxiliary: {} copied, {} unchanged",
+        report.sync.auxiliary_copied, report.sync.auxiliary_unchanged
+    );
+    println!(
+        "Index Sessions Discovered: {}",
+        report.index.sessions_discovered
+    );
+    println!(
+        "Index Sessions Skipped This Run: {}",
+        report.index.sessions_skipped_this_run
+    );
+    println!(
+        "Index Sessions Currently Indexed: {}",
+        report.index.sessions_currently_indexed
+    );
+    println!(
+        "Index Turns Currently Indexed: {}",
+        report.index.turns_currently_indexed
+    );
+    println!(
+        "Skipped rollout files: {}",
+        report.index.skipped_rollouts.len()
+    );
+    if report.sync.manifest_written {
+        println!("Updated manifest.");
+    }
+    if report.sync.config_written {
+        println!("Updated config.");
+    }
 }
 
 /// Runs the hidden Codex rollout schema audit command with dedicated exit codes.
@@ -465,7 +578,30 @@ fn format_sources(sources: &[SourceKind]) -> String {
         .join(", ")
 }
 
-/// Formats one skipped rollout warning for `darc parse`.
+/// Stores the provider lines rendered for one refresh report.
+enum RefreshProviderLines {
+    Shared(String),
+    Split {
+        sync_providers: String,
+        index_providers: String,
+    },
+}
+
+/// Formats the provider lines for one refresh report.
+fn format_refresh_provider_lines(report: &RefreshReport) -> RefreshProviderLines {
+    let sync_providers = format_sources(&report.sync.sources);
+    let index_providers = format_sources(&report.index.providers);
+    if report.sync.sources == report.index.providers {
+        RefreshProviderLines::Shared(sync_providers)
+    } else {
+        RefreshProviderLines::Split {
+            sync_providers,
+            index_providers,
+        }
+    }
+}
+
+/// Formats one skipped rollout warning for `darc index`.
 fn format_skipped_rollout(skipped: &SkippedRollout) -> String {
     let mut details = Vec::new();
     if let Some(session_id) = &skipped.logical_session_id {
@@ -763,11 +899,31 @@ mod tests {
     }
 
     #[test]
-    fn parse_command_accepts_provider_filters() {
-        let cli = Cli::try_parse_from(["darc", "parse", "--provider", "claude"]).unwrap();
+    fn refresh_command_accepts_provider_filters_and_all() {
+        let cli =
+            Cli::try_parse_from(["darc", "refresh", "--provider", "claude", "--all"]).unwrap();
         assert!(matches!(
             cli.command,
-            Commands::Parse(super::ParseArgs { provider, .. }) if provider.len() == 1
+            Commands::Refresh(super::RefreshArgs { provider, all, .. })
+                if provider.len() == 1 && all
+        ));
+    }
+
+    #[test]
+    fn index_command_accepts_provider_filters() {
+        let cli = Cli::try_parse_from(["darc", "index", "--provider", "claude"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Index(super::IndexArgs { provider, .. }) if provider.len() == 1
+        ));
+    }
+
+    #[test]
+    fn sync_command_accepts_provider_filters() {
+        let cli = Cli::try_parse_from(["darc", "sync", "--provider", "claude"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Sync(super::SyncArgs { provider, .. }) if provider.len() == 1
         ));
     }
 

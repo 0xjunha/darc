@@ -24,7 +24,7 @@ This means:
 - current directory `/path/to/new-project` is the target project
 - `old-project` is the old or source project already known to Darc
 
-`link` only updates config. It does not run `sync`, does not run `parse`, and does not remove the source project.
+`link` only updates config. It does not run `refresh`, and it does not remove the source project.
 
 ## darc remove
 
@@ -72,17 +72,15 @@ In that example:
 
 1. creates or reuses the target project from the current checkout
 2. links the old project's paths into the target project
-3. runs `darc sync`
-4. runs `darc parse`
-5. removes the old source project if the previous steps succeed
+3. runs `darc refresh`
+4. removes the old source project if the previous steps succeed
 
 So it is the safe built-in version of:
 
 ```bash
 cd /path/to/new-project
 darc link old-project
-darc sync
-darc parse
+darc refresh
 darc remove old-project
 ```
 

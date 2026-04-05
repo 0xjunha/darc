@@ -36,15 +36,15 @@ pub fn parse_codex_rollout(path: &Path) -> Result<CodexRollout> {
     parse_rollout_file(path)
 }
 
-/// Collects optional provider filters for the `parse` workflow.
+/// Collects optional provider filters for the indexing workflow.
 #[derive(Debug, Clone, Default)]
-pub struct ParseOptions {
+pub struct IndexOptions {
     pub provider_filter: Vec<SourceKind>,
 }
 
 /// Reports the results of indexing archived sessions for one project.
 #[derive(Debug, Clone)]
-pub struct ParseReport {
+pub struct IndexReport {
     pub project_name: String,
     pub project_root: PathBuf,
     pub sessions_root: PathBuf,
@@ -57,7 +57,7 @@ pub struct ParseReport {
     pub skipped_rollouts: Vec<SkippedRollout>,
 }
 
-/// Describes one archived rollout file that darc skipped during parsing.
+/// Describes one archived rollout file that darc skipped during indexing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkippedRollout {
     pub provider: SourceKind,
@@ -70,22 +70,22 @@ pub struct SkippedRollout {
 /// Preserves the old Codex-specific skipped rollout name for compatibility.
 pub type SkippedCodexRollout = SkippedRollout;
 
-/// Parses archived sessions for the active project into SQLite.
-pub fn parse_project_sessions(root: Option<PathBuf>, options: ParseOptions) -> Result<ParseReport> {
+/// Indexes archived sessions for the active project into SQLite.
+pub fn index_project_sessions(root: Option<PathBuf>, options: IndexOptions) -> Result<IndexReport> {
     let current_dir =
         env::current_dir().context("unable to resolve the current working directory")?;
-    parse_project_sessions_from(
+    index_project_sessions_from(
         &current_dir,
         root.unwrap_or_else(default_root_path),
-        &selected_parse_providers(&options.provider_filter),
+        &selected_index_providers(&options.provider_filter),
     )
 }
 
-/// Parses archived Codex rollouts for the active project into SQLite.
-pub fn parse_project_codex_turns(root: Option<PathBuf>) -> Result<ParseReport> {
-    parse_project_sessions(
+/// Indexes archived Codex rollouts for the active project into SQLite.
+pub fn index_project_codex_turns(root: Option<PathBuf>) -> Result<IndexReport> {
+    index_project_sessions(
         root,
-        ParseOptions {
+        IndexOptions {
             provider_filter: vec![SourceKind::Codex],
         },
     )
@@ -197,7 +197,7 @@ pub enum CodexTurnStep {
     },
 }
 
-/// Identifies the normalized indexed session shape used by the shared parse pipeline.
+/// Identifies the normalized indexed session shape used by the shared indexing pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IndexedSessionKind {
     Primary,
@@ -532,16 +532,16 @@ struct DiscoveredArchivedRollouts {
     skipped_rollouts: Vec<SkippedRollout>,
 }
 
-/// Describes the SQLite index changes produced by one parse run.
+/// Describes the SQLite index changes produced by one indexing run.
 #[derive(Debug, Clone)]
-struct IndexedParseOutcome {
+struct IndexedIndexOutcome {
     sessions_succeeded: usize,
     sessions_currently_indexed: usize,
     skipped_rollouts: Vec<SkippedRollout>,
     turns_currently_indexed: usize,
 }
 
-/// Stores one provider/session key inside the normalized parse index.
+/// Stores one provider/session key inside the normalized session index.
 type IndexedSessionKey = (SourceKind, String);
 
 /// Marks hard infrastructure failures while indexing one rollout candidate.
@@ -556,25 +556,25 @@ impl std::fmt::Display for CandidateIndexInfrastructureError {
 
 impl std::error::Error for CandidateIndexInfrastructureError {}
 
-/// Parses archived Codex rollouts for one explicit current directory and darc root.
+/// Indexes archived Codex rollouts for one explicit current directory and darc root.
 #[cfg(test)]
-fn parse_project_codex_turns_from(current_dir: &Path, root: PathBuf) -> Result<ParseReport> {
-    parse_project_sessions_from(current_dir, root, &[SourceKind::Codex])
+fn index_project_codex_turns_from(current_dir: &Path, root: PathBuf) -> Result<IndexReport> {
+    index_project_sessions_from(current_dir, root, &[SourceKind::Codex])
 }
 
-/// Parses archived provider rollouts for one explicit current directory and darc root.
-pub(crate) fn parse_project_sessions_from(
+/// Indexes archived provider rollouts for one explicit current directory and darc root.
+pub(crate) fn index_project_sessions_from(
     current_dir: &Path,
     root: PathBuf,
     providers: &[SourceKind],
-) -> Result<ParseReport> {
+) -> Result<IndexReport> {
     let active_project = load_active_project(current_dir, &root)?;
     let discovered_rollouts =
         discover_archived_rollouts(&active_project.project.sessions_root, providers)?;
     let index_db_path = root.join(INDEX_DB_FILE_NAME);
     let mut connection = open_index_database(&index_db_path)?;
 
-    let parse_outcome = update_project_turns(
+    let index_outcome = update_project_turns(
         &mut connection,
         &active_project.project.id,
         providers,
@@ -582,13 +582,13 @@ pub(crate) fn parse_project_sessions_from(
         &discovered_rollouts.discovered_session_ids,
     )?;
     let mut skipped_rollouts = discovered_rollouts.skipped_rollouts;
-    skipped_rollouts.extend(parse_outcome.skipped_rollouts);
+    skipped_rollouts.extend(index_outcome.skipped_rollouts);
     let sessions_discovered = discovered_rollouts.discovered_session_ids.len();
     let sessions_skipped_this_run = sessions_discovered
-        .checked_sub(parse_outcome.sessions_succeeded)
+        .checked_sub(index_outcome.sessions_succeeded)
         .context("successful indexed session count exceeds discovered sessions")?;
 
-    Ok(ParseReport {
+    Ok(IndexReport {
         project_name: active_project.project.name,
         project_root: active_project.current_root,
         sessions_root: active_project.project.sessions_root,
@@ -596,14 +596,14 @@ pub(crate) fn parse_project_sessions_from(
         providers: providers.to_vec(),
         sessions_discovered,
         sessions_skipped_this_run,
-        sessions_currently_indexed: parse_outcome.sessions_currently_indexed,
-        turns_currently_indexed: parse_outcome.turns_currently_indexed,
+        sessions_currently_indexed: index_outcome.sessions_currently_indexed,
+        turns_currently_indexed: index_outcome.turns_currently_indexed,
         skipped_rollouts,
     })
 }
 
-/// Resolves the selected provider list for one parse run.
-fn selected_parse_providers(filter: &[SourceKind]) -> Vec<SourceKind> {
+/// Resolves the selected provider list for one indexing run.
+pub(crate) fn selected_index_providers(filter: &[SourceKind]) -> Vec<SourceKind> {
     if filter.is_empty() {
         return vec![SourceKind::Claude, SourceKind::Codex];
     }
@@ -1075,7 +1075,7 @@ fn build_archived_rollout_candidate(
     }
 }
 
-/// Normalizes one rollout failure into the shared parse report shape.
+/// Normalizes one rollout failure into the shared index report shape.
 fn build_skipped_rollout(
     provider: SourceKind,
     source_path: &Path,
@@ -1099,7 +1099,7 @@ fn update_project_turns(
     providers: &[SourceKind],
     archived_rollouts: &[ArchivedRolloutGroup],
     discovered_session_ids: &BTreeSet<IndexedSessionKey>,
-) -> Result<IndexedParseOutcome> {
+) -> Result<IndexedIndexOutcome> {
     let provider_set = providers.iter().copied().collect::<BTreeSet<_>>();
     let mut transaction = connection
         .transaction()
@@ -1128,9 +1128,9 @@ fn update_project_turns(
 
     transaction
         .commit()
-        .context("failed to commit SQLite parse transaction")?;
+        .context("failed to commit SQLite index transaction")?;
 
-    Ok(IndexedParseOutcome {
+    Ok(IndexedIndexOutcome {
         sessions_succeeded,
         sessions_currently_indexed: project_session_count(connection, project_id, &provider_set)?,
         skipped_rollouts,
@@ -1453,7 +1453,7 @@ mod tests {
 
     use super::{
         CodexRollout, CodexTurnMessage, CodexTurnStatus, CodexTurnStep,
-        parse_project_codex_turns_from, parse_project_sessions_from,
+        index_project_codex_turns_from, index_project_sessions_from,
     };
     use crate::constants::{CONFIG_FILE_NAME, INDEX_DB_FILE_NAME};
     use crate::rollout::{ParseDeterminism, codex::parse_rollout_reader};
@@ -1729,7 +1729,7 @@ mod tests {
         Ok(())
     }
 
-    /// Writes a minimal shared config for one parse indexing test.
+    /// Writes a minimal shared config for one indexing test.
     fn write_parse_config(
         root: &Path,
         project_root: &Path,
@@ -1778,7 +1778,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_project_indexes_codex_turns_into_sqlite() -> Result<()> {
+    fn index_project_indexes_codex_turns_into_sqlite() -> Result<()> {
         let darc_root = unique_test_dir("parse-index");
         let project_root = darc_root.join("repo");
         let sessions_root = darc_root.join("projects/repo-abc123/sessions");
@@ -1807,7 +1807,7 @@ mod tests {
         )?;
         let (source_size, source_mtime_ms) = super::file_snapshot(&rollout_path)?;
 
-        let report = parse_project_codex_turns_from(&project_root, darc_root.clone())?;
+        let report = index_project_codex_turns_from(&project_root, darc_root.clone())?;
 
         assert_eq!(report.project_name, "repo");
         assert_eq!(report.project_root, fs::canonicalize(&project_root)?);
@@ -1861,7 +1861,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_project_indexes_codex_and_claude_rollouts_together() -> Result<()> {
+    fn index_project_indexes_codex_and_claude_rollouts_together() -> Result<()> {
         let darc_root = unique_test_dir("parse-multi-provider");
         let project_root = darc_root.join("repo");
         let sessions_root = darc_root.join("projects/repo-abc123/sessions");
@@ -1919,7 +1919,7 @@ mod tests {
             ),
         )?;
 
-        let report = parse_project_sessions_from(
+        let report = index_project_sessions_from(
             &project_root,
             darc_root.clone(),
             &[SourceKind::Claude, SourceKind::Codex],
@@ -1978,7 +1978,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_project_rewrites_existing_indexed_turns() -> Result<()> {
+    fn index_project_rewrites_existing_indexed_turns() -> Result<()> {
         let darc_root = unique_test_dir("parse-rewrite");
         let project_root = darc_root.join("repo");
         let sessions_root = darc_root.join("projects/repo-abc123/sessions");
@@ -2000,7 +2000,7 @@ mod tests {
                 project_root.display()
             ),
         )?;
-        parse_project_codex_turns_from(&project_root, darc_root.clone())?;
+        index_project_codex_turns_from(&project_root, darc_root.clone())?;
 
         write_file(
             &rollout_path,
@@ -2018,7 +2018,7 @@ mod tests {
             ),
         )?;
 
-        let report = parse_project_codex_turns_from(&project_root, darc_root.clone())?;
+        let report = index_project_codex_turns_from(&project_root, darc_root.clone())?;
         let connection = Connection::open(darc_root.join(INDEX_DB_FILE_NAME))?;
         let indexed_turns = indexed_codex_turn_count(&connection, "repo-abc123")?;
         let first_turn: (String, String) = connection.query_row(
@@ -2041,7 +2041,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_project_skips_unchanged_sessions_when_snapshot_matches() -> Result<()> {
+    fn index_project_skips_unchanged_sessions_when_snapshot_matches() -> Result<()> {
         let darc_root = unique_test_dir("parse-skip-unchanged");
         let project_root = darc_root.join("repo");
         let sessions_root = darc_root.join("projects/repo-abc123/sessions");
@@ -2061,12 +2061,12 @@ mod tests {
         );
         write_file(&rollout_path, &original)?;
         touch_file_timestamp(&rollout_path, "202604011000.00")?;
-        parse_project_codex_turns_from(&project_root, darc_root.clone())?;
+        index_project_codex_turns_from(&project_root, darc_root.clone())?;
 
         write_file(&rollout_path, &"{".repeat(original.len()))?;
         touch_file_timestamp(&rollout_path, "202604011000.00")?;
 
-        let report = parse_project_codex_turns_from(&project_root, darc_root.clone())?;
+        let report = index_project_codex_turns_from(&project_root, darc_root.clone())?;
         let connection = Connection::open(darc_root.join(INDEX_DB_FILE_NAME))?;
         let indexed_turn: (String, String) = connection.query_row(
             "
@@ -2090,7 +2090,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_project_deduplicates_archived_rollouts_with_same_session_id() -> Result<()> {
+    fn index_project_deduplicates_archived_rollouts_with_same_session_id() -> Result<()> {
         let darc_root = unique_test_dir("parse-deduplicate");
         let project_root = darc_root.join("repo");
         let sessions_root = darc_root.join("projects/repo-abc123/sessions");
@@ -2127,7 +2127,7 @@ mod tests {
             ),
         )?;
 
-        let report = parse_project_codex_turns_from(&project_root, darc_root.clone())?;
+        let report = index_project_codex_turns_from(&project_root, darc_root.clone())?;
         let connection = Connection::open(darc_root.join(INDEX_DB_FILE_NAME))?;
         let indexed_sessions = indexed_codex_session_count(&connection, "repo-abc123")?;
         let indexed_turns = indexed_codex_turn_count(&connection, "repo-abc123")?;
@@ -2163,7 +2163,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_project_skips_mismatched_filename_and_payload_session_ids() -> Result<()> {
+    fn index_project_skips_mismatched_filename_and_payload_session_ids() -> Result<()> {
         let darc_root = unique_test_dir("parse-id-mismatch");
         let project_root = darc_root.join("repo");
         let sessions_root = darc_root.join("projects/repo-abc123/sessions");
@@ -2184,7 +2184,7 @@ mod tests {
             ),
         )?;
 
-        let report = parse_project_codex_turns_from(&project_root, darc_root.clone())?;
+        let report = index_project_codex_turns_from(&project_root, darc_root.clone())?;
         let connection = Connection::open(darc_root.join(INDEX_DB_FILE_NAME))?;
         let indexed_sessions = indexed_codex_session_count(&connection, "repo-abc123")?;
 
@@ -2212,7 +2212,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_project_ignores_corrupt_losing_duplicate() -> Result<()> {
+    fn index_project_ignores_corrupt_losing_duplicate() -> Result<()> {
         let darc_root = unique_test_dir("parse-corrupt-loser");
         let project_root = darc_root.join("repo");
         let sessions_root = darc_root.join("projects/repo-abc123/sessions");
@@ -2239,7 +2239,7 @@ mod tests {
             ),
         )?;
 
-        let report = parse_project_codex_turns_from(&project_root, darc_root.clone())?;
+        let report = index_project_codex_turns_from(&project_root, darc_root.clone())?;
         let connection = Connection::open(darc_root.join(INDEX_DB_FILE_NAME))?;
         let indexed_turn: (String, String) = connection.query_row(
             "
@@ -2263,7 +2263,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_project_falls_back_when_selected_duplicate_is_corrupt() -> Result<()> {
+    fn index_project_falls_back_when_selected_duplicate_is_corrupt() -> Result<()> {
         let darc_root = unique_test_dir("parse-corrupt-winner");
         let project_root = darc_root.join("repo");
         let sessions_root = darc_root.join("projects/repo-abc123/sessions");
@@ -2290,7 +2290,7 @@ mod tests {
             &format!("{{not-json\n{}\n", "x".repeat(4096)),
         )?;
 
-        let report = parse_project_codex_turns_from(&project_root, darc_root.clone())?;
+        let report = index_project_codex_turns_from(&project_root, darc_root.clone())?;
         let connection = Connection::open(darc_root.join(INDEX_DB_FILE_NAME))?;
         let indexed_row: (String, String, String) = connection.query_row(
             "
@@ -2332,7 +2332,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_project_skips_session_when_all_duplicate_candidates_are_corrupt() -> Result<()> {
+    fn index_project_skips_session_when_all_duplicate_candidates_are_corrupt() -> Result<()> {
         let darc_root = unique_test_dir("parse-all-corrupt-duplicates");
         let project_root = darc_root.join("repo");
         let sessions_root = darc_root.join("projects/repo-abc123/sessions");
@@ -2352,7 +2352,7 @@ mod tests {
             &format!("{{not-json\n{}\n", "x".repeat(4096)),
         )?;
 
-        let report = parse_project_codex_turns_from(&project_root, darc_root.clone())?;
+        let report = index_project_codex_turns_from(&project_root, darc_root.clone())?;
         let connection = Connection::open(darc_root.join(INDEX_DB_FILE_NAME))?;
         let indexed_sessions = indexed_codex_session_count(&connection, "repo-abc123")?;
 
@@ -2370,7 +2370,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_project_preserves_previous_index_when_replacement_rollout_fails() -> Result<()> {
+    fn index_project_preserves_previous_index_when_replacement_rollout_fails() -> Result<()> {
         let darc_root = unique_test_dir("parse-preserve-index-on-failure");
         let project_root = darc_root.join("repo");
         let sessions_root = darc_root.join("projects/repo-abc123/sessions");
@@ -2389,11 +2389,11 @@ mod tests {
             project_root.display()
         );
         write_file(&rollout_path, &original)?;
-        parse_project_codex_turns_from(&project_root, darc_root.clone())?;
+        index_project_codex_turns_from(&project_root, darc_root.clone())?;
 
         write_file(&rollout_path, "{not-json\n")?;
 
-        let report = parse_project_codex_turns_from(&project_root, darc_root.clone())?;
+        let report = index_project_codex_turns_from(&project_root, darc_root.clone())?;
         let connection = Connection::open(darc_root.join(INDEX_DB_FILE_NAME))?;
         let indexed_turn: (String, String) = connection.query_row(
             "
@@ -2422,7 +2422,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_project_preserves_previous_index_when_replacement_header_mismatches() -> Result<()> {
+    fn index_project_preserves_previous_index_when_replacement_header_mismatches() -> Result<()> {
         let darc_root = unique_test_dir("parse-preserve-index-on-mismatch");
         let project_root = darc_root.join("repo");
         let sessions_root = darc_root.join("projects/repo-abc123/sessions");
@@ -2441,7 +2441,7 @@ mod tests {
             project_root.display()
         );
         write_file(&rollout_path, &original)?;
-        parse_project_codex_turns_from(&project_root, darc_root.clone())?;
+        index_project_codex_turns_from(&project_root, darc_root.clone())?;
 
         let mismatched = format!(
             concat!(
@@ -2452,7 +2452,7 @@ mod tests {
         );
         write_file(&rollout_path, &mismatched)?;
 
-        let report = parse_project_codex_turns_from(&project_root, darc_root.clone())?;
+        let report = index_project_codex_turns_from(&project_root, darc_root.clone())?;
         let connection = Connection::open(darc_root.join(INDEX_DB_FILE_NAME))?;
         let indexed_turn: (String, String) = connection.query_row(
             "
@@ -2485,7 +2485,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_project_skips_unchanged_fallback_candidate_after_corrupt_higher_duplicate()
+    fn index_project_skips_unchanged_fallback_candidate_after_corrupt_higher_duplicate()
     -> Result<()> {
         let darc_root = unique_test_dir("parse-skip-fallback-duplicate");
         let project_root = darc_root.join("repo");
@@ -2511,12 +2511,12 @@ mod tests {
                 .join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
             &format!("{{not-json\n{}\n", "x".repeat(4096)),
         )?;
-        parse_project_codex_turns_from(&project_root, darc_root.clone())?;
+        index_project_codex_turns_from(&project_root, darc_root.clone())?;
 
         write_file(&fallback_path, &"{".repeat(original.len()))?;
         touch_file_timestamp(&fallback_path, "202604010900.00")?;
 
-        let report = parse_project_codex_turns_from(&project_root, darc_root.clone())?;
+        let report = index_project_codex_turns_from(&project_root, darc_root.clone())?;
         let connection = Connection::open(darc_root.join(INDEX_DB_FILE_NAME))?;
         let indexed_turn: (String, String) = connection.query_row(
             "
@@ -2540,7 +2540,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_project_skips_unknown_schema_session_while_indexing_other_sessions() -> Result<()> {
+    fn index_project_skips_unknown_schema_session_while_indexing_other_sessions() -> Result<()> {
         let darc_root = unique_test_dir("parse-skip-unknown-schema");
         let project_root = darc_root.join("repo");
         let sessions_root = darc_root.join("projects/repo-abc123/sessions");
@@ -2572,7 +2572,7 @@ mod tests {
             ),
         )?;
 
-        let report = parse_project_codex_turns_from(&project_root, darc_root.clone())?;
+        let report = index_project_codex_turns_from(&project_root, darc_root.clone())?;
         let connection = Connection::open(darc_root.join(INDEX_DB_FILE_NAME))?;
         let indexed_sessions = indexed_codex_session_count(&connection, "repo-abc123")?;
         let indexed_turn: (String, String) = connection.query_row(
@@ -2611,7 +2611,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_project_skips_bad_duplicate_group_and_continues_other_sessions() -> Result<()> {
+    fn index_project_skips_bad_duplicate_group_and_continues_other_sessions() -> Result<()> {
         let darc_root = unique_test_dir("parse-skip-bad-group");
         let project_root = darc_root.join("repo");
         let sessions_root = darc_root.join("projects/repo-abc123/sessions");
@@ -2643,7 +2643,7 @@ mod tests {
             ),
         )?;
 
-        let report = parse_project_codex_turns_from(&project_root, darc_root.clone())?;
+        let report = index_project_codex_turns_from(&project_root, darc_root.clone())?;
         let connection = Connection::open(darc_root.join(INDEX_DB_FILE_NAME))?;
         let indexed_sessions = indexed_codex_session_count(&connection, "repo-abc123")?;
         let indexed_turn: (String, String) = connection.query_row(
@@ -2673,7 +2673,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn parse_project_still_fails_on_rollout_file_read_errors() -> Result<()> {
+    fn index_project_still_fails_on_rollout_file_read_errors() -> Result<()> {
         let darc_root = unique_test_dir("parse-hard-file-read-error");
         let project_root = darc_root.join("repo");
         let sessions_root = darc_root.join("projects/repo-abc123/sessions");
@@ -2697,7 +2697,7 @@ mod tests {
         fs::set_permissions(&rollout_path, fs::Permissions::from_mode(0o000))?;
 
         let error =
-            parse_project_codex_turns_from(&project_root, darc_root).expect_err("hard read error");
+            index_project_codex_turns_from(&project_root, darc_root).expect_err("hard read error");
 
         assert!(
             error.to_string().contains("failed") || error.to_string().contains("Permission denied")
