@@ -6,7 +6,6 @@ mod index;
 mod init;
 mod project;
 mod sync;
-pub(crate) mod versions;
 
 pub use analytics::{
     ClaudeRolloutAnalyticsReport, ClaudeSchemaAnalytics, report_claude_rollout_analytics,

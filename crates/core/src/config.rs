@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 pub use darc_paths::SourceKind;
 use serde::{Deserialize, Serialize};
 
-use crate::versions::CONFIG_VERSION;
+const CONFIG_VERSION: u32 = 1;
 
 /// Represents the full shared config file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
