@@ -13,8 +13,11 @@
 7. Run Cargo fmt and clippy after every patch or refactor that touches Rust code.
     - fmt: `cargo +nightly fmt`
     - clippy: `cargo clippy --workspace --all-targets --all-features -- -D warnings -W clippy::all`
-8. Use conventional commits.
-
+8. Split crates by cohesive capability and clear dependency direction, not by file count or verb names alone. 
+9. Prefer leaf capability crates under a thin orchestration/facade crate. Lower-level crates must not depend on higher-level workflow crates.
+10. Only create or keep a crate boundary when it gives one dominant reason to change, a small API surface, and reduced change-coupling.
+11. Extract shared models and helpers downward into lower-level crates instead of duplicating them or making parser/storage code depend on orchestration code.
+12. Use conventional commits.
 - Format: `<type>(<scope>): <imperative summary>`
 - Rules:
     - Use lowercase for `type` and `scope`.

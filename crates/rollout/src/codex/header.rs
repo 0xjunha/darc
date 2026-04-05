@@ -5,29 +5,29 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use darc_paths::normalize_project_path;
 use serde::Deserialize;
 use serde_json::Value;
 
 use super::version::{CodexSchemaId, resolve_codex_schema};
-use crate::project_paths::normalize_project_path;
-use crate::rollout::ParseDeterminism;
+use crate::ParseDeterminism;
 
 /// Stores the tolerant session-level metadata needed for rollout discovery.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CodexRolloutSessionMeta {
-    pub(crate) session_id: String,
-    pub(crate) cwd: PathBuf,
-    pub(crate) cli_version: Option<String>,
+pub struct CodexRolloutSessionMeta {
+    pub session_id: String,
+    pub cwd: PathBuf,
+    pub cli_version: Option<String>,
 }
 
 /// Stores the parsed session-level metadata needed before schema dispatch.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CodexRolloutHeader {
-    pub(crate) session_id: String,
-    pub(crate) cwd: PathBuf,
-    pub(crate) cli_version: String,
-    pub(crate) schema_id: CodexSchemaId,
-    pub(crate) determinism: ParseDeterminism,
+pub struct CodexRolloutHeader {
+    pub session_id: String,
+    pub cwd: PathBuf,
+    pub cli_version: String,
+    pub schema_id: CodexSchemaId,
+    pub determinism: ParseDeterminism,
 }
 
 #[derive(Debug, Deserialize)]
@@ -54,7 +54,7 @@ struct RawSessionMetaPayload {
 }
 
 /// Extracts the logical Codex session id from one rollout filename.
-pub(crate) fn parse_rollout_file_session_id(file_name: &str) -> Option<String> {
+pub fn parse_rollout_file_session_id(file_name: &str) -> Option<String> {
     let trimmed = file_name.strip_prefix("rollout-")?.strip_suffix(".jsonl")?;
     let start = trimmed.len().checked_sub(36)?;
     (start > 0 && trimmed.as_bytes().get(start - 1) == Some(&b'-'))
@@ -62,7 +62,7 @@ pub(crate) fn parse_rollout_file_session_id(file_name: &str) -> Option<String> {
 }
 
 /// Reconciles one logical session id from rollout filename and payload metadata.
-pub(crate) fn reconcile_rollout_session_id(
+pub fn reconcile_rollout_session_id(
     source_path: &Path,
     file_name: Option<&str>,
     payload_session_id: Option<&str>,
@@ -87,7 +87,7 @@ pub(crate) fn reconcile_rollout_session_id(
 }
 
 /// Reads the first rollout line and extracts the strict header metadata for parsing.
-pub(crate) fn read_rollout_header(path: &Path) -> Result<Option<CodexRolloutHeader>> {
+pub fn read_rollout_header(path: &Path) -> Result<Option<CodexRolloutHeader>> {
     let Some(line) = read_first_rollout_line(path)? else {
         return Ok(None);
     };
@@ -95,7 +95,7 @@ pub(crate) fn read_rollout_header(path: &Path) -> Result<Option<CodexRolloutHead
 }
 
 /// Reads the first rollout line and extracts tolerant metadata for session discovery.
-pub(crate) fn read_rollout_session_meta(path: &Path) -> Result<Option<CodexRolloutSessionMeta>> {
+pub fn read_rollout_session_meta(path: &Path) -> Result<Option<CodexRolloutSessionMeta>> {
     let Some(line) = read_first_rollout_line(path)? else {
         return Ok(None);
     };
@@ -103,7 +103,7 @@ pub(crate) fn read_rollout_session_meta(path: &Path) -> Result<Option<CodexRollo
 }
 
 /// Reads the first non-empty rollout line bytes from one JSONL file.
-pub(crate) fn read_first_rollout_line_bytes(path: &Path) -> Result<Option<Vec<u8>>> {
+pub fn read_first_rollout_line_bytes(path: &Path) -> Result<Option<Vec<u8>>> {
     let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     let mut reader = BufReader::new(file);
     let mut line = Vec::new();
@@ -127,7 +127,7 @@ fn read_first_rollout_line(path: &Path) -> Result<Option<String>> {
 }
 
 /// Parses one raw JSONL line into a Codex rollout header.
-pub(crate) fn parse_rollout_header_line(
+pub fn parse_rollout_header_line(
     line: &str,
     source_path: &Path,
 ) -> Result<Option<CodexRolloutHeader>> {
@@ -141,7 +141,7 @@ pub(crate) fn parse_rollout_header_line(
 }
 
 /// Parses one raw JSONL line into tolerant Codex session metadata.
-pub(crate) fn parse_rollout_session_meta_line(
+pub fn parse_rollout_session_meta_line(
     line: &str,
     source_path: &Path,
 ) -> Result<Option<CodexRolloutSessionMeta>> {
@@ -230,8 +230,7 @@ mod tests {
         parse_rollout_file_session_id, parse_rollout_header_line, parse_rollout_session_meta_line,
         reconcile_rollout_session_id,
     };
-    use crate::rollout::ParseDeterminism;
-    use crate::rollout::codex::version::CodexSchemaId;
+    use crate::{ParseDeterminism, codex::version::CodexSchemaId};
 
     #[test]
     fn parses_rollout_header_and_resolves_schema() {

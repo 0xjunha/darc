@@ -6,6 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+pub(crate) use darc_paths::{encode_path_for_claude, normalize_project_path};
 
 /// Resolves the current project root, preferring the git toplevel when available.
 pub(crate) fn current_project_root(current_dir: &Path) -> Result<PathBuf> {
@@ -51,11 +52,6 @@ pub(crate) fn seed_known_paths(current_root: &Path) -> Result<Vec<PathBuf>> {
     Ok(paths.into_iter().collect())
 }
 
-/// Encodes a project path using Claude's directory naming rule.
-pub(crate) fn encode_path_for_claude(path: &Path) -> String {
-    path.to_string_lossy().replace('/', "-")
-}
-
 /// Lists the current live git worktree paths for a repository or worktree root.
 pub(crate) fn git_worktree_paths(project_root: &Path) -> Result<Vec<PathBuf>> {
     if !project_root.exists() {
@@ -82,11 +78,6 @@ pub(crate) fn git_worktree_paths(project_root: &Path) -> Result<Vec<PathBuf>> {
         .into_iter()
         .map(|path| normalize_project_path(&path))
         .collect())
-}
-
-/// Normalizes a project path using canonicalization when possible.
-pub(crate) fn normalize_project_path(path: &Path) -> PathBuf {
-    fs::canonicalize(path).unwrap_or_else(|_| normalize_path_textually(path))
 }
 
 /// Parses the `git worktree list --porcelain` output into raw filesystem paths.
@@ -118,39 +109,6 @@ pub(crate) fn try_git_output(cwd: &Path, args: &[&str]) -> Option<String> {
     Some(value.to_owned())
 }
 
-/// Normalizes a path textually when canonicalization is not possible.
-fn normalize_path_textually(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    let absolute = path.is_absolute();
-
-    if absolute {
-        normalized.push(Path::new("/"));
-    }
-
-    for component in path.components() {
-        match component {
-            std::path::Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
-            std::path::Component::RootDir | std::path::Component::CurDir => {}
-            std::path::Component::Normal(segment) => normalized.push(segment),
-            std::path::Component::ParentDir => {
-                if !normalized.pop() && !absolute {
-                    normalized.push("..");
-                }
-            }
-        }
-    }
-
-    if normalized.as_os_str().is_empty() {
-        if absolute {
-            PathBuf::from("/")
-        } else {
-            PathBuf::from(".")
-        }
-    } else {
-        normalized
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,19 +137,6 @@ mod tests {
         );
 
         assert_eq!(paths, BTreeSet::from([PathBuf::from("/tmp/worktree")]));
-    }
-
-    #[test]
-    fn claude_encoding_replaces_path_separators() {
-        let encoded = encode_path_for_claude(Path::new("/Users/example/src/darc"));
-        assert_eq!(encoded, "-Users-example-src-darc");
-    }
-
-    #[test]
-    fn textual_normalization_removes_dots_and_trailing_slashes() {
-        let normalized = normalize_project_path(Path::new("/tmp/example/./old/../repo/"));
-
-        assert_eq!(normalized, PathBuf::from("/tmp/example/repo"));
     }
 
     #[test]

@@ -2,11 +2,11 @@ use std::{cmp::Ordering, fmt};
 
 use anyhow::{Result, bail};
 
-use crate::rollout::ParseDeterminism;
+use crate::ParseDeterminism;
 
 /// Parses one Codex CLI version string into comparable components.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CodexCliVersion {
+pub struct CodexCliVersion {
     major: u32,
     minor: u32,
     patch: u32,
@@ -35,7 +35,7 @@ impl CodexCliVersion {
     }
 
     /// Parses a persisted Codex CLI version such as `0.118.0-alpha.2`.
-    pub(crate) fn parse(value: &str) -> Result<Self> {
+    pub fn parse(value: &str) -> Result<Self> {
         let (core, prerelease) = match value.split_once('-') {
             Some((core, prerelease)) => (core, Some(prerelease)),
             None => (value, None),
@@ -63,7 +63,7 @@ impl CodexCliVersion {
     }
 
     /// Returns whether this parsed version is a stable release.
-    pub(crate) const fn is_stable(&self) -> bool {
+    pub const fn is_stable(&self) -> bool {
         self.prerelease.is_none()
     }
 }
@@ -97,7 +97,7 @@ pub(crate) fn supports_feature(version: &CodexCliVersion, feature: CodexSchemaFe
 }
 
 /// Returns the latest Codex CLI version covered exactly by darc.
-pub(crate) const fn latest_exact_supported_codex_cli_version() -> CodexCliVersion {
+pub const fn latest_exact_supported_codex_cli_version() -> CodexCliVersion {
     CodexCliVersion::stable(0, 118, 0)
 }
 
@@ -208,7 +208,7 @@ impl fmt::Display for CodexPrerelease {
 /// compatibility truth. Fine-grained support for rollout features and response-item variants is
 /// version-gated by `supports_feature()` and `supports_response_item()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CodexSchemaId {
+pub enum CodexSchemaId {
     /// Earliest supported rollout family before `compacted` and `turn_context` lines existed.
     ///
     /// Supported Codex CLI versions: `>=0.33.0, <0.35.0-alpha.3`.
@@ -240,7 +240,7 @@ pub(crate) enum CodexSchemaId {
 
 impl CodexSchemaId {
     /// Returns the stable string stored on parsed rollouts.
-    pub(crate) const fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Initial => "codex.initial",
             Self::CompactionPrelude => "codex.compaction_prelude",
@@ -308,7 +308,7 @@ mod tests {
         latest_exact_supported_codex_cli_version, resolve_codex_schema, supports_feature,
         supports_response_item,
     };
-    use crate::rollout::ParseDeterminism;
+    use crate::ParseDeterminism;
 
     #[test]
     fn resolves_exact_known_codex_schema_epochs() {

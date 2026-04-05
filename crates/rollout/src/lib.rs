@@ -1,8 +1,8 @@
-use serde::Serialize;
+pub mod claude;
+pub mod codex;
+pub mod model;
 
-pub(crate) mod claude;
-pub(crate) mod codex;
-mod schema_diff;
+use serde::Serialize;
 
 /// Describes whether one parsed rollout used an exact schema match or a forward-compatible fallback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -14,7 +14,7 @@ pub enum ParseDeterminism {
 
 impl ParseDeterminism {
     /// Returns the stable SQLite string value for one rollout determinism level.
-    pub(crate) const fn as_sql_text(self) -> &'static str {
+    pub const fn as_sql_text(self) -> &'static str {
         match self {
             Self::Exact => "exact",
             Self::BestEffortForward => "best_effort_forward",

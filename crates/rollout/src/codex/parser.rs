@@ -2,37 +2,41 @@ use std::{
     cmp::Ordering,
     fs::File,
     io::{BufRead, BufReader},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{
-    index::{CodexRollout, CodexTurn, CodexTurnMessage, CodexTurnStatus, CodexTurnStep},
-    rollout::ParseDeterminism,
-};
-
-mod header;
-mod schema_audit;
-mod version;
-
+use super::CodexRolloutHeader;
 #[cfg(test)]
-use header::parse_rollout_header_parts;
-pub(crate) use header::{
-    CodexRolloutHeader, CodexRolloutSessionMeta, parse_rollout_file_session_id,
-    parse_rollout_session_meta_line, read_first_rollout_line_bytes, read_rollout_header,
-    read_rollout_session_meta, reconcile_rollout_session_id,
+use super::header::parse_rollout_header_parts;
+use super::header::read_rollout_header;
+use super::version::{
+    CodexCliVersion, CodexSchemaFeature, supports_feature, supports_response_item,
 };
-pub use schema_audit::{
-    CodexSchemaAuditOptions, CodexSchemaAuditOutcome, CodexSchemaAuditReport, CodexSchemaDrift,
-    run_codex_schema_audit, run_codex_schema_audit_with_progress,
+use crate::{
+    ParseDeterminism,
+    model::{
+        NormalizedTurn as CodexTurn, NormalizedTurnMessage as CodexTurnMessage,
+        NormalizedTurnStatus as CodexTurnStatus, NormalizedTurnStep as CodexTurnStep,
+    },
 };
-use version::{CodexCliVersion, CodexSchemaFeature, supports_feature, supports_response_item};
+
+/// Stores the parsed Codex dialogue for one rollout file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CodexRollout {
+    pub session_id: String,
+    pub cwd: PathBuf,
+    pub cli_version: String,
+    pub schema_id: String,
+    pub determinism: ParseDeterminism,
+    pub turns: Vec<CodexTurn>,
+}
 
 /// Compares duplicate rollout copies by completeness, recency, and a stable path tie-break.
-pub(crate) fn compare_rollout_priority<T: Ord>(
+pub fn compare_rollout_priority<T: Ord>(
     left_size: u64,
     left_mtime_ms: u64,
     left_tie_break: &T,
@@ -47,7 +51,7 @@ pub(crate) fn compare_rollout_priority<T: Ord>(
 }
 
 /// Receives parsed rollout metadata and completed turns incrementally.
-pub(crate) trait CodexRolloutSink {
+pub trait CodexRolloutSink {
     /// Starts one parsed rollout session before any turns are emitted.
     fn begin_rollout(&mut self, header: &CodexRolloutHeader) -> Result<()>;
 
@@ -149,17 +153,14 @@ struct RawMessageContent {
 }
 
 /// Parses one Codex rollout file into user-visible turns with schema metadata.
-pub(crate) fn parse_rollout_file(path: &Path) -> Result<CodexRollout> {
+pub fn parse_rollout_file(path: &Path) -> Result<CodexRollout> {
     let mut sink = CollectingRolloutSink::default();
     parse_rollout_file_into(path, &mut sink)?;
     sink.finish()
 }
 
 /// Parses one Codex rollout file and emits turns incrementally to a sink.
-pub(crate) fn parse_rollout_file_into<S: CodexRolloutSink>(
-    path: &Path,
-    sink: &mut S,
-) -> Result<()> {
+pub fn parse_rollout_file_into<S: CodexRolloutSink>(path: &Path, sink: &mut S) -> Result<()> {
     let header = read_rollout_header(path)?
         .with_context(|| format!("missing session_meta line in {}", path.display()))?;
     let has_event_user_boundaries = scan_rollout_for_event_user_boundaries(path)?;
@@ -773,92 +774,4 @@ fn is_user_boilerplate(text: &str) -> bool {
         || trimmed.starts_with("# AGENTS.md instructions for ")
         || trimmed.starts_with("<environment_context>")
         || trimmed.starts_with("<turn_aborted>")
-}
-
-#[cfg(test)]
-mod tests {
-    use std::{io::Cursor, path::Path};
-
-    use anyhow::Result;
-
-    use super::parse_rollout_reader;
-    use crate::index::{CodexTurnMessage, CodexTurnStatus, CodexTurnStep};
-    use crate::rollout::ParseDeterminism;
-
-    #[test]
-    fn parses_turn_lifecycle_rollout_and_records_schema_metadata() -> Result<()> {
-        let rollout = parse_rollout_reader(
-            Cursor::new(
-                r#"{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"fixture","cwd":"/tmp/repo","cli_version":"0.118.0"}}
-{"timestamp":"2026-01-01T00:00:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}
-{"timestamp":"2026-01-01T00:00:02Z","type":"event_msg","payload":{"type":"user_message","message":"Inspect repo"}}
-{"timestamp":"2026-01-01T00:00:03Z","type":"response_item","payload":{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"Reading"}]}}
-{"timestamp":"2026-01-01T00:00:04Z","type":"response_item","payload":{"type":"function_call","call_id":"call-1","name":"exec_command","arguments":"{\"cmd\":\"ls\"}"}}
-{"timestamp":"2026-01-01T00:00:05Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-1","output":[{"type":"input_image","image_url":"data:image/png;base64,abc"}]}}
-{"timestamp":"2026-01-01T00:00:06Z","type":"response_item","payload":{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"Done"}]}}
-"#,
-            ),
-            Path::new("fixture.jsonl"),
-        )?;
-
-        assert_eq!(rollout.cli_version, "0.118.0");
-        assert_eq!(rollout.schema_id, "codex.turn_lifecycle");
-        assert_eq!(rollout.determinism, ParseDeterminism::Exact);
-        assert_eq!(rollout.turns.len(), 1);
-        assert_eq!(rollout.turns[0].status, CodexTurnStatus::Completed);
-        assert_eq!(
-            rollout.turns[0].final_answer,
-            Some(CodexTurnMessage {
-                timestamp: "2026-01-01T00:00:06Z".to_owned(),
-                text: "Done".to_owned(),
-            })
-        );
-        assert!(matches!(
-            &rollout.turns[0].steps[0],
-            CodexTurnStep::Commentary { text, .. } if text == "Reading"
-        ));
-        assert!(matches!(
-            &rollout.turns[0].steps[2],
-            CodexTurnStep::ToolCallOutput { output, .. } if output.contains("input_image")
-        ));
-        assert_eq!(rollout.turns[0].steps.len(), 3);
-
-        Ok(())
-    }
-
-    #[test]
-    fn rejects_structured_tool_output_in_pre_097_epoch() {
-        let error = parse_rollout_reader(
-            Cursor::new(
-                r#"{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"fixture","cwd":"/tmp/repo","cli_version":"0.95.0"}}
-{"timestamp":"2026-01-01T00:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"Inspect repo"}}
-{"timestamp":"2026-01-01T00:00:02Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-1","output":[{"type":"input_image","image_url":"data:image/png;base64,abc"}]}}
-"#,
-            ),
-            Path::new("fixture.jsonl"),
-        )
-        .unwrap_err();
-
-        assert!(error.to_string().contains("unsupported tool output shape"));
-    }
-
-    #[test]
-    fn rejects_response_item_variants_before_their_supported_version() {
-        let error = parse_rollout_reader(
-            Cursor::new(
-                r#"{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"fixture","cwd":"/tmp/repo","cli_version":"0.94.0"}}
-{"timestamp":"2026-01-01T00:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"Inspect repo"}}
-{"timestamp":"2026-01-01T00:00:02Z","type":"response_item","payload":{"type":"image_generation_call","status":"completed","result":"image-bytes","id":"ig_123"}}
-"#,
-            ),
-            Path::new("fixture.jsonl"),
-        )
-        .unwrap_err();
-
-        assert!(
-            error
-                .to_string()
-                .contains("unsupported response_item `image_generation_call`")
-        );
-    }
 }

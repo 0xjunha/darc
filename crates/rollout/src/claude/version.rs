@@ -1,11 +1,11 @@
 use std::{cmp::Ordering, fmt};
 
 use super::ClaudeSessionKind;
-use crate::rollout::ParseDeterminism;
+use crate::ParseDeterminism;
 
 /// Parses one Claude CLI version string into comparable components.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ClaudeCliVersion {
+pub struct ClaudeCliVersion {
     major: u32,
     minor: u32,
     patch: u32,
@@ -24,7 +24,7 @@ impl ClaudeCliVersion {
     }
 
     /// Parses one persisted Claude CLI version such as `2.1.87`.
-    pub(crate) fn parse(value: &str) -> anyhow::Result<Self> {
+    pub fn parse(value: &str) -> anyhow::Result<Self> {
         let (core, prerelease) = match value.split_once('-') {
             Some((core, prerelease)) => (core, Some(prerelease)),
             None => (value, None),
@@ -48,7 +48,7 @@ impl ClaudeCliVersion {
     }
 
     /// Returns whether this parsed version is a stable release.
-    pub(crate) const fn is_stable(&self) -> bool {
+    pub const fn is_stable(&self) -> bool {
         self.prerelease.is_none()
     }
 }
@@ -160,7 +160,7 @@ pub(crate) const fn earliest_observed_claude_cli_version() -> ClaudeCliVersion {
 }
 
 /// Returns the latest Claude CLI version covered exactly by darc.
-pub(crate) const fn latest_exact_supported_claude_cli_version() -> ClaudeCliVersion {
+pub const fn latest_exact_supported_claude_cli_version() -> ClaudeCliVersion {
     ClaudeCliVersion::stable(2, 1, 87)
 }
 
@@ -275,7 +275,7 @@ mod tests {
         ClaudeCliVersion, ClaudeSchemaEpoch, earliest_observed_claude_cli_version,
         latest_exact_supported_claude_cli_version, resolve_claude_schema,
     };
-    use crate::rollout::ParseDeterminism;
+    use crate::ParseDeterminism;
 
     #[test]
     fn parses_and_orders_claude_versions() {

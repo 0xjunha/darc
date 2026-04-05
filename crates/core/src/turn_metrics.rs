@@ -1,4 +1,4 @@
-use crate::index::{CodexTurn, CodexTurnStep};
+use darc_rollout::model::{NormalizedTurn as CodexTurn, NormalizedTurnStep as CodexTurnStep};
 
 /// Stores the derived per-turn analytics counters persisted in the SQLite index.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

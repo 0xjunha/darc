@@ -1,10 +1,11 @@
 use std::{fs, path::Path, time::Duration};
 
 use anyhow::{Context, Result};
+use darc_rollout::model::NormalizedTurnStep as CodexTurnStep;
 use rusqlite::Connection;
 use serde_json::from_str;
 
-use crate::{index::CodexTurnStep, turn_metrics::summarize_stored_turn_metrics};
+use crate::turn_metrics::summarize_stored_turn_metrics;
 
 const INDEX_DB_SCHEMA_VERSION: i32 = 1;
 
