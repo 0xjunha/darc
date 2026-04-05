@@ -5,6 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use darc_index::{INDEX_DB_FILE_NAME, open_index_database};
 use darc_paths::{
     current_project_root, normalize_project_path, normalized_known_paths, project_path_set,
     seed_known_paths, try_git_output,
@@ -13,10 +14,9 @@ use rusqlite::params;
 
 use crate::{
     config::{ProjectConfig, SharedConfig, SourceKind, load_config},
-    constants::{CONFIG_FILE_NAME, INDEX_DB_FILE_NAME},
+    constants::CONFIG_FILE_NAME,
     default_root_path,
     index::{IndexReport, index_project_sessions_from, selected_index_providers},
-    index_db::open_index_database,
     init::{normalize_project_config, project_id_from_path},
     sync::{SyncOptions, SyncReport, execute_sync, prepare_sync_from},
 };
@@ -560,11 +560,12 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
+    use darc_index::open_index_database;
+
     use super::*;
     use crate::{
         active_project::load_active_project,
         config::{CodexSourceConfig, SourcesConfig},
-        index_db::open_index_database,
     };
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);

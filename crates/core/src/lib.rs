@@ -3,11 +3,9 @@ mod analytics;
 pub mod config;
 pub(crate) mod constants;
 mod index;
-mod index_db;
 mod init;
 mod project;
 mod sync;
-mod turn_metrics;
 pub(crate) mod versions;
 
 pub use analytics::{

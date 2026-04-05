@@ -4,13 +4,11 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use darc_index::{INDEX_DB_FILE_NAME, open_index_database};
 use rusqlite::Connection;
 use serde::Serialize;
 
-use crate::{
-    active_project::load_active_project, constants::INDEX_DB_FILE_NAME, default_root_path,
-    index_db::open_index_database,
-};
+use crate::{active_project::load_active_project, default_root_path};
 
 /// Reports aggregate Claude rollout analytics from the normalized SQLite index.
 #[derive(Debug, Clone, Serialize)]
@@ -350,11 +348,12 @@ mod tests {
     };
 
     use anyhow::Result;
+    use darc_index::INDEX_DB_FILE_NAME;
 
     use super::report_claude_rollout_analytics_from;
     use crate::{
         config::{ProjectConfig, SharedConfig, SourcesConfig},
-        constants::{CONFIG_FILE_NAME, INDEX_DB_FILE_NAME},
+        constants::CONFIG_FILE_NAME,
         index::index_project_sessions_from,
     };
 

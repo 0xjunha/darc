@@ -4,6 +4,7 @@ resolver = "3"
 members = [
     "crates/cli",
     "crates/core",
+    "crates/index",
     "crates/paths",
     "crates/rollout-audit",
     "crates/rollout",
@@ -20,6 +21,7 @@ repository = "https://github.com/0xjunha/darc"
 [workspace.dependencies]
 # Internal Dependencies
 darc-core = { path = "crates/core" }
+darc-index = { path = "crates/index" }
 darc-paths = { path = "crates/paths" }
 darc-rollout-audit = { path = "crates/rollout-audit" }
 darc-rollout = { path = "crates/rollout" }

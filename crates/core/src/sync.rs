@@ -166,7 +166,7 @@ pub(crate) fn prepare_sync_from(
         project_paths: full_project_paths,
         other_project_paths,
         project_upstream,
-        sources: sources.iter().copied().map(sync_source_kind).collect(),
+        sources: sources.clone(),
         claude: config.sources.claude.as_ref().map(|source| ClaudeSource {
             include_subagents: source.include_subagents,
             projects_root: source.projects_root.clone(),
@@ -258,14 +258,6 @@ fn selected_sources(config: &SharedConfig, filter: &[SourceKind]) -> Result<Vec<
     }
 
     Ok(sources)
-}
-
-/// Maps one core source kind into the sync-engine source kind.
-fn sync_source_kind(source: SourceKind) -> darc_sync::SourceKind {
-    match source {
-        SourceKind::Claude => darc_sync::SourceKind::Claude,
-        SourceKind::Codex => darc_sync::SourceKind::Codex,
-    }
 }
 
 #[cfg(test)]

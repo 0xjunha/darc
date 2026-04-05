@@ -6,6 +6,32 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+
+/// Identifies which upstream tool produced one archived session tree.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
+pub enum SourceKind {
+    Claude,
+    Codex,
+}
+
+impl SourceKind {
+    /// Returns the stable directory name used for archived sessions.
+    pub fn directory_name(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+        }
+    }
+
+    /// Returns a human-readable name for the source kind.
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Claude => "Claude",
+            Self::Codex => "Codex",
+        }
+    }
+}
 
 /// Encodes a project path using Claude's directory naming rule.
 pub fn encode_path_for_claude(path: &Path) -> String {

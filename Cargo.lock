@@ -213,6 +213,7 @@ name = "darc-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "darc-index",
  "darc-paths",
  "darc-rollout",
  "darc-rollout-audit",
@@ -220,8 +221,19 @@ dependencies = [
  "directories",
  "rusqlite",
  "serde",
- "serde_json",
  "toml",
+ "walkdir",
+]
+
+[[package]]
+name = "darc-index"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "darc-paths",
+ "darc-rollout",
+ "rusqlite",
+ "serde_json",
  "walkdir",
 ]
 
@@ -230,6 +242,7 @@ name = "darc-paths"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "serde",
 ]
 
 [[package]]
