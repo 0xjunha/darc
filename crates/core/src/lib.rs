@@ -23,7 +23,8 @@ pub use parse::{
     parse_project_codex_turns, parse_project_sessions,
 };
 pub use project::{
-    LinkReport, RemoveReport, RenameReport, link_project, remove_project, rename_project,
+    LinkReport, RefreshAllReport, RefreshOptions, RefreshReport, RemoveReport, RenameReport,
+    link_project, refresh_all_projects, refresh_project, remove_project, rename_project,
 };
 pub use rollout::ParseDeterminism;
 pub use rollout::claude::{

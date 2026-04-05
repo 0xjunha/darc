@@ -6,6 +6,8 @@
 
 Darc archives local Claude and Codex session history by project, then indexes the archived rollouts into a normalized SQLite index for inspection, analytics, and downstream tooling.
 
+The daily happy path is `darc refresh`, which runs `sync` and `index` together.
+
 ## What it does
 
 - Detects and registers local projects in a shared `~/.darc` workspace.
@@ -21,25 +23,30 @@ Install the CLI from this repository:
 cargo install --path crates/cli
 ```
 
-Initialize Darc for a project, archive matching sessions, then index them:
+Initialize Darc for a project, then use the daily refresh path:
 
 ```bash
 cd /path/to/project
 darc init
-darc sync
-darc index
+darc refresh
 ```
 
 Use provider filters when you only want one source:
 
 ```bash
-darc sync --provider claude
-darc index --provider claude
+darc refresh --provider claude
+```
+
+Refresh every registered project in the shared Darc workspace:
+
+```bash
+darc refresh --all
 ```
 
 ## Commands
 
 - `darc init` detects local sources and creates the shared Darc config.
+- `darc refresh` is the daily happy path. It runs `sync` then `index` for the active project, or every registered project with `--all`.
 - `darc sync` archives matching Claude and Codex sessions for the active project.
 - `darc index` indexes archived sessions into SQLite.
 - `darc link`, `darc remove`, and `darc rename-from` manage renamed or merged projects.

@@ -603,7 +603,7 @@ pub(crate) fn parse_project_sessions_from(
 }
 
 /// Resolves the selected provider list for one parse run.
-fn selected_parse_providers(filter: &[SourceKind]) -> Vec<SourceKind> {
+pub(crate) fn selected_parse_providers(filter: &[SourceKind]) -> Vec<SourceKind> {
     if filter.is_empty() {
         return vec![SourceKind::Claude, SourceKind::Codex];
     }
