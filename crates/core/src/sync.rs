@@ -263,11 +263,11 @@ fn selected_sources(config: &SharedConfig, filter: &[SourceKind]) -> Result<Vec<
 #[cfg(test)]
 mod tests {
     use std::{
-        env, fs,
+        fs,
         path::{Path, PathBuf},
-        process::Command,
-        time::{SystemTime, UNIX_EPOCH},
     };
+
+    use darc_test_utils::{init_git_repo, unique_test_dir, write_file};
 
     use super::*;
     use crate::{
@@ -277,51 +277,6 @@ mod tests {
         },
         constants::CONFIG_FILE_NAME,
     };
-
-    fn unique_test_dir(prefix: &str) -> PathBuf {
-        env::temp_dir().join(format!(
-            "test-{prefix}-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("system time should be after epoch")
-                .as_nanos()
-        ))
-    }
-
-    fn write_file(path: &Path, content: &str) -> Result<()> {
-        let parent = path.parent().context("missing parent directory")?;
-        fs::create_dir_all(parent)?;
-        fs::write(path, content)?;
-        Ok(())
-    }
-
-    fn run_git(cwd: &Path, args: &[&str]) -> Result<()> {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(cwd)
-            .output()
-            .with_context(|| format!("failed to run git {:?} in {}", args, cwd.display()))?;
-        if output.status.success() {
-            return Ok(());
-        }
-
-        bail!(
-            "git {:?} failed in {}: {}",
-            args,
-            cwd.display(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        )
-    }
-
-    fn init_git_repo(path: &Path, remote: &str) -> Result<()> {
-        fs::create_dir_all(path)?;
-        run_git(path, &["init"])?;
-        run_git(path, &["config", "user.name", "Darc Test"])?;
-        run_git(path, &["config", "user.email", "darc-tests@example.com"])?;
-        run_git(path, &["config", "commit.gpgsign", "false"])?;
-        run_git(path, &["remote", "add", "origin", remote])
-    }
 
     fn sample_config(
         root: &Path,

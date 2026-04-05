@@ -337,6 +337,7 @@ mod tests {
     use std::{
         env, fs,
         path::{Path, PathBuf},
+        sync::atomic::{AtomicU64, Ordering},
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -346,13 +347,19 @@ mod tests {
 
     use super::{ProjectAnalyticsRequest, report_project_claude_rollout_analytics};
 
+    static UNIQUE_TEST_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+
     /// Builds one unique temporary directory for analytics tests.
     fn unique_test_dir(prefix: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock should be after the Unix epoch")
             .as_nanos();
-        env::temp_dir().join(format!("test-{prefix}-{}-{nanos}", std::process::id()))
+        let counter = UNIQUE_TEST_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+        env::temp_dir().join(format!(
+            "test-{prefix}-{}-{nanos}-{counter}",
+            std::process::id()
+        ))
     }
 
     /// Writes one text fixture while creating any missing parent directories.

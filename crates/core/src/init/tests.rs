@@ -1,6 +1,7 @@
 use std::{
     env, fs,
     path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -22,12 +23,19 @@ use crate::{
     constants::CONFIG_FILE_NAME,
 };
 
+static UNIQUE_TEST_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Builds one unique temporary directory for init tests.
 fn unique_test_dir(prefix: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock should be after the Unix epoch")
         .as_nanos();
-    env::temp_dir().join(format!("test-{prefix}-{}-{nanos}", std::process::id()))
+    let counter = UNIQUE_TEST_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+    env::temp_dir().join(format!(
+        "test-{prefix}-{}-{nanos}-{counter}",
+        std::process::id()
+    ))
 }
 
 /// Builds an init draft fixture for display and status tests.
