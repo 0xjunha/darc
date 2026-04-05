@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use darc_index::{INDEX_DB_FILE_NAME, ProjectIndexRequest, index_project_archived_sessions};
-pub use darc_index::{IndexReport, SkippedCodexRollout, SkippedRollout, parse_codex_rollout};
+pub use darc_index::{IndexReport, SkippedCodexRollout, SkippedRollout};
 use darc_paths::SourceKind;
 
 use crate::{active_project::load_active_project, default_root_path};

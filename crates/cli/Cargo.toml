@@ -14,3 +14,4 @@ path = "src/main.rs"
 anyhow = { workspace = true }
 clap = { workspace = true }
 darc-core = { workspace = true }
+darc-rollout-audit = { workspace = true }

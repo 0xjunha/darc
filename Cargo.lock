@@ -217,6 +217,7 @@ dependencies = [
  "anyhow",
  "clap",
  "darc-core",
+ "darc-rollout-audit",
 ]
 
 [[package]]
@@ -227,8 +228,6 @@ dependencies = [
  "darc-analytics",
  "darc-index",
  "darc-paths",
- "darc-rollout",
- "darc-rollout-audit",
  "darc-sync",
  "darc-test-utils",
  "directories",
