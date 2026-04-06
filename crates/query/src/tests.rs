@@ -4,10 +4,15 @@ use anyhow::{Context, Result};
 use darc_index::open_index_database;
 use darc_test_utils::unique_test_dir;
 
-use crate::query::{
-    HardDebuggingTurn, LocalDate, ProjectInsights, SessionKind, ToolAccessKind,
-    build_project_insights, build_workspace_insights, classify_tool_access, extract_tool_path,
-    open_existing_index_database, parse_session_kind,
+use crate::{
+    policy::{
+        ToolAccessKind, active_time_policy, classify_tool_access, extract_tool_path,
+        should_include_turn_in_active_time,
+    },
+    query::{
+        HardDebuggingTurn, LocalDate, ProjectInsights, SessionKind, build_project_insights,
+        build_workspace_insights, open_existing_index_database, parse_session_kind,
+    },
 };
 
 /// Stores one normalized turn fixture used to seed query tests.
@@ -164,6 +169,29 @@ fn extracts_file_paths_from_tool_arguments() {
         Some("/tmp/repo/src/main.rs")
     );
     assert!(extract_tool_path("*** Begin Patch").is_none());
+}
+
+#[test]
+fn active_time_policy_requires_completed_turns_and_two_seconds() {
+    let policy = active_time_policy();
+
+    assert_eq!(policy.min_duration_ms, 2_000);
+    assert!(should_include_turn_in_active_time(
+        darc_rollout::model::NormalizedTurnStatus::Completed,
+        2_000,
+    ));
+    assert!(should_include_turn_in_active_time(
+        darc_rollout::model::NormalizedTurnStatus::Completed,
+        7_200_000,
+    ));
+    assert!(!should_include_turn_in_active_time(
+        darc_rollout::model::NormalizedTurnStatus::Completed,
+        1_999,
+    ));
+    assert!(!should_include_turn_in_active_time(
+        darc_rollout::model::NormalizedTurnStatus::Incomplete,
+        7_200_000,
+    ));
 }
 
 #[test]
