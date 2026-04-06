@@ -143,7 +143,7 @@ pub fn query_turn(
     )
 }
 
-/// Queries the workspace insights payload for one darc root and UTC day window.
+/// Queries the workspace insights payload for one darc root and host-local day window.
 pub fn query_workspace_insight_report(
     root: Option<PathBuf>,
     window_days: u32,

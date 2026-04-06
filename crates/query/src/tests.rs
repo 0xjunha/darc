@@ -5,7 +5,7 @@ use darc_index::open_index_database;
 use darc_test_utils::unique_test_dir;
 
 use crate::query::{
-    HardDebuggingTurn, ProjectInsights, SessionKind, ToolAccessKind, UtcDate,
+    HardDebuggingTurn, LocalDate, ProjectInsights, SessionKind, ToolAccessKind,
     build_project_insights, build_workspace_insights, classify_tool_access, extract_tool_path,
     open_existing_index_database, parse_session_kind,
 };
@@ -115,6 +115,15 @@ fn insert_turn(connection: &rusqlite::Connection, fixture: TurnFixture<'_>) -> R
         ),
     )?;
     Ok(())
+}
+
+/// Resolves one UTC timestamp into the host-local civil day used by SQLite localtime.
+fn sqlite_local_date(connection: &rusqlite::Connection, timestamp: &str) -> Result<String> {
+    connection
+        .query_row("SELECT DATE(?1, 'localtime')", [timestamp], |row| {
+            row.get(0)
+        })
+        .context("failed to derive SQLite local date")
 }
 
 #[test]
@@ -230,7 +239,10 @@ fn workspace_insights_filter_short_and_failed_turns() -> Result<()> {
 
     let insights = build_workspace_insights(&connection, 7)?;
 
-    assert_eq!(insights.window_end, "2026-04-06");
+    assert_eq!(
+        insights.window_end,
+        sqlite_local_date(&connection, "2026-04-06T08:00:00Z")?
+    );
     assert_eq!(insights.active_session_count, 1);
     assert_eq!(insights.included_turn_count, 1);
     assert_eq!(insights.excluded_turn_count, 2);
@@ -323,9 +335,8 @@ fn project_insights_collect_tool_and_file_stats() -> Result<()> {
 }
 
 #[test]
-fn utc_date_add_days_round_trips() -> Result<()> {
-    let date = UtcDate::from_timestamp_prefix("2026-04-06T00:00:00Z")
-        .context("fixture timestamp should parse")?;
+fn local_date_add_days_round_trips() -> Result<()> {
+    let date = LocalDate::parse("2026-04-06").context("fixture date should parse")?;
     assert_eq!(
         date.add_days(-6)
             .context("date subtraction should work")?
