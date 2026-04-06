@@ -1,4 +1,4 @@
-# Claude support and analytics
+# Claude support
 
 ## Claude support policy
 
@@ -9,15 +9,3 @@ Darc tracks Claude rollout support at three levels:
 - `unsupported`: versions earlier than the practical Claude audit floor (`1.0.88`) or malformed rollouts that cannot be parsed safely. Individual unsupported rollout files are skipped during `darc index`; they do not abort the entire index run.
 
 The current parser epochs are broader than the exact set. Exactness is intentionally narrower than epoch membership.
-
-## Analytics helper
-
-After indexing archived sessions with `darc index`, library consumers can summarize the indexed Claude rollout corpus with:
-
-```rust
-use darc_core::report_claude_rollout_analytics;
-
-let report = report_claude_rollout_analytics(None)?;
-```
-
-The report aggregates indexed Claude sessions and turns by schema family, determinism, completion status, tool usage, delegation events, attachments, hook summaries, and turn durations from the normalized SQLite index.

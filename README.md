@@ -25,7 +25,7 @@ Darc is moving toward a small workspace of focused crates with `darc-core` kept 
 - `darc-rollout-audit`: release/schema compatibility audits and other heavy maintainer-only rollout tooling.
 - `darc-sync`: archive discovery, sync planning, and file copy execution.
 - `darc-index`: normalized session ingestion, SQLite schema/migrations, and indexing metrics.
-- `darc-analytics`: read-only reporting over the indexed SQLite data.
+- `darc-query`: read-only query and reporting over the indexed SQLite data.
 
 Crate boundaries follow three rules: keep each crate cohesive around one dominant capability, keep dependency direction acyclic, and extract shared models/utilities downward instead of letting lower-level code depend on orchestration crates.
 
@@ -72,5 +72,5 @@ Run `darc --help` for the visible CLI surface. Hidden maintainer commands are do
 - [Documentation index](docs/README.md)
 - [Project rename and linking](docs/project-rename.md)
 - [Schema audits](docs/schema-audits.md)
-- [Claude support and analytics](docs/claude-support.md)
+- [Claude support](docs/claude-support.md)
 - [Backlog](docs/todo.md)

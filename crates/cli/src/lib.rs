@@ -1,10 +1,17 @@
 #[cfg(test)]
 mod tests;
 
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use darc_core::query::{
+    query_project_insight_report, query_sessions, query_turn, query_turns, query_workspace,
+    query_workspace_insight_report,
+};
 use darc_core::{
     IndexOptions, InitDraft, RefreshOptions, RefreshReport, SkippedRollout, SourceKind,
     SyncOptions, default_root_path, execute_sync, index_project_sessions, link_project,
@@ -19,6 +26,7 @@ use darc_rollout_audit::codex::{
     CodexSchemaAuditOptions, CodexSchemaAuditOutcome, CodexSchemaAuditReport,
     run_codex_schema_audit_with_progress,
 };
+use serde::Serialize;
 
 #[derive(Debug, Parser)]
 #[command(name = "darc", version, about = "Darc CLI")]
@@ -57,6 +65,8 @@ enum Commands {
     Sync(SyncArgs),
     /// Index archived sessions from selected providers for the active project into SQLite.
     Index(IndexArgs),
+    /// Query darc state through the machine-readable read protocol.
+    Query(QueryArgs),
     #[command(
         hide = true,
         about = "Audit Codex rollout schema compatibility against stable release tags",
@@ -154,6 +164,140 @@ struct IndexArgs {
     provider: Vec<ProviderArg>,
 }
 
+/// Queries darc state through the machine-readable read protocol.
+#[derive(Debug, Args)]
+struct QueryArgs {
+    #[command(subcommand)]
+    command: QueryCommands,
+}
+
+/// Represents the supported machine-readable query commands.
+#[derive(Debug, Subcommand)]
+enum QueryCommands {
+    /// Queries the workspace/sidebar payload for one darc root.
+    Workspace(QueryWorkspaceArgs),
+    /// Queries the session list for one configured project.
+    Sessions(QuerySessionsArgs),
+    /// Queries the turn list for one provider session.
+    Turns(QueryTurnsArgs),
+    /// Queries one full turn detail payload.
+    Turn(QueryTurnArgs),
+    /// Queries one insights payload.
+    Insights(QueryInsightsArgs),
+}
+
+/// Queries the workspace/sidebar payload for one darc root.
+#[derive(Debug, Args)]
+struct QueryWorkspaceArgs {
+    #[arg(long, default_value_os_t = default_root_path())]
+    root: PathBuf,
+
+    #[arg(long)]
+    json: bool,
+}
+
+/// Queries the session list for one configured project.
+#[derive(Debug, Args)]
+struct QuerySessionsArgs {
+    #[arg(long, default_value_os_t = default_root_path())]
+    root: PathBuf,
+
+    #[arg(long = "project-id")]
+    project_id: String,
+
+    #[arg(long)]
+    json: bool,
+}
+
+/// Queries the turn list for one provider session.
+#[derive(Debug, Args)]
+struct QueryTurnsArgs {
+    #[arg(long, default_value_os_t = default_root_path())]
+    root: PathBuf,
+
+    #[arg(long = "project-id")]
+    project_id: String,
+
+    #[arg(long, value_enum)]
+    provider: ProviderArg,
+
+    #[arg(long = "session-id")]
+    session_id: String,
+
+    #[arg(long)]
+    json: bool,
+}
+
+/// Queries one full turn detail payload.
+#[derive(Debug, Args)]
+struct QueryTurnArgs {
+    #[arg(long, default_value_os_t = default_root_path())]
+    root: PathBuf,
+
+    #[arg(long = "project-id")]
+    project_id: String,
+
+    #[arg(long, value_enum)]
+    provider: ProviderArg,
+
+    #[arg(long = "session-id")]
+    session_id: String,
+
+    #[arg(long = "turn-ordinal")]
+    turn_ordinal: u64,
+
+    #[arg(long)]
+    include_raw: bool,
+
+    #[arg(long)]
+    json: bool,
+}
+
+/// Queries one workspace or project insights payload.
+#[derive(Debug, Args)]
+struct QueryInsightsArgs {
+    #[command(subcommand)]
+    command: QueryInsightsCommands,
+}
+
+/// Represents the supported machine-readable insights query commands.
+#[derive(Debug, Subcommand)]
+enum QueryInsightsCommands {
+    /// Queries the workspace insights payload for one rolling day window.
+    Workspace(QueryWorkspaceInsightsArgs),
+    /// Queries the project insights payload for one configured project.
+    Project(QueryProjectInsightsArgs),
+}
+
+/// Queries the workspace insights payload for one rolling day window.
+#[derive(Debug, Args)]
+struct QueryWorkspaceInsightsArgs {
+    #[arg(long, default_value_os_t = default_root_path())]
+    root: PathBuf,
+
+    #[arg(long = "window", default_value = "7d", value_parser = parse_window_days)]
+    window_days: u32,
+
+    #[arg(long)]
+    json: bool,
+}
+
+/// Queries the project insights payload for one configured project.
+#[derive(Debug, Args)]
+struct QueryProjectInsightsArgs {
+    #[arg(long, default_value_os_t = default_root_path())]
+    root: PathBuf,
+
+    #[arg(long = "project-id")]
+    project_id: String,
+
+    #[arg(long, default_value_t = 1000)]
+    limit: usize,
+
+    #[arg(long)]
+    json: bool,
+}
+
 /// Audit Codex rollout schema compatibility against stable release tags.
 #[derive(Debug, Args)]
 struct CodexSchemaAuditArgs {
@@ -205,6 +349,7 @@ pub fn run() -> i32 {
         Commands::RenameFrom(args) => standard_exit(run_rename_from(args)),
         Commands::Sync(args) => standard_exit(run_sync(args)),
         Commands::Index(args) => standard_exit(run_index(args)),
+        Commands::Query(args) => query_exit(run_query(args)),
         Commands::CodexSchemaAudit(args) => run_codex_schema_audit_command(args),
         Commands::ClaudeSchemaAudit(args) => run_claude_schema_audit_command(args),
     }
@@ -219,6 +364,221 @@ fn standard_exit(result: Result<()>) -> i32 {
             1
         }
     }
+}
+
+/// Maps query command results to JSON-only machine-readable output.
+fn query_exit(result: Result<()>) -> i32 {
+    match result {
+        Ok(()) => 0,
+        Err(error) => {
+            let message = format_query_error(&error);
+            eprintln!("{message}");
+            1
+        }
+    }
+}
+
+/// Dispatches the supported machine-readable query commands.
+fn run_query(args: QueryArgs) -> Result<()> {
+    match args.command {
+        QueryCommands::Workspace(args) => run_query_workspace(args),
+        QueryCommands::Sessions(args) => run_query_sessions(args),
+        QueryCommands::Turns(args) => run_query_turns(args),
+        QueryCommands::Turn(args) => run_query_turn(args),
+        QueryCommands::Insights(args) => run_query_insights(args),
+    }
+}
+
+/// Queries the workspace/sidebar payload for one darc root.
+fn run_query_workspace(args: QueryWorkspaceArgs) -> Result<()> {
+    ensure_json_requested(args.json)?;
+    print_query_json("darc.query.workspace.v1", &query_workspace(Some(args.root)))
+}
+
+/// Queries the session list for one configured project.
+fn run_query_sessions(args: QuerySessionsArgs) -> Result<()> {
+    ensure_json_requested(args.json)?;
+    let data = query_sessions(Some(args.root), &args.project_id)?;
+    print_query_json("darc.query.sessions.v1", &data)
+}
+
+/// Queries the turn list for one provider session.
+fn run_query_turns(args: QueryTurnsArgs) -> Result<()> {
+    ensure_json_requested(args.json)?;
+    let data = query_turns(
+        Some(args.root),
+        &args.project_id,
+        provider_arg_to_source_kind(args.provider),
+        &args.session_id,
+    )?;
+    print_query_json("darc.query.turns.v1", &data)
+}
+
+/// Queries one full turn detail payload.
+fn run_query_turn(args: QueryTurnArgs) -> Result<()> {
+    ensure_json_requested(args.json)?;
+    let data = query_turn(
+        Some(args.root),
+        &args.project_id,
+        provider_arg_to_source_kind(args.provider),
+        &args.session_id,
+        args.turn_ordinal,
+        args.include_raw,
+    )?;
+    print_query_json("darc.query.turn.v1", &data)
+}
+
+/// Dispatches the supported machine-readable insights query commands.
+fn run_query_insights(args: QueryInsightsArgs) -> Result<()> {
+    match args.command {
+        QueryInsightsCommands::Workspace(args) => run_query_workspace_insights(args),
+        QueryInsightsCommands::Project(args) => run_query_project_insights(args),
+    }
+}
+
+/// Queries the workspace insights payload for one rolling day window.
+fn run_query_workspace_insights(args: QueryWorkspaceInsightsArgs) -> Result<()> {
+    ensure_json_requested(args.json)?;
+    let data = query_workspace_insight_report(Some(args.root), args.window_days)?;
+    print_query_json("darc.query.insights.workspace.v1", &data)
+}
+
+/// Queries the project insights payload for one configured project.
+fn run_query_project_insights(args: QueryProjectInsightsArgs) -> Result<()> {
+    ensure_json_requested(args.json)?;
+    let data = query_project_insight_report(Some(args.root), &args.project_id, args.limit)?;
+    print_query_json("darc.query.insights.project.v1", &data)
+}
+
+/// Writes one machine-readable JSON envelope to stdout.
+fn print_query_json<T: Serialize>(schema: &'static str, data: &T) -> Result<()> {
+    let payload = QueryEnvelope {
+        schema,
+        generated_at: current_utc_timestamp(),
+        darc_version: env!("CARGO_PKG_VERSION"),
+        data,
+    };
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&payload)
+            .context("failed to serialize query response JSON")?
+    );
+    Ok(())
+}
+
+/// Returns one machine-readable JSON error envelope string.
+fn format_query_error(error: &anyhow::Error) -> String {
+    let causes = error
+        .chain()
+        .skip(1)
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    let payload = QueryErrorEnvelope {
+        schema: "darc.error.v1",
+        generated_at: current_utc_timestamp(),
+        darc_version: env!("CARGO_PKG_VERSION"),
+        error: QueryErrorData {
+            message: error.to_string(),
+            causes,
+        },
+    };
+    serde_json::to_string_pretty(&payload).unwrap_or_else(|serialization_error| {
+        format!(r#"{{"schema":"darc.error.v1","error":"{serialization_error}"}}"#)
+    })
+}
+
+/// Returns an error unless the query command explicitly requested JSON output.
+fn ensure_json_requested(json: bool) -> Result<()> {
+    if json {
+        return Ok(());
+    }
+    bail!("query commands currently require --json")
+}
+
+/// Parses one rolling day-window argument such as `7d`.
+fn parse_window_days(value: &str) -> Result<u32, String> {
+    let Some(days) = value.strip_suffix('d') else {
+        return Err("window must use the `<days>d` format, for example `7d`".to_owned());
+    };
+    let days = days
+        .parse::<u32>()
+        .map_err(|_| format!("invalid day window `{value}`"))?;
+    if days == 0 {
+        return Err("window must be at least 1 day".to_owned());
+    }
+    Ok(days)
+}
+
+/// Converts one parsed provider argument back into the shared source kind.
+fn provider_arg_to_source_kind(provider: ProviderArg) -> SourceKind {
+    match provider {
+        ProviderArg::Claude => SourceKind::Claude,
+        ProviderArg::Codex => SourceKind::Codex,
+    }
+}
+
+/// Stores one machine-readable query success envelope.
+#[derive(Debug, Serialize)]
+struct QueryEnvelope<'a, T> {
+    schema: &'a str,
+    generated_at: String,
+    darc_version: &'a str,
+    data: &'a T,
+}
+
+/// Stores one machine-readable query error envelope.
+#[derive(Debug, Serialize)]
+struct QueryErrorEnvelope<'a> {
+    schema: &'a str,
+    generated_at: String,
+    darc_version: &'a str,
+    error: QueryErrorData,
+}
+
+/// Stores one machine-readable query error payload.
+#[derive(Debug, Serialize)]
+struct QueryErrorData {
+    message: String,
+    causes: Vec<String>,
+}
+
+/// Returns the current UTC timestamp formatted for query protocol envelopes.
+fn current_utc_timestamp() -> String {
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let total_seconds = duration.as_secs();
+    let days = i64::try_from(total_seconds / 86_400).unwrap_or(i64::MAX);
+    let seconds_of_day = total_seconds % 86_400;
+    let (year, month, day) = civil_from_days(days);
+    let hour = seconds_of_day / 3_600;
+    let minute = (seconds_of_day % 3_600) / 60;
+    let second = seconds_of_day % 60;
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
+/// Converts one Unix-day count into a UTC civil date.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 {
+        z / 146_097
+    } else {
+        (z - 146_096) / 146_097
+    };
+    let day_of_era = z - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    year += if month <= 2 { 1 } else { 0 };
+    (
+        year,
+        u32::try_from(month).unwrap_or(1),
+        u32::try_from(day).unwrap_or(1),
+    )
 }
 
 /// Prepares and optionally writes the shared init draft.

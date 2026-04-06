@@ -200,17 +200,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "darc-analytics"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "darc-index",
- "darc-paths",
- "rusqlite",
- "serde",
-]
-
-[[package]]
 name = "darc-cli"
 version = "0.1.0"
 dependencies = [
@@ -218,6 +207,8 @@ dependencies = [
  "clap",
  "darc-core",
  "darc-rollout-audit",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -225,9 +216,9 @@ name = "darc-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "darc-analytics",
  "darc-index",
  "darc-paths",
+ "darc-query",
  "darc-sync",
  "darc-test-utils",
  "directories",
@@ -255,6 +246,20 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "serde",
+]
+
+[[package]]
+name = "darc-query"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "darc-index",
+ "darc-paths",
+ "darc-rollout",
+ "darc-test-utils",
+ "rusqlite",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

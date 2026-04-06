@@ -1,3 +1,4 @@
+use anyhow::anyhow;
 use clap::{CommandFactory, Parser};
 use darc_rollout_audit::claude::{
     ClaudeSchemaAuditReport, ClaudeSchemaDrift, ClaudeSchemaDriftWindow, ClaudeSchemaSurveyMode,
@@ -5,10 +6,12 @@ use darc_rollout_audit::claude::{
 };
 use darc_rollout_audit::codex::{CodexSchemaAuditReport, CodexSchemaDrift};
 use darc_rollout_audit::{claude::ClaudeSchemaAuditOutcome, codex::CodexSchemaAuditOutcome};
+use serde_json::Value;
 
 use super::{
-    Cli, Commands, claude_schema_audit_exit_code, codex_schema_audit_exit_code,
-    format_claude_schema_audit_report, format_codex_schema_audit_report,
+    Cli, Commands, QueryCommands, QueryInsightsCommands, claude_schema_audit_exit_code,
+    codex_schema_audit_exit_code, format_claude_schema_audit_report,
+    format_codex_schema_audit_report, format_query_error, parse_window_days,
 };
 
 fn compatible_report() -> CodexSchemaAuditReport {
@@ -136,6 +139,97 @@ fn parses_rename_command() {
         cli.command,
         Commands::RenameFrom(super::RenameArgs { project, .. }) if project == "memstack"
     ));
+}
+
+#[test]
+fn parses_query_workspace_command() {
+    let cli = Cli::try_parse_from(["darc", "query", "workspace", "--json"]).unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Query(super::QueryArgs {
+            command: QueryCommands::Workspace(super::QueryWorkspaceArgs { json, .. }),
+        }) if json
+    ));
+}
+
+#[test]
+fn parses_query_turn_command() {
+    let cli = Cli::try_parse_from([
+        "darc",
+        "query",
+        "turn",
+        "--project-id",
+        "repo-abc123",
+        "--provider",
+        "codex",
+        "--session-id",
+        "session-1",
+        "--turn-ordinal",
+        "2",
+        "--include-raw",
+        "--json",
+    ])
+    .unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Query(super::QueryArgs {
+            command: QueryCommands::Turn(super::QueryTurnArgs {
+                project_id,
+                session_id,
+                turn_ordinal,
+                include_raw,
+                json,
+                ..
+            }),
+        }) if project_id == "repo-abc123"
+            && session_id == "session-1"
+            && turn_ordinal == 2
+            && include_raw
+            && json
+    ));
+}
+
+#[test]
+fn parses_query_workspace_insights_command() {
+    let cli = Cli::try_parse_from([
+        "darc",
+        "query",
+        "insights",
+        "workspace",
+        "--window",
+        "14d",
+        "--json",
+    ])
+    .unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Query(super::QueryArgs {
+            command: QueryCommands::Insights(super::QueryInsightsArgs {
+                command: QueryInsightsCommands::Workspace(super::QueryWorkspaceInsightsArgs {
+                    window_days,
+                    json,
+                    ..
+                }),
+            }),
+        }) if window_days == 14 && json
+    ));
+}
+
+#[test]
+fn parses_window_days() {
+    assert_eq!(parse_window_days("7d").unwrap(), 7);
+    assert!(parse_window_days("0d").is_err());
+    assert!(parse_window_days("weekly").is_err());
+}
+
+#[test]
+fn formats_query_errors_as_json() {
+    let payload = format_query_error(&anyhow!("boom"));
+    let value: Value = serde_json::from_str(&payload).unwrap();
+
+    assert_eq!(value["schema"], "darc.error.v1");
+    assert_eq!(value["error"]["message"], "boom");
+    assert!(value["generated_at"].as_str().unwrap().ends_with('Z'));
 }
 
 #[test]
