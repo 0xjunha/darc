@@ -1,5 +1,4 @@
 mod active_project;
-mod analytics;
 pub mod config;
 pub(crate) mod constants;
 mod index;
@@ -8,9 +7,6 @@ mod project;
 pub mod query;
 mod sync;
 
-pub use analytics::{
-    ClaudeRolloutAnalyticsReport, ClaudeSchemaAnalytics, report_claude_rollout_analytics,
-};
 pub use config::SourceKind;
 pub use index::{
     IndexOptions, IndexReport, SkippedCodexRollout, SkippedRollout, index_project_codex_turns,
