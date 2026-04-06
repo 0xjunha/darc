@@ -189,67 +189,86 @@ enum QueryCommands {
 /// Queries the workspace/sidebar payload for one darc root.
 #[derive(Debug, Args)]
 struct QueryWorkspaceArgs {
-    #[arg(long, default_value_os_t = default_root_path())]
+    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
     root: PathBuf,
 
-    #[arg(long)]
+    #[arg(
+        long,
+        required = true,
+        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
+    )]
     json: bool,
 }
 
 /// Queries the session list for one configured project.
 #[derive(Debug, Args)]
 struct QuerySessionsArgs {
-    #[arg(long, default_value_os_t = default_root_path())]
+    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
     root: PathBuf,
 
-    #[arg(long = "project-id")]
+    #[arg(long = "project-id", help = "Query this configured project id")]
     project_id: String,
 
-    #[arg(long)]
+    #[arg(
+        long,
+        required = true,
+        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
+    )]
     json: bool,
 }
 
 /// Queries the turn list for one provider session.
 #[derive(Debug, Args)]
 struct QueryTurnsArgs {
-    #[arg(long, default_value_os_t = default_root_path())]
+    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
     root: PathBuf,
 
-    #[arg(long = "project-id")]
+    #[arg(long = "project-id", help = "Query this configured project id")]
     project_id: String,
 
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, help = "Query this provider")]
     provider: ProviderArg,
 
-    #[arg(long = "session-id")]
+    #[arg(long = "session-id", help = "Query this session id")]
     session_id: String,
 
-    #[arg(long)]
+    #[arg(
+        long,
+        required = true,
+        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
+    )]
     json: bool,
 }
 
 /// Queries one full turn detail payload.
 #[derive(Debug, Args)]
 struct QueryTurnArgs {
-    #[arg(long, default_value_os_t = default_root_path())]
+    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
     root: PathBuf,
 
-    #[arg(long = "project-id")]
+    #[arg(long = "project-id", help = "Query this configured project id")]
     project_id: String,
 
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, help = "Query this provider")]
     provider: ProviderArg,
 
-    #[arg(long = "session-id")]
+    #[arg(long = "session-id", help = "Query this session id")]
     session_id: String,
 
-    #[arg(long = "turn-ordinal")]
+    #[arg(long = "turn-ordinal", help = "Query this turn ordinal")]
     turn_ordinal: u64,
 
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Include optional raw/debug fields such as raw_steps_json"
+    )]
     include_raw: bool,
 
-    #[arg(long)]
+    #[arg(
+        long,
+        required = true,
+        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
+    )]
     json: bool,
 }
 
@@ -272,29 +291,46 @@ enum QueryInsightsCommands {
 /// Queries the workspace insights payload for one rolling day window.
 #[derive(Debug, Args)]
 struct QueryWorkspaceInsightsArgs {
-    #[arg(long, default_value_os_t = default_root_path())]
+    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
     root: PathBuf,
 
-    #[arg(long = "window", default_value = "7d", value_parser = parse_window_days)]
+    #[arg(
+        long = "window",
+        default_value = "7d",
+        value_parser = parse_window_days,
+        help = "Rolling UTC day window in `<days>d` format"
+    )]
     window_days: u32,
 
-    #[arg(long)]
+    #[arg(
+        long,
+        required = true,
+        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
+    )]
     json: bool,
 }
 
 /// Queries the project insights payload for one configured project.
 #[derive(Debug, Args)]
 struct QueryProjectInsightsArgs {
-    #[arg(long, default_value_os_t = default_root_path())]
+    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
     root: PathBuf,
 
-    #[arg(long = "project-id")]
+    #[arg(long = "project-id", help = "Query this configured project id")]
     project_id: String,
 
-    #[arg(long, default_value_t = 1000)]
+    #[arg(
+        long,
+        default_value_t = 1000,
+        help = "Maximum indexed turns to inspect"
+    )]
     limit: usize,
 
-    #[arg(long)]
+    #[arg(
+        long,
+        required = true,
+        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
+    )]
     json: bool,
 }
 

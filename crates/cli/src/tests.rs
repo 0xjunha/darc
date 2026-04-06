@@ -153,6 +153,13 @@ fn parses_query_workspace_command() {
 }
 
 #[test]
+fn query_workspace_requires_json_flag() {
+    let error = Cli::try_parse_from(["darc", "query", "workspace"]).unwrap_err();
+
+    assert!(error.to_string().contains("--json"));
+}
+
+#[test]
 fn parses_query_turn_command() {
     let cli = Cli::try_parse_from([
         "darc",
@@ -187,6 +194,33 @@ fn parses_query_turn_command() {
             && include_raw
             && json
     ));
+}
+
+#[test]
+fn query_help_mentions_machine_protocol() {
+    let mut command = Cli::command();
+    let help = command
+        .find_subcommand_mut("query")
+        .expect("query subcommand should be present")
+        .render_long_help()
+        .to_string();
+
+    assert!(help.contains("machine-readable"));
+}
+
+#[test]
+fn query_workspace_help_mentions_json_flag() {
+    let mut command = Cli::command();
+    let query = command
+        .find_subcommand_mut("query")
+        .expect("query subcommand should be present");
+    let help = query
+        .find_subcommand_mut("workspace")
+        .expect("workspace query subcommand should be present")
+        .render_long_help()
+        .to_string();
+
+    assert!(help.contains("--json"));
 }
 
 #[test]
