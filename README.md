@@ -70,6 +70,7 @@ Run `darc --help` for the visible CLI surface. Hidden maintainer commands are do
 ## Documentation
 
 - [Documentation index](docs/README.md)
+- [Query protocol](docs/query-protocol.md)
 - [Project rename and linking](docs/project-rename.md)
 - [Schema audits](docs/schema-audits.md)
 - [Claude support](docs/claude-support.md)
