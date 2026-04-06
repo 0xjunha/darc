@@ -77,7 +77,11 @@ Clients should branch on `schema`, not on `darc_version`.
 
 ## Stability rules
 
-Within a `v1` schema:
+The protocol is still in development.
+
+Current `v1` schemas are the active working contract for Darc Desktop and may still evolve before stabilization.
+
+Target rules within one schema version:
 
 - field meaning must stay stable
 - field names must stay stable
@@ -85,7 +89,7 @@ Within a `v1` schema:
 - responses may add new fields
 - responses may add new array items
 
-Breaking changes require a new schema id, such as `...v2`.
+After stabilization, breaking changes should require a new schema id, such as `...v2`.
 
 Examples of breaking changes:
 
@@ -114,5 +118,15 @@ Today:
 
 - `darc query turn --include-raw --json` includes `raw_steps_json`
 - without `--include-raw`, `raw_steps_json` is currently still present in the response and set to `null`
+
+## Insights day semantics
+
+Insights payloads use host-local civil days, not UTC days.
+
+- `daily_time[*].date` is the local calendar day for the machine running `darc`
+- `window_start` and `window_end` are local calendar days
+- timestamp fields such as `started_at` and `latest_turn_at` remain UTC ISO 8601 strings
+
+These local-day semantics are part of the current development-phase `v1` insights contract.
 
 Clients should avoid depending on raw/debug fields unless they explicitly request them.

@@ -1,7 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, bail};
@@ -198,7 +197,7 @@ pub struct HardDebuggingTurn {
     pub status: NormalizedTurnStatus,
 }
 
-/// Stores the workspace insights payload for one reporting window.
+/// Stores the workspace insights payload for one host-local reporting window.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WorkspaceInsights {
     pub window_start: String,
@@ -274,7 +273,7 @@ pub fn query_turn_detail(
     )
 }
 
-/// Queries one workspace insights payload for a rolling UTC day window.
+/// Queries one workspace insights payload for a rolling host-local day window.
 pub fn query_workspace_insights(
     index_db_path: &Path,
     window_days: u32,
@@ -626,10 +625,10 @@ pub(crate) fn build_workspace_insights(
     window_days: u32,
 ) -> Result<WorkspaceInsights> {
     let window_days = window_days.max(1);
-    let anchor_date = query_latest_started_at(connection)?
+    let anchor_date = query_latest_local_date(connection)?
         .as_deref()
-        .and_then(UtcDate::from_timestamp_prefix)
-        .unwrap_or_else(UtcDate::today);
+        .and_then(LocalDate::parse)
+        .unwrap_or(query_local_today(connection)?);
     let start_date = anchor_date
         .add_days(-(i64::from(window_days) - 1))
         .context("failed to calculate workspace insights window start")?;
@@ -683,11 +682,10 @@ pub(crate) fn build_workspace_insights(
             total_time_ms = total_time_ms.saturating_add(row.duration_ms);
             included_turn_count = included_turn_count.saturating_add(1);
 
-            let date_key = timestamp_date_key(&row.started_at);
-            if let Some(total) = daily_time_map.get_mut(date_key) {
+            if let Some(total) = daily_time_map.get_mut(&row.local_date) {
                 *total = (*total).saturating_add(row.duration_ms);
             }
-            if let Some(projects) = daily_project_time_map.get_mut(date_key) {
+            if let Some(projects) = daily_project_time_map.get_mut(&row.local_date) {
                 let project_total = projects.entry(row.project_id.clone()).or_insert(0);
                 *project_total = project_total.saturating_add(row.duration_ms);
             }
@@ -770,8 +768,7 @@ pub(crate) fn build_project_insights(
 
         if should_include_turn_in_active_time(row.status, row.duration_ms, row.step_count) {
             total_time_ms = total_time_ms.saturating_add(row.duration_ms);
-            let date_key = timestamp_date_key(&row.started_at).to_owned();
-            let total = daily_time_map.entry(date_key).or_insert(0);
+            let total = daily_time_map.entry(row.local_date.clone()).or_insert(0);
             *total = total.saturating_add(row.duration_ms);
         }
 
@@ -893,21 +890,35 @@ pub(crate) fn build_project_insights(
     })
 }
 
-/// Queries the latest indexed turn start timestamp in one workspace database.
-fn query_latest_started_at(connection: &Connection) -> Result<Option<String>> {
+/// Queries the latest indexed host-local day in one workspace database.
+fn query_latest_local_date(connection: &Connection) -> Result<Option<String>> {
     connection
-        .query_row("SELECT MAX(started_at) FROM turns", [], |row| row.get(0))
-        .context("failed to query latest indexed turn timestamp")
+        .query_row(
+            "SELECT MAX(DATE(started_at, 'localtime')) FROM turns",
+            [],
+            |row| row.get(0),
+        )
+        .context("failed to query latest indexed local day")
+}
+
+/// Queries the current host-local civil day according to SQLite localtime rules.
+fn query_local_today(connection: &Connection) -> Result<LocalDate> {
+    let value = connection
+        .query_row("SELECT DATE('now', 'localtime')", [], |row| {
+            row.get::<_, String>(0)
+        })
+        .context("failed to query current local day")?;
+    LocalDate::parse(&value).with_context(|| format!("failed to parse SQLite local day `{value}`"))
 }
 
 /// Queries the turn rows needed to build workspace insights.
 fn query_workspace_insight_rows(
     connection: &Connection,
-    start_date: &UtcDate,
-    end_exclusive: &UtcDate,
+    start_date: &LocalDate,
+    end_exclusive: &LocalDate,
 ) -> Result<Vec<InsightTurnRow>> {
-    let started_at_or_after = start_date.start_of_day_timestamp();
-    let started_before = end_exclusive.start_of_day_timestamp();
+    let started_at_or_after = start_date.to_string();
+    let started_before = end_exclusive.to_string();
     let mut statement = connection
         .prepare(
             "
@@ -916,11 +927,12 @@ fn query_workspace_insight_rows(
                 provider,
                 session_id,
                 started_at,
+                DATE(started_at, 'localtime'),
                 status,
                 COALESCE(step_count, 0),
                 COALESCE(duration_ms, 0)
             FROM turns
-            WHERE started_at >= ?1 AND started_at < ?2
+            WHERE DATE(started_at, 'localtime') >= ?1 AND DATE(started_at, 'localtime') < ?2
             ORDER BY started_at ASC, project_id ASC, provider ASC, session_id ASC, turn_ordinal ASC
             ",
         )
@@ -933,8 +945,9 @@ fn query_workspace_insight_rows(
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
                 row.get::<_, String>(4)?,
-                row.get::<_, i64>(5)?,
+                row.get::<_, String>(5)?,
                 row.get::<_, i64>(6)?,
+                row.get::<_, i64>(7)?,
             ))
         })
         .context("failed to query workspace insight rows")?
@@ -942,12 +955,22 @@ fn query_workspace_insight_rows(
         .context("failed to read workspace insight rows")?;
     rows.into_iter()
         .map(
-            |(project_id, provider, session_id, started_at, status, step_count, duration_ms)| {
+            |(
+                project_id,
+                provider,
+                session_id,
+                started_at,
+                local_date,
+                status,
+                step_count,
+                duration_ms,
+            )| {
                 Ok(InsightTurnRow {
                     project_id,
                     provider: parse_provider(&provider)?,
                     session_id,
                     started_at,
+                    local_date,
                     status: parse_turn_status(&status)?,
                     step_count: sql_count_to_u64(step_count)?,
                     duration_ms: sql_count_to_u64(duration_ms)?,
@@ -973,7 +996,7 @@ fn query_project_insight_rows(
                 provider,
                 session_id,
                 turn_ordinal,
-                started_at,
+                DATE(started_at, 'localtime'),
                 status,
                 COALESCE(step_count, 0),
                 COALESCE(tool_call_count, 0),
@@ -1011,7 +1034,7 @@ fn query_project_insight_rows(
                 provider,
                 session_id,
                 turn_ordinal,
-                started_at,
+                local_date,
                 status,
                 step_count,
                 tool_call_count,
@@ -1024,7 +1047,7 @@ fn query_project_insight_rows(
                     provider: parse_provider(&provider)?,
                     session_id,
                     turn_ordinal: sql_count_to_u64(turn_ordinal)?,
-                    started_at,
+                    local_date,
                     status: parse_turn_status(&status)?,
                     step_count: sql_count_to_u64(step_count)?,
                     tool_call_count: sql_count_to_u64(tool_call_count)?,
@@ -1129,11 +1152,6 @@ pub(crate) fn classify_tool_access(name: &str) -> ToolAccessKind {
     }
 }
 
-/// Returns the `YYYY-MM-DD` prefix stored in one UTC timestamp.
-fn timestamp_date_key(timestamp: &str) -> &str {
-    timestamp.get(..10).unwrap_or(timestamp)
-}
-
 /// Stores one internal session aggregate while building workspace insights.
 #[derive(Debug, Clone)]
 struct SessionAggregate {
@@ -1154,6 +1172,7 @@ struct InsightTurnRow {
     provider: SourceKind,
     session_id: String,
     started_at: String,
+    local_date: String,
     status: NormalizedTurnStatus,
     step_count: u64,
     duration_ms: u64,
@@ -1166,7 +1185,7 @@ struct ProjectInsightRow {
     provider: SourceKind,
     session_id: String,
     turn_ordinal: u64,
-    started_at: String,
+    local_date: String,
     status: NormalizedTurnStatus,
     step_count: u64,
     tool_call_count: u64,
@@ -1182,19 +1201,18 @@ pub(crate) enum ToolAccessKind {
     Other,
 }
 
-/// Stores one UTC civil day used for query-window calculations.
+/// Stores one civil day used for local-day query-window calculations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct UtcDate {
+pub(crate) struct LocalDate {
     year: i64,
     month: u32,
     day: u32,
 }
 
-impl UtcDate {
-    /// Parses one Darc UTC timestamp prefix into a civil UTC date.
-    pub(crate) fn from_timestamp_prefix(timestamp: &str) -> Option<Self> {
-        let prefix = timestamp.get(..10)?;
-        let mut parts = prefix.split('-');
+impl LocalDate {
+    /// Parses one `YYYY-MM-DD` civil date string.
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        let mut parts = value.split('-');
         let year = parts.next()?.parse().ok()?;
         let month = parts.next()?.parse().ok()?;
         let day = parts.next()?.parse().ok()?;
@@ -1204,27 +1222,13 @@ impl UtcDate {
         Some(Self { year, month, day })
     }
 
-    /// Returns the current UTC civil day according to the host clock.
-    fn today() -> Self {
-        let duration = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default();
-        let days = i64::try_from(duration.as_secs() / 86_400).unwrap_or(i64::MAX);
-        Self::from_days_since_epoch(days)
-    }
-
-    /// Offsets one civil UTC date by a whole-number day count.
+    /// Offsets one civil date by a whole-number day count.
     pub(crate) fn add_days(self, days: i64) -> Option<Self> {
         let base_days = self.days_since_epoch()?;
         base_days.checked_add(days).map(Self::from_days_since_epoch)
     }
 
-    /// Formats one civil UTC day as `YYYY-MM-DD`.
-    fn start_of_day_timestamp(self) -> String {
-        format!("{self}T00:00:00Z")
-    }
-
-    /// Converts one civil UTC day into Unix days.
+    /// Converts one civil day into Unix days.
     fn days_since_epoch(self) -> Option<i64> {
         if !(1..=12).contains(&self.month) || !(1..=31).contains(&self.day) {
             return None;
@@ -1244,7 +1248,7 @@ impl UtcDate {
         Some(era * 146_097 + day_of_era - 719_468)
     }
 
-    /// Converts one Unix-day count back into a civil UTC date.
+    /// Converts one Unix-day count back into one civil date.
     fn from_days_since_epoch(days: i64) -> Self {
         let z = days + 719_468;
         let era = if z >= 0 {
@@ -1269,7 +1273,7 @@ impl UtcDate {
     }
 }
 
-impl std::fmt::Display for UtcDate {
+impl std::fmt::Display for LocalDate {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             formatter,

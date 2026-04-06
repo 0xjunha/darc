@@ -298,7 +298,7 @@ struct QueryWorkspaceInsightsArgs {
         long = "window",
         default_value = "7d",
         value_parser = parse_window_days,
-        help = "Rolling UTC day window in `<days>d` format"
+        help = "Rolling host-local day window in `<days>d` format"
     )]
     window_days: u32,
 
@@ -472,7 +472,7 @@ fn run_query_insights(args: QueryInsightsArgs) -> Result<()> {
     }
 }
 
-/// Queries the workspace insights payload for one rolling day window.
+/// Queries the workspace insights payload for one rolling host-local day window.
 fn run_query_workspace_insights(args: QueryWorkspaceInsightsArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
     let data = query_workspace_insight_report(Some(args.root), args.window_days)?;
