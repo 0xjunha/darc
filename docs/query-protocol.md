@@ -110,6 +110,47 @@ Query payloads follow these rules:
 - empty arrays instead of omitted list fields
 - deterministic ordering where practical
 
+## Analytics semantics
+
+Some query analytics are now hardened as contract behavior, while others remain provisional.
+
+### Active time
+
+Current hardened rule:
+
+- a turn contributes to active session time only when its status is `completed`
+- the turn duration must be at least `2000` ms
+
+Current non-rule:
+
+- Darc does not yet exclude active time based on inferred long single-step spans
+- any future exclusion policy of that kind should be treated as a semantic change and documented explicitly
+
+### File analytics
+
+Current file analytics are provisional heuristics derived from normalized tool-call steps.
+
+Today:
+
+- Darc extracts file-like arguments from `file_path`, `path`, and `file`
+- tool names containing `read`, `view`, or `list` count toward read-style file analytics
+- tool names containing `write`, `edit`, or `replace` count toward write-style file analytics
+- paths are currently reported as the raw extracted path string
+
+These rules may evolve before stabilization.
+
+### Hard debugging
+
+`hard_debuggings` is currently provisional.
+
+Today it is ranked by:
+
+- higher `step_count` first
+- then higher `duration_ms`
+- then stable identity tie-breaks
+
+This should be treated as a temporary ranking policy until Darc adopts a more explicit debugging score.
+
 ## Raw and debug fields
 
 Raw/debug payload fields are optional and command-specific.

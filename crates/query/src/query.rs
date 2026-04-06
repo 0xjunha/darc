@@ -9,7 +9,11 @@ use darc_paths::SourceKind;
 use darc_rollout::model::{NormalizedTurnStatus, NormalizedTurnStep};
 use rusqlite::Connection;
 use serde::Serialize;
-use serde_json::Value;
+
+use crate::policy::{
+    ToolAccessKind, classify_tool_access, extract_tool_path, rank_hard_debuggings,
+    should_include_turn_in_active_time,
+};
 
 /// Stores one indexed project aggregate used by the workspace sidebar.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -676,7 +680,7 @@ pub(crate) fn build_workspace_insights(
             aggregate.latest_turn_at = row.started_at.clone();
         }
 
-        if should_include_turn_in_active_time(row.status, row.duration_ms, row.step_count) {
+        if should_include_turn_in_active_time(row.status, row.duration_ms) {
             aggregate.active_time_ms = aggregate.active_time_ms.saturating_add(row.duration_ms);
             aggregate.active_turn_count = aggregate.active_turn_count.saturating_add(1);
             total_time_ms = total_time_ms.saturating_add(row.duration_ms);
@@ -766,7 +770,7 @@ pub(crate) fn build_project_insights(
             failure_count = failure_count.saturating_add(1);
         }
 
-        if should_include_turn_in_active_time(row.status, row.duration_ms, row.step_count) {
+        if should_include_turn_in_active_time(row.status, row.duration_ms) {
             total_time_ms = total_time_ms.saturating_add(row.duration_ms);
             let total = daily_time_map.entry(row.local_date.clone()).or_insert(0);
             *total = total.saturating_add(row.duration_ms);
@@ -811,17 +815,7 @@ pub(crate) fn build_project_insights(
         }
     }
 
-    hard_debuggings.sort_by(|left, right| {
-        right
-            .step_count
-            .cmp(&left.step_count)
-            .then_with(|| right.duration_ms.cmp(&left.duration_ms))
-            .then_with(|| left.project_id.cmp(&right.project_id))
-            .then_with(|| left.provider.cmp(&right.provider))
-            .then_with(|| left.session_id.cmp(&right.session_id))
-            .then_with(|| left.turn_ordinal.cmp(&right.turn_ordinal))
-    });
-    hard_debuggings.truncate(10);
+    rank_hard_debuggings(&mut hard_debuggings);
 
     let merged_paths = file_reads
         .keys()
@@ -929,7 +923,6 @@ fn query_workspace_insight_rows(
                 started_at,
                 DATE(started_at, 'localtime'),
                 status,
-                COALESCE(step_count, 0),
                 COALESCE(duration_ms, 0)
             FROM turns
             WHERE DATE(started_at, 'localtime') >= ?1 AND DATE(started_at, 'localtime') < ?2
@@ -947,7 +940,6 @@ fn query_workspace_insight_rows(
                 row.get::<_, String>(4)?,
                 row.get::<_, String>(5)?,
                 row.get::<_, i64>(6)?,
-                row.get::<_, i64>(7)?,
             ))
         })
         .context("failed to query workspace insight rows")?
@@ -955,16 +947,7 @@ fn query_workspace_insight_rows(
         .context("failed to read workspace insight rows")?;
     rows.into_iter()
         .map(
-            |(
-                project_id,
-                provider,
-                session_id,
-                started_at,
-                local_date,
-                status,
-                step_count,
-                duration_ms,
-            )| {
+            |(project_id, provider, session_id, started_at, local_date, status, duration_ms)| {
                 Ok(InsightTurnRow {
                     project_id,
                     provider: parse_provider(&provider)?,
@@ -972,7 +955,6 @@ fn query_workspace_insight_rows(
                     started_at,
                     local_date,
                     status: parse_turn_status(&status)?,
-                    step_count: sql_count_to_u64(step_count)?,
                     duration_ms: sql_count_to_u64(duration_ms)?,
                 })
             },
@@ -1103,55 +1085,6 @@ fn preview_text(text: &str) -> String {
     preview
 }
 
-/// Returns whether one turn should contribute to active-runtime charts.
-fn should_include_turn_in_active_time(
-    status: NormalizedTurnStatus,
-    duration_ms: u64,
-    step_count: u64,
-) -> bool {
-    if status != NormalizedTurnStatus::Completed {
-        return false;
-    }
-    if duration_ms < 2_000 {
-        return false;
-    }
-    if duration_ms > 3_600_000 && step_count < 50 {
-        return false;
-    }
-    duration_ms > 0
-}
-
-/// Extracts one candidate file path from one tool-call arguments payload.
-pub(crate) fn extract_tool_path(arguments: &str) -> Option<String> {
-    let value = serde_json::from_str::<Value>(arguments).ok()?;
-    let object = value.as_object()?;
-    for key in ["file_path", "path", "file"] {
-        if let Some(value) = object.get(key) {
-            let path = value.as_str()?.trim();
-            if !path.is_empty() {
-                return Some(path.to_owned());
-            }
-        }
-    }
-    None
-}
-
-/// Classifies one tool name into a coarse file-access bucket.
-pub(crate) fn classify_tool_access(name: &str) -> ToolAccessKind {
-    let normalized = name.to_ascii_lowercase();
-    if normalized.contains("write") || normalized.contains("edit") || normalized.contains("replace")
-    {
-        ToolAccessKind::Write
-    } else if normalized.contains("read")
-        || normalized.contains("view")
-        || normalized.contains("list")
-    {
-        ToolAccessKind::Read
-    } else {
-        ToolAccessKind::Other
-    }
-}
-
 /// Stores one internal session aggregate while building workspace insights.
 #[derive(Debug, Clone)]
 struct SessionAggregate {
@@ -1174,7 +1107,6 @@ struct InsightTurnRow {
     started_at: String,
     local_date: String,
     status: NormalizedTurnStatus,
-    step_count: u64,
     duration_ms: u64,
 }
 
@@ -1191,14 +1123,6 @@ struct ProjectInsightRow {
     tool_call_count: u64,
     duration_ms: u64,
     steps_json: String,
-}
-
-/// Identifies the coarse file-access bucket inferred from one tool call.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ToolAccessKind {
-    Read,
-    Write,
-    Other,
 }
 
 /// Stores one civil day used for local-day query-window calculations.
