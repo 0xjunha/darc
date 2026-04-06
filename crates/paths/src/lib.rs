@@ -10,8 +10,11 @@ use serde::{Deserialize, Serialize};
 
 /// Identifies which upstream tool produced one archived session tree.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum SourceKind {
+    #[serde(alias = "Claude")]
     Claude,
+    #[serde(alias = "Codex")]
     Codex,
 }
 

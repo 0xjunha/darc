@@ -9,7 +9,11 @@ use anyhow::{Context, Result};
 use darc_paths::{encode_path_for_claude, normalize_project_path};
 use darc_test_utils::{init_git_repo, run_git, unique_test_dir, write_file};
 
-use super::{engine::*, manifest::Manifest, *};
+use super::{
+    engine::*,
+    manifest::{Manifest, ManifestSessionEntry},
+    *,
+};
 use crate::utils::{format_system_time_utc, replace_existing_file, unique_sibling_path};
 
 fn sample_request(
@@ -310,6 +314,99 @@ fn unique_sibling_path_is_distinct_per_call() {
     assert_ne!(first, second);
     assert_ne!(first, backup);
     assert_ne!(second, backup);
+}
+
+#[test]
+fn load_manifest_accepts_lowercase_provider_values() -> Result<()> {
+    let dir = unique_test_dir("sync-manifest-provider");
+    let manifest_path = dir.join(".manifest.json");
+    write_file(
+        &manifest_path,
+        r#"{
+  "version": 1,
+  "sessions": {
+    "session-1": {
+      "provider": "codex",
+      "source_path": "/tmp/source.jsonl",
+      "archive_path": "codex/source.jsonl",
+      "cwd": "/tmp/repo",
+      "size": 123,
+      "mtime_ms": 456,
+      "synced_at": "2026-04-05T06:19:47Z"
+    }
+  },
+  "auxiliary": {}
+}
+"#,
+    )?;
+
+    let manifest = crate::manifest::load_manifest(&manifest_path)?;
+
+    assert_eq!(
+        manifest
+            .sessions
+            .get("session-1")
+            .map(|entry| entry.provider),
+        Some(SourceKind::Codex)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn load_manifest_accepts_title_case_provider_values() -> Result<()> {
+    let dir = unique_test_dir("sync-manifest-provider-title-case");
+    let manifest_path = dir.join(".manifest.json");
+    write_file(
+        &manifest_path,
+        r#"{
+  "version": 1,
+  "sessions": {
+    "session-1": {
+      "provider": "Codex",
+      "source_path": "/tmp/source.jsonl",
+      "archive_path": "codex/source.jsonl",
+      "cwd": "/tmp/repo",
+      "size": 123,
+      "mtime_ms": 456,
+      "synced_at": "2026-04-05T06:19:47Z"
+    }
+  },
+  "auxiliary": {}
+}
+"#,
+    )?;
+
+    let manifest = crate::manifest::load_manifest(&manifest_path)?;
+
+    assert_eq!(
+        manifest
+            .sessions
+            .get("session-1")
+            .map(|entry| entry.provider),
+        Some(SourceKind::Codex)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn manifest_session_entry_serializes_provider_lowercase() -> Result<()> {
+    let entry = ManifestSessionEntry {
+        provider: SourceKind::Codex,
+        source_path: PathBuf::from("/tmp/source.jsonl"),
+        archive_path: PathBuf::from("codex/source.jsonl"),
+        cwd: Some(PathBuf::from("/tmp/repo")),
+        size: 123,
+        mtime_ms: 456,
+        synced_at: "2026-04-05T06:19:47Z".to_owned(),
+    };
+
+    let encoded = serde_json::to_string(&entry)?;
+
+    assert!(encoded.contains(r#""provider":"codex""#));
+
+    Ok(())
 }
 
 #[test]
