@@ -17,3 +17,9 @@ darc-core = { workspace = true }
 darc-rollout-audit = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+darc-index = { workspace = true }
+darc-test-utils = { workspace = true }
+rusqlite = { workspace = true }
+toml = { workspace = true }

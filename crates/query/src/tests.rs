@@ -238,7 +238,11 @@ fn workspace_insights_filter_short_and_failed_turns() -> Result<()> {
     assert_eq!(insights.recent_sessions.len(), 1);
     assert_eq!(insights.recent_sessions[0].project_id, "repo-a");
 
-    fs::remove_dir_all(index_path.parent().expect("index path should have a parent"))?;
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
     Ok(())
 }
 
@@ -310,7 +314,11 @@ fn project_insights_collect_tool_and_file_stats() -> Result<()> {
         HardDebuggingTurn { step_count: 55, .. }
     ));
 
-    fs::remove_dir_all(index_path.parent().expect("index path should have a parent"))?;
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
     Ok(())
 }
 

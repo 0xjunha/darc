@@ -206,9 +206,13 @@ dependencies = [
  "anyhow",
  "clap",
  "darc-core",
+ "darc-index",
  "darc-rollout-audit",
+ "darc-test-utils",
+ "rusqlite",
  "serde",
  "serde_json",
+ "toml",
 ]
 
 [[package]]
