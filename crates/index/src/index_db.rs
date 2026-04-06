@@ -81,6 +81,10 @@ fn initialize_index_database(connection: &mut Connection) -> Result<()> {
 
             CREATE INDEX IF NOT EXISTS turns_project_provider_started_idx
                 ON turns (project_id, provider, started_at);
+            CREATE INDEX IF NOT EXISTS turns_started_idx
+                ON turns (started_at);
+            CREATE INDEX IF NOT EXISTS turns_project_started_idx
+                ON turns (project_id, started_at);
             CREATE INDEX IF NOT EXISTS sessions_project_provider_schema_idx
                 ON sessions (project_id, provider, schema_id, determinism);
             ",

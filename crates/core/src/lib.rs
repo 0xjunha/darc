@@ -5,6 +5,7 @@ pub(crate) mod constants;
 mod index;
 mod init;
 mod project;
+pub mod query;
 mod sync;
 
 pub use analytics::{

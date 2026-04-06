@@ -4,9 +4,9 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-pub use darc_analytics::{ClaudeRolloutAnalyticsReport, ClaudeSchemaAnalytics};
-use darc_analytics::{ProjectAnalyticsRequest, report_project_claude_rollout_analytics};
 use darc_index::INDEX_DB_FILE_NAME;
+pub use darc_query::{ClaudeRolloutAnalyticsReport, ClaudeSchemaAnalytics};
+use darc_query::{ProjectAnalyticsRequest, report_project_claude_rollout_analytics};
 
 use crate::{active_project::load_active_project, default_root_path};
 
