@@ -285,6 +285,10 @@ fn project_insights_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["schema"], "darc.query.insights.project.v1");
     assert_eq!(value["data"]["most_common_tools"][0]["name"], "Read");
     assert_eq!(value["data"]["total_time_ms"], 5000);
+    assert_eq!(
+        value["data"]["most_read_files"][0]["repo_relative_path"],
+        "README.md"
+    );
 
     remove_root(&root)?;
     Ok(())
@@ -318,6 +322,7 @@ fn turn_insights_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["tool_output_count"], 1);
     assert_eq!(value["data"]["tools"][0]["name"], "Read");
     assert_eq!(value["data"]["files"][0]["path"], "README.md");
+    assert_eq!(value["data"]["files"][0]["repo_relative_path"], "README.md");
     assert_eq!(value["data"]["files"][0]["read_count"], 1);
 
     remove_root(&root)?;

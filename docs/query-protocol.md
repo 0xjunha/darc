@@ -143,6 +143,7 @@ Today:
 - shell commands only contribute file analytics when Darc can extract a concrete path from the command text; implicit cwd-only access and dynamic shell-variable expansion may still be omitted
 - this layer is best effort, not a perfect trace: archived rollouts record tool payloads and command text, not syscall-level file I/O, so commands such as `git`, `cargo`, inline Python, shell loops, subshells, or helper scripts may touch files without naming every path explicitly
 - paths are currently reported as the raw extracted path string
+- `repo_relative_path` is included on file-usage rows when the indexed access already carried a repo-relative label; otherwise it is `null`
 
 These rules may evolve before stabilization.
 

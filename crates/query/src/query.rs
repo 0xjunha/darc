@@ -170,6 +170,7 @@ pub struct ToolUsageStat {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FileUsageStat {
     pub path: String,
+    pub repo_relative_path: Option<String>,
     pub read_count: u64,
     pub write_count: u64,
 }
@@ -1218,6 +1219,7 @@ fn query_file_usage_stats(
                     "
                     SELECT
                         path,
+                        MIN(repo_relative_path) AS repo_relative_path,
                         SUM(CASE WHEN access_type IN ('read', 'list') THEN 1 ELSE 0 END) AS read_count,
                         SUM(CASE WHEN access_type IN ('write', 'edit') THEN 1 ELSE 0 END) AS write_count
                     FROM file_accesses
@@ -1240,8 +1242,9 @@ fn query_file_usage_stats(
                     |row| {
                         Ok((
                             row.get::<_, String>(0)?,
-                            row.get::<_, i64>(1)?,
+                            row.get::<_, Option<String>>(1)?,
                             row.get::<_, i64>(2)?,
+                            row.get::<_, i64>(3)?,
                         ))
                     },
                 )
@@ -1264,6 +1267,7 @@ fn query_file_usage_stats(
                     )
                     SELECT
                         file_accesses.path,
+                        MIN(file_accesses.repo_relative_path) AS repo_relative_path,
                         SUM(CASE
                             WHEN file_accesses.access_type IN ('read', 'list') THEN 1
                             ELSE 0
@@ -1286,8 +1290,9 @@ fn query_file_usage_stats(
                 .query_map((project_id, limit), |row| {
                     Ok((
                         row.get::<_, String>(0)?,
-                        row.get::<_, i64>(1)?,
+                        row.get::<_, Option<String>>(1)?,
                         row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
                     ))
                 })
                 .context("failed to query project file usage rows")?
@@ -1296,13 +1301,16 @@ fn query_file_usage_stats(
         }
     };
     rows.into_iter()
-        .map(|(path, read_count, write_count)| -> Result<_> {
-            Ok(FileUsageStat {
-                path,
-                read_count: sql_count_to_u64(read_count)?,
-                write_count: sql_count_to_u64(write_count)?,
-            })
-        })
+        .map(
+            |(path, repo_relative_path, read_count, write_count)| -> Result<_> {
+                Ok(FileUsageStat {
+                    path,
+                    repo_relative_path,
+                    read_count: sql_count_to_u64(read_count)?,
+                    write_count: sql_count_to_u64(write_count)?,
+                })
+            },
+        )
         .collect()
 }
 
