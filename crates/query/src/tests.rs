@@ -13,13 +13,13 @@ use darc_paths::SourceKind;
 use darc_rollout::model::NormalizedTurnStep;
 use darc_test_utils::{
     IndexedSessionFixture, IndexedTurnFixture, insert_indexed_session, insert_indexed_turn,
-    unique_test_dir,
+    seed_legacy_codex_index, unique_test_dir,
 };
 
 use crate::query::{
     HardDebuggingTurn, LocalDate, ProjectInsights, SessionKind, TurnInsights,
     build_project_insights, build_turn_insights, build_workspace_insights,
-    open_existing_index_database, parse_session_kind,
+    open_existing_index_database, parse_session_kind, smoke_test_sql,
 };
 
 /// Builds one temporary SQLite index path for query tests.
@@ -48,6 +48,44 @@ fn rejects_missing_existing_index_database() {
     let error = open_existing_index_database(&test_index_path("missing")).unwrap_err();
 
     assert!(error.to_string().contains("index database not found"));
+}
+
+#[test]
+fn prepares_all_query_sql_against_current_schema() -> Result<()> {
+    let index_path = test_index_path("query-sql-smoke-current");
+    let connection = open_index_database(&index_path)?;
+
+    smoke_test_sql(&connection)?;
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn prepares_all_query_sql_after_legacy_codex_migration() -> Result<()> {
+    let index_path = test_index_path("query-sql-smoke-legacy");
+    fs::create_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    let connection = rusqlite::Connection::open(&index_path)?;
+    seed_legacy_codex_index(&connection)?;
+    drop(connection);
+
+    let migrated = open_index_database(&index_path)?;
+    smoke_test_sql(&migrated)?;
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
 }
 
 #[test]
