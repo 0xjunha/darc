@@ -20,6 +20,8 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 darc-index = { workspace = true }
+darc-paths = { workspace = true }
+darc-rollout = { workspace = true }
 darc-test-utils = { workspace = true }
 rusqlite = { workspace = true }
 toml = { workspace = true }

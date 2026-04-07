@@ -1,4 +1,4 @@
-# Darc Query protocol
+# Darc Query Protocol
 
 `darc query` is the machine-readable read protocol for desktop and other clients.
 
@@ -132,9 +132,14 @@ Current file analytics are provisional heuristics derived from normalized tool-c
 
 Today:
 
-- Darc extracts file-like arguments from `file_path`, `path`, and `file`
-- tool names containing `read`, `view`, or `list` count toward read-style file analytics
-- tool names containing `write`, `edit`, or `replace` count toward write-style file analytics
+- Darc extracts file-like arguments from explicit tool payload keys such as `file_path`, `path`, and `file`
+- explicit tool names such as `read`, `grep`, and `view` count toward read-style file analytics
+- explicit tool names such as `glob` and `list` count toward list-style file analytics
+- explicit tool names such as `write`, `edit`, `replace`, and `patch` count toward write/edit-style file analytics
+- Darc also derives file accesses from selected shell-like tools by parsing observed command forms
+- current shell rules cover common explicit file-target commands such as `sed`, `rg`, `grep`, `cat`, `nl`, `ls`, `find`, `head`, `tail`, `awk`, `jq`, `cp`, `mv`, `rm`, `mkdir`, `touch`, `chmod`, and `apply_patch`
+- shell commands only contribute file analytics when Darc can extract a concrete path from the command text; implicit cwd-only access and dynamic shell-variable expansion may still be omitted
+- this layer is best effort, not a perfect trace: archived rollouts record tool payloads and command text, not syscall-level file I/O, so commands such as `git`, `cargo`, inline Python, shell loops, subshells, or helper scripts may touch files without naming every path explicitly
 - paths are currently reported as the raw extracted path string
 
 These rules may evolve before stabilization.
