@@ -4,11 +4,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result, bail};
 use darc_paths::normalize_project_path;
 use serde::Deserialize;
 use serde_json::Value;
 
+use super::error::{CodexError, Result};
 use super::version::{CodexSchemaId, resolve_codex_schema};
 use crate::ParseDeterminism;
 
@@ -73,12 +73,11 @@ pub fn reconcile_rollout_session_id(
         (Some(filename_session_id), Some(payload_session_id))
             if filename_session_id != payload_session_id =>
         {
-            bail!(
-                "mismatched Codex session ids in {}: filename={} payload={}",
-                source_path.display(),
-                filename_session_id,
-                payload_session_id
-            );
+            Err(CodexError::mismatched_session_ids(
+                source_path,
+                &filename_session_id,
+                payload_session_id,
+            ))
         }
         (Some(filename_session_id), _) => Ok(Some(filename_session_id)),
         (None, Some(payload_session_id)) => Ok(Some(payload_session_id.to_owned())),
@@ -104,10 +103,14 @@ pub fn read_rollout_session_meta(path: &Path) -> Result<Option<CodexRolloutSessi
 
 /// Reads the first non-empty rollout line bytes from one JSONL file.
 pub fn read_first_rollout_line_bytes(path: &Path) -> Result<Option<Vec<u8>>> {
-    let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let file = File::open(path).map_err(|source| CodexError::open_file(path, source))?;
     let mut reader = BufReader::new(file);
     let mut line = Vec::new();
-    if reader.read_until(b'\n', &mut line)? == 0 {
+    if reader
+        .read_until(b'\n', &mut line)
+        .map_err(|source| CodexError::read_line(path, 1, source))?
+        == 0
+    {
         return Ok(None);
     }
     Ok(Some(line))
@@ -118,12 +121,9 @@ fn read_first_rollout_line(path: &Path) -> Result<Option<String>> {
     let Some(line) = read_first_rollout_line_bytes(path)? else {
         return Ok(None);
     };
-    String::from_utf8(line).map(Some).with_context(|| {
-        format!(
-            "failed to decode the first JSONL line in {}",
-            path.display()
-        )
-    })
+    String::from_utf8(line)
+        .map(Some)
+        .map_err(|source| CodexError::decode_first_line(path, source))
 }
 
 /// Parses one raw JSONL line into a Codex rollout header.
@@ -131,11 +131,8 @@ pub fn parse_rollout_header_line(
     line: &str,
     source_path: &Path,
 ) -> Result<Option<CodexRolloutHeader>> {
-    let raw: RawHeaderLine = serde_json::from_str(line).with_context(|| {
-        format!(
-            "failed to deserialize the first JSONL line in {}",
-            source_path.display()
-        )
+    let raw: RawHeaderLine = serde_json::from_str(line).map_err(|source| {
+        CodexError::deserialize_header_json(source_path, "the first JSONL line", source)
     })?;
     parse_rollout_header_parts(&raw.kind, raw.payload, source_path)
 }
@@ -145,11 +142,8 @@ pub fn parse_rollout_session_meta_line(
     line: &str,
     source_path: &Path,
 ) -> Result<Option<CodexRolloutSessionMeta>> {
-    let raw: RawHeaderLine = serde_json::from_str(line).with_context(|| {
-        format!(
-            "failed to deserialize the first JSONL line in {}",
-            source_path.display()
-        )
+    let raw: RawHeaderLine = serde_json::from_str(line).map_err(|source| {
+        CodexError::deserialize_header_json(source_path, "the first JSONL line", source)
     })?;
     parse_rollout_session_meta_parts(&raw.kind, raw.payload, source_path).map(|meta| {
         meta.map(|meta| CodexRolloutSessionMeta {
@@ -170,15 +164,10 @@ pub(crate) fn parse_rollout_header_parts(
         return Ok(None);
     };
     let Some(cli_version) = meta.cli_version else {
-        bail!("missing Codex cli_version in {}", source_path.display());
+        return Err(CodexError::missing_cli_version(source_path));
     };
-    let resolution = resolve_codex_schema(&cli_version).with_context(|| {
-        format!(
-            "unsupported Codex rollout schema for cli_version `{}` in {}",
-            cli_version,
-            source_path.display()
-        )
-    })?;
+    let resolution = resolve_codex_schema(&cli_version)
+        .map_err(|source| CodexError::resolve_schema(source_path, &cli_version, source))?;
 
     Ok(Some(CodexRolloutHeader {
         session_id: meta.session_id,
@@ -199,11 +188,8 @@ fn parse_rollout_session_meta_parts(
         return Ok(None);
     }
 
-    let payload: RawSessionMetaPayload = serde_json::from_value(payload).with_context(|| {
-        format!(
-            "failed to deserialize session_meta payload in {}",
-            source_path.display()
-        )
+    let payload: RawSessionMetaPayload = serde_json::from_value(payload).map_err(|source| {
+        CodexError::deserialize_header_json(source_path, "session_meta payload", source)
     })?;
 
     Ok(Some(ParsedSessionMeta {

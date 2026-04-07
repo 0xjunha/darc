@@ -768,5 +768,5 @@ pub(crate) fn select_codex_candidate(candidates: &[CodexCandidate]) -> Option<Co
 
 /// Extracts the Codex `session_meta` id and cwd from the first rollout line.
 pub(crate) fn extract_codex_session_meta(path: &Path) -> Result<Option<CodexRolloutSessionMeta>> {
-    read_rollout_session_meta(path)
+    Ok(read_rollout_session_meta(path)?)
 }

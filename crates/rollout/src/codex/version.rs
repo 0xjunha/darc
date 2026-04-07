@@ -1,8 +1,10 @@
 use std::{cmp::Ordering, fmt};
 
-use anyhow::{Result, bail};
-
+use super::error::{CodexCliVersionParseError, CodexSchemaError};
 use crate::ParseDeterminism;
+
+type ParseResult<T> = std::result::Result<T, CodexCliVersionParseError>;
+type SchemaResult<T> = std::result::Result<T, CodexSchemaError>;
 
 /// Parses one Codex CLI version string into comparable components.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,7 +37,7 @@ impl CodexCliVersion {
     }
 
     /// Parses a persisted Codex CLI version such as `0.118.0-alpha.2`.
-    pub fn parse(value: &str) -> Result<Self> {
+    pub fn parse(value: &str) -> ParseResult<Self> {
         let (core, prerelease) = match value.split_once('-') {
             Some((core, prerelease)) => (core, Some(prerelease)),
             None => (value, None),
@@ -45,12 +47,18 @@ impl CodexCliVersion {
         let minor = parse_numeric_part(parts.next(), value, "minor")?;
         let patch = parse_numeric_part(parts.next(), value, "patch")?;
         if parts.next().is_some() {
-            bail!("unsupported Codex CLI version format `{value}`");
+            return Err(CodexCliVersionParseError::InvalidFormat {
+                raw_version: value.to_owned(),
+            });
         }
 
         let prerelease = match prerelease {
             None => None,
-            Some("") => bail!("unsupported Codex CLI prerelease format `{value}`"),
+            Some("") => {
+                return Err(CodexCliVersionParseError::InvalidPrereleaseFormat {
+                    raw_version: value.to_owned(),
+                });
+            }
             Some(prerelease) => Some(CodexPrerelease::parse(prerelease, value)?),
         };
 
@@ -166,10 +174,13 @@ enum CodexPrerelease {
 
 impl CodexPrerelease {
     /// Parses one prerelease segment such as `alpha.2`.
-    fn parse(value: &str, raw_version: &str) -> Result<Self> {
+    fn parse(value: &str, raw_version: &str) -> ParseResult<Self> {
         if let Some(number) = value.strip_prefix("alpha.") {
-            return Ok(Self::Alpha(number.parse().map_err(|error| {
-                anyhow::anyhow!("unsupported Codex CLI alpha prerelease `{raw_version}`: {error}")
+            return Ok(Self::Alpha(number.parse().map_err(|source| {
+                CodexCliVersionParseError::InvalidAlphaPrerelease {
+                    raw_version: raw_version.to_owned(),
+                    source,
+                }
             })?));
         }
         Ok(Self::Other(value.to_owned()))
@@ -260,12 +271,14 @@ pub(crate) struct CodexSchemaResolution {
 }
 
 /// Resolves the parser epoch for one Codex CLI version string.
-pub(crate) fn resolve_codex_schema(cli_version: &str) -> Result<CodexSchemaResolution> {
-    let version = CodexCliVersion::parse(cli_version)?;
+pub(crate) fn resolve_codex_schema(cli_version: &str) -> SchemaResult<CodexSchemaResolution> {
+    let version = CodexCliVersion::parse(cli_version).map_err(CodexSchemaError::from)?;
 
     let schema_id = if version < CodexCliVersion::alpha(0, 35, 0, 3) {
         if version < CodexCliVersion::stable(0, 33, 0) {
-            bail!("unsupported Codex CLI version `{cli_version}`");
+            return Err(CodexSchemaError::UnsupportedVersion {
+                cli_version: cli_version.to_owned(),
+            });
         }
         CodexSchemaId::Initial
     } else if version < CodexCliVersion::alpha(0, 35, 0, 8) {
@@ -292,13 +305,23 @@ pub(crate) fn resolve_codex_schema(cli_version: &str) -> Result<CodexSchemaResol
     })
 }
 
-fn parse_numeric_part(part: Option<&str>, raw_version: &str, label: &str) -> Result<u32> {
+fn parse_numeric_part(
+    part: Option<&str>,
+    raw_version: &str,
+    label: &'static str,
+) -> ParseResult<u32> {
     let Some(part) = part else {
-        bail!("unsupported Codex CLI version format `{raw_version}`");
+        return Err(CodexCliVersionParseError::InvalidFormat {
+            raw_version: raw_version.to_owned(),
+        });
     };
-    part.parse().map_err(|error| {
-        anyhow::anyhow!("invalid Codex CLI {label} version in `{raw_version}`: {error}")
-    })
+    part.parse().map_err(
+        |source| CodexCliVersionParseError::InvalidNumericComponent {
+            raw_version: raw_version.to_owned(),
+            label,
+            source,
+        },
+    )
 }
 
 #[cfg(test)]

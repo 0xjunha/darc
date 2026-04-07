@@ -8,16 +8,17 @@ use std::{
 use anyhow::{Context, Result};
 use darc_paths::SourceKind;
 #[cfg(test)]
-use darc_rollout::codex::CodexRollout;
+use darc_rollout::codex::{CodexRollout, parse_rollout_file as parse_codex_rollout_file};
 use darc_rollout::{
     ParseDeterminism,
     claude::{
         ClaudeArchivedContext, ClaudeSessionKind, parse_rollout_file as parse_claude_rollout_file,
     },
     codex::{
-        CodexRolloutHeader, CodexRolloutSink, compare_rollout_priority, parse_rollout_file_into,
-        parse_rollout_file_session_id, parse_rollout_session_meta_line,
-        read_first_rollout_line_bytes, reconcile_rollout_session_id,
+        CodexRolloutHeader, CodexRolloutSink, compare_rollout_priority,
+        parse_rollout_file_into as parse_codex_rollout_file_into, parse_rollout_file_session_id,
+        parse_rollout_session_meta_line, read_first_rollout_line_bytes,
+        reconcile_rollout_session_id,
     },
     model::NormalizedTurn as CodexTurn,
 };
@@ -35,7 +36,7 @@ pub const INDEX_DB_FILE_NAME: &str = "index.sqlite";
 /// Parses one Codex rollout file into user-visible turns.
 #[cfg(test)]
 pub(crate) fn parse_codex_rollout(path: &Path) -> Result<CodexRollout> {
-    darc_rollout::codex::parse_rollout_file(path)
+    Ok(parse_codex_rollout_file(path)?)
 }
 
 /// Reports the results of indexing archived sessions for one project.
@@ -193,6 +194,28 @@ impl IndexedSessionSnapshot {
         self.archive_path == candidate.archive_path
             && self.source_size == Some(candidate.size)
             && self.source_mtime_ms == Some(candidate.mtime_ms)
+    }
+}
+
+/// Wraps one SQLite sink failure so the streaming parser can surface it as a trait object.
+#[derive(Debug)]
+struct SqliteSessionSinkError(anyhow::Error);
+
+impl From<anyhow::Error> for SqliteSessionSinkError {
+    fn from(value: anyhow::Error) -> Self {
+        Self(value)
+    }
+}
+
+impl std::fmt::Display for SqliteSessionSinkError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl std::error::Error for SqliteSessionSinkError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.chain().nth(1)
     }
 }
 
@@ -432,18 +455,27 @@ impl<'conn> SqliteCodexRolloutSink<'conn> {
 }
 
 impl CodexRolloutSink for SqliteCodexRolloutSink<'_> {
-    fn begin_rollout(&mut self, header: &CodexRolloutHeader) -> Result<()> {
-        self.writer.begin_session(
-            &header.session_id,
-            &header.cwd,
-            Some(&header.cli_version),
-            header.schema_id.as_str(),
-            header.determinism,
-        )
+    type Error = SqliteSessionSinkError;
+
+    fn begin_rollout(
+        &mut self,
+        header: &CodexRolloutHeader,
+    ) -> std::result::Result<(), Self::Error> {
+        self.writer
+            .begin_session(
+                &header.session_id,
+                &header.cwd,
+                Some(&header.cli_version),
+                header.schema_id.as_str(),
+                header.determinism,
+            )
+            .map_err(SqliteSessionSinkError::from)
     }
 
-    fn push_turn(&mut self, turn: CodexTurn) -> Result<()> {
-        self.writer.push_turn(turn)
+    fn push_turn(&mut self, turn: CodexTurn) -> std::result::Result<(), Self::Error> {
+        self.writer
+            .push_turn(turn)
+            .map_err(SqliteSessionSinkError::from)
     }
 }
 
@@ -1141,7 +1173,7 @@ fn index_archived_rollout_candidate(
     match archived.provider {
         SourceKind::Codex => {
             let mut sink = SqliteCodexRolloutSink::new(connection, project_id, archived);
-            parse_rollout_file_into(&archived.source_path, &mut sink)
+            parse_codex_rollout_file_into(&archived.source_path, &mut sink)
                 .with_context(|| format!("failed to parse {}", archived.source_path.display()))
         }
         SourceKind::Claude => {

@@ -4,9 +4,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 
+use super::error::{ClaudeError, Result};
 use super::version::{ClaudeSchemaEpoch, ClaudeSchemaResolution, resolve_claude_schema};
 use crate::{
     ParseDeterminism,
@@ -50,7 +50,7 @@ pub struct ClaudeRollout {
 
 /// Parses one archived Claude rollout file into normalized turns.
 pub fn parse_rollout_file(path: &Path, context: &ClaudeArchivedContext) -> Result<ClaudeRollout> {
-    let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let file = File::open(path).map_err(|source| ClaudeError::open_file(path, source))?;
     parse_rollout_reader(BufReader::new(file), path, context)
 }
 
@@ -63,12 +63,7 @@ pub(crate) fn parse_rollout_reader<R: BufRead>(
     let mut parser = ClaudeRolloutParser::new(source_path, context);
     for (index, line) in reader.lines().enumerate() {
         let line_no = index + 1;
-        let line = line.with_context(|| {
-            format!(
-                "failed to read Claude rollout line {line_no} from {}",
-                source_path.display()
-            )
-        })?;
+        let line = line.map_err(|source| ClaudeError::read_line(source_path, line_no, source))?;
         parser.process_line(line_no, &line)?;
     }
     parser.finish()
@@ -141,18 +136,11 @@ impl<'a> ClaudeRolloutParser<'a> {
 
     /// Applies one raw JSONL line to the current parser state.
     fn process_line(&mut self, line_no: usize, line: &str) -> Result<()> {
-        let value: Value = serde_json::from_str(line).with_context(|| {
-            format!(
-                "failed to parse Claude JSONL line {line_no} in {}",
-                self.source_path.display()
-            )
-        })?;
-        let object = value.as_object().with_context(|| {
-            format!(
-                "Claude rollout line {line_no} in {} is not a JSON object",
-                self.source_path.display()
-            )
-        })?;
+        let value: Value = serde_json::from_str(line)
+            .map_err(|source| ClaudeError::parse_json_line(self.source_path, line_no, source))?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| ClaudeError::json_line_not_object(self.source_path, line_no))?;
 
         self.capture_metadata(object)?;
         self.process_epoch_line(self.current_epoch(), object)
@@ -255,12 +243,10 @@ impl<'a> ClaudeRolloutParser<'a> {
             self.turns.push(turn.finish());
         }
 
-        let cwd = self.cwd.clone().with_context(|| {
-            format!(
-                "missing Claude cwd metadata in {}",
-                self.source_path.display()
-            )
-        })?;
+        let cwd = self
+            .cwd
+            .clone()
+            .ok_or_else(|| ClaudeError::missing_cwd_metadata(self.source_path))?;
         let resolution = self.schema_resolution();
         let determinism = if resolution.determinism.is_exact() && !self.best_effort {
             ParseDeterminism::Exact
@@ -288,20 +274,21 @@ impl<'a> ClaudeRolloutParser<'a> {
         if let Some(raw_session_id) = object.get("sessionId").and_then(Value::as_str)
             && raw_session_id != self.context.expected_rollout_session_id
         {
-            bail!(
-                "mismatched Claude session ids in {}: archive expects `{}`, rollout reported `{raw_session_id}`",
-                self.source_path.display(),
-                self.context.expected_rollout_session_id
-            );
+            return Err(ClaudeError::mismatched_session_id(
+                self.source_path,
+                &self.context.expected_rollout_session_id,
+                raw_session_id,
+            ));
         }
         if let Some(expected_agent_id) = &self.context.expected_agent_id
             && let Some(raw_agent_id) = object.get("agentId").and_then(Value::as_str)
             && normalize_agent_id(raw_agent_id) != normalize_agent_id(expected_agent_id)
         {
-            bail!(
-                "mismatched Claude agent ids in {}: archive expects `{expected_agent_id}`, rollout reported `{raw_agent_id}`",
-                self.source_path.display()
-            );
+            return Err(ClaudeError::mismatched_agent_id(
+                self.source_path,
+                expected_agent_id,
+                raw_agent_id,
+            ));
         }
 
         if let Some(cwd) = object.get("cwd").and_then(Value::as_str) {
@@ -332,7 +319,7 @@ impl<'a> ClaudeRolloutParser<'a> {
         let message = object
             .get("message")
             .and_then(Value::as_object)
-            .context("missing Claude user message object")?;
+            .ok_or_else(|| ClaudeError::missing_user_message_object(self.source_path))?;
         let timestamp = object
             .get("timestamp")
             .and_then(Value::as_str)
@@ -405,7 +392,7 @@ impl<'a> ClaudeRolloutParser<'a> {
         let message = object
             .get("message")
             .and_then(Value::as_object)
-            .context("missing Claude assistant message object")?;
+            .ok_or_else(|| ClaudeError::missing_assistant_message_object(self.source_path))?;
         if message.get("role").and_then(Value::as_str) != Some("assistant") {
             self.best_effort = true;
             turn.steps.push(CodexTurnStep::ProviderResponseItem {
@@ -415,8 +402,9 @@ impl<'a> ClaudeRolloutParser<'a> {
                     .unwrap_or_default()
                     .to_owned(),
                 item_type: "claude.assistant".to_owned(),
-                payload_json: serde_json::to_string(&Value::Object(object.clone()))
-                    .context("failed to serialize Claude assistant payload")?,
+                payload_json: serde_json::to_string(&Value::Object(object.clone())).map_err(
+                    |source| ClaudeError::serialize_json("Claude assistant payload", source),
+                )?,
             });
             return Ok(());
         }
@@ -479,8 +467,8 @@ impl<'a> ClaudeRolloutParser<'a> {
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_owned();
-                    let arguments = value_to_text(item_object.get("input").unwrap_or(&Value::Null))
-                        .context("failed to serialize Claude tool input")?;
+                    let arguments =
+                        value_to_text(item_object.get("input").unwrap_or(&Value::Null))?;
                     turn.steps.push(CodexTurnStep::ToolCall {
                         timestamp: timestamp.clone(),
                         call_id,
@@ -493,8 +481,9 @@ impl<'a> ClaudeRolloutParser<'a> {
                     turn.steps.push(CodexTurnStep::ProviderResponseItem {
                         timestamp: timestamp.clone(),
                         item_type: format!("claude.assistant_content.{other}"),
-                        payload_json: serde_json::to_string(item)
-                            .context("failed to serialize Claude assistant content item")?,
+                        payload_json: serde_json::to_string(item).map_err(|source| {
+                            ClaudeError::serialize_json("Claude assistant content item", source)
+                        })?,
                     });
                 }
             }
@@ -591,8 +580,9 @@ impl<'a> ClaudeRolloutParser<'a> {
                     "" => "claude.user_content".to_owned(),
                     other => format!("claude.user_content.{other}"),
                 },
-                payload_json: serde_json::to_string(item)
-                    .context("failed to serialize Claude user content item")?,
+                payload_json: serde_json::to_string(item).map_err(|source| {
+                    ClaudeError::serialize_json("Claude user content item", source)
+                })?,
             });
         }
 
@@ -613,8 +603,9 @@ impl<'a> ClaudeRolloutParser<'a> {
         turn.steps.push(CodexTurnStep::ProviderResponseItem {
             timestamp: timestamp.to_owned(),
             item_type,
-            payload_json: serde_json::to_string(&payload)
-                .context("failed to serialize preserved Claude provider item")?,
+            payload_json: serde_json::to_string(&payload).map_err(|source| {
+                ClaudeError::serialize_json("preserved Claude provider item", source)
+            })?,
         });
         Ok(())
     }
@@ -802,8 +793,9 @@ fn tool_result_output(
     if let Some(tool_use_result) = user_line.get("toolUseResult").cloned()
         && (tool_use_result.get("agentId").is_some() || tool_use_result.get("agentType").is_some())
     {
-        return serde_json::to_string(&tool_use_result)
-            .context("failed to serialize Claude delegated tool payload");
+        return serde_json::to_string(&tool_use_result).map_err(|source| {
+            ClaudeError::serialize_json("Claude delegated tool payload", source)
+        });
     }
     if result
         .get("is_error")
@@ -814,9 +806,9 @@ fn tool_result_output(
             "is_error": true,
             "content": content,
         }))
-        .context("failed to serialize Claude tool error payload")
+        .map_err(|source| ClaudeError::serialize_json("Claude tool error payload", source))
     } else {
-        value_to_text(&content).context("failed to serialize Claude tool payload")
+        value_to_text(&content)
     }
 }
 
@@ -837,7 +829,7 @@ fn attachment_step(object: &Map<String, Value>) -> Result<Option<CodexTurnStep>>
             .unwrap_or_default()
             .to_owned(),
         payload_json: serde_json::to_string(&Value::Object(attachment.clone()))
-            .context("failed to serialize Claude attachment payload")?,
+            .map_err(|source| ClaudeError::serialize_json("Claude attachment payload", source))?,
     }))
 }
 
@@ -877,8 +869,9 @@ fn progress_step(object: &Map<String, Value>) -> Result<Option<CodexTurnStep>> {
             .and_then(Value::as_str)
             .filter(|text| !text.is_empty())
             .map(str::to_owned),
-        payload_json: serde_json::to_string(&Value::Object(data.clone()))
-            .context("failed to serialize Claude agent progress payload")?,
+        payload_json: serde_json::to_string(&Value::Object(data.clone())).map_err(|source| {
+            ClaudeError::serialize_json("Claude agent progress payload", source)
+        })?,
     }))
 }
 
@@ -926,8 +919,9 @@ fn system_step(object: &Map<String, Value>) -> Result<Option<CodexTurnStep>> {
                 .and_then(Value::as_str)
                 .filter(|text| !text.is_empty())
                 .map(str::to_owned),
-            payload_json: serde_json::to_string(&Value::Object(object.clone()))
-                .context("failed to serialize Claude task lifecycle payload")?,
+            payload_json: serde_json::to_string(&Value::Object(object.clone())).map_err(
+                |source| ClaudeError::serialize_json("Claude task lifecycle payload", source),
+            )?,
         }));
     }
 
@@ -960,8 +954,9 @@ fn system_step(object: &Map<String, Value>) -> Result<Option<CodexTurnStep>> {
                 .get("level")
                 .and_then(Value::as_str)
                 .map(str::to_owned),
-            payload_json: serde_json::to_string(&Value::Object(object.clone()))
-                .context("failed to serialize Claude hook summary payload")?,
+            payload_json: serde_json::to_string(&Value::Object(object.clone())).map_err(
+                |source| ClaudeError::serialize_json("Claude hook summary payload", source),
+            )?,
         }));
     }
 
@@ -1006,8 +1001,9 @@ fn delegation_result_step(
             .and_then(Value::as_str)
             .filter(|text| !text.is_empty())
             .map(str::to_owned),
-        payload_json: serde_json::to_string(&Value::Object(tool_use_result.clone()))
-            .context("failed to serialize Claude delegated tool result payload")?,
+        payload_json: serde_json::to_string(&Value::Object(tool_use_result.clone())).map_err(
+            |source| ClaudeError::serialize_json("Claude delegated tool result payload", source),
+        )?,
     }))
 }
 
@@ -1015,6 +1011,7 @@ fn delegation_result_step(
 fn value_to_text(value: &Value) -> Result<String> {
     match value {
         Value::String(text) => Ok(text.clone()),
-        other => serde_json::to_string(other).context("failed to serialize JSON value"),
+        other => serde_json::to_string(other)
+            .map_err(|source| ClaudeError::serialize_json("JSON value", source)),
     }
 }

@@ -276,6 +276,7 @@ dependencies = [
  "darc-paths",
  "serde",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]

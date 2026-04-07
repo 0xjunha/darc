@@ -15,7 +15,11 @@ use crate::model::{
 };
 
 fn parse_fixture(input: &str, context: &ClaudeArchivedContext) -> Result<ClaudeRollout> {
-    parse_rollout_reader(Cursor::new(input), Path::new("fixture.jsonl"), context)
+    Ok(parse_rollout_reader(
+        Cursor::new(input),
+        Path::new("fixture.jsonl"),
+        context,
+    )?)
 }
 
 fn fixture_path(name: &str) -> PathBuf {
@@ -25,7 +29,7 @@ fn fixture_path(name: &str) -> PathBuf {
 }
 
 fn parse_fixture_file(name: &str, context: &ClaudeArchivedContext) -> Result<ClaudeRollout> {
-    parse_rollout_file(&fixture_path(name), context)
+    Ok(parse_rollout_file(&fixture_path(name), context)?)
 }
 
 fn primary_context() -> ClaudeArchivedContext {

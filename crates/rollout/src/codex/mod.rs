@@ -1,9 +1,13 @@
+mod error;
 mod header;
 mod parser;
 #[cfg(test)]
 mod tests;
 mod version;
 
+pub use error::{
+    CodexCliVersionParseError, CodexError, CodexSchemaError, ParseIntoError, ParseIntoResult,
+};
 pub use header::{
     CodexRolloutHeader, CodexRolloutSessionMeta, parse_rollout_file_session_id,
     parse_rollout_session_meta_line, read_first_rollout_line_bytes, read_rollout_header,
