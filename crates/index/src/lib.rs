@@ -2,6 +2,8 @@ mod derived_data;
 mod engine;
 mod index_db;
 pub mod policy;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 #[cfg(test)]
 mod tests;
 mod turn_metrics;
