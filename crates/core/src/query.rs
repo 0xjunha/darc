@@ -9,8 +9,9 @@ use darc_paths::SourceKind;
 pub use darc_query::{
     DailyTimeStat, FileUsageStat, HardDebuggingTurn, ProjectInsights, ProjectSummary,
     ProjectTimeStat, RootAvailability, RootInfo, SessionKind, SessionRuntimeStat, SessionSummary,
-    SessionsQueryData, ToolUsageStat, TurnDetail, TurnDetailInsights, TurnInsights, TurnSummary,
-    TurnsQueryData, WorkspaceDailyTimeStat, WorkspaceInsights, WorkspaceQueryData,
+    SessionsQueryData, ShellCommandSummary, ToolUsageStat, TurnDetail, TurnDetailInsights,
+    TurnInsights, TurnSummary, TurnsQueryData, WorkspaceDailyTimeStat, WorkspaceInsights,
+    WorkspaceQueryData,
 };
 use darc_query::{
     ProjectIndexAggregate, list_project_index_aggregates, query_project_insights,
