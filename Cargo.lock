@@ -243,6 +243,7 @@ dependencies = [
  "darc-rollout",
  "rusqlite",
  "serde_json",
+ "thiserror",
  "walkdir",
 ]
 
