@@ -8,3 +8,8 @@ repository.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+darc-index = { workspace = true }
+darc-paths = { workspace = true }
+darc-rollout = { workspace = true }
+rusqlite = { workspace = true }
+serde_json = { workspace = true }

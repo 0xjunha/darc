@@ -313,6 +313,11 @@ name = "darc-test-utils"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "darc-index",
+ "darc-paths",
+ "darc-rollout",
+ "rusqlite",
+ "serde_json",
 ]
 
 [[package]]

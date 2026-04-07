@@ -609,76 +609,8 @@ fn query_turn(
     turn_ordinal: u64,
     include_raw: bool,
 ) -> Result<TurnDetail> {
-    let turn_ordinal =
-        i64::try_from(turn_ordinal).context("turn ordinal exceeds SQLite INTEGER range")?;
-    let row = connection
-        .query_row(
-            "
-            SELECT
-                project_id,
-                provider,
-                session_id,
-                turn_ordinal,
-                turn_id,
-                started_at,
-                completed_at,
-                status,
-                user_message,
-                final_answer_at,
-                final_answer_text,
-                step_count,
-                steps_json
-            FROM turns
-            WHERE project_id = ?1 AND provider = ?2 AND session_id = ?3 AND turn_ordinal = ?4
-            ",
-            (
-                project_id,
-                provider.directory_name(),
-                session_id,
-                turn_ordinal,
-            ),
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, Option<String>>(6)?,
-                    row.get::<_, String>(7)?,
-                    row.get::<_, String>(8)?,
-                    row.get::<_, Option<String>>(9)?,
-                    row.get::<_, Option<String>>(10)?,
-                    row.get::<_, i64>(11)?,
-                    row.get::<_, String>(12)?,
-                ))
-            },
-        )
-        .with_context(|| {
-            format!(
-                "turn {turn_ordinal} was not found in session {session_id} for provider {}",
-                provider.directory_name()
-            )
-        })?;
-    let steps = serde_json::from_str::<Vec<NormalizedTurnStep>>(&row.12)
-        .context("failed to parse stored normalized turn steps")?;
-    Ok(TurnDetail {
-        project_id: row.0,
-        provider: parse_provider(&row.1)?,
-        session_id: row.2,
-        turn_ordinal: sql_count_to_u64(row.3)?,
-        turn_id: row.4,
-        started_at: row.5,
-        completed_at: row.6,
-        status: parse_turn_status(&row.7)?,
-        user_message: row.8,
-        final_answer_at: row.9,
-        final_answer_text: row.10,
-        step_count: sql_count_to_u64(row.11)?,
-        steps,
-        raw_steps_json: include_raw.then_some(row.12),
-    })
+    query_indexed_turn_row(connection, project_id, provider, session_id, turn_ordinal)?
+        .into_turn_detail(include_raw)
 }
 
 /// Builds one turn insights report from indexed turn, tool, and file rows.
@@ -690,27 +622,29 @@ pub(crate) fn build_turn_insights(
     turn_ordinal: u64,
 ) -> Result<TurnInsights> {
     let mut insights =
-        query_turn_insight_header(connection, project_id, provider, session_id, turn_ordinal)?;
-    let mut tools =
-        query_turn_tool_usage_stats(connection, project_id, provider, session_id, turn_ordinal)?;
-    tools.sort_by(|left, right| {
-        right
-            .count
-            .cmp(&left.count)
-            .then_with(|| left.name.cmp(&right.name))
-    });
+        query_indexed_turn_row(connection, project_id, provider, session_id, turn_ordinal)?
+            .into_turn_insights();
+    let mut tools = query_tool_usage_stats(
+        connection,
+        ToolUsageScope::Turn {
+            project_id,
+            provider,
+            session_id,
+            turn_ordinal,
+        },
+    )?;
+    sort_tool_usage_stats(&mut tools);
 
-    let mut files =
-        query_turn_file_usage_stats(connection, project_id, provider, session_id, turn_ordinal)?;
-    files.sort_by(|left, right| {
-        let left_total = left.read_count.saturating_add(left.write_count);
-        let right_total = right.read_count.saturating_add(right.write_count);
-        right_total
-            .cmp(&left_total)
-            .then_with(|| right.write_count.cmp(&left.write_count))
-            .then_with(|| right.read_count.cmp(&left.read_count))
-            .then_with(|| left.path.cmp(&right.path))
-    });
+    let mut files = query_file_usage_stats(
+        connection,
+        FileUsageScope::Turn {
+            project_id,
+            provider,
+            session_id,
+            turn_ordinal,
+        },
+    )?;
+    sort_turn_file_usage_stats(&mut files);
 
     insights.tools = tools;
     insights.files = files;
@@ -851,8 +785,16 @@ pub(crate) fn build_project_insights(
     limit: usize,
 ) -> Result<ProjectInsights> {
     let rows = query_project_insight_rows(connection, project_id, limit)?;
-    let all_files = query_project_file_usage_stats(connection, project_id, limit)?;
-    let most_common_tools = query_project_tool_usage_stats(connection, project_id, limit)?;
+    let all_files = query_file_usage_stats(
+        connection,
+        FileUsageScope::RecentProject { project_id, limit },
+    )?;
+    let mut most_common_tools = query_tool_usage_stats(
+        connection,
+        ToolUsageScope::RecentProject { project_id, limit },
+    )?;
+    sort_tool_usage_stats(&mut most_common_tools);
+    most_common_tools.truncate(10);
     let mut daily_time_map = BTreeMap::<String, u64>::new();
     let mut failure_count = 0_u64;
     let mut total_time_ms = 0_u64;
@@ -924,14 +866,14 @@ pub(crate) fn build_project_insights(
     })
 }
 
-/// Queries one indexed turn row used to build turn insights.
-fn query_turn_insight_header(
+/// Queries one indexed turn row used by turn detail and turn insights.
+fn query_indexed_turn_row(
     connection: &Connection,
     project_id: &str,
     provider: SourceKind,
     session_id: &str,
     turn_ordinal: u64,
-) -> Result<TurnInsights> {
+) -> Result<IndexedTurnRow> {
     let turn_ordinal =
         i64::try_from(turn_ordinal).context("turn ordinal exceeds SQLite INTEGER range")?;
     let row = connection
@@ -942,9 +884,14 @@ fn query_turn_insight_header(
                 provider,
                 session_id,
                 turn_ordinal,
+                turn_id,
                 started_at,
                 completed_at,
                 status,
+                user_message,
+                final_answer_at,
+                final_answer_text,
+                steps_json,
                 COALESCE(duration_ms, 0),
                 COALESCE(step_count, 0),
                 COALESCE(tool_call_count, 0),
@@ -968,17 +915,22 @@ fn query_turn_insight_header(
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, i64>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, Option<String>>(5)?,
-                    row.get::<_, String>(6)?,
-                    row.get::<_, i64>(7)?,
-                    row.get::<_, i64>(8)?,
-                    row.get::<_, i64>(9)?,
-                    row.get::<_, i64>(10)?,
-                    row.get::<_, i64>(11)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                    row.get::<_, Option<String>>(10)?,
+                    row.get::<_, String>(11)?,
                     row.get::<_, i64>(12)?,
                     row.get::<_, i64>(13)?,
                     row.get::<_, i64>(14)?,
+                    row.get::<_, i64>(15)?,
+                    row.get::<_, i64>(16)?,
+                    row.get::<_, i64>(17)?,
+                    row.get::<_, i64>(18)?,
+                    row.get::<_, i64>(19)?,
                 ))
             },
         )
@@ -988,24 +940,27 @@ fn query_turn_insight_header(
                 provider.directory_name()
             )
         })?;
-    Ok(TurnInsights {
+    Ok(IndexedTurnRow {
         project_id: row.0,
         provider: parse_provider(&row.1)?,
         session_id: row.2,
         turn_ordinal: sql_count_to_u64(row.3)?,
-        started_at: row.4,
-        completed_at: row.5,
-        status: parse_turn_status(&row.6)?,
-        duration_ms: sql_count_to_u64(row.7)?,
-        step_count: sql_count_to_u64(row.8)?,
-        tool_call_count: sql_count_to_u64(row.9)?,
-        tool_output_count: sql_count_to_u64(row.10)?,
-        attachment_count: sql_count_to_u64(row.11)?,
-        delegation_count: sql_count_to_u64(row.12)?,
-        hook_summary_count: sql_count_to_u64(row.13)?,
-        has_final_answer: row.14 != 0,
-        tools: Vec::new(),
-        files: Vec::new(),
+        turn_id: row.4,
+        started_at: row.5,
+        completed_at: row.6,
+        status: parse_turn_status(&row.7)?,
+        user_message: row.8,
+        final_answer_at: row.9,
+        final_answer_text: row.10,
+        steps_json: row.11,
+        duration_ms: sql_count_to_u64(row.12)?,
+        step_count: sql_count_to_u64(row.13)?,
+        tool_call_count: sql_count_to_u64(row.14)?,
+        tool_output_count: sql_count_to_u64(row.15)?,
+        attachment_count: sql_count_to_u64(row.16)?,
+        delegation_count: sql_count_to_u64(row.17)?,
+        hook_summary_count: sql_count_to_u64(row.18)?,
+        has_final_answer: row.19 != 0,
     })
 }
 
@@ -1158,43 +1113,82 @@ fn query_project_insight_rows(
         .collect()
 }
 
-/// Queries the derived tool-call rows needed to build one turn insights report.
-fn query_turn_tool_usage_stats(
+/// Queries grouped tool usage stats for one query scope.
+fn query_tool_usage_stats(
     connection: &Connection,
-    project_id: &str,
-    provider: SourceKind,
-    session_id: &str,
-    turn_ordinal: u64,
+    scope: ToolUsageScope<'_>,
 ) -> Result<Vec<ToolUsageStat>> {
-    let turn_ordinal =
-        i64::try_from(turn_ordinal).context("turn ordinal exceeds SQLite INTEGER range")?;
-    let mut statement = connection
-        .prepare(
-            "
-            SELECT tool_name, COUNT(*) AS call_count
-            FROM tool_calls
-            WHERE project_id = ?1
-                AND provider = ?2
-                AND session_id = ?3
-                AND turn_ordinal = ?4
-                AND tool_name IS NOT NULL
-            GROUP BY tool_name
-            ",
-        )
-        .context("failed to prepare turn tool usage query")?;
-    let rows = statement
-        .query_map(
-            (
-                project_id,
-                provider.directory_name(),
-                session_id,
-                turn_ordinal,
-            ),
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
-        )
-        .context("failed to query turn tool usage rows")?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .context("failed to read turn tool usage rows")?;
+    let rows = match scope {
+        ToolUsageScope::Turn {
+            project_id,
+            provider,
+            session_id,
+            turn_ordinal,
+        } => {
+            let turn_ordinal =
+                i64::try_from(turn_ordinal).context("turn ordinal exceeds SQLite INTEGER range")?;
+            let mut statement = connection
+                .prepare(
+                    "
+                    SELECT tool_name, COUNT(*) AS call_count
+                    FROM tool_calls
+                    WHERE project_id = ?1
+                        AND provider = ?2
+                        AND session_id = ?3
+                        AND turn_ordinal = ?4
+                        AND tool_name IS NOT NULL
+                    GROUP BY tool_name
+                    ",
+                )
+                .context("failed to prepare turn tool usage query")?;
+            statement
+                .query_map(
+                    (
+                        project_id,
+                        provider.directory_name(),
+                        session_id,
+                        turn_ordinal,
+                    ),
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .context("failed to query turn tool usage rows")?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .context("failed to read turn tool usage rows")?
+        }
+        ToolUsageScope::RecentProject { project_id, limit } => {
+            let limit = i64::try_from(limit)
+                .context("project insights limit exceeds SQLite INTEGER range")?;
+            let mut statement = connection
+                .prepare(
+                    "
+                    WITH recent_turns AS (
+                        SELECT project_id, provider, session_id, turn_ordinal
+                        FROM turns
+                        WHERE project_id = ?1
+                        ORDER BY started_at DESC, provider ASC, session_id ASC, turn_ordinal ASC
+                        LIMIT ?2
+                    )
+                    SELECT tool_calls.tool_name, COUNT(*) AS call_count
+                    FROM recent_turns
+                    INNER JOIN tool_calls
+                        ON tool_calls.project_id = recent_turns.project_id
+                        AND tool_calls.provider = recent_turns.provider
+                        AND tool_calls.session_id = recent_turns.session_id
+                        AND tool_calls.turn_ordinal = recent_turns.turn_ordinal
+                    WHERE tool_calls.tool_name IS NOT NULL
+                    GROUP BY tool_calls.tool_name
+                    ",
+                )
+                .context("failed to prepare project tool usage query")?;
+            statement
+                .query_map((project_id, limit), |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                })
+                .context("failed to query project tool usage rows")?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .context("failed to read project tool usage rows")?
+        }
+    };
     rows.into_iter()
         .map(|(name, count)| -> Result<_> {
             Ok(ToolUsageStat {
@@ -1205,161 +1199,102 @@ fn query_turn_tool_usage_stats(
         .collect()
 }
 
-/// Queries the derived file-access rows needed to build one turn insights report.
-fn query_turn_file_usage_stats(
+/// Queries grouped file usage stats for one query scope.
+fn query_file_usage_stats(
     connection: &Connection,
-    project_id: &str,
-    provider: SourceKind,
-    session_id: &str,
-    turn_ordinal: u64,
+    scope: FileUsageScope<'_>,
 ) -> Result<Vec<FileUsageStat>> {
-    let turn_ordinal =
-        i64::try_from(turn_ordinal).context("turn ordinal exceeds SQLite INTEGER range")?;
-    let mut statement = connection
-        .prepare(
-            "
-            SELECT
-                path,
-                SUM(CASE WHEN access_type IN ('read', 'list') THEN 1 ELSE 0 END) AS read_count,
-                SUM(CASE WHEN access_type IN ('write', 'edit') THEN 1 ELSE 0 END) AS write_count
-            FROM file_accesses
-            WHERE project_id = ?1
-                AND provider = ?2
-                AND session_id = ?3
-                AND turn_ordinal = ?4
-            GROUP BY path
-            ",
-        )
-        .context("failed to prepare turn file usage query")?;
-    let rows = statement
-        .query_map(
-            (
-                project_id,
-                provider.directory_name(),
-                session_id,
-                turn_ordinal,
-            ),
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, i64>(2)?,
-                ))
-            },
-        )
-        .context("failed to query turn file usage rows")?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .context("failed to read turn file usage rows")?;
-    rows.into_iter()
-        .map(|(path, read_count, write_count)| -> Result<_> {
-            Ok(FileUsageStat {
-                path,
-                read_count: sql_count_to_u64(read_count)?,
-                write_count: sql_count_to_u64(write_count)?,
-            })
-        })
-        .collect()
-}
-
-/// Queries the derived tool-call rows needed to build one project insights report.
-fn query_project_tool_usage_stats(
-    connection: &Connection,
-    project_id: &str,
-    limit: usize,
-) -> Result<Vec<ToolUsageStat>> {
-    let limit =
-        i64::try_from(limit).context("project insights limit exceeds SQLite INTEGER range")?;
-    let mut statement = connection
-        .prepare(
-            "
-            WITH recent_turns AS (
-                SELECT project_id, provider, session_id, turn_ordinal
-                FROM turns
-                WHERE project_id = ?1
-                ORDER BY started_at DESC, provider ASC, session_id ASC, turn_ordinal ASC
-                LIMIT ?2
-            )
-            SELECT tool_calls.tool_name, COUNT(*) AS call_count
-            FROM recent_turns
-            INNER JOIN tool_calls
-                ON tool_calls.project_id = recent_turns.project_id
-                AND tool_calls.provider = recent_turns.provider
-                AND tool_calls.session_id = recent_turns.session_id
-                AND tool_calls.turn_ordinal = recent_turns.turn_ordinal
-            WHERE tool_calls.tool_name IS NOT NULL
-            GROUP BY tool_calls.tool_name
-            ORDER BY call_count DESC, tool_calls.tool_name ASC
-            LIMIT 10
-            ",
-        )
-        .context("failed to prepare project tool usage query")?;
-    let rows = statement
-        .query_map((project_id, limit), |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-        })
-        .context("failed to query project tool usage rows")?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .context("failed to read project tool usage rows")?;
-    rows.into_iter()
-        .map(|(name, count)| -> Result<_> {
-            Ok(ToolUsageStat {
-                name,
-                count: sql_count_to_u64(count)?,
-            })
-        })
-        .collect()
-}
-
-/// Queries the derived file-access rows needed to build one project insights report.
-fn query_project_file_usage_stats(
-    connection: &Connection,
-    project_id: &str,
-    limit: usize,
-) -> Result<Vec<FileUsageStat>> {
-    let limit =
-        i64::try_from(limit).context("project insights limit exceeds SQLite INTEGER range")?;
-    let mut statement = connection
-        .prepare(
-            "
-            WITH recent_turns AS (
-                SELECT project_id, provider, session_id, turn_ordinal
-                FROM turns
-                WHERE project_id = ?1
-                ORDER BY started_at DESC, provider ASC, session_id ASC, turn_ordinal ASC
-                LIMIT ?2
-            )
-            SELECT
-                file_accesses.path,
-                SUM(CASE
-                    WHEN file_accesses.access_type IN ('read', 'list') THEN 1
-                    ELSE 0
-                END) AS read_count,
-                SUM(CASE
-                    WHEN file_accesses.access_type IN ('write', 'edit') THEN 1
-                    ELSE 0
-                END) AS write_count
-            FROM recent_turns
-            INNER JOIN file_accesses
-                ON file_accesses.project_id = recent_turns.project_id
-                AND file_accesses.provider = recent_turns.provider
-                AND file_accesses.session_id = recent_turns.session_id
-                AND file_accesses.turn_ordinal = recent_turns.turn_ordinal
-            GROUP BY file_accesses.path
-            ORDER BY file_accesses.path ASC
-            ",
-        )
-        .context("failed to prepare project file usage query")?;
-    let rows = statement
-        .query_map((project_id, limit), |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, i64>(2)?,
-            ))
-        })
-        .context("failed to query project file usage rows")?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .context("failed to read project file usage rows")?;
+    let rows = match scope {
+        FileUsageScope::Turn {
+            project_id,
+            provider,
+            session_id,
+            turn_ordinal,
+        } => {
+            let turn_ordinal =
+                i64::try_from(turn_ordinal).context("turn ordinal exceeds SQLite INTEGER range")?;
+            let mut statement = connection
+                .prepare(
+                    "
+                    SELECT
+                        path,
+                        SUM(CASE WHEN access_type IN ('read', 'list') THEN 1 ELSE 0 END) AS read_count,
+                        SUM(CASE WHEN access_type IN ('write', 'edit') THEN 1 ELSE 0 END) AS write_count
+                    FROM file_accesses
+                    WHERE project_id = ?1
+                        AND provider = ?2
+                        AND session_id = ?3
+                        AND turn_ordinal = ?4
+                    GROUP BY path
+                    ",
+                )
+                .context("failed to prepare turn file usage query")?;
+            statement
+                .query_map(
+                    (
+                        project_id,
+                        provider.directory_name(),
+                        session_id,
+                        turn_ordinal,
+                    ),
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ))
+                    },
+                )
+                .context("failed to query turn file usage rows")?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .context("failed to read turn file usage rows")?
+        }
+        FileUsageScope::RecentProject { project_id, limit } => {
+            let limit = i64::try_from(limit)
+                .context("project insights limit exceeds SQLite INTEGER range")?;
+            let mut statement = connection
+                .prepare(
+                    "
+                    WITH recent_turns AS (
+                        SELECT project_id, provider, session_id, turn_ordinal
+                        FROM turns
+                        WHERE project_id = ?1
+                        ORDER BY started_at DESC, provider ASC, session_id ASC, turn_ordinal ASC
+                        LIMIT ?2
+                    )
+                    SELECT
+                        file_accesses.path,
+                        SUM(CASE
+                            WHEN file_accesses.access_type IN ('read', 'list') THEN 1
+                            ELSE 0
+                        END) AS read_count,
+                        SUM(CASE
+                            WHEN file_accesses.access_type IN ('write', 'edit') THEN 1
+                            ELSE 0
+                        END) AS write_count
+                    FROM recent_turns
+                    INNER JOIN file_accesses
+                        ON file_accesses.project_id = recent_turns.project_id
+                        AND file_accesses.provider = recent_turns.provider
+                        AND file_accesses.session_id = recent_turns.session_id
+                        AND file_accesses.turn_ordinal = recent_turns.turn_ordinal
+                    GROUP BY file_accesses.path
+                    ",
+                )
+                .context("failed to prepare project file usage query")?;
+            statement
+                .query_map((project_id, limit), |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                })
+                .context("failed to query project file usage rows")?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .context("failed to read project file usage rows")?
+        }
+    };
     rows.into_iter()
         .map(|(path, read_count, write_count)| -> Result<_> {
             Ok(FileUsageStat {
@@ -1451,6 +1386,131 @@ struct ProjectInsightRow {
     status: NormalizedTurnStatus,
     step_count: u64,
     duration_ms: u64,
+}
+
+/// Stores one fully decoded indexed turn row reused by turn queries.
+#[derive(Debug, Clone)]
+struct IndexedTurnRow {
+    project_id: String,
+    provider: SourceKind,
+    session_id: String,
+    turn_ordinal: u64,
+    turn_id: Option<String>,
+    started_at: String,
+    completed_at: Option<String>,
+    status: NormalizedTurnStatus,
+    user_message: String,
+    final_answer_at: Option<String>,
+    final_answer_text: Option<String>,
+    step_count: u64,
+    tool_call_count: u64,
+    tool_output_count: u64,
+    attachment_count: u64,
+    delegation_count: u64,
+    hook_summary_count: u64,
+    has_final_answer: bool,
+    duration_ms: u64,
+    steps_json: String,
+}
+
+impl IndexedTurnRow {
+    /// Converts one indexed turn row into the public turn detail payload.
+    fn into_turn_detail(self, include_raw: bool) -> Result<TurnDetail> {
+        let steps = serde_json::from_str::<Vec<NormalizedTurnStep>>(&self.steps_json)
+            .context("failed to parse stored normalized turn steps")?;
+        Ok(TurnDetail {
+            project_id: self.project_id,
+            provider: self.provider,
+            session_id: self.session_id,
+            turn_ordinal: self.turn_ordinal,
+            turn_id: self.turn_id,
+            started_at: self.started_at,
+            completed_at: self.completed_at,
+            status: self.status,
+            user_message: self.user_message,
+            final_answer_at: self.final_answer_at,
+            final_answer_text: self.final_answer_text,
+            step_count: self.step_count,
+            steps,
+            raw_steps_json: include_raw.then_some(self.steps_json),
+        })
+    }
+
+    /// Converts one indexed turn row into the public turn insights payload.
+    fn into_turn_insights(self) -> TurnInsights {
+        TurnInsights {
+            project_id: self.project_id,
+            provider: self.provider,
+            session_id: self.session_id,
+            turn_ordinal: self.turn_ordinal,
+            started_at: self.started_at,
+            completed_at: self.completed_at,
+            status: self.status,
+            duration_ms: self.duration_ms,
+            step_count: self.step_count,
+            tool_call_count: self.tool_call_count,
+            tool_output_count: self.tool_output_count,
+            attachment_count: self.attachment_count,
+            delegation_count: self.delegation_count,
+            hook_summary_count: self.hook_summary_count,
+            has_final_answer: self.has_final_answer,
+            tools: Vec::new(),
+            files: Vec::new(),
+        }
+    }
+}
+
+/// Identifies the supported grouped tool-usage query scopes.
+#[derive(Debug, Clone, Copy)]
+enum ToolUsageScope<'a> {
+    Turn {
+        project_id: &'a str,
+        provider: SourceKind,
+        session_id: &'a str,
+        turn_ordinal: u64,
+    },
+    RecentProject {
+        project_id: &'a str,
+        limit: usize,
+    },
+}
+
+/// Identifies the supported grouped file-usage query scopes.
+#[derive(Debug, Clone, Copy)]
+enum FileUsageScope<'a> {
+    Turn {
+        project_id: &'a str,
+        provider: SourceKind,
+        session_id: &'a str,
+        turn_ordinal: u64,
+    },
+    RecentProject {
+        project_id: &'a str,
+        limit: usize,
+    },
+}
+
+/// Sorts grouped tool-usage stats by descending frequency then name.
+fn sort_tool_usage_stats(stats: &mut [ToolUsageStat]) {
+    stats.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+}
+
+/// Sorts turn file-usage stats by total accesses, writes, reads, then path.
+fn sort_turn_file_usage_stats(stats: &mut [FileUsageStat]) {
+    stats.sort_by(|left, right| {
+        let left_total = left.read_count.saturating_add(left.write_count);
+        let right_total = right.read_count.saturating_add(right.write_count);
+        right_total
+            .cmp(&left_total)
+            .then_with(|| right.write_count.cmp(&left.write_count))
+            .then_with(|| right.read_count.cmp(&left.read_count))
+            .then_with(|| left.path.cmp(&right.path))
+    });
 }
 
 /// Stores one civil day used for local-day query-window calculations.
