@@ -13,6 +13,12 @@ use super::{
 };
 use crate::constants::CONFIG_FILE_NAME;
 
+/// Stores the project session-count query used during SQLite cleanup.
+const COUNT_PROJECT_SESSIONS_SQL: &str = "SELECT COUNT(*) FROM sessions WHERE project_id = ?1";
+
+/// Stores the project turn-count query used during SQLite cleanup.
+const COUNT_PROJECT_TURNS_SQL: &str = "SELECT COUNT(*) FROM turns WHERE project_id = ?1";
+
 /// Removes one named project from config, archive storage, and SQLite.
 pub(super) fn remove_project_named(root: &Path, project_name: &str) -> Result<RemoveReport> {
     let config_path = root.join(CONFIG_FILE_NAME);
@@ -81,9 +87,14 @@ fn delete_project_index_rows(index_db_path: &Path, project_id: &str) -> Result<(
     let transaction = connection
         .transaction()
         .context("failed to begin SQLite removal transaction")?;
-    let indexed_sessions_removed =
-        count_project_rows(&transaction, "sessions", project_id, "sessions")?;
-    let indexed_turns_removed = count_project_rows(&transaction, "turns", project_id, "turns")?;
+    let indexed_sessions_removed = count_project_rows(
+        &transaction,
+        COUNT_PROJECT_SESSIONS_SQL,
+        "sessions",
+        project_id,
+    )?;
+    let indexed_turns_removed =
+        count_project_rows(&transaction, COUNT_PROJECT_TURNS_SQL, "turns", project_id)?;
     transaction
         .execute(
             "DELETE FROM sessions WHERE project_id = ?1",
@@ -100,16 +111,12 @@ fn delete_project_index_rows(index_db_path: &Path, project_id: &str) -> Result<(
 /// Counts one project's rows in a selected normalized SQLite table.
 fn count_project_rows(
     connection: &rusqlite::Transaction<'_>,
-    table_name: &str,
-    project_id: &str,
+    sql: &str,
     label: &str,
+    project_id: &str,
 ) -> Result<usize> {
     let count: i64 = connection
-        .query_row(
-            &format!("SELECT COUNT(*) FROM {table_name} WHERE project_id = ?1"),
-            params![project_id],
-            |row| row.get(0),
-        )
+        .query_row(sql, params![project_id], |row| row.get(0))
         .with_context(|| format!("failed to count indexed {label} for project `{project_id}`"))?;
     usize::try_from(count).with_context(|| format!("indexed {label} count exceeds usize range"))
 }
