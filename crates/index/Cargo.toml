@@ -6,6 +6,9 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
+[features]
+test-support = []
+
 [dependencies]
 darc-paths = { workspace = true }
 darc-rollout = { workspace = true }

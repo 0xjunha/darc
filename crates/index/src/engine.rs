@@ -29,7 +29,11 @@ use thiserror::Error;
 use walkdir::WalkDir;
 
 use crate::{
-    derived_data::insert_turn_derived_records, index_db::open_index_database,
+    derived_data::insert_turn_derived_records,
+    index_db::{
+        open_index_database,
+        schema::{INSERT_SESSION_SQL, INSERT_TURN_SQL},
+    },
     turn_metrics::summarize_turn_metrics,
 };
 
@@ -103,14 +107,6 @@ impl From<ClaudeSessionKind> for IndexedSessionKind {
             ClaudeSessionKind::Primary => Self::Primary,
             ClaudeSessionKind::Subagent => Self::Subagent,
         }
-    }
-}
-
-/// Returns the stable lowercase SQLite value stored for one source kind.
-fn source_kind_as_sql_text(source: SourceKind) -> &'static str {
-    match source {
-        SourceKind::Claude => "claude",
-        SourceKind::Codex => "codex",
     }
 }
 
@@ -263,25 +259,10 @@ impl<'conn> SqliteSessionWriter<'conn> {
 
         self.connection
             .execute(
-                "
-                INSERT INTO sessions (
-                    project_id,
-                    provider,
-                    session_id,
-                    parent_session_id,
-                    session_kind,
-                    archive_path,
-                    cwd,
-                    cli_version,
-                    schema_id,
-                    determinism,
-                    source_size,
-                    source_mtime_ms
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
-                ",
+                INSERT_SESSION_SQL,
                 params![
                     self.project_id.as_str(),
-                    source_kind_as_sql_text(self.provider),
+                    self.provider.directory_name(),
                     session_id,
                     self.parent_session_id.as_deref(),
                     self.session_kind.as_sql_text(),
@@ -329,33 +310,10 @@ impl<'conn> SqliteSessionWriter<'conn> {
 
         self.connection
             .execute(
-                "
-                INSERT INTO turns (
-                    project_id,
-                    provider,
-                    session_id,
-                    turn_ordinal,
-                    turn_id,
-                    started_at,
-                    completed_at,
-                    status,
-                    user_message,
-                    final_answer_at,
-                    final_answer_text,
-                    steps_json,
-                    step_count,
-                    tool_call_count,
-                    tool_output_count,
-                    attachment_count,
-                    delegation_count,
-                    hook_summary_count,
-                    has_final_answer,
-                    duration_ms
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
-                ",
+                INSERT_TURN_SQL,
                 params![
                     self.project_id.as_str(),
-                    source_kind_as_sql_text(self.provider),
+                    self.provider.directory_name(),
                     session_id,
                     turn_ordinal,
                     turn_id,
@@ -383,8 +341,7 @@ impl<'conn> SqliteSessionWriter<'conn> {
                     self.turn_ordinal,
                     session_id
                 )
-            })
-            ?;
+            })?;
         insert_turn_derived_records(
             self.connection,
             &self.project_id,
@@ -1371,7 +1328,7 @@ fn delete_indexed_session(
             DELETE FROM sessions
             WHERE project_id = ?1 AND provider = ?2 AND session_id = ?3
             ",
-            params![project_id, source_kind_as_sql_text(provider), session_id],
+            params![project_id, provider.directory_name(), session_id],
         )
         .with_context(|| {
             format!(
@@ -1398,7 +1355,7 @@ fn project_session_count(
                 FROM sessions
                 WHERE project_id = ?1 AND provider = ?2
                 ",
-                params![project_id, source_kind_as_sql_text(*provider)],
+                params![project_id, provider.directory_name()],
                 |row| row.get(0),
             )
             .with_context(|| format!("failed to count indexed {} sessions", provider.title()))?;
@@ -1423,7 +1380,7 @@ fn project_turn_count(
                 FROM turns
                 WHERE project_id = ?1 AND provider = ?2
                 ",
-                params![project_id, source_kind_as_sql_text(*provider)],
+                params![project_id, provider.directory_name()],
                 |row| row.get(0),
             )
             .with_context(|| format!("failed to count indexed {} turns", provider.title()))?;

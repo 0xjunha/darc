@@ -3,7 +3,13 @@ use darc_paths::SourceKind;
 use darc_rollout::model::NormalizedTurnStep;
 use rusqlite::{Connection, params};
 
-use crate::policy::{derive_file_access_records, extract_tool_call_records};
+use crate::{
+    index_db::schema::{
+        DELETE_DERIVED_ANALYTICS_SQL, INSERT_FILE_ACCESS_SQL, INSERT_TOOL_CALL_SQL,
+        SELECT_DERIVED_ANALYTICS_REBUILD_ROWS_SQL,
+    },
+    policy::{derive_file_access_records, extract_tool_call_records},
+};
 
 /// Inserts one turn's derived tool-call and file-access records into SQLite.
 pub(crate) fn insert_turn_derived_records(
@@ -21,30 +27,13 @@ pub(crate) fn insert_turn_derived_records(
     let file_accesses = derive_file_access_records(&tool_calls);
 
     let mut tool_call_statement = connection
-        .prepare(
-            "
-            INSERT INTO tool_calls (
-                project_id,
-                provider,
-                session_id,
-                turn_ordinal,
-                call_ordinal,
-                call_id,
-                timestamp,
-                tool_name,
-                arguments_text,
-                output_text,
-                status,
-                is_error
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
-            ",
-        )
+        .prepare(INSERT_TOOL_CALL_SQL)
         .context("failed to prepare tool_call insert statement")?;
     for record in &tool_calls {
         tool_call_statement
             .execute(params![
                 record.project_id.as_str(),
-                source_kind_as_sql_text(record.provider),
+                record.provider.directory_name(),
                 record.session_id.as_str(),
                 i64::try_from(record.turn_ordinal)
                     .context("turn ordinal exceeds SQLite INTEGER range")?,
@@ -69,29 +58,13 @@ pub(crate) fn insert_turn_derived_records(
     drop(tool_call_statement);
 
     let mut file_access_statement = connection
-        .prepare(
-            "
-            INSERT INTO file_accesses (
-                project_id,
-                provider,
-                session_id,
-                turn_ordinal,
-                call_ordinal,
-                call_id,
-                timestamp,
-                tool_name,
-                access_type,
-                path,
-                repo_relative_path
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
-            ",
-        )
+        .prepare(INSERT_FILE_ACCESS_SQL)
         .context("failed to prepare file_access insert statement")?;
     for record in &file_accesses {
         file_access_statement
             .execute(params![
                 record.project_id.as_str(),
-                source_kind_as_sql_text(record.provider),
+                record.provider.directory_name(),
                 record.session_id.as_str(),
                 i64::try_from(record.turn_ordinal)
                     .context("turn ordinal exceeds SQLite INTEGER range")?,
@@ -119,22 +92,11 @@ pub(crate) fn insert_turn_derived_records(
 /// Rebuilds every derived tool-call and file-access row from stored turn steps.
 pub(crate) fn rebuild_derived_analytics_tables(connection: &Connection) -> Result<()> {
     connection
-        .execute_batch(
-            "
-            DELETE FROM file_accesses;
-            DELETE FROM tool_calls;
-            ",
-        )
+        .execute_batch(DELETE_DERIVED_ANALYTICS_SQL)
         .context("failed to clear derived analytics tables")?;
 
     let mut statement = connection
-        .prepare(
-            "
-            SELECT project_id, provider, session_id, turn_ordinal, steps_json
-            FROM turns
-            ORDER BY project_id ASC, provider ASC, session_id ASC, turn_ordinal ASC
-            ",
-        )
+        .prepare(SELECT_DERIVED_ANALYTICS_REBUILD_ROWS_SQL)
         .context("failed to prepare derived analytics rebuild query")?;
     let rows = statement
         .query_map([], |row| {
@@ -170,15 +132,6 @@ pub(crate) fn rebuild_derived_analytics_tables(connection: &Connection) -> Resul
 
     Ok(())
 }
-
-/// Returns the stable lowercase SQLite value stored for one source kind.
-fn source_kind_as_sql_text(source: SourceKind) -> &'static str {
-    match source {
-        SourceKind::Claude => "claude",
-        SourceKind::Codex => "codex",
-    }
-}
-
 /// Parses one persisted lowercase SQLite provider value back into a source kind.
 fn parse_provider(value: &str) -> Result<SourceKind> {
     match value {
