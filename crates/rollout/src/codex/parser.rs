@@ -1,15 +1,17 @@
 use std::{
     cmp::Ordering,
+    convert::Infallible,
+    error::Error as StdError,
     fs::File,
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::CodexRolloutHeader;
+use super::error::{CodexError, ParseIntoError, ParseIntoResult, Result};
 #[cfg(test)]
 use super::header::parse_rollout_header_parts;
 use super::header::read_rollout_header;
@@ -52,11 +54,17 @@ pub fn compare_rollout_priority<T: Ord>(
 
 /// Receives parsed rollout metadata and completed turns incrementally.
 pub trait CodexRolloutSink {
+    /// Stores one sink-local error type surfaced by callback implementations.
+    type Error: StdError + Send + Sync + 'static;
+
     /// Starts one parsed rollout session before any turns are emitted.
-    fn begin_rollout(&mut self, header: &CodexRolloutHeader) -> Result<()>;
+    fn begin_rollout(
+        &mut self,
+        header: &CodexRolloutHeader,
+    ) -> std::result::Result<(), Self::Error>;
 
     /// Stores one completed parsed turn.
-    fn push_turn(&mut self, turn: CodexTurn) -> Result<()>;
+    fn push_turn(&mut self, turn: CodexTurn) -> std::result::Result<(), Self::Error>;
 }
 
 /// Collects parsed rollout data into the in-memory inspect representation.
@@ -69,7 +77,9 @@ struct CollectingRolloutSink {
 impl CollectingRolloutSink {
     /// Finishes one collected rollout after parsing completes.
     fn finish(self) -> Result<CodexRollout> {
-        let header = self.header.context("missing collected rollout header")?;
+        let header = self
+            .header
+            .ok_or_else(CodexError::missing_collected_header)?;
         Ok(CodexRollout {
             session_id: header.session_id,
             cwd: header.cwd,
@@ -82,12 +92,17 @@ impl CollectingRolloutSink {
 }
 
 impl CodexRolloutSink for CollectingRolloutSink {
-    fn begin_rollout(&mut self, header: &CodexRolloutHeader) -> Result<()> {
+    type Error = Infallible;
+
+    fn begin_rollout(
+        &mut self,
+        header: &CodexRolloutHeader,
+    ) -> std::result::Result<(), Self::Error> {
         self.header = Some(header.clone());
         Ok(())
     }
 
-    fn push_turn(&mut self, turn: CodexTurn) -> Result<()> {
+    fn push_turn(&mut self, turn: CodexTurn) -> std::result::Result<(), Self::Error> {
         self.turns.push(turn);
         Ok(())
     }
@@ -160,11 +175,14 @@ pub fn parse_rollout_file(path: &Path) -> Result<CodexRollout> {
 }
 
 /// Parses one Codex rollout file and emits turns incrementally to a sink.
-pub fn parse_rollout_file_into<S: CodexRolloutSink>(path: &Path, sink: &mut S) -> Result<()> {
-    let header = read_rollout_header(path)?
-        .with_context(|| format!("missing session_meta line in {}", path.display()))?;
+pub fn parse_rollout_file_into<S: CodexRolloutSink>(
+    path: &Path,
+    sink: &mut S,
+) -> ParseIntoResult<(), S::Error> {
+    let header =
+        read_rollout_header(path)?.ok_or_else(|| CodexError::missing_session_meta_line(path))?;
     let has_event_user_boundaries = scan_rollout_for_event_user_boundaries(path)?;
-    let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let file = File::open(path).map_err(|source| CodexError::open_file(path, source))?;
     let reader = BufReader::new(file);
 
     parse_rollout_stream(reader, path, header, has_event_user_boundaries, sink)
@@ -200,9 +218,9 @@ fn parse_rollout_header_from_lines(
 ) -> Result<CodexRolloutHeader> {
     let first = raw_lines
         .first()
-        .with_context(|| format!("missing session_meta line in {}", source_path.display()))?;
+        .ok_or_else(|| CodexError::missing_session_meta_line(source_path))?;
     parse_rollout_header_parts(&first.line.kind, first.line.payload.clone(), source_path)?
-        .with_context(|| format!("missing session_meta line in {}", source_path.display()))
+        .ok_or_else(|| CodexError::missing_session_meta_line(source_path))
 }
 
 /// Replays buffered rollout lines through the standard streaming parser.
@@ -213,7 +231,7 @@ fn parse_rollout_lines<S: CodexRolloutSink>(
     header: CodexRolloutHeader,
     has_event_user_boundaries: bool,
     sink: &mut S,
-) -> Result<()> {
+) -> ParseIntoResult<(), S::Error> {
     let mut parser = RolloutLineParser::new(source_path, header, has_event_user_boundaries, sink)?;
     for numbered_line in raw_lines {
         parser.process_line(numbered_line)?;
@@ -228,17 +246,18 @@ fn parse_rollout_stream<R: BufRead, S: CodexRolloutSink>(
     header: CodexRolloutHeader,
     has_event_user_boundaries: bool,
     sink: &mut S,
-) -> Result<()> {
+) -> ParseIntoResult<(), S::Error> {
     let mut parser = RolloutLineParser::new(source_path, header, has_event_user_boundaries, sink)?;
 
     for (index, line) in reader.lines().enumerate() {
         let line_no = index + 1;
-        let line = line.with_context(|| format!("failed to read line {line_no}"))?;
+        let line = line.map_err(|source| CodexError::read_line(source_path, line_no, source))?;
         if line.trim().is_empty() {
             continue;
         }
-        let raw: RawLine = serde_json::from_str(&line)
-            .with_context(|| format!("failed to deserialize JSONL line {line_no}"))?;
+        let raw: RawLine = serde_json::from_str(&line).map_err(|source| {
+            CodexError::deserialize_json_line(source_path, line_no, "JSONL line", source)
+        })?;
         parser.process_line(NumberedRawLine { line_no, line: raw })?;
     }
 
@@ -263,15 +282,11 @@ impl<'a, S: CodexRolloutSink> RolloutLineParser<'a, S> {
         header: CodexRolloutHeader,
         has_event_user_boundaries: bool,
         sink: &'a mut S,
-    ) -> Result<Self> {
-        let cli_version = CodexCliVersion::parse(&header.cli_version).with_context(|| {
-            format!(
-                "failed to parse Codex cli_version `{}` in {}",
-                header.cli_version,
-                source_path.display()
-            )
+    ) -> ParseIntoResult<Self, S::Error> {
+        let cli_version = CodexCliVersion::parse(&header.cli_version).map_err(|source| {
+            CodexError::parse_cli_version(source_path, &header.cli_version, source)
         })?;
-        sink.begin_rollout(&header)?;
+        sink.begin_rollout(&header).map_err(ParseIntoError::Sink)?;
 
         Ok(Self {
             source_path,
@@ -285,7 +300,7 @@ impl<'a, S: CodexRolloutSink> RolloutLineParser<'a, S> {
     }
 
     /// Applies one raw rollout line to the current parser state.
-    fn process_line(&mut self, numbered_line: NumberedRawLine) -> Result<()> {
+    fn process_line(&mut self, numbered_line: NumberedRawLine) -> ParseIntoResult<(), S::Error> {
         let line_no = numbered_line.line_no;
         let RawLine {
             timestamp,
@@ -296,8 +311,14 @@ impl<'a, S: CodexRolloutSink> RolloutLineParser<'a, S> {
         match kind.as_str() {
             "session_meta" => {}
             "event_msg" => {
-                let event: RawEventPayload = serde_json::from_value(payload)
-                    .with_context(|| format!("failed to parse event_msg on line {line_no}"))?;
+                let event: RawEventPayload = serde_json::from_value(payload).map_err(|source| {
+                    CodexError::deserialize_json_line(
+                        self.source_path,
+                        line_no,
+                        "event_msg",
+                        source,
+                    )
+                })?;
                 match event.kind.as_str() {
                     "task_started" | "turn_started" => {
                         ensure_feature_support(
@@ -337,34 +358,48 @@ impl<'a, S: CodexRolloutSink> RolloutLineParser<'a, S> {
                             }
                             turn.completed_at = Some(timestamp);
                             turn.status = CodexTurnStatus::Completed;
-                            self.sink.push_turn(turn)?;
+                            self.sink.push_turn(turn).map_err(ParseIntoError::Sink)?;
                         }
                     }
                     "turn_aborted" => {
                         if let Some(mut turn) = self.current_turn.take() {
                             turn.completed_at = Some(timestamp);
                             turn.status = CodexTurnStatus::Aborted;
-                            self.sink.push_turn(turn)?;
+                            self.sink.push_turn(turn).map_err(ParseIntoError::Sink)?;
                         }
                     }
                     _ => {}
                 }
             }
             "response_item" => {
-                let raw_payload_json = serde_json::to_string(&payload).with_context(|| {
-                    format!("failed to serialize response_item on line {line_no}")
+                let raw_payload_json = serde_json::to_string(&payload).map_err(|source| {
+                    CodexError::serialize_json_line(
+                        self.source_path,
+                        line_no,
+                        "response_item",
+                        source,
+                    )
                 })?;
-                let item: RawResponseItemPayload = serde_json::from_value(payload)
-                    .with_context(|| format!("failed to parse response_item on line {line_no}"))?;
+                let item: RawResponseItemPayload =
+                    serde_json::from_value(payload).map_err(|source| {
+                        CodexError::deserialize_json_line(
+                            self.source_path,
+                            line_no,
+                            "response_item",
+                            source,
+                        )
+                    })?;
                 if self.header.determinism.is_exact()
                     && !supports_response_item(&self.cli_version, &item.kind)
                 {
-                    bail!(
-                        "unsupported response_item `{}` on line {line_no} for cli_version `{}` in {}",
-                        item.kind,
-                        self.header.cli_version,
-                        self.source_path.display()
-                    );
+                    return Err(ParseIntoError::Parse(
+                        CodexError::unsupported_response_item(
+                            self.source_path,
+                            line_no,
+                            &item.kind,
+                            &self.header.cli_version,
+                        ),
+                    ));
                 }
                 match item.kind.as_str() {
                     "message" => {
@@ -518,11 +553,12 @@ impl<'a, S: CodexRolloutSink> RolloutLineParser<'a, S> {
             )?,
             _ => {
                 if self.header.determinism.is_exact() {
-                    bail!(
-                        "unsupported rollout item `{kind}` on line {line_no} for schema {} in {}",
+                    return Err(ParseIntoError::Parse(CodexError::unsupported_rollout_item(
+                        self.source_path,
+                        line_no,
+                        &kind,
                         self.header.schema_id.as_str(),
-                        self.source_path.display()
-                    );
+                    )));
                 }
             }
         }
@@ -531,14 +567,16 @@ impl<'a, S: CodexRolloutSink> RolloutLineParser<'a, S> {
     }
 
     /// Flushes any unfinished turn after all rollout lines have been processed.
-    fn finish(mut self) -> Result<()> {
+    fn finish(mut self) -> ParseIntoResult<(), S::Error> {
         self.close_open_turn()
     }
 
     /// Closes the current turn and emits it to the sink when present.
-    fn close_open_turn(&mut self) -> Result<()> {
+    fn close_open_turn(&mut self) -> ParseIntoResult<(), S::Error> {
         if let Some(turn) = self.current_turn.take() {
-            self.sink.push_turn(normalize_turn(turn))?;
+            self.sink
+                .push_turn(normalize_turn(turn))
+                .map_err(ParseIntoError::Sink)?;
         }
         Ok(())
     }
@@ -546,16 +584,17 @@ impl<'a, S: CodexRolloutSink> RolloutLineParser<'a, S> {
 
 /// Scans one rollout file to decide whether event-based user boundaries are present.
 fn scan_rollout_for_event_user_boundaries(path: &Path) -> Result<bool> {
-    let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let file = File::open(path).map_err(|source| CodexError::open_file(path, source))?;
 
     for (index, line) in BufReader::new(file).lines().enumerate() {
         let line_no = index + 1;
-        let line = line.with_context(|| format!("failed to read line {line_no}"))?;
+        let line = line.map_err(|source| CodexError::read_line(path, line_no, source))?;
         if line.trim().is_empty() {
             continue;
         }
-        let raw: RawLine = serde_json::from_str(&line)
-            .with_context(|| format!("failed to deserialize JSONL line {line_no}"))?;
+        let raw: RawLine = serde_json::from_str(&line).map_err(|source| {
+            CodexError::deserialize_json_line(path, line_no, "JSONL line", source)
+        })?;
         if raw_line_has_event_user_boundary(&raw) {
             return Ok(true);
         }
@@ -576,15 +615,16 @@ fn ensure_feature_support(
     determinism: ParseDeterminism,
     source_path: &Path,
     line_no: usize,
-    feature_name: &str,
+    feature_name: &'static str,
 ) -> Result<()> {
     if supports_feature(cli_version, schema_feature) || !determinism.is_exact() {
         return Ok(());
     }
-    bail!(
-        "encountered unsupported {feature_name} on line {line_no} in {}",
-        source_path.display()
-    )
+    Err(CodexError::unsupported_feature(
+        source_path,
+        line_no,
+        feature_name,
+    ))
 }
 
 /// Buffers one rollout reader into numbered raw lines for shared parse entry points.
@@ -593,12 +633,14 @@ fn read_raw_lines<R: BufRead>(reader: R) -> Result<Vec<NumberedRawLine>> {
     let mut raw_lines = Vec::new();
     for (index, line) in reader.lines().enumerate() {
         let line_no = index + 1;
-        let line = line.with_context(|| format!("failed to read line {line_no}"))?;
+        let line =
+            line.map_err(|source| CodexError::read_line(Path::new("<reader>"), line_no, source))?;
         if line.trim().is_empty() {
             continue;
         }
-        let raw: RawLine = serde_json::from_str(&line)
-            .with_context(|| format!("failed to deserialize JSONL line {line_no}"))?;
+        let raw: RawLine = serde_json::from_str(&line).map_err(|source| {
+            CodexError::deserialize_json_line(Path::new("<reader>"), line_no, "JSONL line", source)
+        })?;
         raw_lines.push(NumberedRawLine { line_no, line: raw });
     }
     Ok(raw_lines)
@@ -671,21 +713,34 @@ fn message_text(
 
     let parts = match content {
         Value::Null => return Ok(None),
-        Value::Array(_) => serde_json::from_value::<Vec<RawMessageContent>>(content)
-            .with_context(|| format!("failed to parse response_item content on line {line_no}"))?,
+        Value::Array(_) => {
+            serde_json::from_value::<Vec<RawMessageContent>>(content).map_err(|source| {
+                CodexError::deserialize_json_line(
+                    source_path,
+                    line_no,
+                    "response_item content",
+                    source,
+                )
+            })?
+        }
         Value::Object(_) => vec![
-            serde_json::from_value::<RawMessageContent>(content).with_context(|| {
-                format!("failed to parse response_item content on line {line_no}")
+            serde_json::from_value::<RawMessageContent>(content).map_err(|source| {
+                CodexError::deserialize_json_line(
+                    source_path,
+                    line_no,
+                    "response_item content",
+                    source,
+                )
             })?,
         ],
         Value::String(text) if !determinism.is_exact() => {
             return Ok(non_empty_text(Some(text)));
         }
         _ => {
-            bail!(
-                "unsupported message content shape on line {line_no} in {}",
-                source_path.display()
-            )
+            return Err(CodexError::unsupported_message_content_shape(
+                source_path,
+                line_no,
+            ));
         }
     };
 
@@ -701,7 +756,7 @@ fn string_field(
     source_path: &Path,
     line_no: usize,
     determinism: ParseDeterminism,
-    field_name: &str,
+    field_name: &'static str,
 ) -> Result<Option<String>> {
     match value {
         None | Some(Value::Null) => Ok(None),
@@ -709,10 +764,11 @@ fn string_field(
         Some(other) if !determinism.is_exact() => Ok(serde_json::to_string(&other)
             .ok()
             .and_then(|text| non_empty_text(Some(text)))),
-        Some(_) => bail!(
-            "unsupported {field_name} shape on line {line_no} in {}",
-            source_path.display()
-        ),
+        Some(_) => Err(CodexError::unsupported_field_shape(
+            source_path,
+            line_no,
+            field_name,
+        )),
     }
 }
 
@@ -737,10 +793,10 @@ fn output_field(
         Some(other) if !determinism.is_exact() => Ok(serde_json::to_string(&other)
             .ok()
             .and_then(|text| non_empty_text(Some(text)))),
-        Some(_) => bail!(
-            "unsupported tool output shape on line {line_no} in {}",
-            source_path.display()
-        ),
+        Some(_) => Err(CodexError::unsupported_tool_output_shape(
+            source_path,
+            line_no,
+        )),
     }
 }
 

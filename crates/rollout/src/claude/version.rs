@@ -1,7 +1,10 @@
 use std::{cmp::Ordering, fmt};
 
 use super::ClaudeSessionKind;
+use super::error::ClaudeCliVersionParseError;
 use crate::ParseDeterminism;
+
+type Result<T> = std::result::Result<T, ClaudeCliVersionParseError>;
 
 /// Parses one Claude CLI version string into comparable components.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,7 +27,7 @@ impl ClaudeCliVersion {
     }
 
     /// Parses one persisted Claude CLI version such as `2.1.87`.
-    pub fn parse(value: &str) -> anyhow::Result<Self> {
+    pub fn parse(value: &str) -> Result<Self> {
         let (core, prerelease) = match value.split_once('-') {
             Some((core, prerelease)) => (core, Some(prerelease)),
             None => (value, None),
@@ -34,7 +37,9 @@ impl ClaudeCliVersion {
         let minor = parse_numeric_part(parts.next(), value, "minor")?;
         let patch = parse_numeric_part(parts.next(), value, "patch")?;
         if parts.next().is_some() {
-            anyhow::bail!("unsupported Claude CLI version format `{value}`");
+            return Err(ClaudeCliVersionParseError::InvalidFormat {
+                raw_version: value.to_owned(),
+            });
         }
 
         Ok(Self {
@@ -260,13 +265,19 @@ impl fmt::Display for ClaudeCliVersion {
 }
 
 /// Parses one required numeric version segment.
-fn parse_numeric_part(part: Option<&str>, raw_version: &str, label: &str) -> anyhow::Result<u32> {
+fn parse_numeric_part(part: Option<&str>, raw_version: &str, label: &'static str) -> Result<u32> {
     let Some(part) = part else {
-        anyhow::bail!("unsupported Claude CLI version format `{raw_version}`");
+        return Err(ClaudeCliVersionParseError::InvalidFormat {
+            raw_version: raw_version.to_owned(),
+        });
     };
-    part.parse().map_err(|error| {
-        anyhow::anyhow!("invalid Claude CLI {label} version in `{raw_version}`: {error}")
-    })
+    part.parse().map_err(
+        |source| ClaudeCliVersionParseError::InvalidNumericComponent {
+            raw_version: raw_version.to_owned(),
+            label,
+            source,
+        },
+    )
 }
 
 #[cfg(test)]
