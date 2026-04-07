@@ -441,18 +441,16 @@ fn project_insights_collect_tool_and_file_stats() -> Result<()> {
     assert_eq!(insights.failure_count, 1);
     assert_eq!(insights.total_time_ms, 5_000);
     assert_eq!(insights.most_common_tools[0].name, "Edit");
-    assert!(
-        insights
-            .most_read_files
-            .iter()
-            .any(|stat| stat.path == "README.md" && stat.read_count == 1)
-    );
-    assert!(
-        insights
-            .most_written_files
-            .iter()
-            .any(|stat| stat.path == "src/main.rs" && stat.write_count == 1)
-    );
+    assert!(insights.most_read_files.iter().any(|stat| {
+        stat.path == "README.md"
+            && stat.repo_relative_path.as_deref() == Some("README.md")
+            && stat.read_count == 1
+    }));
+    assert!(insights.most_written_files.iter().any(|stat| {
+        stat.path == "src/main.rs"
+            && stat.repo_relative_path.as_deref() == Some("src/main.rs")
+            && stat.write_count == 1
+    }));
     assert!(matches!(
         insights.hard_debuggings[0],
         HardDebuggingTurn { step_count: 55, .. }
@@ -550,10 +548,58 @@ fn turn_insights_collect_turn_scoped_stats_and_ordering() -> Result<()> {
         insights
             .files
             .iter()
-            .map(|stat| (stat.path.as_str(), stat.read_count, stat.write_count))
+            .map(|stat| {
+                (
+                    stat.path.as_str(),
+                    stat.repo_relative_path.as_deref(),
+                    stat.read_count,
+                    stat.write_count,
+                )
+            })
             .collect::<Vec<_>>(),
-        vec![("src/main.rs", 0, 2), ("README.md", 2, 0)]
+        vec![
+            ("src/main.rs", Some("src/main.rs"), 0, 2),
+            ("README.md", Some("README.md"), 2, 0),
+        ]
     );
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn turn_insights_preserve_null_repo_relative_path_for_absolute_paths() -> Result<()> {
+    let index_path = test_index_path("turn-insights-absolute-path");
+    let connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture::new(
+            "repo-a",
+            SourceKind::Codex,
+            "session-1",
+            0,
+            "2026-04-06T11:10:00Z",
+            "completed",
+            r#"[{"type":"tool_call","timestamp":"2026-04-06T11:10:01Z","call_id":"call-1","name":"Read","arguments":"{\"file_path\":\"/tmp/repo-a/README.md\"}"}]"#,
+        ),
+    )?;
+
+    let insights: TurnInsights =
+        build_turn_insights(&connection, "repo-a", SourceKind::Codex, "session-1", 0)?;
+
+    assert_eq!(insights.files.len(), 1);
+    assert_eq!(insights.files[0].path, "/tmp/repo-a/README.md");
+    assert_eq!(insights.files[0].repo_relative_path, None);
+    assert_eq!(insights.files[0].read_count, 1);
+    assert_eq!(insights.files[0].write_count, 0);
 
     fs::remove_dir_all(
         index_path
