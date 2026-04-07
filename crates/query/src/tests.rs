@@ -5,7 +5,7 @@ use darc_index::{
     open_index_database,
     policy::{
         ToolAccessKind, active_time_policy, classify_tool_access, derive_file_access_records,
-        extract_tool_call_records, extract_tool_path, extract_tool_paths,
+        extract_shell_command, extract_tool_call_records, extract_tool_path, extract_tool_paths,
         should_include_turn_in_active_time,
     },
 };
@@ -85,6 +85,30 @@ fn extracts_file_paths_from_tool_arguments() {
         vec!["README.md".to_owned(), "src/main.rs".to_owned()]
     );
     assert!(extract_tool_path("*** Begin Patch").is_none());
+}
+
+#[test]
+fn extracts_shell_commands_from_shell_like_tool_arguments() {
+    let exec_command = extract_shell_command(
+        "exec_command",
+        r#"{"cmd":"rg -n \"tool_calls\" src -S","workdir":"/tmp/repo"}"#,
+    )
+    .expect("exec_command payload should parse");
+    assert_eq!(exec_command.command_text, r#"rg -n "tool_calls" src -S"#);
+    assert_eq!(exec_command.workdir.as_deref(), Some("/tmp/repo"));
+
+    let shell_command = extract_shell_command(
+        "shell",
+        r#"{"command":["bash","-lc","cp src/main.rs src/main.rs.bak && ls src"],"workdir":"/tmp/repo"}"#,
+    )
+    .expect("shell payload should parse");
+    assert_eq!(
+        shell_command.command_text,
+        "cp src/main.rs src/main.rs.bak && ls src"
+    );
+    assert_eq!(shell_command.workdir.as_deref(), Some("/tmp/repo"));
+
+    assert!(extract_shell_command("Read", r#"{"file_path":"README.md"}"#).is_none());
 }
 
 #[test]
@@ -610,6 +634,73 @@ fn turn_insights_preserve_null_repo_relative_path_for_absolute_paths() -> Result
 }
 
 #[test]
+fn turn_insights_collect_shell_commands() -> Result<()> {
+    let index_path = test_index_path("turn-insights-shell-commands");
+    let connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            step_count: 3,
+            tool_call_count: 3,
+            tool_output_count: 0,
+            attachment_count: 0,
+            delegation_count: 0,
+            hook_summary_count: 0,
+            has_final_answer: true,
+            duration_ms: 8_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                0,
+                "2026-04-06T11:15:00Z",
+                "completed",
+                r##"[{"type":"tool_call","timestamp":"2026-04-06T11:15:01Z","call_id":"call-1","name":"exec_command","arguments":"{\"cmd\":\"rg -n \\\"query_turn_insights\\\" crates/query/src/query.rs -S\",\"workdir\":\"/tmp/repo\"}"},{"type":"tool_call","timestamp":"2026-04-06T11:15:02Z","call_id":"call-2","name":"shell","arguments":"{\"command\":[\"bash\",\"-lc\",\"cp src/main.rs src/main.rs.bak && ls src\"],\"workdir\":\"/tmp/repo\"}"},{"type":"tool_call","timestamp":"2026-04-06T11:15:03Z","call_id":"call-3","name":"Read","arguments":"{\"file_path\":\"README.md\"}"}]"##,
+            )
+        },
+    )?;
+
+    let insights = build_turn_insights(&connection, "repo-a", SourceKind::Codex, "session-1", 0)?;
+
+    assert_eq!(
+        insights
+            .shell_commands
+            .iter()
+            .map(|command| {
+                (
+                    command.tool_name.as_str(),
+                    command.command_text.as_str(),
+                    command.workdir.as_deref(),
+                )
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                "exec_command",
+                r#"rg -n "query_turn_insights" crates/query/src/query.rs -S"#,
+                Some("/tmp/repo"),
+            ),
+            (
+                "shell",
+                "cp src/main.rs src/main.rs.bak && ls src",
+                Some("/tmp/repo"),
+            ),
+        ]
+    );
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
 fn turn_insights_return_empty_tool_and_file_lists() -> Result<()> {
     let index_path = test_index_path("turn-insights-empty");
     let connection = open_index_database(&index_path)?;
@@ -643,6 +734,7 @@ fn turn_insights_return_empty_tool_and_file_lists() -> Result<()> {
     let insights = build_turn_insights(&connection, "repo-a", SourceKind::Codex, "session-1", 0)?;
 
     assert!(insights.tools.is_empty());
+    assert!(insights.shell_commands.is_empty());
     assert!(insights.files.is_empty());
     assert_eq!(insights.tool_call_count, 0);
     assert_eq!(insights.tool_output_count, 0);

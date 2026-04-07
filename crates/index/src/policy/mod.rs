@@ -8,6 +8,7 @@ pub use file_access::{
     FileAccessRecord, ToolAccessKind, ToolCallRecord, classify_tool_access,
     derive_file_access_records, extract_tool_call_records, extract_tool_path, extract_tool_paths,
 };
+pub use shell::{ShellCommand, extract_shell_command};
 
 /// Defines the fields needed to rank hard-debugging candidates.
 pub trait HardDebuggingCandidate {

@@ -366,6 +366,74 @@ fn turn_insights_query_emits_success_envelope() -> Result<()> {
 }
 
 #[test]
+fn turn_insights_query_emits_shell_commands() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-turn-insights-shell")?;
+    let connection = open_index_database(&root.join("index.sqlite"))?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            turn_id: Some("turn-2"),
+            completed_at: Some("2026-04-06T10:10:03Z"),
+            user_message: "Run shell commands",
+            final_answer_at: Some("2026-04-06T10:10:03Z"),
+            final_answer_text: Some("Done."),
+            step_count: 1,
+            tool_call_count: 1,
+            tool_output_count: 0,
+            attachment_count: 0,
+            delegation_count: 0,
+            hook_summary_count: 0,
+            has_final_answer: true,
+            duration_ms: 3_000,
+            ..IndexedTurnFixture::new(
+                "repo-abc123",
+                SourceKind::Codex,
+                "session-1",
+                1,
+                "2026-04-06T10:10:00Z",
+                "completed",
+                r##"[{"type":"tool_call","timestamp":"2026-04-06T10:10:01Z","call_id":"call-2","name":"exec_command","arguments":"{\"cmd\":\"rg -n \\\"query_turn_insights\\\" crates/query/src/query.rs -S\",\"workdir\":\"/tmp/repo\"}"}]"##,
+            )
+        },
+    )?;
+    drop(connection);
+
+    let output = run_darc([
+        "query",
+        "insights",
+        "turn",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--provider",
+        "codex",
+        "--session-id",
+        "session-1",
+        "--turn-ordinal",
+        "1",
+        "--json",
+    ])?;
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.insights.turn.v1");
+    assert_eq!(
+        value["data"]["shell_commands"][0]["tool_name"],
+        "exec_command"
+    );
+    assert_eq!(
+        value["data"]["shell_commands"][0]["command_text"],
+        r#"rg -n "query_turn_insights" crates/query/src/query.rs -S"#
+    );
+    assert_eq!(value["data"]["shell_commands"][0]["workdir"], "/tmp/repo");
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
 fn turn_insights_query_missing_turn_emits_error_envelope() -> Result<()> {
     let root = create_query_fixture_root("cli-query-turn-insights-missing")?;
     let output = run_darc([

@@ -6,7 +6,8 @@ use std::{
 use anyhow::{Context, Result, bail};
 use darc_index::open_index_database;
 use darc_index::policy::{
-    HardDebuggingCandidate, rank_hard_debuggings, should_include_turn_in_active_time,
+    HardDebuggingCandidate, extract_shell_command, rank_hard_debuggings,
+    should_include_turn_in_active_time,
 };
 use darc_paths::SourceKind;
 use darc_rollout::model::{NormalizedTurnStatus, NormalizedTurnStep};
@@ -171,6 +172,7 @@ pub struct TurnInsights {
     pub hook_summary_count: u64,
     pub has_final_answer: bool,
     pub tools: Vec<ToolUsageStat>,
+    pub shell_commands: Vec<ShellCommandSummary>,
     pub files: Vec<FileUsageStat>,
 }
 
@@ -179,6 +181,14 @@ pub struct TurnInsights {
 pub struct ToolUsageStat {
     pub name: String,
     pub count: u64,
+}
+
+/// Stores one shell-like command invocation reported in turn insights.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ShellCommandSummary {
+    pub tool_name: String,
+    pub command_text: String,
+    pub workdir: Option<String>,
 }
 
 /// Stores one aggregated file access counter for project insights.
@@ -645,7 +655,9 @@ pub(crate) fn build_turn_insights(
 ) -> Result<TurnInsights> {
     let row = query_indexed_turn_row(connection, project_id, provider, session_id, turn_ordinal)?;
     let insights = build_turn_detail_insights(connection, &row)?;
-    Ok(row.into_turn_insights(insights))
+    let shell_commands =
+        query_turn_shell_commands(connection, project_id, provider, session_id, turn_ordinal)?;
+    Ok(row.into_turn_insights(insights, shell_commands))
 }
 
 /// Builds one workspace insights report from indexed turn rows.
@@ -1310,6 +1322,56 @@ fn query_file_usage_stats(
         .collect()
 }
 
+/// Queries shell-like command invocations for one indexed turn.
+fn query_turn_shell_commands(
+    connection: &Connection,
+    project_id: &str,
+    provider: SourceKind,
+    session_id: &str,
+    turn_ordinal: u64,
+) -> Result<Vec<ShellCommandSummary>> {
+    let turn_ordinal =
+        i64::try_from(turn_ordinal).context("turn ordinal exceeds SQLite INTEGER range")?;
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT tool_name, arguments_text
+            FROM tool_calls
+            WHERE project_id = ?1
+                AND provider = ?2
+                AND session_id = ?3
+                AND turn_ordinal = ?4
+                AND tool_name IS NOT NULL
+                AND arguments_text IS NOT NULL
+            ORDER BY call_ordinal ASC
+            ",
+        )
+        .context("failed to prepare turn shell command query")?;
+    let rows = statement
+        .query_map(
+            (
+                project_id,
+                provider.directory_name(),
+                session_id,
+                turn_ordinal,
+            ),
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .context("failed to query turn shell command rows")?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed to read turn shell command rows")?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(tool_name, arguments_text)| {
+            extract_shell_command(&tool_name, &arguments_text).map(|command| ShellCommandSummary {
+                tool_name,
+                command_text: command.command_text,
+                workdir: command.workdir,
+            })
+        })
+        .collect())
+}
+
 /// Parses one provider value stored in SQLite back into a source kind.
 fn parse_provider(value: &str) -> Result<SourceKind> {
     match value {
@@ -1446,7 +1508,11 @@ impl IndexedTurnRow {
     }
 
     /// Converts one indexed turn row into the public turn insights payload.
-    fn into_turn_insights(self, insights: TurnDetailInsights) -> TurnInsights {
+    fn into_turn_insights(
+        self,
+        insights: TurnDetailInsights,
+        shell_commands: Vec<ShellCommandSummary>,
+    ) -> TurnInsights {
         TurnInsights {
             project_id: self.project_id,
             provider: self.provider,
@@ -1464,6 +1530,7 @@ impl IndexedTurnRow {
             hook_summary_count: insights.hook_summary_count,
             has_final_answer: insights.has_final_answer,
             tools: insights.tools,
+            shell_commands,
             files: insights.files,
         }
     }

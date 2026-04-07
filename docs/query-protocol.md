@@ -156,10 +156,13 @@ Today:
 
 - top-level count fields such as `step_count`, `tool_call_count`, `tool_output_count`, `attachment_count`, `delegation_count`, `hook_summary_count`, `has_final_answer`, and `duration_ms` come from the indexed `turns` row for that exact turn
 - `tools` comes from normalized per-turn `tool_calls` rows, grouped by `tool_name`
+- `shell_commands` comes from Darc-owned parsing of shell-like `tool_calls` payloads such as `exec_command`, `shell_command`, `shell`, and `Bash`
+- each `shell_commands[*]` item currently reports the originating `tool_name`, the extracted `command_text`, and optional `workdir`
 - `files` comes from normalized per-turn `file_accesses` rows, grouped by `path`
 - `files[*].read_count` currently counts both `read` and `list` access kinds
 - `files[*].write_count` currently counts both `write` and `edit` access kinds
 - `tools` is ordered by higher `count` first, then `name` ascending
+- `shell_commands` is ordered by tool call order within the turn
 - `files` is ordered by higher total accesses first, then higher `write_count`, then higher `read_count`, then `path` ascending
 
 Clients should treat these analytics as Darc-owned derived data and should not re-derive them from `steps_json`.

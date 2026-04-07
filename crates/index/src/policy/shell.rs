@@ -2,27 +2,33 @@ use serde_json::Value;
 
 use super::file_access::{ToolAccessKind, derive_apply_patch_file_accesses, push_access};
 
-/// Stores one shell invocation decoded from one tool-call payload.
+/// Stores one shell-like command decoded from one tool-call payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ShellInvocation {
-    command_text: String,
-    workdir: Option<String>,
+pub struct ShellCommand {
+    pub command_text: String,
+    pub workdir: Option<String>,
 }
 
 /// Derives file accesses from one shell-like tool invocation.
 pub(super) fn derive_shell_file_accesses(arguments_text: &str) -> Vec<(ToolAccessKind, String)> {
-    let Some(invocation) = parse_shell_invocation(arguments_text) else {
+    let Some(command) = parse_shell_command(arguments_text) else {
         return Vec::new();
     };
 
     let mut accesses = Vec::new();
-    for fragment in split_shell_fragments(&invocation.command_text) {
+    for fragment in split_shell_fragments(&command.command_text) {
         accesses.extend(derive_shell_fragment_file_accesses(
             &fragment,
-            invocation.workdir.as_deref(),
+            command.workdir.as_deref(),
         ));
     }
     accesses
+}
+
+/// Extracts one shell-like command from one tool name plus arguments payload.
+pub fn extract_shell_command(tool_name: &str, arguments_text: &str) -> Option<ShellCommand> {
+    is_shell_tool_name(tool_name).then_some(())?;
+    parse_shell_command(arguments_text)
 }
 
 /// Returns whether one tool name carries a shell command payload.
@@ -31,10 +37,10 @@ pub(super) fn is_shell_tool_name(name: &str) -> bool {
 }
 
 /// Parses one shell-like tool payload into one command plus optional workdir.
-fn parse_shell_invocation(arguments_text: &str) -> Option<ShellInvocation> {
+fn parse_shell_command(arguments_text: &str) -> Option<ShellCommand> {
     let parsed = serde_json::from_str::<Value>(arguments_text).ok();
     match parsed {
-        Some(Value::Object(object)) => Some(ShellInvocation {
+        Some(Value::Object(object)) => Some(ShellCommand {
             command_text: shell_command_text_from_value(
                 object
                     .get("cmd")
@@ -47,15 +53,15 @@ fn parse_shell_invocation(arguments_text: &str) -> Option<ShellInvocation> {
                 .and_then(Value::as_str)
                 .map(str::to_owned),
         }),
-        Some(Value::Array(values)) => Some(ShellInvocation {
+        Some(Value::Array(values)) => Some(ShellCommand {
             command_text: shell_command_text_from_array(&values)?,
             workdir: None,
         }),
-        Some(Value::String(command_text)) => Some(ShellInvocation {
+        Some(Value::String(command_text)) => Some(ShellCommand {
             command_text,
             workdir: None,
         }),
-        _ => Some(ShellInvocation {
+        _ => Some(ShellCommand {
             command_text: arguments_text.trim().to_owned(),
             workdir: None,
         }),
