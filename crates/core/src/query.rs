@@ -9,8 +9,8 @@ use darc_paths::SourceKind;
 pub use darc_query::{
     DailyTimeStat, FileUsageStat, HardDebuggingTurn, ProjectInsights, ProjectSummary,
     ProjectTimeStat, RootAvailability, RootInfo, SessionKind, SessionRuntimeStat, SessionSummary,
-    SessionsQueryData, ToolUsageStat, TurnDetail, TurnInsights, TurnSummary, TurnsQueryData,
-    WorkspaceDailyTimeStat, WorkspaceInsights, WorkspaceQueryData,
+    SessionsQueryData, ToolUsageStat, TurnDetail, TurnDetailInsights, TurnInsights, TurnSummary,
+    TurnsQueryData, WorkspaceDailyTimeStat, WorkspaceInsights, WorkspaceQueryData,
 };
 use darc_query::{
     ProjectIndexAggregate, list_project_index_aggregates, query_project_insights,
@@ -132,6 +132,7 @@ pub fn query_turn(
     session_id: &str,
     turn_ordinal: u64,
     include_raw: bool,
+    include_insights: bool,
 ) -> Result<TurnDetail> {
     let context = load_project_query_context(root, project_id)?;
     query_turn_detail(
@@ -141,6 +142,7 @@ pub fn query_turn(
         session_id,
         turn_ordinal,
         include_raw,
+        include_insights,
     )
 }
 

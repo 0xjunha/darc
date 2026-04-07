@@ -174,6 +174,7 @@ fn parses_query_turn_command() {
         "--turn-ordinal",
         "2",
         "--include-raw",
+        "--include-insights",
         "--json",
     ])
     .unwrap();
@@ -185,6 +186,7 @@ fn parses_query_turn_command() {
                 session_id,
                 turn_ordinal,
                 include_raw,
+                include_insights,
                 json,
                 ..
             }),
@@ -192,6 +194,7 @@ fn parses_query_turn_command() {
             && session_id == "session-1"
             && turn_ordinal == 2
             && include_raw
+            && include_insights
             && json
     ));
 }

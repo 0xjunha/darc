@@ -266,6 +266,12 @@ struct QueryTurnArgs {
 
     #[arg(
         long,
+        help = "Include one derived insights block with metrics plus tool and file analytics"
+    )]
+    include_insights: bool,
+
+    #[arg(
+        long,
         required = true,
         help = "Required. Emit the stable machine-readable JSON envelope on stdout"
     )]
@@ -488,6 +494,7 @@ fn run_query_turn(args: QueryTurnArgs) -> Result<()> {
         &args.session_id,
         args.turn_ordinal,
         args.include_raw,
+        args.include_insights,
     )?;
     print_query_json("darc.query.turn.v1", &data)
 }

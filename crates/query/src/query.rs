@@ -135,6 +135,21 @@ pub struct TurnDetail {
     pub step_count: u64,
     pub steps: Vec<NormalizedTurnStep>,
     pub raw_steps_json: Option<String>,
+    pub insights: Option<TurnDetailInsights>,
+}
+
+/// Stores one optional derived insights block embedded in a turn detail payload.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TurnDetailInsights {
+    pub duration_ms: u64,
+    pub tool_call_count: u64,
+    pub tool_output_count: u64,
+    pub attachment_count: u64,
+    pub delegation_count: u64,
+    pub hook_summary_count: u64,
+    pub has_final_answer: bool,
+    pub tools: Vec<ToolUsageStat>,
+    pub files: Vec<FileUsageStat>,
 }
 
 /// Stores one turn-scoped insights payload for one indexed session turn.
@@ -312,15 +327,17 @@ pub fn query_turn_detail(
     session_id: &str,
     turn_ordinal: u64,
     include_raw: bool,
+    include_insights: bool,
 ) -> Result<TurnDetail> {
     let connection = open_existing_index_database(index_db_path)?;
-    query_turn(
+    build_turn_detail(
         &connection,
         project_id,
         provider,
         session_id,
         turn_ordinal,
         include_raw,
+        include_insights,
     )
 }
 
@@ -601,17 +618,21 @@ fn query_turns(
         .collect()
 }
 
-/// Queries one normalized turn detail row from the index.
-fn query_turn(
+/// Builds one normalized turn detail row from the index.
+fn build_turn_detail(
     connection: &Connection,
     project_id: &str,
     provider: SourceKind,
     session_id: &str,
     turn_ordinal: u64,
     include_raw: bool,
+    include_insights: bool,
 ) -> Result<TurnDetail> {
-    query_indexed_turn_row(connection, project_id, provider, session_id, turn_ordinal)?
-        .into_turn_detail(include_raw)
+    let row = query_indexed_turn_row(connection, project_id, provider, session_id, turn_ordinal)?;
+    let insights = include_insights
+        .then(|| build_turn_detail_insights(connection, &row))
+        .transpose()?;
+    row.into_turn_detail(include_raw, insights)
 }
 
 /// Builds one turn insights report from indexed turn, tool, and file rows.
@@ -622,34 +643,9 @@ pub(crate) fn build_turn_insights(
     session_id: &str,
     turn_ordinal: u64,
 ) -> Result<TurnInsights> {
-    let mut insights =
-        query_indexed_turn_row(connection, project_id, provider, session_id, turn_ordinal)?
-            .into_turn_insights();
-    let mut tools = query_tool_usage_stats(
-        connection,
-        ToolUsageScope::Turn {
-            project_id,
-            provider,
-            session_id,
-            turn_ordinal,
-        },
-    )?;
-    sort_tool_usage_stats(&mut tools);
-
-    let mut files = query_file_usage_stats(
-        connection,
-        FileUsageScope::Turn {
-            project_id,
-            provider,
-            session_id,
-            turn_ordinal,
-        },
-    )?;
-    sort_turn_file_usage_stats(&mut files);
-
-    insights.tools = tools;
-    insights.files = files;
-    Ok(insights)
+    let row = query_indexed_turn_row(connection, project_id, provider, session_id, turn_ordinal)?;
+    let insights = build_turn_detail_insights(connection, &row)?;
+    Ok(row.into_turn_insights(insights))
 }
 
 /// Builds one workspace insights report from indexed turn rows.
@@ -1423,7 +1419,11 @@ struct IndexedTurnRow {
 
 impl IndexedTurnRow {
     /// Converts one indexed turn row into the public turn detail payload.
-    fn into_turn_detail(self, include_raw: bool) -> Result<TurnDetail> {
+    fn into_turn_detail(
+        self,
+        include_raw: bool,
+        insights: Option<TurnDetailInsights>,
+    ) -> Result<TurnDetail> {
         let steps = serde_json::from_str::<Vec<NormalizedTurnStep>>(&self.steps_json)
             .context("failed to parse stored normalized turn steps")?;
         Ok(TurnDetail {
@@ -1441,11 +1441,12 @@ impl IndexedTurnRow {
             step_count: self.step_count,
             steps,
             raw_steps_json: include_raw.then_some(self.steps_json),
+            insights,
         })
     }
 
     /// Converts one indexed turn row into the public turn insights payload.
-    fn into_turn_insights(self) -> TurnInsights {
+    fn into_turn_insights(self, insights: TurnDetailInsights) -> TurnInsights {
         TurnInsights {
             project_id: self.project_id,
             provider: self.provider,
@@ -1456,16 +1457,56 @@ impl IndexedTurnRow {
             status: self.status,
             duration_ms: self.duration_ms,
             step_count: self.step_count,
-            tool_call_count: self.tool_call_count,
-            tool_output_count: self.tool_output_count,
-            attachment_count: self.attachment_count,
-            delegation_count: self.delegation_count,
-            hook_summary_count: self.hook_summary_count,
-            has_final_answer: self.has_final_answer,
-            tools: Vec::new(),
-            files: Vec::new(),
+            tool_call_count: insights.tool_call_count,
+            tool_output_count: insights.tool_output_count,
+            attachment_count: insights.attachment_count,
+            delegation_count: insights.delegation_count,
+            hook_summary_count: insights.hook_summary_count,
+            has_final_answer: insights.has_final_answer,
+            tools: insights.tools,
+            files: insights.files,
         }
     }
+}
+
+/// Builds one derived insights block for a turn detail payload.
+fn build_turn_detail_insights(
+    connection: &Connection,
+    turn: &IndexedTurnRow,
+) -> Result<TurnDetailInsights> {
+    let mut tools = query_tool_usage_stats(
+        connection,
+        ToolUsageScope::Turn {
+            project_id: &turn.project_id,
+            provider: turn.provider,
+            session_id: &turn.session_id,
+            turn_ordinal: turn.turn_ordinal,
+        },
+    )?;
+    sort_tool_usage_stats(&mut tools);
+
+    let mut files = query_file_usage_stats(
+        connection,
+        FileUsageScope::Turn {
+            project_id: &turn.project_id,
+            provider: turn.provider,
+            session_id: &turn.session_id,
+            turn_ordinal: turn.turn_ordinal,
+        },
+    )?;
+    sort_turn_file_usage_stats(&mut files);
+
+    Ok(TurnDetailInsights {
+        duration_ms: turn.duration_ms,
+        tool_call_count: turn.tool_call_count,
+        tool_output_count: turn.tool_output_count,
+        attachment_count: turn.attachment_count,
+        delegation_count: turn.delegation_count,
+        hook_summary_count: turn.hook_summary_count,
+        has_final_answer: turn.has_final_answer,
+        tools,
+        files,
+    })
 }
 
 /// Identifies the supported grouped tool-usage query scopes.

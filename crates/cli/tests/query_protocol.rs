@@ -233,6 +233,42 @@ fn turn_query_emits_success_envelope_and_raw_field() -> Result<()> {
     assert_eq!(value["data"]["session_id"], "session-1");
     assert_eq!(value["data"]["steps"][0]["type"], "tool_call");
     assert!(value["data"]["raw_steps_json"].is_string());
+    assert!(value["data"]["insights"].is_null());
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn turn_query_can_embed_derived_insights() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-turn-with-insights")?;
+    let output = run_darc([
+        "query",
+        "turn",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--provider",
+        "codex",
+        "--session-id",
+        "session-1",
+        "--turn-ordinal",
+        "0",
+        "--include-insights",
+        "--json",
+    ])?;
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.turn.v1");
+    assert_eq!(value["data"]["step_count"], 2);
+    assert_eq!(value["data"]["insights"]["duration_ms"], 5_000);
+    assert_eq!(value["data"]["insights"]["tool_call_count"], 1);
+    assert_eq!(value["data"]["insights"]["tool_output_count"], 1);
+    assert_eq!(value["data"]["insights"]["tools"][0]["name"], "Read");
+    assert_eq!(value["data"]["insights"]["files"][0]["path"], "README.md");
 
     remove_root(&root)?;
     Ok(())
