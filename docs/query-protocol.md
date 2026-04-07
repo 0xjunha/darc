@@ -17,6 +17,7 @@ All query commands currently require `--json`.
 - `darc query turns --root <path> --project-id <id> --provider <provider> --session-id <id> --json`
 - `darc query turn --root <path> --project-id <id> --provider <provider> --session-id <id> --turn-ordinal <n> --json`
 - `darc query turn --root <path> --project-id <id> --provider <provider> --session-id <id> --turn-ordinal <n> --include-raw --json`
+- `darc query turn --root <path> --project-id <id> --provider <provider> --session-id <id> --turn-ordinal <n> --include-insights --json`
 - `darc query insights workspace --root <path> --window <days>d --json`
 - `darc query insights project --root <path> --project-id <id> --limit <n> --json`
 - `darc query insights turn --root <path> --project-id <id> --provider <provider> --session-id <id> --turn-ordinal <n> --json`
@@ -163,6 +164,17 @@ Today:
 
 Clients should treat these analytics as Darc-owned derived data and should not re-derive them from `steps_json`.
 
+### Combined turn queries
+
+`darc query turn --include-insights --json` embeds one derived `insights` block inside `darc.query.turn.v1`.
+
+Today:
+
+- the top-level turn detail fields remain unchanged
+- `insights` includes `duration_ms`, `tool_call_count`, `tool_output_count`, `attachment_count`, `delegation_count`, `hook_summary_count`, `has_final_answer`, `tools`, and `files`
+- the embedded `insights.tools` and `insights.files` arrays follow the same derivation and ordering rules as `darc.query.insights.turn.v1`
+- this command is the preferred single-round-trip protocol when a client needs both turn detail and turn analytics together
+
 ### Hard debugging
 
 `hard_debuggings` is currently provisional.
@@ -182,7 +194,9 @@ Raw/debug payload fields are optional and command-specific.
 Today:
 
 - `darc query turn --include-raw --json` includes `raw_steps_json`
+- `darc query turn --include-insights --json` includes `insights`
 - without `--include-raw`, `raw_steps_json` is currently still present in the response and set to `null`
+- without `--include-insights`, `insights` is currently still present in the response and set to `null`
 
 ## Insights day semantics
 
