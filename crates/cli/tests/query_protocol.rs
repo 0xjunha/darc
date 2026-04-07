@@ -49,6 +49,9 @@ struct TurnFixture<'a> {
     step_count: i64,
     tool_call_count: i64,
     tool_output_count: i64,
+    attachment_count: i64,
+    delegation_count: i64,
+    hook_summary_count: i64,
     has_final_answer: bool,
     duration_ms: i64,
 }
@@ -115,6 +118,9 @@ fn create_query_fixture_root(prefix: &str) -> Result<PathBuf> {
             step_count: 2,
             tool_call_count: 1,
             tool_output_count: 1,
+            attachment_count: 0,
+            delegation_count: 0,
+            hook_summary_count: 0,
             has_final_answer: true,
             duration_ms: 5_000,
         },
@@ -189,7 +195,7 @@ fn insert_turn(connection: &rusqlite::Connection, fixture: TurnFixture<'_>) -> R
             hook_summary_count,
             has_final_answer,
             duration_ms
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, 0, 0, 0, ?16, ?17)
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
         ",
         rusqlite::params![
             fixture.project_id,
@@ -207,6 +213,9 @@ fn insert_turn(connection: &rusqlite::Connection, fixture: TurnFixture<'_>) -> R
             fixture.step_count,
             fixture.tool_call_count,
             fixture.tool_output_count,
+            fixture.attachment_count,
+            fixture.delegation_count,
+            fixture.hook_summary_count,
             i64::from(fixture.has_final_answer),
             fixture.duration_ms,
         ],
@@ -478,6 +487,74 @@ fn project_insights_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["schema"], "darc.query.insights.project.v1");
     assert_eq!(value["data"]["most_common_tools"][0]["name"], "Read");
     assert_eq!(value["data"]["total_time_ms"], 5000);
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn turn_insights_query_emits_success_envelope() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-turn-insights")?;
+    let output = run_darc([
+        "query",
+        "insights",
+        "turn",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--provider",
+        "codex",
+        "--session-id",
+        "session-1",
+        "--turn-ordinal",
+        "0",
+        "--json",
+    ])?;
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.insights.turn.v1");
+    assert_eq!(value["data"]["tool_call_count"], 1);
+    assert_eq!(value["data"]["tool_output_count"], 1);
+    assert_eq!(value["data"]["tools"][0]["name"], "Read");
+    assert_eq!(value["data"]["files"][0]["path"], "README.md");
+    assert_eq!(value["data"]["files"][0]["read_count"], 1);
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn turn_insights_query_missing_turn_emits_error_envelope() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-turn-insights-missing")?;
+    let output = run_darc([
+        "query",
+        "insights",
+        "turn",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--provider",
+        "codex",
+        "--session-id",
+        "session-1",
+        "--turn-ordinal",
+        "9",
+        "--json",
+    ])?;
+
+    assert!(!output.status.success());
+    let value = parse_json(&output.stderr, "stderr")?;
+    assert_eq!(value["schema"], "darc.error.v1");
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("turn 9 was not found in session session-1 for provider codex")
+    );
 
     remove_root(&root)?;
     Ok(())

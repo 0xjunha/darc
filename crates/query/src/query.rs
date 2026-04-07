@@ -137,6 +137,28 @@ pub struct TurnDetail {
     pub raw_steps_json: Option<String>,
 }
 
+/// Stores one turn-scoped insights payload for one indexed session turn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TurnInsights {
+    pub project_id: String,
+    pub provider: SourceKind,
+    pub session_id: String,
+    pub turn_ordinal: u64,
+    pub started_at: String,
+    pub completed_at: Option<String>,
+    pub status: NormalizedTurnStatus,
+    pub duration_ms: u64,
+    pub step_count: u64,
+    pub tool_call_count: u64,
+    pub tool_output_count: u64,
+    pub attachment_count: u64,
+    pub delegation_count: u64,
+    pub hook_summary_count: u64,
+    pub has_final_answer: bool,
+    pub tools: Vec<ToolUsageStat>,
+    pub files: Vec<FileUsageStat>,
+}
+
 /// Stores one aggregated tool usage counter for project insights.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ToolUsageStat {
@@ -299,6 +321,18 @@ pub fn query_turn_detail(
         turn_ordinal,
         include_raw,
     )
+}
+
+/// Queries one turn insights payload for one indexed provider session turn.
+pub fn query_turn_insights(
+    index_db_path: &Path,
+    project_id: &str,
+    provider: SourceKind,
+    session_id: &str,
+    turn_ordinal: u64,
+) -> Result<TurnInsights> {
+    let connection = open_existing_index_database(index_db_path)?;
+    build_turn_insights(&connection, project_id, provider, session_id, turn_ordinal)
 }
 
 /// Queries one workspace insights payload for a rolling host-local day window.
@@ -647,6 +681,42 @@ fn query_turn(
     })
 }
 
+/// Builds one turn insights report from indexed turn, tool, and file rows.
+pub(crate) fn build_turn_insights(
+    connection: &Connection,
+    project_id: &str,
+    provider: SourceKind,
+    session_id: &str,
+    turn_ordinal: u64,
+) -> Result<TurnInsights> {
+    let mut insights =
+        query_turn_insight_header(connection, project_id, provider, session_id, turn_ordinal)?;
+    let mut tools =
+        query_turn_tool_usage_stats(connection, project_id, provider, session_id, turn_ordinal)?;
+    tools.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+
+    let mut files =
+        query_turn_file_usage_stats(connection, project_id, provider, session_id, turn_ordinal)?;
+    files.sort_by(|left, right| {
+        let left_total = left.read_count.saturating_add(left.write_count);
+        let right_total = right.read_count.saturating_add(right.write_count);
+        right_total
+            .cmp(&left_total)
+            .then_with(|| right.write_count.cmp(&left.write_count))
+            .then_with(|| right.read_count.cmp(&left.read_count))
+            .then_with(|| left.path.cmp(&right.path))
+    });
+
+    insights.tools = tools;
+    insights.files = files;
+    Ok(insights)
+}
+
 /// Builds one workspace insights report from indexed turn rows.
 pub(crate) fn build_workspace_insights(
     connection: &Connection,
@@ -854,6 +924,91 @@ pub(crate) fn build_project_insights(
     })
 }
 
+/// Queries one indexed turn row used to build turn insights.
+fn query_turn_insight_header(
+    connection: &Connection,
+    project_id: &str,
+    provider: SourceKind,
+    session_id: &str,
+    turn_ordinal: u64,
+) -> Result<TurnInsights> {
+    let turn_ordinal =
+        i64::try_from(turn_ordinal).context("turn ordinal exceeds SQLite INTEGER range")?;
+    let row = connection
+        .query_row(
+            "
+            SELECT
+                project_id,
+                provider,
+                session_id,
+                turn_ordinal,
+                started_at,
+                completed_at,
+                status,
+                COALESCE(duration_ms, 0),
+                COALESCE(step_count, 0),
+                COALESCE(tool_call_count, 0),
+                COALESCE(tool_output_count, 0),
+                COALESCE(attachment_count, 0),
+                COALESCE(delegation_count, 0),
+                COALESCE(hook_summary_count, 0),
+                has_final_answer
+            FROM turns
+            WHERE project_id = ?1 AND provider = ?2 AND session_id = ?3 AND turn_ordinal = ?4
+            ",
+            (
+                project_id,
+                provider.directory_name(),
+                session_id,
+                turn_ordinal,
+            ),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, i64>(9)?,
+                    row.get::<_, i64>(10)?,
+                    row.get::<_, i64>(11)?,
+                    row.get::<_, i64>(12)?,
+                    row.get::<_, i64>(13)?,
+                    row.get::<_, i64>(14)?,
+                ))
+            },
+        )
+        .with_context(|| {
+            format!(
+                "turn {turn_ordinal} was not found in session {session_id} for provider {}",
+                provider.directory_name()
+            )
+        })?;
+    Ok(TurnInsights {
+        project_id: row.0,
+        provider: parse_provider(&row.1)?,
+        session_id: row.2,
+        turn_ordinal: sql_count_to_u64(row.3)?,
+        started_at: row.4,
+        completed_at: row.5,
+        status: parse_turn_status(&row.6)?,
+        duration_ms: sql_count_to_u64(row.7)?,
+        step_count: sql_count_to_u64(row.8)?,
+        tool_call_count: sql_count_to_u64(row.9)?,
+        tool_output_count: sql_count_to_u64(row.10)?,
+        attachment_count: sql_count_to_u64(row.11)?,
+        delegation_count: sql_count_to_u64(row.12)?,
+        hook_summary_count: sql_count_to_u64(row.13)?,
+        has_final_answer: row.14 != 0,
+        tools: Vec::new(),
+        files: Vec::new(),
+    })
+}
+
 /// Queries the latest indexed host-local day in one workspace database.
 fn query_latest_local_date(connection: &Connection) -> Result<Option<String>> {
     connection
@@ -1000,6 +1155,109 @@ fn query_project_insight_rows(
                 })
             },
         )
+        .collect()
+}
+
+/// Queries the derived tool-call rows needed to build one turn insights report.
+fn query_turn_tool_usage_stats(
+    connection: &Connection,
+    project_id: &str,
+    provider: SourceKind,
+    session_id: &str,
+    turn_ordinal: u64,
+) -> Result<Vec<ToolUsageStat>> {
+    let turn_ordinal =
+        i64::try_from(turn_ordinal).context("turn ordinal exceeds SQLite INTEGER range")?;
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT tool_name, COUNT(*) AS call_count
+            FROM tool_calls
+            WHERE project_id = ?1
+                AND provider = ?2
+                AND session_id = ?3
+                AND turn_ordinal = ?4
+                AND tool_name IS NOT NULL
+            GROUP BY tool_name
+            ",
+        )
+        .context("failed to prepare turn tool usage query")?;
+    let rows = statement
+        .query_map(
+            (
+                project_id,
+                provider.directory_name(),
+                session_id,
+                turn_ordinal,
+            ),
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .context("failed to query turn tool usage rows")?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed to read turn tool usage rows")?;
+    rows.into_iter()
+        .map(|(name, count)| -> Result<_> {
+            Ok(ToolUsageStat {
+                name,
+                count: sql_count_to_u64(count)?,
+            })
+        })
+        .collect()
+}
+
+/// Queries the derived file-access rows needed to build one turn insights report.
+fn query_turn_file_usage_stats(
+    connection: &Connection,
+    project_id: &str,
+    provider: SourceKind,
+    session_id: &str,
+    turn_ordinal: u64,
+) -> Result<Vec<FileUsageStat>> {
+    let turn_ordinal =
+        i64::try_from(turn_ordinal).context("turn ordinal exceeds SQLite INTEGER range")?;
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT
+                path,
+                SUM(CASE WHEN access_type IN ('read', 'list') THEN 1 ELSE 0 END) AS read_count,
+                SUM(CASE WHEN access_type IN ('write', 'edit') THEN 1 ELSE 0 END) AS write_count
+            FROM file_accesses
+            WHERE project_id = ?1
+                AND provider = ?2
+                AND session_id = ?3
+                AND turn_ordinal = ?4
+            GROUP BY path
+            ",
+        )
+        .context("failed to prepare turn file usage query")?;
+    let rows = statement
+        .query_map(
+            (
+                project_id,
+                provider.directory_name(),
+                session_id,
+                turn_ordinal,
+            ),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .context("failed to query turn file usage rows")?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed to read turn file usage rows")?;
+    rows.into_iter()
+        .map(|(path, read_count, write_count)| -> Result<_> {
+            Ok(FileUsageStat {
+                path,
+                read_count: sql_count_to_u64(read_count)?,
+                write_count: sql_count_to_u64(write_count)?,
+            })
+        })
         .collect()
 }
 

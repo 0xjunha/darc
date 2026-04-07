@@ -9,8 +9,8 @@ use std::{
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use darc_core::query::{
-    query_project_insight_report, query_sessions, query_turn, query_turns, query_workspace,
-    query_workspace_insight_report,
+    query_project_insight_report, query_sessions, query_turn, query_turn_insight_report,
+    query_turns, query_workspace, query_workspace_insight_report,
 };
 use darc_core::{
     IndexOptions, InitDraft, RefreshOptions, RefreshReport, SkippedRollout, SourceKind,
@@ -286,6 +286,8 @@ enum QueryInsightsCommands {
     Workspace(QueryWorkspaceInsightsArgs),
     /// Queries the project insights payload for one configured project.
     Project(QueryProjectInsightsArgs),
+    /// Queries the turn insights payload for one provider session turn.
+    Turn(QueryTurnInsightsArgs),
 }
 
 /// Queries the workspace insights payload for one rolling day window.
@@ -325,6 +327,32 @@ struct QueryProjectInsightsArgs {
         help = "Maximum indexed turns to inspect"
     )]
     limit: usize,
+
+    #[arg(
+        long,
+        required = true,
+        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
+    )]
+    json: bool,
+}
+
+/// Queries one turn insights payload.
+#[derive(Debug, Args)]
+struct QueryTurnInsightsArgs {
+    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    root: PathBuf,
+
+    #[arg(long = "project-id", help = "Query this configured project id")]
+    project_id: String,
+
+    #[arg(long, value_enum, help = "Query this provider")]
+    provider: ProviderArg,
+
+    #[arg(long = "session-id", help = "Query this session id")]
+    session_id: String,
+
+    #[arg(long = "turn-ordinal", help = "Query this turn ordinal")]
+    turn_ordinal: u64,
 
     #[arg(
         long,
@@ -469,6 +497,7 @@ fn run_query_insights(args: QueryInsightsArgs) -> Result<()> {
     match args.command {
         QueryInsightsCommands::Workspace(args) => run_query_workspace_insights(args),
         QueryInsightsCommands::Project(args) => run_query_project_insights(args),
+        QueryInsightsCommands::Turn(args) => run_query_turn_insights(args),
     }
 }
 
@@ -484,6 +513,19 @@ fn run_query_project_insights(args: QueryProjectInsightsArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
     let data = query_project_insight_report(Some(args.root), &args.project_id, args.limit)?;
     print_query_json("darc.query.insights.project.v1", &data)
+}
+
+/// Queries the turn insights payload for one provider session turn.
+fn run_query_turn_insights(args: QueryTurnInsightsArgs) -> Result<()> {
+    ensure_json_requested(args.json)?;
+    let data = query_turn_insight_report(
+        Some(args.root),
+        &args.project_id,
+        provider_arg_to_source_kind(args.provider),
+        &args.session_id,
+        args.turn_ordinal,
+    )?;
+    print_query_json("darc.query.insights.turn.v1", &data)
 }
 
 /// Writes one machine-readable JSON envelope to stdout.

@@ -14,8 +14,9 @@ use darc_rollout::model::NormalizedTurnStep;
 use darc_test_utils::unique_test_dir;
 
 use crate::query::{
-    HardDebuggingTurn, LocalDate, ProjectInsights, SessionKind, build_project_insights,
-    build_workspace_insights, open_existing_index_database, parse_session_kind,
+    HardDebuggingTurn, LocalDate, ProjectInsights, SessionKind, TurnInsights,
+    build_project_insights, build_turn_insights, build_workspace_insights,
+    open_existing_index_database, parse_session_kind,
 };
 
 /// Stores one normalized turn fixture used to seed query tests.
@@ -29,6 +30,10 @@ struct TurnFixture<'a> {
     steps_json: &'a str,
     step_count: i64,
     tool_call_count: i64,
+    tool_output_count: i64,
+    attachment_count: i64,
+    delegation_count: i64,
+    hook_summary_count: i64,
     has_final_answer: bool,
     duration_ms: i64,
 }
@@ -103,9 +108,9 @@ fn insert_turn(connection: &rusqlite::Connection, fixture: TurnFixture<'_>) -> R
             hook_summary_count,
             has_final_answer,
             duration_ms
-        ) VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, 'Inspect the repo', ?8, ?9, ?10, ?11, ?12, 0, 0, 0, 0, ?13, ?14)
+        ) VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, 'Inspect the repo', ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
         ",
-        (
+        rusqlite::params![
             fixture.project_id,
             fixture.provider,
             fixture.session_id,
@@ -118,9 +123,13 @@ fn insert_turn(connection: &rusqlite::Connection, fixture: TurnFixture<'_>) -> R
             fixture.steps_json,
             fixture.step_count,
             fixture.tool_call_count,
+            fixture.tool_output_count,
+            fixture.attachment_count,
+            fixture.delegation_count,
+            fixture.hook_summary_count,
             i64::from(fixture.has_final_answer),
             fixture.duration_ms,
-        ),
+        ],
     )?;
     let provider = parse_test_provider(fixture.provider)?;
     let turn_ordinal =
@@ -506,6 +515,10 @@ fn workspace_insights_filter_short_and_failed_turns() -> Result<()> {
             steps_json: "[]",
             step_count: 3,
             tool_call_count: 0,
+            tool_output_count: 0,
+            attachment_count: 0,
+            delegation_count: 0,
+            hook_summary_count: 0,
             has_final_answer: true,
             duration_ms: 3_000,
         },
@@ -522,6 +535,10 @@ fn workspace_insights_filter_short_and_failed_turns() -> Result<()> {
             steps_json: "[]",
             step_count: 1,
             tool_call_count: 0,
+            tool_output_count: 0,
+            attachment_count: 0,
+            delegation_count: 0,
+            hook_summary_count: 0,
             has_final_answer: true,
             duration_ms: 1_000,
         },
@@ -538,6 +555,10 @@ fn workspace_insights_filter_short_and_failed_turns() -> Result<()> {
             steps_json: "[]",
             step_count: 10,
             tool_call_count: 0,
+            tool_output_count: 0,
+            attachment_count: 0,
+            delegation_count: 0,
+            hook_summary_count: 0,
             has_final_answer: false,
             duration_ms: 9_000,
         },
@@ -589,6 +610,10 @@ fn project_insights_collect_tool_and_file_stats() -> Result<()> {
             steps_json: r#"[{"type":"tool_call","timestamp":"2026-04-06T10:00:01Z","call_id":"call-1","name":"Read","arguments":"{\"file_path\":\"README.md\"}"},{"type":"tool_call","timestamp":"2026-04-06T10:00:02Z","call_id":"call-2","name":"Edit","arguments":"{\"path\":\"src/main.rs\"}"}]"#,
             step_count: 2,
             tool_call_count: 2,
+            tool_output_count: 0,
+            attachment_count: 0,
+            delegation_count: 0,
+            hook_summary_count: 0,
             has_final_answer: true,
             duration_ms: 5_000,
         },
@@ -605,6 +630,10 @@ fn project_insights_collect_tool_and_file_stats() -> Result<()> {
             steps_json: "[]",
             step_count: 55,
             tool_call_count: 0,
+            tool_output_count: 0,
+            attachment_count: 0,
+            delegation_count: 0,
+            hook_summary_count: 0,
             has_final_answer: false,
             duration_ms: 4_000,
         },
@@ -631,6 +660,184 @@ fn project_insights_collect_tool_and_file_stats() -> Result<()> {
         insights.hard_debuggings[0],
         HardDebuggingTurn { step_count: 55, .. }
     ));
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn turn_insights_collect_turn_scoped_stats_and_ordering() -> Result<()> {
+    let index_path = test_index_path("turn-insights");
+    let connection = open_index_database(&index_path)?;
+    insert_session(
+        &connection,
+        "repo-a",
+        "codex",
+        "session-1",
+        None,
+        "primary",
+        "/tmp/repo-a",
+    )?;
+    insert_turn(
+        &connection,
+        TurnFixture {
+            project_id: "repo-a",
+            provider: "codex",
+            session_id: "session-1",
+            turn_ordinal: 0,
+            started_at: "2026-04-06T11:00:00Z",
+            status: "completed",
+            steps_json: r#"[{"type":"tool_call","timestamp":"2026-04-06T11:00:01Z","call_id":"call-1","name":"Read","arguments":"{\"file_path\":\"README.md\"}"},{"type":"tool_call","timestamp":"2026-04-06T11:00:02Z","call_id":"call-2","name":"Edit","arguments":"{\"path\":\"src/main.rs\"}"},{"type":"tool_call","timestamp":"2026-04-06T11:00:03Z","call_id":"call-3","name":"Read","arguments":"{\"file_path\":\"README.md\"}"},{"type":"tool_call","timestamp":"2026-04-06T11:00:04Z","call_id":"call-4","name":"Edit","arguments":"{\"path\":\"src/main.rs\"}"}]"#,
+            step_count: 9,
+            tool_call_count: 4,
+            tool_output_count: 2,
+            attachment_count: 1,
+            delegation_count: 1,
+            hook_summary_count: 1,
+            has_final_answer: true,
+            duration_ms: 12_000,
+        },
+    )?;
+    insert_turn(
+        &connection,
+        TurnFixture {
+            project_id: "repo-a",
+            provider: "codex",
+            session_id: "session-1",
+            turn_ordinal: 1,
+            started_at: "2026-04-06T11:05:00Z",
+            status: "completed",
+            steps_json: r#"[{"type":"tool_call","timestamp":"2026-04-06T11:05:01Z","call_id":"call-9","name":"Write","arguments":"{\"path\":\"ignored.txt\"}"}]"#,
+            step_count: 1,
+            tool_call_count: 1,
+            tool_output_count: 0,
+            attachment_count: 0,
+            delegation_count: 0,
+            hook_summary_count: 0,
+            has_final_answer: true,
+            duration_ms: 1_000,
+        },
+    )?;
+
+    let insights: TurnInsights =
+        build_turn_insights(&connection, "repo-a", SourceKind::Codex, "session-1", 0)?;
+
+    assert_eq!(insights.project_id, "repo-a");
+    assert_eq!(insights.provider, SourceKind::Codex);
+    assert_eq!(insights.session_id, "session-1");
+    assert_eq!(insights.turn_ordinal, 0);
+    assert_eq!(
+        insights.status,
+        darc_rollout::model::NormalizedTurnStatus::Completed
+    );
+    assert_eq!(insights.duration_ms, 12_000);
+    assert_eq!(insights.step_count, 9);
+    assert_eq!(insights.tool_call_count, 4);
+    assert_eq!(insights.tool_output_count, 2);
+    assert_eq!(insights.attachment_count, 1);
+    assert_eq!(insights.delegation_count, 1);
+    assert_eq!(insights.hook_summary_count, 1);
+    assert!(insights.has_final_answer);
+    assert_eq!(
+        insights
+            .tools
+            .iter()
+            .map(|stat| (stat.name.as_str(), stat.count))
+            .collect::<Vec<_>>(),
+        vec![("Edit", 2), ("Read", 2)]
+    );
+    assert_eq!(
+        insights
+            .files
+            .iter()
+            .map(|stat| (stat.path.as_str(), stat.read_count, stat.write_count))
+            .collect::<Vec<_>>(),
+        vec![("src/main.rs", 0, 2), ("README.md", 2, 0)]
+    );
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn turn_insights_return_empty_tool_and_file_lists() -> Result<()> {
+    let index_path = test_index_path("turn-insights-empty");
+    let connection = open_index_database(&index_path)?;
+    insert_session(
+        &connection,
+        "repo-a",
+        "codex",
+        "session-1",
+        None,
+        "primary",
+        "/tmp/repo-a",
+    )?;
+    insert_turn(
+        &connection,
+        TurnFixture {
+            project_id: "repo-a",
+            provider: "codex",
+            session_id: "session-1",
+            turn_ordinal: 0,
+            started_at: "2026-04-06T12:00:00Z",
+            status: "completed",
+            steps_json: "[]",
+            step_count: 0,
+            tool_call_count: 0,
+            tool_output_count: 0,
+            attachment_count: 0,
+            delegation_count: 0,
+            hook_summary_count: 0,
+            has_final_answer: false,
+            duration_ms: 0,
+        },
+    )?;
+
+    let insights = build_turn_insights(&connection, "repo-a", SourceKind::Codex, "session-1", 0)?;
+
+    assert!(insights.tools.is_empty());
+    assert!(insights.files.is_empty());
+    assert_eq!(insights.tool_call_count, 0);
+    assert_eq!(insights.tool_output_count, 0);
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn turn_insights_report_missing_turn_errors() -> Result<()> {
+    let index_path = test_index_path("turn-insights-missing");
+    let connection = open_index_database(&index_path)?;
+    insert_session(
+        &connection,
+        "repo-a",
+        "codex",
+        "session-1",
+        None,
+        "primary",
+        "/tmp/repo-a",
+    )?;
+
+    let error = build_turn_insights(&connection, "repo-a", SourceKind::Codex, "session-1", 9)
+        .expect_err("missing turns should error");
+
+    assert!(
+        error
+            .to_string()
+            .contains("turn 9 was not found in session session-1 for provider codex")
+    );
 
     fs::remove_dir_all(
         index_path
