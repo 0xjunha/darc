@@ -5,8 +5,11 @@ use darc_rollout::model::NormalizedTurnStep as CodexTurnStep;
 use rusqlite::Connection;
 use serde_json::from_str;
 
-use crate::turn_metrics::summarize_stored_turn_metrics;
+use crate::{
+    derived_data::rebuild_derived_analytics_tables, turn_metrics::summarize_stored_turn_metrics,
+};
 
+/// Tracks one-shot SQLite migrations for derived analytics tables.
 const INDEX_DB_SCHEMA_VERSION: i32 = 1;
 
 /// Opens the index database and creates the current schema when missing.
@@ -30,6 +33,9 @@ pub fn ensure_index_database(path: &Path) -> Result<()> {
 
 /// Creates the supported SQLite schema when missing.
 fn initialize_index_database(connection: &mut Connection) -> Result<()> {
+    let needs_derived_analytics_compat_backfill = index_db_schema_version(connection)?
+        >= INDEX_DB_SCHEMA_VERSION
+        && (!has_table(connection, "tool_calls")? || !has_table(connection, "file_accesses")?);
     connection
         .execute_batch(
             "
@@ -85,6 +91,69 @@ fn initialize_index_database(connection: &mut Connection) -> Result<()> {
                 ON turns (started_at);
             CREATE INDEX IF NOT EXISTS turns_project_started_idx
                 ON turns (project_id, started_at);
+
+            CREATE TABLE IF NOT EXISTS tool_calls (
+                project_id TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                turn_ordinal INTEGER NOT NULL,
+                call_ordinal INTEGER NOT NULL,
+                call_id TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                tool_name TEXT,
+                arguments_text TEXT,
+                output_text TEXT,
+                status TEXT,
+                is_error INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (project_id, provider, session_id, turn_ordinal, call_ordinal),
+                FOREIGN KEY (project_id, provider, session_id, turn_ordinal)
+                    REFERENCES turns(project_id, provider, session_id, turn_ordinal)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS tool_calls_project_tool_idx
+                ON tool_calls (project_id, tool_name);
+            CREATE INDEX IF NOT EXISTS tool_calls_project_session_turn_idx
+                ON tool_calls (project_id, provider, session_id, turn_ordinal);
+            CREATE INDEX IF NOT EXISTS tool_calls_project_timestamp_idx
+                ON tool_calls (project_id, timestamp);
+
+            CREATE TABLE IF NOT EXISTS file_accesses (
+                project_id TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                turn_ordinal INTEGER NOT NULL,
+                call_ordinal INTEGER NOT NULL,
+                call_id TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                access_type TEXT NOT NULL,
+                path TEXT NOT NULL,
+                repo_relative_path TEXT,
+                PRIMARY KEY (
+                    project_id,
+                    provider,
+                    session_id,
+                    turn_ordinal,
+                    call_ordinal,
+                    access_type,
+                    path
+                ),
+                FOREIGN KEY (project_id, provider, session_id, turn_ordinal, call_ordinal)
+                    REFERENCES tool_calls(
+                        project_id,
+                        provider,
+                        session_id,
+                        turn_ordinal,
+                        call_ordinal
+                    )
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS file_accesses_project_access_path_idx
+                ON file_accesses (project_id, access_type, path);
+            CREATE INDEX IF NOT EXISTS file_accesses_project_session_turn_idx
+                ON file_accesses (project_id, provider, session_id, turn_ordinal);
             CREATE INDEX IF NOT EXISTS sessions_project_provider_schema_idx
                 ON sessions (project_id, provider, schema_id, determinism);
             ",
@@ -96,6 +165,7 @@ fn initialize_index_database(connection: &mut Connection) -> Result<()> {
     }
     migrate_legacy_codex_tables(connection)?;
     migrate_index_db_schema_version(connection)?;
+    compat_backfill_missing_derived_analytics(connection, needs_derived_analytics_compat_backfill)?;
     Ok(())
 }
 
@@ -260,14 +330,40 @@ fn backfill_turn_metrics(connection: &Connection) -> Result<()> {
 }
 
 /// Applies one-shot schema-version migrations that should not rerun on every DB open.
-fn migrate_index_db_schema_version(connection: &Connection) -> Result<()> {
+fn migrate_index_db_schema_version(connection: &mut Connection) -> Result<()> {
     let current_version = index_db_schema_version(connection)?;
     if current_version >= INDEX_DB_SCHEMA_VERSION {
         return Ok(());
     }
 
-    backfill_turn_metrics(connection)?;
-    set_index_db_schema_version(connection, INDEX_DB_SCHEMA_VERSION)?;
+    let transaction = connection
+        .transaction()
+        .context("failed to begin schema-version migration transaction")?;
+    backfill_turn_metrics(&transaction)?;
+    rebuild_derived_analytics_tables(&transaction)?;
+    set_index_db_schema_version(&transaction, INDEX_DB_SCHEMA_VERSION)?;
+    transaction
+        .commit()
+        .context("failed to commit schema-version migration transaction")?;
+    Ok(())
+}
+
+/// Rebuilds derived analytics once for version-1 databases that predate those tables.
+fn compat_backfill_missing_derived_analytics(
+    connection: &mut Connection,
+    needs_compat_backfill: bool,
+) -> Result<()> {
+    if !needs_compat_backfill {
+        return Ok(());
+    }
+
+    let transaction = connection
+        .transaction()
+        .context("failed to begin compatibility derived-analytics backfill transaction")?;
+    rebuild_derived_analytics_tables(&transaction)?;
+    transaction
+        .commit()
+        .context("failed to commit compatibility derived-analytics backfill transaction")?;
     Ok(())
 }
 
@@ -945,10 +1041,362 @@ mod tests {
                 ))
             },
         )?;
+        let tool_call_row: (String, String, String, i64) = reopened.query_row(
+            "
+            SELECT call_id, tool_name, arguments_text, is_error
+            FROM tool_calls
+            WHERE project_id = 'project' AND provider = 'claude' AND session_id = 'session'
+                AND turn_ordinal = 0 AND call_ordinal = 0
+            ",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        let file_access_row: (String, String, String) = reopened.query_row(
+            "
+            SELECT tool_name, access_type, path
+            FROM file_accesses
+            WHERE project_id = 'project' AND provider = 'claude' AND session_id = 'session'
+                AND turn_ordinal = 0 AND call_ordinal = 0
+            ",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
         let user_version: i32 = reopened.query_row("PRAGMA user_version", [], |row| row.get(0))?;
 
         assert_eq!(metrics, (4, 1, 1, 1, 1, 0, 1, 5_000));
+        assert_eq!(
+            tool_call_row,
+            (
+                "tool-1".to_owned(),
+                "Read".to_owned(),
+                "{\"file_path\":\"README.md\"}".to_owned(),
+                0,
+            )
+        );
+        assert_eq!(
+            file_access_row,
+            ("Read".to_owned(), "read".to_owned(), "README.md".to_owned())
+        );
         assert_eq!(user_version, INDEX_DB_SCHEMA_VERSION);
+
+        Ok(())
+    }
+
+    #[test]
+    fn open_index_database_backfills_missing_derived_tables_for_version_one_indexes() -> Result<()>
+    {
+        let path = unique_db_path("index-db-compat-derived-backfill");
+        let connection = open_index_database(&path)?;
+        connection.execute(
+            "
+            INSERT INTO sessions (
+                project_id,
+                provider,
+                session_id,
+                parent_session_id,
+                session_kind,
+                archive_path,
+                cwd,
+                cli_version,
+                schema_id,
+                determinism,
+                source_size,
+                source_mtime_ms
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            ",
+            (
+                "project",
+                "codex",
+                "session",
+                Option::<String>::None,
+                "primary",
+                "codex/session.jsonl",
+                "/tmp/repo",
+                Some("0.118.0"),
+                "codex.turn_lifecycle",
+                "exact",
+                Some(10_i64),
+                Some(20_i64),
+            ),
+        )?;
+        connection.execute(
+            "
+            INSERT INTO turns (
+                project_id,
+                provider,
+                session_id,
+                turn_ordinal,
+                turn_id,
+                started_at,
+                completed_at,
+                status,
+                user_message,
+                final_answer_at,
+                final_answer_text,
+                steps_json,
+                step_count,
+                tool_call_count,
+                tool_output_count,
+                attachment_count,
+                delegation_count,
+                hook_summary_count,
+                has_final_answer,
+                duration_ms
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+            ",
+            rusqlite::params![
+                "project",
+                "codex",
+                "session",
+                0_i64,
+                Some("turn-1"),
+                "2026-04-01T00:00:00Z",
+                Some("2026-04-01T00:00:05Z"),
+                "completed",
+                "Inspect README",
+                Some("2026-04-01T00:00:05Z"),
+                Some("done"),
+                r#"[{"type":"tool_call","timestamp":"2026-04-01T00:00:01Z","call_id":"tool-1","name":"Read","arguments":"{\"file_path\":\"README.md\"}"}]"#,
+                1_i64,
+                1_i64,
+                0_i64,
+                0_i64,
+                0_i64,
+                0_i64,
+                1_i64,
+                5_000_i64,
+            ],
+        )?;
+        connection.execute_batch(
+            "
+            DROP TABLE file_accesses;
+            DROP TABLE tool_calls;
+            ",
+        )?;
+        drop(connection);
+
+        let reopened = open_index_database(&path)?;
+        let tool_call_row: (String, String, String, i64) = reopened.query_row(
+            "
+            SELECT call_id, tool_name, arguments_text, is_error
+            FROM tool_calls
+            WHERE project_id = 'project' AND provider = 'codex' AND session_id = 'session'
+                AND turn_ordinal = 0 AND call_ordinal = 0
+            ",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        let file_access_row: (String, String, String) = reopened.query_row(
+            "
+            SELECT tool_name, access_type, path
+            FROM file_accesses
+            WHERE project_id = 'project' AND provider = 'codex' AND session_id = 'session'
+                AND turn_ordinal = 0 AND call_ordinal = 0
+            ",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        let user_version: i32 = reopened.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+
+        assert_eq!(
+            tool_call_row,
+            (
+                "tool-1".to_owned(),
+                "Read".to_owned(),
+                "{\"file_path\":\"README.md\"}".to_owned(),
+                0,
+            )
+        );
+        assert_eq!(
+            file_access_row,
+            ("Read".to_owned(), "read".to_owned(), "README.md".to_owned())
+        );
+        assert_eq!(user_version, INDEX_DB_SCHEMA_VERSION);
+
+        Ok(())
+    }
+
+    #[test]
+    fn open_index_database_rolls_back_derived_rebuild_failures() -> Result<()> {
+        let path = unique_db_path("index-db-atomic-derived-rebuild");
+        let connection = open_index_database(&path)?;
+        connection.execute(
+            "
+            INSERT INTO sessions (
+                project_id,
+                provider,
+                session_id,
+                parent_session_id,
+                session_kind,
+                archive_path,
+                cwd,
+                cli_version,
+                schema_id,
+                determinism,
+                source_size,
+                source_mtime_ms
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            ",
+            (
+                "project",
+                "codex",
+                "session",
+                Option::<String>::None,
+                "primary",
+                "codex/session.jsonl",
+                "/tmp/repo",
+                Some("0.118.0"),
+                "codex.turn_lifecycle",
+                "exact",
+                Some(10_i64),
+                Some(20_i64),
+            ),
+        )?;
+        connection.execute(
+            "
+            INSERT INTO turns (
+                project_id,
+                provider,
+                session_id,
+                turn_ordinal,
+                turn_id,
+                started_at,
+                completed_at,
+                status,
+                user_message,
+                final_answer_at,
+                final_answer_text,
+                steps_json,
+                step_count,
+                tool_call_count,
+                tool_output_count,
+                attachment_count,
+                delegation_count,
+                hook_summary_count,
+                has_final_answer,
+                duration_ms
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+            ",
+            rusqlite::params![
+                "project",
+                "codex",
+                "session",
+                0_i64,
+                Some("turn-1"),
+                "2026-04-01T00:00:00Z",
+                Some("2026-04-01T00:00:05Z"),
+                "completed",
+                "Inspect README",
+                Some("2026-04-01T00:00:05Z"),
+                Some("done"),
+                r#"[{"type":"tool_call","timestamp":"2026-04-01T00:00:01Z","call_id":"tool-1","name":"Read","arguments":"{\"file_path\":\"README.md\"}"}]"#,
+                1_i64,
+                1_i64,
+                0_i64,
+                0_i64,
+                0_i64,
+                0_i64,
+                1_i64,
+                5_000_i64,
+            ],
+        )?;
+        connection.execute(
+            "
+            INSERT INTO tool_calls (
+                project_id,
+                provider,
+                session_id,
+                turn_ordinal,
+                call_ordinal,
+                call_id,
+                timestamp,
+                tool_name,
+                arguments_text,
+                output_text,
+                status,
+                is_error
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            ",
+            (
+                "project",
+                "codex",
+                "session",
+                0_i64,
+                0_i64,
+                "tool-1",
+                "2026-04-01T00:00:01Z",
+                Some("Read"),
+                Some(r#"{"file_path":"README.md"}"#),
+                Option::<String>::None,
+                Option::<String>::None,
+                0_i64,
+            ),
+        )?;
+        connection.execute(
+            "
+            INSERT INTO file_accesses (
+                project_id,
+                provider,
+                session_id,
+                turn_ordinal,
+                call_ordinal,
+                call_id,
+                timestamp,
+                tool_name,
+                access_type,
+                path,
+                repo_relative_path
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            ",
+            (
+                "project",
+                "codex",
+                "session",
+                0_i64,
+                0_i64,
+                "tool-1",
+                "2026-04-01T00:00:01Z",
+                "Read",
+                "read",
+                "README.md",
+                Some("README.md"),
+            ),
+        )?;
+        connection.execute(
+            "
+            UPDATE turns
+            SET steps_json = 'not json'
+            WHERE project_id = 'project' AND provider = 'codex' AND session_id = 'session'
+                AND turn_ordinal = 0
+            ",
+            [],
+        )?;
+        connection.execute_batch(&format!(
+            "PRAGMA user_version = {};",
+            INDEX_DB_SCHEMA_VERSION - 1
+        ))?;
+        drop(connection);
+
+        let error = open_index_database(&path).expect_err("rebuild should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("failed to parse stored steps_json while rebuilding analytics")
+        );
+
+        let reopened = Connection::open(&path)?;
+        let state: (i64, i64, i32) = reopened.query_row(
+            "
+            SELECT
+                (SELECT COUNT(*) FROM tool_calls),
+                (SELECT COUNT(*) FROM file_accesses),
+                (SELECT user_version FROM pragma_user_version)
+            ",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+
+        assert_eq!(state, (1, 1, INDEX_DB_SCHEMA_VERSION - 1));
 
         Ok(())
     }
