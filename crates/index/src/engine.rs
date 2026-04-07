@@ -24,7 +24,10 @@ use darc_rollout::{
 use rusqlite::{Connection, Transaction, params};
 use walkdir::WalkDir;
 
-use crate::{index_db::open_index_database, turn_metrics::summarize_turn_metrics};
+use crate::{
+    derived_data::insert_turn_derived_records, index_db::open_index_database,
+    turn_metrics::summarize_turn_metrics,
+};
 
 /// Stores the shared SQLite index filename inside the darc workspace root.
 pub const INDEX_DB_FILE_NAME: &str = "index.sqlite";
@@ -297,12 +300,22 @@ impl<'conn> SqliteSessionWriter<'conn> {
             .as_deref()
             .context("missing active session id while inserting turn")
             .context(CandidateIndexInfrastructureError)?;
+        let turn_ordinal = self.turn_ordinal;
         let metrics = summarize_turn_metrics(&turn);
-        let steps_json = serde_json::to_string(&turn.steps)
+        let CodexTurn {
+            turn_id,
+            user_message,
+            final_answer,
+            started_at,
+            completed_at,
+            status,
+            steps,
+        } = turn;
+        let steps_json = serde_json::to_string(&steps)
             .context("failed to serialize turn steps")
             .context(CandidateIndexInfrastructureError)?;
-        let final_answer_at = turn.final_answer.as_ref().map(|message| &message.timestamp);
-        let final_answer_text = turn.final_answer.as_ref().map(|message| &message.text);
+        let final_answer_at = final_answer.as_ref().map(|message| &message.timestamp);
+        let final_answer_text = final_answer.as_ref().map(|message| &message.text);
 
         self.connection
             .execute(
@@ -334,12 +347,12 @@ impl<'conn> SqliteSessionWriter<'conn> {
                     self.project_id.as_str(),
                     source_kind_as_sql_text(self.provider),
                     session_id,
-                    self.turn_ordinal,
-                    turn.turn_id,
-                    turn.started_at,
-                    turn.completed_at,
-                    turn.status.as_sql_text(),
-                    turn.user_message,
+                    turn_ordinal,
+                    turn_id,
+                    started_at,
+                    completed_at,
+                    status.as_sql_text(),
+                    user_message,
                     final_answer_at,
                     final_answer_text,
                     steps_json,
@@ -362,6 +375,23 @@ impl<'conn> SqliteSessionWriter<'conn> {
                 )
             })
             .context(CandidateIndexInfrastructureError)?;
+        insert_turn_derived_records(
+            self.connection,
+            &self.project_id,
+            self.provider,
+            session_id,
+            turn_ordinal,
+            &steps,
+        )
+        .with_context(|| {
+            format!(
+                "failed to insert derived analytics for {} turn {} in session {}",
+                self.provider.title(),
+                turn_ordinal,
+                session_id
+            )
+        })
+        .context(CandidateIndexInfrastructureError)?;
         self.turn_ordinal += 1;
 
         Ok(())
