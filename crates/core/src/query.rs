@@ -9,12 +9,13 @@ use darc_paths::SourceKind;
 pub use darc_query::{
     DailyTimeStat, FileUsageStat, HardDebuggingTurn, ProjectInsights, ProjectSummary,
     ProjectTimeStat, RootAvailability, RootInfo, SessionKind, SessionRuntimeStat, SessionSummary,
-    SessionsQueryData, ToolUsageStat, TurnDetail, TurnSummary, TurnsQueryData,
+    SessionsQueryData, ToolUsageStat, TurnDetail, TurnInsights, TurnSummary, TurnsQueryData,
     WorkspaceDailyTimeStat, WorkspaceInsights, WorkspaceQueryData,
 };
 use darc_query::{
     ProjectIndexAggregate, list_project_index_aggregates, query_project_insights,
-    query_project_sessions, query_session_turns, query_turn_detail, query_workspace_insights,
+    query_project_sessions, query_session_turns, query_turn_detail, query_turn_insights,
+    query_workspace_insights,
 };
 
 use crate::{
@@ -140,6 +141,24 @@ pub fn query_turn(
         session_id,
         turn_ordinal,
         include_raw,
+    )
+}
+
+/// Queries the turn insights payload for one configured provider session turn.
+pub fn query_turn_insight_report(
+    root: Option<PathBuf>,
+    project_id: &str,
+    provider: SourceKind,
+    session_id: &str,
+    turn_ordinal: u64,
+) -> Result<TurnInsights> {
+    let context = load_project_query_context(root, project_id)?;
+    query_turn_insights(
+        &context.root.database_path,
+        &context.project.id,
+        provider,
+        session_id,
+        turn_ordinal,
     )
 }
 

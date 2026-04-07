@@ -19,6 +19,7 @@ All query commands currently require `--json`.
 - `darc query turn --root <path> --project-id <id> --provider <provider> --session-id <id> --turn-ordinal <n> --include-raw --json`
 - `darc query insights workspace --root <path> --window <days>d --json`
 - `darc query insights project --root <path> --project-id <id> --limit <n> --json`
+- `darc query insights turn --root <path> --project-id <id> --provider <provider> --session-id <id> --turn-ordinal <n> --json`
 
 ## Success envelope
 
@@ -71,6 +72,7 @@ Current schema ids:
 - `darc.query.turn.v1`
 - `darc.query.insights.workspace.v1`
 - `darc.query.insights.project.v1`
+- `darc.query.insights.turn.v1`
 - `darc.error.v1`
 
 Clients should branch on `schema`, not on `darc_version`.
@@ -143,6 +145,22 @@ Today:
 - paths are currently reported as the raw extracted path string
 
 These rules may evolve before stabilization.
+
+### Turn insights
+
+`darc.query.insights.turn.v1` reports one turn's stored metrics plus one-turn tool/file analytics.
+
+Today:
+
+- top-level count fields such as `step_count`, `tool_call_count`, `tool_output_count`, `attachment_count`, `delegation_count`, `hook_summary_count`, `has_final_answer`, and `duration_ms` come from the indexed `turns` row for that exact turn
+- `tools` comes from normalized per-turn `tool_calls` rows, grouped by `tool_name`
+- `files` comes from normalized per-turn `file_accesses` rows, grouped by `path`
+- `files[*].read_count` currently counts both `read` and `list` access kinds
+- `files[*].write_count` currently counts both `write` and `edit` access kinds
+- `tools` is ordered by higher `count` first, then `name` ascending
+- `files` is ordered by higher total accesses first, then higher `write_count`, then higher `read_count`, then `path` ascending
+
+Clients should treat these analytics as Darc-owned derived data and should not re-derive them from `steps_json`.
 
 ### Hard debugging
 
