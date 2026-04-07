@@ -1,6 +1,7 @@
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet},
+    error::Error as StdError,
     fs,
     path::{Path, PathBuf},
 };
@@ -12,10 +13,11 @@ use darc_rollout::codex::{CodexRollout, parse_rollout_file as parse_codex_rollou
 use darc_rollout::{
     ParseDeterminism,
     claude::{
-        ClaudeArchivedContext, ClaudeSessionKind, parse_rollout_file as parse_claude_rollout_file,
+        ClaudeArchivedContext, ClaudeError, ClaudeSessionKind,
+        parse_rollout_file as parse_claude_rollout_file,
     },
     codex::{
-        CodexRolloutHeader, CodexRolloutSink, compare_rollout_priority,
+        CodexError, CodexRolloutHeader, CodexRolloutSink, ParseIntoError, compare_rollout_priority,
         parse_rollout_file_into as parse_codex_rollout_file_into, parse_rollout_file_session_id,
         parse_rollout_session_meta_line, read_first_rollout_line_bytes,
         reconcile_rollout_session_id,
@@ -23,6 +25,7 @@ use darc_rollout::{
     model::NormalizedTurn as CodexTurn,
 };
 use rusqlite::{Connection, Transaction, params};
+use thiserror::Error;
 use walkdir::WalkDir;
 
 use crate::{
@@ -197,25 +200,15 @@ impl IndexedSessionSnapshot {
     }
 }
 
-/// Wraps one SQLite sink failure so the streaming parser can surface it as a trait object.
-#[derive(Debug)]
-struct SqliteSessionSinkError(anyhow::Error);
+/// Preserves one SQLite sink failure while retaining the original anyhow chain.
+#[derive(Debug, Error)]
+#[error(transparent)]
+struct SqliteSessionSinkError(#[from] anyhow::Error);
 
-impl From<anyhow::Error> for SqliteSessionSinkError {
-    fn from(value: anyhow::Error) -> Self {
-        Self(value)
-    }
-}
-
-impl std::fmt::Display for SqliteSessionSinkError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(formatter)
-    }
-}
-
-impl std::error::Error for SqliteSessionSinkError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.0.chain().nth(1)
+impl SqliteSessionSinkError {
+    /// Returns the original sink failure without wrapping it again.
+    fn into_inner(self) -> anyhow::Error {
+        self.0
     }
 }
 
@@ -263,12 +256,10 @@ impl<'conn> SqliteSessionWriter<'conn> {
         schema_id: &str,
         determinism: ParseDeterminism,
     ) -> Result<()> {
-        let source_size = i64::try_from(self.source_size)
-            .context("source_size exceeds SQLite INTEGER range")
-            .context(CandidateIndexInfrastructureError)?;
+        let source_size =
+            i64::try_from(self.source_size).context("source_size exceeds SQLite INTEGER range")?;
         let source_mtime_ms = i64::try_from(self.source_mtime_ms)
-            .context("source_mtime_ms exceeds SQLite INTEGER range")
-            .context(CandidateIndexInfrastructureError)?;
+            .context("source_mtime_ms exceeds SQLite INTEGER range")?;
 
         self.connection
             .execute(
@@ -309,8 +300,7 @@ impl<'conn> SqliteSessionWriter<'conn> {
                     self.provider.title(),
                     session_id
                 )
-            })
-            .context(CandidateIndexInfrastructureError)?;
+            })?;
         self.session_id = Some(session_id.to_owned());
         self.turn_ordinal = 0;
         Ok(())
@@ -321,8 +311,7 @@ impl<'conn> SqliteSessionWriter<'conn> {
         let session_id = self
             .session_id
             .as_deref()
-            .context("missing active session id while inserting turn")
-            .context(CandidateIndexInfrastructureError)?;
+            .context("missing active session id while inserting turn")?;
         let turn_ordinal = self.turn_ordinal;
         let metrics = summarize_turn_metrics(&turn);
         let CodexTurn {
@@ -334,9 +323,7 @@ impl<'conn> SqliteSessionWriter<'conn> {
             status,
             steps,
         } = turn;
-        let steps_json = serde_json::to_string(&steps)
-            .context("failed to serialize turn steps")
-            .context(CandidateIndexInfrastructureError)?;
+        let steps_json = serde_json::to_string(&steps).context("failed to serialize turn steps")?;
         let final_answer_at = final_answer.as_ref().map(|message| &message.timestamp);
         let final_answer_text = final_answer.as_ref().map(|message| &message.text);
 
@@ -397,7 +384,7 @@ impl<'conn> SqliteSessionWriter<'conn> {
                     session_id
                 )
             })
-            .context(CandidateIndexInfrastructureError)?;
+            ?;
         insert_turn_derived_records(
             self.connection,
             &self.project_id,
@@ -413,8 +400,7 @@ impl<'conn> SqliteSessionWriter<'conn> {
                 turn_ordinal,
                 session_id
             )
-        })
-        .context(CandidateIndexInfrastructureError)?;
+        })?;
         self.turn_ordinal += 1;
 
         Ok(())
@@ -436,46 +422,25 @@ impl<'conn> SqliteSessionWriter<'conn> {
     }
 }
 
-/// Adapts the streaming Codex rollout parser to the normalized SQLite writer.
-struct SqliteCodexRolloutSink<'conn> {
-    writer: SqliteSessionWriter<'conn>,
-}
-
-impl<'conn> SqliteCodexRolloutSink<'conn> {
-    /// Creates one SQLite sink for a selected archived Codex rollout candidate.
-    fn new(
-        connection: &'conn Connection,
-        project_id: &str,
-        archived: &ArchivedRolloutCandidate,
-    ) -> Self {
-        Self {
-            writer: SqliteSessionWriter::new(connection, project_id, archived),
-        }
-    }
-}
-
-impl CodexRolloutSink for SqliteCodexRolloutSink<'_> {
+impl CodexRolloutSink for SqliteSessionWriter<'_> {
     type Error = SqliteSessionSinkError;
 
     fn begin_rollout(
         &mut self,
         header: &CodexRolloutHeader,
     ) -> std::result::Result<(), Self::Error> {
-        self.writer
-            .begin_session(
-                &header.session_id,
-                &header.cwd,
-                Some(&header.cli_version),
-                header.schema_id.as_str(),
-                header.determinism,
-            )
-            .map_err(SqliteSessionSinkError::from)
+        self.begin_session(
+            &header.session_id,
+            &header.cwd,
+            Some(header.cli_version.as_str()),
+            header.schema_id.as_str(),
+            header.determinism,
+        )
+        .map_err(SqliteSessionSinkError::from)
     }
 
     fn push_turn(&mut self, turn: CodexTurn) -> std::result::Result<(), Self::Error> {
-        self.writer
-            .push_turn(turn)
-            .map_err(SqliteSessionSinkError::from)
+        SqliteSessionWriter::push_turn(self, turn).map_err(SqliteSessionSinkError::from)
     }
 }
 
@@ -499,17 +464,37 @@ struct IndexedIndexOutcome {
 /// Stores one provider/session key inside the normalized session index.
 type IndexedSessionKey = (SourceKind, String);
 
-/// Marks hard infrastructure failures while indexing one rollout candidate.
-#[derive(Debug)]
-struct CandidateIndexInfrastructureError;
-
-impl std::fmt::Display for CandidateIndexInfrastructureError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("candidate index infrastructure failure")
-    }
+/// Distinguishes rollout parse failures from infrastructure failures while indexing one candidate.
+#[derive(Debug, Error)]
+enum CandidateIndexError {
+    #[error(transparent)]
+    Parse(Box<CandidateParseError>),
+    #[error(transparent)]
+    Infrastructure(#[from] anyhow::Error),
 }
 
-impl std::error::Error for CandidateIndexInfrastructureError {}
+/// Preserves one rollout parse failure that should be reported as a skipped candidate.
+#[derive(Debug, Error)]
+enum CandidateParseError {
+    #[error("failed to parse {}", .path.display())]
+    Codex {
+        path: PathBuf,
+        #[source]
+        source: Box<darc_rollout::codex::CodexError>,
+    },
+    #[error("failed to parse {}", .path.display())]
+    Claude {
+        path: PathBuf,
+        #[source]
+        source: Box<darc_rollout::claude::ClaudeError>,
+    },
+}
+
+impl From<CandidateParseError> for CandidateIndexError {
+    fn from(value: CandidateParseError) -> Self {
+        Self::Parse(Box::new(value))
+    }
+}
 
 #[cfg(test)]
 pub(crate) const TEST_PROJECT_ID: &str = "repo-abc123";
@@ -1144,10 +1129,10 @@ fn update_archived_rollout_group(
                     skipped_rollouts,
                 });
             }
-            Err(error) if is_skippable_rollout_candidate_error(&error) => {
+            Err(CandidateIndexError::Parse(error)) => {
                 skipped_rollouts.push(skipped_archived_rollout_candidate(archived, &error));
             }
-            Err(error) => return Err(error),
+            Err(CandidateIndexError::Infrastructure(error)) => return Err(error),
         }
     }
 
@@ -1162,7 +1147,7 @@ fn index_archived_rollout_candidate(
     connection: &Connection,
     project_id: &str,
     archived: &ArchivedRolloutCandidate,
-) -> Result<()> {
+) -> std::result::Result<(), CandidateIndexError> {
     delete_indexed_session(
         connection,
         project_id,
@@ -1172,21 +1157,23 @@ fn index_archived_rollout_candidate(
 
     match archived.provider {
         SourceKind::Codex => {
-            let mut sink = SqliteCodexRolloutSink::new(connection, project_id, archived);
-            parse_codex_rollout_file_into(&archived.source_path, &mut sink)
-                .with_context(|| format!("failed to parse {}", archived.source_path.display()))
+            let mut writer = SqliteSessionWriter::new(connection, project_id, archived);
+            parse_codex_rollout_file_into(&archived.source_path, &mut writer)
+                .map_err(|error| classify_codex_parse_into_error(&archived.source_path, error))?;
         }
         SourceKind::Claude => {
-            let rollout = parse_archived_claude_rollout(archived)
-                .with_context(|| format!("failed to parse {}", archived.source_path.display()))?;
+            let rollout = parse_archived_claude_rollout(archived)?;
             let mut writer = SqliteSessionWriter::new(connection, project_id, archived);
-            writer.write_rollout(rollout)
+            writer.write_rollout(rollout)?;
         }
     }
+    Ok(())
 }
 
 /// Parses one archived Claude rollout candidate into the normalized indexing model.
-fn parse_archived_claude_rollout(archived: &ArchivedRolloutCandidate) -> Result<IndexedRollout> {
+fn parse_archived_claude_rollout(
+    archived: &ArchivedRolloutCandidate,
+) -> std::result::Result<IndexedRollout, CandidateIndexError> {
     let rollout = parse_claude_rollout_file(
         &archived.source_path,
         &ClaudeArchivedContext {
@@ -1199,7 +1186,8 @@ fn parse_archived_claude_rollout(archived: &ArchivedRolloutCandidate) -> Result<
             expected_rollout_session_id: archived.rollout_session_id.clone(),
             expected_agent_id: archived.agent_id.clone(),
         },
-    )?;
+    )
+    .map_err(|error| classify_claude_parse_error(&archived.source_path, error))?;
     Ok(IndexedRollout {
         session_id: rollout.session_id,
         cwd: rollout.cwd,
@@ -1210,10 +1198,88 @@ fn parse_archived_claude_rollout(archived: &ArchivedRolloutCandidate) -> Result<
     })
 }
 
+/// Classifies one streaming Codex parse failure as skippable or hard.
+fn classify_codex_parse_into_error(
+    source_path: &Path,
+    error: ParseIntoError<SqliteSessionSinkError>,
+) -> CandidateIndexError {
+    match error {
+        ParseIntoError::Parse(error) => classify_codex_parse_error(source_path, error),
+        ParseIntoError::Sink(error) => CandidateIndexError::Infrastructure(error.into_inner()),
+    }
+}
+
+/// Classifies one Codex parse failure as skippable or hard.
+fn classify_codex_parse_error(source_path: &Path, error: CodexError) -> CandidateIndexError {
+    if codex_error_is_skippable(&error) {
+        CandidateParseError::Codex {
+            path: source_path.to_path_buf(),
+            source: Box::new(error),
+        }
+        .into()
+    } else {
+        CandidateIndexError::Infrastructure(error.into())
+    }
+}
+
+/// Returns whether one Codex parse failure should be reported as a skipped rollout.
+fn codex_error_is_skippable(error: &CodexError) -> bool {
+    matches!(
+        error,
+        CodexError::MissingSessionMetaLine { .. }
+            | CodexError::DecodeFirstLine { .. }
+            | CodexError::DeserializeHeaderJson { .. }
+            | CodexError::DeserializeJsonLine { .. }
+            | CodexError::MismatchedSessionIds { .. }
+            | CodexError::MissingCliVersion { .. }
+            | CodexError::ResolveSchema { .. }
+            | CodexError::ParseCliVersion { .. }
+            | CodexError::UnsupportedFeature { .. }
+            | CodexError::UnsupportedResponseItem { .. }
+            | CodexError::UnsupportedRolloutItem { .. }
+            | CodexError::UnsupportedMessageContentShape { .. }
+            | CodexError::UnsupportedFieldShape { .. }
+            | CodexError::UnsupportedToolOutputShape { .. }
+    ) || matches!(
+        error,
+        CodexError::ReadLine { source, .. } if source.kind() == std::io::ErrorKind::InvalidData
+    )
+}
+
+/// Classifies one Claude parse failure as skippable or hard.
+fn classify_claude_parse_error(source_path: &Path, error: ClaudeError) -> CandidateIndexError {
+    if claude_error_is_skippable(&error) {
+        CandidateParseError::Claude {
+            path: source_path.to_path_buf(),
+            source: Box::new(error),
+        }
+        .into()
+    } else {
+        CandidateIndexError::Infrastructure(error.into())
+    }
+}
+
+/// Returns whether one Claude parse failure should be reported as a skipped rollout.
+fn claude_error_is_skippable(error: &ClaudeError) -> bool {
+    matches!(
+        error,
+        ClaudeError::ParseJsonLine { .. }
+            | ClaudeError::JsonLineNotObject { .. }
+            | ClaudeError::MissingCwdMetadata { .. }
+            | ClaudeError::MismatchedSessionId { .. }
+            | ClaudeError::MismatchedAgentId { .. }
+            | ClaudeError::MissingUserMessageObject { .. }
+            | ClaudeError::MissingAssistantMessageObject { .. }
+    ) || matches!(
+        error,
+        ClaudeError::ReadLine { source, .. } if source.kind() == std::io::ErrorKind::InvalidData
+    )
+}
+
 /// Builds the skip report for one archived rollout candidate that failed to parse.
 fn skipped_archived_rollout_candidate(
     archived: &ArchivedRolloutCandidate,
-    error: &anyhow::Error,
+    error: &CandidateParseError,
 ) -> SkippedRollout {
     build_skipped_rollout(
         archived.provider,
@@ -1224,38 +1290,15 @@ fn skipped_archived_rollout_candidate(
     )
 }
 
-/// Returns whether one rollout candidate error should be recorded as a skip.
-fn is_skippable_rollout_candidate_error(error: &anyhow::Error) -> bool {
-    if error.chain().any(|cause| {
-        cause
-            .downcast_ref::<CandidateIndexInfrastructureError>()
-            .is_some()
-    }) {
-        return false;
-    }
-    if error
-        .chain()
-        .any(|cause| cause.downcast_ref::<rusqlite::Error>().is_some())
-    {
-        return false;
-    }
-    if let Some(io_error) = error
-        .chain()
-        .find_map(|cause| cause.downcast_ref::<std::io::Error>())
-    {
-        return io_error.kind() == std::io::ErrorKind::InvalidData;
-    }
-
-    true
-}
-
 /// Formats one error chain as a concise skip reason.
-fn format_error_chain(error: &anyhow::Error) -> String {
-    error
-        .chain()
-        .map(std::string::ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(": ")
+fn format_error_chain(error: &(dyn StdError + 'static)) -> String {
+    let mut messages = Vec::new();
+    let mut current = Some(error);
+    while let Some(cause) = current {
+        messages.push(cause.to_string());
+        current = cause.source();
+    }
+    messages.join(": ")
 }
 
 /// Loads the indexed session snapshots used to detect unchanged archived rollouts.
@@ -1398,4 +1441,99 @@ fn optional_sql_i64_to_u64(value: Option<i64>, column_name: &str) -> Result<Opti
                 .with_context(|| format!("indexed `{column_name}` value {value} is negative"))
         })
         .transpose()
+}
+
+#[cfg(test)]
+mod classification_tests {
+    use std::io;
+
+    use serde_json::Value;
+
+    use super::*;
+
+    /// Builds one reusable JSON error for classification tests.
+    fn json_error() -> serde_json::Error {
+        serde_json::from_str::<Value>("{").expect_err("invalid JSON fixture")
+    }
+
+    #[test]
+    fn codex_skip_classification_is_an_explicit_allowlist() {
+        let path = Path::new("/tmp/codex-rollout.jsonl");
+
+        assert!(codex_error_is_skippable(&CodexError::DeserializeJsonLine {
+            path: path.to_path_buf(),
+            line_no: 7,
+            context: "JSONL line",
+            source: json_error(),
+        }));
+        assert!(!codex_error_is_skippable(&CodexError::SerializeJsonLine {
+            path: path.to_path_buf(),
+            line_no: 7,
+            context: "normalized response item",
+            source: json_error(),
+        }));
+        assert!(codex_error_is_skippable(&CodexError::ReadLine {
+            path: path.to_path_buf(),
+            line_no: 7,
+            source: io::Error::new(io::ErrorKind::InvalidData, "invalid utf-8"),
+        }));
+        assert!(!codex_error_is_skippable(&CodexError::OpenFile {
+            path: path.to_path_buf(),
+            source: io::Error::other("permission denied"),
+        }));
+        assert!(!codex_error_is_skippable(&CodexError::ReadLine {
+            path: path.to_path_buf(),
+            line_no: 7,
+            source: io::Error::other("permission denied"),
+        }));
+    }
+
+    #[test]
+    fn claude_skip_classification_is_an_explicit_allowlist() {
+        let path = Path::new("/tmp/claude-rollout.jsonl");
+
+        assert!(claude_error_is_skippable(&ClaudeError::ParseJsonLine {
+            path: path.to_path_buf(),
+            line_no: 4,
+            source: json_error(),
+        }));
+        assert!(claude_error_is_skippable(&ClaudeError::ReadLine {
+            path: path.to_path_buf(),
+            line_no: 4,
+            source: io::Error::new(io::ErrorKind::InvalidData, "invalid utf-8"),
+        }));
+        assert!(!claude_error_is_skippable(&ClaudeError::SerializeJson {
+            context: "Claude assistant payload",
+            source: json_error(),
+        }));
+        assert!(!claude_error_is_skippable(&ClaudeError::ReadLine {
+            path: path.to_path_buf(),
+            line_no: 4,
+            source: io::Error::other("permission denied"),
+        }));
+    }
+
+    #[test]
+    fn codex_sink_errors_preserve_the_anyhow_chain() {
+        let classified = classify_codex_parse_into_error(
+            Path::new("/tmp/codex-rollout.jsonl"),
+            ParseIntoError::Sink(SqliteSessionSinkError::from(
+                anyhow::Error::new(io::Error::other("disk full"))
+                    .context("failed to insert Codex turn"),
+            )),
+        );
+
+        let CandidateIndexError::Infrastructure(error) = classified else {
+            panic!("expected infrastructure error");
+        };
+        let messages: Vec<_> = error.chain().map(ToString::to_string).collect();
+
+        assert_eq!(messages[0], "failed to insert Codex turn");
+        assert!(messages.iter().any(|message| message.contains("disk full")));
+        assert!(
+            error
+                .chain()
+                .any(|cause| cause.downcast_ref::<io::Error>().is_some())
+        );
+    }
 }

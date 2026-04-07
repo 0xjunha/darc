@@ -1391,6 +1391,47 @@ fn index_project_skips_bad_duplicate_group_and_continues_other_sessions() -> Res
 
 #[cfg(unix)]
 #[test]
+fn index_project_still_fails_on_claude_rollout_file_read_errors() -> Result<()> {
+    let darc_root = unique_test_dir("parse-hard-claude-file-read-error");
+    let project_root = darc_root.join("repo");
+    let sessions_root = darc_root.join("projects/repo-abc123/sessions");
+    let claude_session_id = "885a05b8-f731-4fde-bfdb-a24ce28dc9c3";
+    let rollout_path = sessions_root
+        .join("claude")
+        .join(claude_session_id)
+        .join(format!("{claude_session_id}.jsonl"));
+    fs::create_dir_all(&project_root)?;
+    write_parse_config(&darc_root, &project_root, &sessions_root)?;
+
+    write_file(
+        &rollout_path,
+        &format!(
+            concat!(
+                "{{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"timestamp\":\"2026-04-01T11:00:00Z\",\"sessionId\":\"{}\",\"content\":\"Inspect parse.rs\"}}\n",
+                "{{\"parentUuid\":null,\"isSidechain\":false,\"promptId\":\"prompt-1\",\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"Inspect parse.rs\"}},\"uuid\":\"user-1\",\"timestamp\":\"2026-04-01T11:00:01Z\",\"userType\":\"external\",\"entrypoint\":\"claude-desktop\",\"cwd\":\"{}\",\"sessionId\":\"{}\",\"version\":\"2.1.87\",\"gitBranch\":\"main\"}}\n",
+                "{{\"parentUuid\":\"user-1\",\"isSidechain\":false,\"message\":{{\"model\":\"claude-sonnet-4-6\",\"id\":\"assistant-1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"Claude reply\"}}],\"stop_reason\":\"end_turn\",\"stop_sequence\":null}},\"requestId\":\"req-1\",\"type\":\"assistant\",\"uuid\":\"assistant-1\",\"timestamp\":\"2026-04-01T11:00:02Z\",\"userType\":\"external\",\"entrypoint\":\"claude-desktop\",\"cwd\":\"{}\",\"sessionId\":\"{}\",\"version\":\"2.1.87\",\"gitBranch\":\"main\"}}\n"
+            ),
+            claude_session_id,
+            project_root.display(),
+            claude_session_id,
+            project_root.display(),
+            claude_session_id
+        ),
+    )?;
+    fs::set_permissions(&rollout_path, fs::Permissions::from_mode(0o000))?;
+
+    let error = index_project_sessions_from(&project_root, darc_root, &[SourceKind::Claude])
+        .expect_err("hard read error");
+
+    assert!(
+        error.to_string().contains("failed") || error.to_string().contains("Permission denied")
+    );
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
 fn index_project_still_fails_on_rollout_file_read_errors() -> Result<()> {
     let darc_root = unique_test_dir("parse-hard-file-read-error");
     let project_root = darc_root.join("repo");

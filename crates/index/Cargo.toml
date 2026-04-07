@@ -12,4 +12,5 @@ darc-rollout = { workspace = true }
 anyhow = { workspace = true }
 rusqlite = { workspace = true }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
 walkdir = { workspace = true }
