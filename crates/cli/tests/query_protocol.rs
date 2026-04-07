@@ -5,7 +5,12 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use darc_index::open_index_database;
+use darc_index::{
+    open_index_database,
+    policy::{derive_file_access_records, extract_tool_call_records},
+};
+use darc_paths::SourceKind;
+use darc_rollout::model::NormalizedTurnStep;
 use darc_test_utils::{unique_test_dir, write_file};
 use serde_json::Value;
 
@@ -114,6 +119,7 @@ fn create_query_fixture_root(prefix: &str) -> Result<PathBuf> {
             duration_ms: 5_000,
         },
     )?;
+    connection.execute_batch("PRAGMA user_version = 1")?;
 
     Ok(root)
 }
@@ -205,6 +211,92 @@ fn insert_turn(connection: &rusqlite::Connection, fixture: TurnFixture<'_>) -> R
             fixture.duration_ms,
         ],
     )?;
+    let provider = match fixture.provider {
+        "claude" => SourceKind::Claude,
+        "codex" => SourceKind::Codex,
+        other => anyhow::bail!("unsupported fixture provider `{other}`"),
+    };
+    let turn_ordinal =
+        u64::try_from(fixture.turn_ordinal).context("fixture turn ordinal must be non-negative")?;
+    let steps = serde_json::from_str::<Vec<NormalizedTurnStep>>(fixture.steps_json)
+        .context("fixture steps_json should parse")?;
+    let tool_calls = extract_tool_call_records(
+        fixture.project_id,
+        provider,
+        fixture.session_id,
+        turn_ordinal,
+        &steps,
+    );
+    for record in &tool_calls {
+        connection.execute(
+            "
+            INSERT INTO tool_calls (
+                project_id,
+                provider,
+                session_id,
+                turn_ordinal,
+                call_ordinal,
+                call_id,
+                timestamp,
+                tool_name,
+                arguments_text,
+                output_text,
+                status,
+                is_error
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            ",
+            rusqlite::params![
+                record.project_id.as_str(),
+                fixture.provider,
+                record.session_id.as_str(),
+                i64::try_from(record.turn_ordinal)
+                    .context("turn ordinal exceeds SQLite INTEGER range")?,
+                i64::try_from(record.call_ordinal)
+                    .context("call ordinal exceeds SQLite INTEGER range")?,
+                record.call_id.as_str(),
+                record.timestamp.as_str(),
+                record.tool_name.as_deref(),
+                record.arguments_text.as_deref(),
+                record.output_text.as_deref(),
+                record.status.as_deref(),
+                i64::from(record.is_error),
+            ],
+        )?;
+    }
+    for record in derive_file_access_records(&tool_calls) {
+        connection.execute(
+            "
+            INSERT INTO file_accesses (
+                project_id,
+                provider,
+                session_id,
+                turn_ordinal,
+                call_ordinal,
+                call_id,
+                timestamp,
+                tool_name,
+                access_type,
+                path,
+                repo_relative_path
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            ",
+            rusqlite::params![
+                record.project_id.as_str(),
+                fixture.provider,
+                record.session_id.as_str(),
+                i64::try_from(record.turn_ordinal)
+                    .context("turn ordinal exceeds SQLite INTEGER range")?,
+                i64::try_from(record.call_ordinal)
+                    .context("call ordinal exceeds SQLite INTEGER range")?,
+                record.call_id.as_str(),
+                record.timestamp.as_str(),
+                record.tool_name.as_str(),
+                record.access_type.as_sql_text(),
+                record.path.as_str(),
+                record.repo_relative_path.as_deref(),
+            ],
+        )?;
+    }
     Ok(())
 }
 

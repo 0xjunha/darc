@@ -5,15 +5,13 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use darc_index::open_index_database;
+use darc_index::policy::{
+    HardDebuggingCandidate, rank_hard_debuggings, should_include_turn_in_active_time,
+};
 use darc_paths::SourceKind;
 use darc_rollout::model::{NormalizedTurnStatus, NormalizedTurnStep};
 use rusqlite::Connection;
 use serde::Serialize;
-
-use crate::policy::{
-    ToolAccessKind, classify_tool_access, extract_tool_path, rank_hard_debuggings,
-    should_include_turn_in_active_time,
-};
 
 /// Stores one indexed project aggregate used by the workspace sidebar.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -199,6 +197,32 @@ pub struct HardDebuggingTurn {
     pub step_count: u64,
     pub duration_ms: u64,
     pub status: NormalizedTurnStatus,
+}
+
+impl HardDebuggingCandidate for HardDebuggingTurn {
+    fn project_id(&self) -> &str {
+        &self.project_id
+    }
+
+    fn provider(&self) -> SourceKind {
+        self.provider
+    }
+
+    fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    fn turn_ordinal(&self) -> u64 {
+        self.turn_ordinal
+    }
+
+    fn step_count(&self) -> u64 {
+        self.step_count
+    }
+
+    fn duration_ms(&self) -> u64 {
+        self.duration_ms
+    }
 }
 
 /// Stores the workspace insights payload for one host-local reporting window.
@@ -757,10 +781,9 @@ pub(crate) fn build_project_insights(
     limit: usize,
 ) -> Result<ProjectInsights> {
     let rows = query_project_insight_rows(connection, project_id, limit)?;
+    let all_files = query_project_file_usage_stats(connection, project_id, limit)?;
+    let most_common_tools = query_project_tool_usage_stats(connection, project_id, limit)?;
     let mut daily_time_map = BTreeMap::<String, u64>::new();
-    let mut tool_counts = BTreeMap::<String, u64>::new();
-    let mut file_reads = BTreeMap::<String, u64>::new();
-    let mut file_writes = BTreeMap::<String, u64>::new();
     let mut failure_count = 0_u64;
     let mut total_time_ms = 0_u64;
     let mut hard_debuggings = Vec::new();
@@ -785,51 +808,10 @@ pub(crate) fn build_project_insights(
             duration_ms: row.duration_ms,
             status: row.status,
         });
-
-        if row.tool_call_count == 0 {
-            continue;
-        }
-
-        let steps = serde_json::from_str::<Vec<NormalizedTurnStep>>(&row.steps_json)
-            .context("failed to parse stored normalized turn steps for project insights")?;
-        for step in &steps {
-            let NormalizedTurnStep::ToolCall {
-                name, arguments, ..
-            } = step
-            else {
-                continue;
-            };
-            let count = tool_counts.entry(name.clone()).or_insert(0);
-            *count = count.saturating_add(1);
-
-            let Some(path) = extract_tool_path(arguments) else {
-                continue;
-            };
-            if classify_tool_access(name) == ToolAccessKind::Write {
-                let count = file_writes.entry(path).or_insert(0);
-                *count = count.saturating_add(1);
-            } else if classify_tool_access(name) == ToolAccessKind::Read {
-                let count = file_reads.entry(path).or_insert(0);
-                *count = count.saturating_add(1);
-            }
-        }
     }
 
     rank_hard_debuggings(&mut hard_debuggings);
 
-    let merged_paths = file_reads
-        .keys()
-        .chain(file_writes.keys())
-        .cloned()
-        .collect::<std::collections::BTreeSet<_>>();
-    let all_files = merged_paths
-        .into_iter()
-        .map(|path| FileUsageStat {
-            read_count: *file_reads.get(&path).unwrap_or(&0),
-            write_count: *file_writes.get(&path).unwrap_or(&0),
-            path,
-        })
-        .collect::<Vec<_>>();
     let mut most_read_files = all_files
         .iter()
         .filter(|stat| stat.read_count > 0)
@@ -854,18 +836,6 @@ pub(crate) fn build_project_insights(
             .then_with(|| left.path.cmp(&right.path))
     });
     most_written_files.truncate(10);
-
-    let mut most_common_tools = tool_counts
-        .into_iter()
-        .map(|(name, count)| ToolUsageStat { name, count })
-        .collect::<Vec<_>>();
-    most_common_tools.sort_by(|left, right| {
-        right
-            .count
-            .cmp(&left.count)
-            .then_with(|| left.name.cmp(&right.name))
-    });
-    most_common_tools.truncate(10);
 
     Ok(ProjectInsights {
         daily_time: daily_time_map
@@ -981,9 +951,7 @@ fn query_project_insight_rows(
                 DATE(started_at, 'localtime'),
                 status,
                 COALESCE(step_count, 0),
-                COALESCE(tool_call_count, 0),
-                COALESCE(duration_ms, 0),
-                steps_json
+                COALESCE(duration_ms, 0)
             FROM turns
             WHERE project_id = ?1
             ORDER BY started_at DESC, provider ASC, session_id ASC, turn_ordinal ASC
@@ -1002,8 +970,6 @@ fn query_project_insight_rows(
                 row.get::<_, String>(5)?,
                 row.get::<_, i64>(6)?,
                 row.get::<_, i64>(7)?,
-                row.get::<_, i64>(8)?,
-                row.get::<_, String>(9)?,
             ))
         })
         .context("failed to query project insight rows")?
@@ -1019,9 +985,7 @@ fn query_project_insight_rows(
                 local_date,
                 status,
                 step_count,
-                tool_call_count,
                 duration_ms,
-                steps_json,
             )|
              -> Result<_> {
                 Ok(ProjectInsightRow {
@@ -1032,12 +996,120 @@ fn query_project_insight_rows(
                     local_date,
                     status: parse_turn_status(&status)?,
                     step_count: sql_count_to_u64(step_count)?,
-                    tool_call_count: sql_count_to_u64(tool_call_count)?,
                     duration_ms: sql_count_to_u64(duration_ms)?,
-                    steps_json,
                 })
             },
         )
+        .collect()
+}
+
+/// Queries the derived tool-call rows needed to build one project insights report.
+fn query_project_tool_usage_stats(
+    connection: &Connection,
+    project_id: &str,
+    limit: usize,
+) -> Result<Vec<ToolUsageStat>> {
+    let limit =
+        i64::try_from(limit).context("project insights limit exceeds SQLite INTEGER range")?;
+    let mut statement = connection
+        .prepare(
+            "
+            WITH recent_turns AS (
+                SELECT project_id, provider, session_id, turn_ordinal
+                FROM turns
+                WHERE project_id = ?1
+                ORDER BY started_at DESC, provider ASC, session_id ASC, turn_ordinal ASC
+                LIMIT ?2
+            )
+            SELECT tool_calls.tool_name, COUNT(*) AS call_count
+            FROM recent_turns
+            INNER JOIN tool_calls
+                ON tool_calls.project_id = recent_turns.project_id
+                AND tool_calls.provider = recent_turns.provider
+                AND tool_calls.session_id = recent_turns.session_id
+                AND tool_calls.turn_ordinal = recent_turns.turn_ordinal
+            WHERE tool_calls.tool_name IS NOT NULL
+            GROUP BY tool_calls.tool_name
+            ORDER BY call_count DESC, tool_calls.tool_name ASC
+            LIMIT 10
+            ",
+        )
+        .context("failed to prepare project tool usage query")?;
+    let rows = statement
+        .query_map((project_id, limit), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
+        .context("failed to query project tool usage rows")?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed to read project tool usage rows")?;
+    rows.into_iter()
+        .map(|(name, count)| -> Result<_> {
+            Ok(ToolUsageStat {
+                name,
+                count: sql_count_to_u64(count)?,
+            })
+        })
+        .collect()
+}
+
+/// Queries the derived file-access rows needed to build one project insights report.
+fn query_project_file_usage_stats(
+    connection: &Connection,
+    project_id: &str,
+    limit: usize,
+) -> Result<Vec<FileUsageStat>> {
+    let limit =
+        i64::try_from(limit).context("project insights limit exceeds SQLite INTEGER range")?;
+    let mut statement = connection
+        .prepare(
+            "
+            WITH recent_turns AS (
+                SELECT project_id, provider, session_id, turn_ordinal
+                FROM turns
+                WHERE project_id = ?1
+                ORDER BY started_at DESC, provider ASC, session_id ASC, turn_ordinal ASC
+                LIMIT ?2
+            )
+            SELECT
+                file_accesses.path,
+                SUM(CASE
+                    WHEN file_accesses.access_type IN ('read', 'list') THEN 1
+                    ELSE 0
+                END) AS read_count,
+                SUM(CASE
+                    WHEN file_accesses.access_type IN ('write', 'edit') THEN 1
+                    ELSE 0
+                END) AS write_count
+            FROM recent_turns
+            INNER JOIN file_accesses
+                ON file_accesses.project_id = recent_turns.project_id
+                AND file_accesses.provider = recent_turns.provider
+                AND file_accesses.session_id = recent_turns.session_id
+                AND file_accesses.turn_ordinal = recent_turns.turn_ordinal
+            GROUP BY file_accesses.path
+            ORDER BY file_accesses.path ASC
+            ",
+        )
+        .context("failed to prepare project file usage query")?;
+    let rows = statement
+        .query_map((project_id, limit), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })
+        .context("failed to query project file usage rows")?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed to read project file usage rows")?;
+    rows.into_iter()
+        .map(|(path, read_count, write_count)| -> Result<_> {
+            Ok(FileUsageStat {
+                path,
+                read_count: sql_count_to_u64(read_count)?,
+                write_count: sql_count_to_u64(write_count)?,
+            })
+        })
         .collect()
 }
 
@@ -1120,9 +1192,7 @@ struct ProjectInsightRow {
     local_date: String,
     status: NormalizedTurnStatus,
     step_count: u64,
-    tool_call_count: u64,
     duration_ms: u64,
-    steps_json: String,
 }
 
 /// Stores one civil day used for local-day query-window calculations.

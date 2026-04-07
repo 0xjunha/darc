@@ -1,18 +1,21 @@
 use std::{fs, path::PathBuf};
 
 use anyhow::{Context, Result};
-use darc_index::open_index_database;
-use darc_test_utils::unique_test_dir;
-
-use crate::{
+use darc_index::{
+    open_index_database,
     policy::{
-        ToolAccessKind, active_time_policy, classify_tool_access, extract_tool_path,
+        ToolAccessKind, active_time_policy, classify_tool_access, derive_file_access_records,
+        extract_tool_call_records, extract_tool_path, extract_tool_paths,
         should_include_turn_in_active_time,
     },
-    query::{
-        HardDebuggingTurn, LocalDate, ProjectInsights, SessionKind, build_project_insights,
-        build_workspace_insights, open_existing_index_database, parse_session_kind,
-    },
+};
+use darc_paths::SourceKind;
+use darc_rollout::model::NormalizedTurnStep;
+use darc_test_utils::unique_test_dir;
+
+use crate::query::{
+    HardDebuggingTurn, LocalDate, ProjectInsights, SessionKind, build_project_insights,
+    build_workspace_insights, open_existing_index_database, parse_session_kind,
 };
 
 /// Stores one normalized turn fixture used to seed query tests.
@@ -119,6 +122,88 @@ fn insert_turn(connection: &rusqlite::Connection, fixture: TurnFixture<'_>) -> R
             fixture.duration_ms,
         ),
     )?;
+    let provider = parse_test_provider(fixture.provider)?;
+    let turn_ordinal =
+        u64::try_from(fixture.turn_ordinal).context("fixture turn ordinal must be non-negative")?;
+    let steps = serde_json::from_str::<Vec<NormalizedTurnStep>>(fixture.steps_json)
+        .context("fixture steps_json should parse")?;
+    let tool_calls = extract_tool_call_records(
+        fixture.project_id,
+        provider,
+        fixture.session_id,
+        turn_ordinal,
+        &steps,
+    );
+    for record in &tool_calls {
+        connection.execute(
+            "
+            INSERT INTO tool_calls (
+                project_id,
+                provider,
+                session_id,
+                turn_ordinal,
+                call_ordinal,
+                call_id,
+                timestamp,
+                tool_name,
+                arguments_text,
+                output_text,
+                status,
+                is_error
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            ",
+            (
+                record.project_id.as_str(),
+                fixture.provider,
+                record.session_id.as_str(),
+                i64::try_from(record.turn_ordinal)
+                    .context("turn ordinal exceeds SQLite INTEGER range")?,
+                i64::try_from(record.call_ordinal)
+                    .context("call ordinal exceeds SQLite INTEGER range")?,
+                record.call_id.as_str(),
+                record.timestamp.as_str(),
+                record.tool_name.as_deref(),
+                record.arguments_text.as_deref(),
+                record.output_text.as_deref(),
+                record.status.as_deref(),
+                i64::from(record.is_error),
+            ),
+        )?;
+    }
+    for record in derive_file_access_records(&tool_calls) {
+        connection.execute(
+            "
+            INSERT INTO file_accesses (
+                project_id,
+                provider,
+                session_id,
+                turn_ordinal,
+                call_ordinal,
+                call_id,
+                timestamp,
+                tool_name,
+                access_type,
+                path,
+                repo_relative_path
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            ",
+            (
+                record.project_id.as_str(),
+                fixture.provider,
+                record.session_id.as_str(),
+                i64::try_from(record.turn_ordinal)
+                    .context("turn ordinal exceeds SQLite INTEGER range")?,
+                i64::try_from(record.call_ordinal)
+                    .context("call ordinal exceeds SQLite INTEGER range")?,
+                record.call_id.as_str(),
+                record.timestamp.as_str(),
+                record.tool_name.as_str(),
+                record.access_type.as_sql_text(),
+                record.path.as_str(),
+                record.repo_relative_path.as_deref(),
+            ),
+        )?;
+    }
     Ok(())
 }
 
@@ -129,6 +214,15 @@ fn sqlite_local_date(connection: &rusqlite::Connection, timestamp: &str) -> Resu
             row.get(0)
         })
         .context("failed to derive SQLite local date")
+}
+
+/// Parses one fixture provider string into a source kind.
+fn parse_test_provider(value: &str) -> Result<SourceKind> {
+    match value {
+        "claude" => Ok(SourceKind::Claude),
+        "codex" => Ok(SourceKind::Codex),
+        other => anyhow::bail!("unsupported fixture provider `{other}`"),
+    }
 }
 
 #[test]
@@ -148,6 +242,13 @@ fn rejects_missing_existing_index_database() {
 #[test]
 fn classifies_tool_access_names() {
     assert!(matches!(classify_tool_access("Read"), ToolAccessKind::Read));
+    assert!(matches!(classify_tool_access("Grep"), ToolAccessKind::Read));
+    assert!(matches!(
+        classify_tool_access("ListFiles"),
+        ToolAccessKind::List
+    ));
+    assert!(matches!(classify_tool_access("Glob"), ToolAccessKind::List));
+    assert!(matches!(classify_tool_access("Edit"), ToolAccessKind::Edit));
     assert!(matches!(
         classify_tool_access("WriteFile"),
         ToolAccessKind::Write
@@ -168,7 +269,184 @@ fn extracts_file_paths_from_tool_arguments() {
         extract_tool_path(r#"{"path":"/tmp/repo/src/main.rs"}"#).as_deref(),
         Some("/tmp/repo/src/main.rs")
     );
+    assert_eq!(
+        extract_tool_paths(r#"{"file":["README.md","src/main.rs"]}"#),
+        vec!["README.md".to_owned(), "src/main.rs".to_owned()]
+    );
     assert!(extract_tool_path("*** Begin Patch").is_none());
+}
+
+#[test]
+fn matches_tool_call_outputs_and_keeps_unmatched_rows() {
+    let steps = vec![
+        NormalizedTurnStep::ToolCall {
+            timestamp: "2026-04-06T10:00:01Z".to_owned(),
+            call_id: "call-1".to_owned(),
+            name: "Read".to_owned(),
+            arguments: r#"{"file_path":"README.md"}"#.to_owned(),
+        },
+        NormalizedTurnStep::ToolCallOutput {
+            timestamp: "2026-04-06T10:00:02Z".to_owned(),
+            call_id: "call-1".to_owned(),
+            output: "# README".to_owned(),
+        },
+        NormalizedTurnStep::ToolCallOutput {
+            timestamp: "2026-04-06T10:00:03Z".to_owned(),
+            call_id: "call-2".to_owned(),
+            output: r#"{"status":"error","error":"boom"}"#.to_owned(),
+        },
+        NormalizedTurnStep::ToolCall {
+            timestamp: "2026-04-06T10:00:04Z".to_owned(),
+            call_id: "call-3".to_owned(),
+            name: "Edit".to_owned(),
+            arguments: r#"{"path":"src/main.rs"}"#.to_owned(),
+        },
+    ];
+
+    let records = extract_tool_call_records("repo-a", SourceKind::Codex, "session-1", 7, &steps);
+
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[0].tool_name.as_deref(), Some("Read"));
+    assert_eq!(records[0].output_text.as_deref(), Some("# README"));
+    assert_eq!(records[1].tool_name, None);
+    assert_eq!(records[1].status.as_deref(), Some("error"));
+    assert!(records[1].is_error);
+    assert_eq!(records[2].tool_name.as_deref(), Some("Edit"));
+    assert_eq!(records[2].output_text, None);
+}
+
+#[test]
+fn derives_file_accesses_from_normalized_tool_calls() {
+    let steps = vec![
+        NormalizedTurnStep::ToolCall {
+            timestamp: "2026-04-06T10:00:01Z".to_owned(),
+            call_id: "call-1".to_owned(),
+            name: "ListFiles".to_owned(),
+            arguments: r#"{"file":["README.md","src/main.rs"]}"#.to_owned(),
+        },
+        NormalizedTurnStep::ToolCall {
+            timestamp: "2026-04-06T10:00:02Z".to_owned(),
+            call_id: "call-2".to_owned(),
+            name: "Edit".to_owned(),
+            arguments: r#"{"path":"src/lib.rs"}"#.to_owned(),
+        },
+    ];
+
+    let tool_calls = extract_tool_call_records("repo-a", SourceKind::Codex, "session-1", 0, &steps);
+    let file_accesses = derive_file_access_records(&tool_calls);
+
+    assert_eq!(file_accesses.len(), 3);
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "README.md"
+            && matches!(record.access_type, ToolAccessKind::List)
+            && record.repo_relative_path.as_deref() == Some("README.md")
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "src/lib.rs" && matches!(record.access_type, ToolAccessKind::Edit)
+    }));
+}
+
+#[test]
+fn derives_file_accesses_from_shell_commands_and_patches() {
+    let steps = vec![
+        NormalizedTurnStep::ToolCall {
+            timestamp: "2026-04-06T10:00:01Z".to_owned(),
+            call_id: "call-1".to_owned(),
+            name: "exec_command".to_owned(),
+            arguments: r#"{"cmd":"sed -n '1,200p' README.md && rg -n \"fn main\" src/main.rs && cat > notes.txt <<'EOF'\nhello\nEOF","workdir":"/tmp/repo"}"#.to_owned(),
+        },
+        NormalizedTurnStep::ToolCall {
+            timestamp: "2026-04-06T10:00:02Z".to_owned(),
+            call_id: "call-2".to_owned(),
+            name: "shell".to_owned(),
+            arguments: r#"{"command":["bash","-lc","cp src/main.rs src/main.rs.bak && mv old.rs new.rs && ls src"],"workdir":"/tmp/repo"}"#.to_owned(),
+        },
+        NormalizedTurnStep::ToolCall {
+            timestamp: "2026-04-06T10:00:03Z".to_owned(),
+            call_id: "call-3".to_owned(),
+            name: "apply_patch".to_owned(),
+            arguments: "*** Begin Patch\n*** Update File: src/lib.rs\n@@\n-old\n+new\n*** Add File: src/new.rs\n+fn main() {}\n*** End Patch\n".to_owned(),
+        },
+    ];
+
+    let tool_calls = extract_tool_call_records("repo-a", SourceKind::Codex, "session-1", 0, &steps);
+    let file_accesses = derive_file_access_records(&tool_calls);
+
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "README.md" && matches!(record.access_type, ToolAccessKind::Read)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "src/main.rs" && matches!(record.access_type, ToolAccessKind::Read)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "notes.txt" && matches!(record.access_type, ToolAccessKind::Write)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "src/main.rs.bak" && matches!(record.access_type, ToolAccessKind::Write)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "old.rs" && matches!(record.access_type, ToolAccessKind::Edit)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "new.rs" && matches!(record.access_type, ToolAccessKind::Write)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "src" && matches!(record.access_type, ToolAccessKind::List)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "src/lib.rs" && matches!(record.access_type, ToolAccessKind::Edit)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "src/new.rs" && matches!(record.access_type, ToolAccessKind::Write)
+    }));
+}
+
+#[test]
+fn derives_file_accesses_from_script_runners_and_output_flags() {
+    let steps = vec![
+        NormalizedTurnStep::ToolCall {
+            timestamp: "2026-04-06T10:00:01Z".to_owned(),
+            call_id: "call-1".to_owned(),
+            name: "exec_command".to_owned(),
+            arguments: r#"{"cmd":"bash ./scripts/check.sh && cargo fmt -- crates/core/src/sync.rs && cargo test --manifest-path Cargo.toml && curl -o /tmp/out.txt https://example.com","workdir":"/tmp/repo"}"#.to_owned(),
+        },
+        NormalizedTurnStep::ToolCall {
+            timestamp: "2026-04-06T10:00:02Z".to_owned(),
+            call_id: "call-2".to_owned(),
+            name: "Bash".to_owned(),
+            arguments: r#"{"command":"rustfmt src/shared/types.rs && node scripts/build.js","description":"run toolchain"}"#.to_owned(),
+        },
+        NormalizedTurnStep::ToolCall {
+            timestamp: "2026-04-06T10:00:03Z".to_owned(),
+            call_id: "call-3".to_owned(),
+            name: "exec_command".to_owned(),
+            arguments: r#"{"cmd":"python3 - <<'PY'\nprint('hi')\nPY","workdir":"/tmp/repo"}"#.to_owned(),
+        },
+    ];
+
+    let tool_calls = extract_tool_call_records("repo-a", SourceKind::Codex, "session-1", 0, &steps);
+    let file_accesses = derive_file_access_records(&tool_calls);
+
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "./scripts/check.sh" && matches!(record.access_type, ToolAccessKind::Read)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "crates/core/src/sync.rs"
+            && matches!(record.access_type, ToolAccessKind::Edit)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "Cargo.toml" && matches!(record.access_type, ToolAccessKind::Read)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "/tmp/out.txt" && matches!(record.access_type, ToolAccessKind::Write)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "src/shared/types.rs" && matches!(record.access_type, ToolAccessKind::Read)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "scripts/build.js" && matches!(record.access_type, ToolAccessKind::Read)
+    }));
+    assert!(!file_accesses.iter().any(|record| record.path == "<<PY"));
 }
 
 #[test]
