@@ -4,30 +4,45 @@
 [![CI](https://github.com/0xjunha/darc/actions/workflows/ci.yml/badge.svg)](https://github.com/0xjunha/darc/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/github/0xjunha/darc/graph/badge.svg?token=J5ZVVBJ3U9)](https://codecov.io/github/0xjunha/darc)
 
-Darc archives local Claude and Codex session history by project, then indexes the archived rollouts into a normalized SQLite index for inspection, analytics, and downstream tooling.
+Darc organizes your local Claude Code and Codex session history by project and keeps a durable archive of it.
+It builds a queryable SQLite index for insights, analytics, downstream tools, and direct session inspection.
 
 The daily happy path is `darc refresh`, which runs `sync` and `index` together.
 
 ## What it does
 
-- Detects and registers local projects in a shared `~/.darc` workspace.
-- Syncs matching Claude and Codex session data into a per-project archive.
-- Indexes archived rollouts into a normalized SQLite index.
-- Preserves project history across checkout moves, merges, and renames.
+- Registers local projects in a shared `~/.darc` workspace and resolves the active project from the current checkout.
+- Archives matching Claude and Codex session history into a per-project rollout archive.
+- Rebuilds a normalized SQLite index from archived rollouts for insights, reporting, and downstream tooling.
+- Exposes a stable machine-readable `darc query` protocol for workspace, session, turn, and insights data.
+- Derives indexed insights at workspace, project, and turn scope without requiring clients to open `index.sqlite`
+  directly.
+- Preserves project continuity across checkout moves, worktrees, merges, and renames with built-in linking and
+  rename workflows.
 
 ## Workspace Architecture
 
-Darc is moving toward a small workspace of focused crates with `darc-core` kept as a thin facade and orchestration layer during the split.
+Darc is organized as a small workspace of focused crates with `darc-core` kept as a thin facade and orchestration layer.
 
 - `darc-cli`: CLI entrypoint and command surface.
-- `darc-core`: stable public API plus project/workspace orchestration such as `init`, `refresh`, `link`, and `rename-from`.
+- `darc-core`: stable public API plus project/workspace orchestration such as `init`, `refresh`, `link`, and
+  `rename-from`.
+- `darc-index`: normalized session ingestion, SQLite schema/migrations, and indexing metrics.
+- `darc-paths`: shared path normalization, source-kind modeling, and project/worktree discovery helpers used across
+  lower-level crates.
+- `darc-query`: read-only query and reporting over the indexed SQLite data.
 - `darc-rollout`: rollout models, provider parsers, and schema/version logic.
 - `darc-rollout-audit`: release/schema compatibility audits and other heavy maintainer-only rollout tooling.
 - `darc-sync`: archive discovery, sync planning, and file copy execution.
-- `darc-index`: normalized session ingestion, SQLite schema/migrations, and indexing metrics.
-- `darc-query`: read-only query and reporting over the indexed SQLite data.
+- `darc-test-utils`: shared test fixtures and helpers for Git repositories, temporary directories, and seeded index
+  data.
 
-Crate boundaries follow three rules: keep each crate cohesive around one dominant capability, keep dependency direction acyclic, and extract shared models/utilities downward instead of letting lower-level code depend on orchestration crates.
+#### Crate boundaries follow three rules:
+
+1. Keep each crate cohesive around one dominant capability.
+2. Keep dependency direction acyclic.
+3. Extract shared models/utilities downward instead of letting lower-level code depend on orchestration
+   crates.
 
 ## Quickstart
 
@@ -60,9 +75,12 @@ darc refresh --all
 ## Commands
 
 - `darc init` detects local sources and creates the shared Darc config.
-- `darc refresh` is the daily happy path. It runs `sync` then `index` for the active project, or every registered project with `--all`.
+- `darc refresh` is the daily happy path. It runs `sync` then `index` for the active project, or every registered
+  project with `--all`.
 - `darc sync` archives matching Claude and Codex sessions for the active project.
 - `darc index` indexes archived sessions into SQLite.
+- `darc query` exposes the machine-readable read protocol for workspace, session, turn, and insights data. Query
+  commands currently require `--json`; see [Query protocol](docs/query-protocol.md).
 - `darc link`, `darc remove`, and `darc rename-from` manage renamed or merged projects.
 
 Run `darc --help` for the visible CLI surface. Hidden maintainer commands are documented separately.
