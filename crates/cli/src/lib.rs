@@ -804,7 +804,8 @@ fn run_refresh(args: RefreshArgs) -> Result<()> {
         return Ok(());
     }
 
-    let report = refresh_project(Some(args.root), options)?;
+    let report = refresh_project(Some(args.root), options)
+        .map_err(add_init_hint_for_unconfigured_project)?;
     print_refresh_report(&report);
     Ok(())
 }
@@ -816,7 +817,8 @@ fn run_sync(args: SyncArgs) -> Result<()> {
         SyncOptions {
             provider_filter: args.provider.into_iter().map(ProviderArg::into).collect(),
         },
-    )?;
+    )
+    .map_err(add_init_hint_for_unconfigured_project)?;
 
     println!("Project: {}", plan.project_name);
     println!("Project Root: {}", plan.project_root.display());
@@ -857,6 +859,19 @@ fn run_sync(args: SyncArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Adds a `darc init` hint when sync or refresh runs outside a configured project.
+fn add_init_hint_for_unconfigured_project(error: anyhow::Error) -> anyhow::Error {
+    if error.chain().any(|cause| {
+        cause.to_string() == "current directory does not match any configured darc project"
+    }) {
+        anyhow::anyhow!(
+            "{error:#}\nrun `darc init` from this project root first (reuse the same `--root` flag if you passed one here)"
+        )
+    } else {
+        error
+    }
 }
 
 /// Indexes archived sessions for the active project into SQLite.
