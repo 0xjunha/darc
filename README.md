@@ -14,7 +14,7 @@ The daily happy path is `darc refresh`, which runs `sync` and `index` together.
 - Registers local projects in a shared `~/.darc` workspace and resolves the active project from the current checkout.
 - Archives matching Claude and Codex session history into a per-project rollout archive.
 - Rebuilds a normalized SQLite index from archived rollouts for insights, reporting, and downstream tooling.
-- Exposes a stable machine-readable `darc query` protocol for workspace, session, turn, and insights data.
+- Exposes a stable machine-readable `darc query` protocol for workspace, session, turn, search, and insights data.
 - Derives indexed insights at workspace, project, and turn scope without requiring clients to open `index.sqlite`
   directly.
 - Preserves project continuity across checkout moves, worktrees, merges, and renames with built-in linking and
@@ -79,9 +79,30 @@ darc refresh --all
   project with `--all`.
 - `darc sync` archives matching Claude and Codex sessions for the active project.
 - `darc index` indexes archived sessions into SQLite.
-- `darc query` exposes the machine-readable read protocol for workspace, session, turn, and insights data. Query
-  commands currently require `--json`; see [Query protocol](docs/query-protocol.md).
+- `darc query` exposes the machine-readable read protocol for workspace, session, turn, search, and insights data.
+  Query commands currently require `--json`; see [Query protocol](docs/query-protocol.md).
 - `darc link`, `darc remove`, and `darc rename-from` manage renamed or merged projects.
+
+## Search
+
+Darc now supports project-scoped turn search through the query protocol.
+
+- keyword search uses SQLite FTS5 over derived turn text
+- file-name search uses derived basenames from indexed `file_accesses`
+- file-path search uses derived repo-relative or raw paths from indexed `file_accesses`
+- file-name and file-path search currently rank exact matches first, then prefix matches, then substring matches
+
+Example:
+
+```bash
+darc query search turns \
+  --project-id repo-abc123 \
+  --mode keyword \
+  --query "panic unwrap" \
+  --json
+```
+
+See [Query protocol](docs/query-protocol.md) for the full search payload contract and filters.
 
 Run `darc --help` for the visible CLI surface. Hidden maintainer commands are documented separately.
 

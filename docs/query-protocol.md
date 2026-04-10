@@ -186,7 +186,7 @@ Today:
 
 Today:
 
-- `mode=keyword` uses Darc-owned FTS indexing over derived per-turn search text
+- `mode=keyword` uses SQLite FTS5 over Darc-owned derived per-turn search text
 - keyword search currently indexes `user_message`, `final_answer_text`, and selected derived step text such as commentary, tool names, and delegation summaries
 - keyword search does not currently index raw tool outputs or raw provider payload blobs
 - `mode=file_name` searches the derived `file_accesses.file_name` basename field
