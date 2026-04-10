@@ -19,7 +19,8 @@ use darc_test_utils::{
 use crate::query::{
     HardDebuggingTurn, LocalDate, ProjectInsights, SearchMode, SearchTurnsRequest, SessionKind,
     TurnInsights, build_project_insights, build_turn_insights, build_workspace_insights,
-    open_existing_index_database, parse_session_kind, query_search_turns, smoke_test_sql,
+    open_existing_index_database, parse_session_kind, query_project_sessions, query_search_turns,
+    smoke_test_sql,
 };
 
 /// Builds one temporary SQLite index path for query tests.
@@ -275,6 +276,27 @@ fn derives_file_accesses_from_shell_commands_and_patches() {
 }
 
 #[test]
+fn derives_file_accesses_from_shell_heredoc_apply_patch() {
+    let steps = vec![NormalizedTurnStep::ToolCall {
+        timestamp: "2026-04-06T10:00:01Z".to_owned(),
+        call_id: "call-1".to_owned(),
+        name: "exec_command".to_owned(),
+        arguments: r#"{"cmd":"apply_patch <<'PATCH'\n*** Begin Patch\n*** Update File: src/main.rs\n@@\n-old\n+new\n*** Add File: src/new.rs\n+fn main() {}\n*** End Patch\nPATCH","workdir":"/tmp/repo"}"#
+            .to_owned(),
+    }];
+
+    let tool_calls = extract_tool_call_records("repo-a", SourceKind::Codex, "session-1", 0, &steps);
+    let file_accesses = derive_file_access_records(&tool_calls);
+
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "src/main.rs" && matches!(record.access_type, ToolAccessKind::Edit)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "src/new.rs" && matches!(record.access_type, ToolAccessKind::Write)
+    }));
+}
+
+#[test]
 fn derives_file_accesses_from_script_runners_and_output_flags() {
     let steps = vec![
         NormalizedTurnStep::ToolCall {
@@ -436,6 +458,61 @@ fn workspace_insights_filter_short_and_failed_turns() -> Result<()> {
     assert_eq!(insights.total_time_ms, 3_000);
     assert_eq!(insights.recent_sessions.len(), 1);
     assert_eq!(insights.recent_sessions[0].project_id, "repo-a");
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn session_summaries_leave_partial_token_and_runtime_totals_null() -> Result<()> {
+    let index_path = test_index_path("session-partial-totals");
+    let connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            duration_ms: 1_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                0,
+                "2026-04-05T12:00:00Z",
+                "completed",
+                "[]",
+            )
+        },
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            duration_ms: 2_000,
+            effective_agent_runtime_ms: Some(2_000),
+            total_token_count: Some(321),
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                1,
+                "2026-04-05T12:05:00Z",
+                "completed",
+                "[]",
+            )
+        },
+    )?;
+
+    let sessions = query_project_sessions(&index_path, "repo-a")?;
+
+    assert_eq!(sessions.sessions.len(), 1);
+    assert_eq!(sessions.sessions[0].total_token_count, None);
+    assert_eq!(sessions.sessions[0].effective_agent_runtime_ms, None);
 
     fs::remove_dir_all(
         index_path

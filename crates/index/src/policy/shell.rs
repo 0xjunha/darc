@@ -1,8 +1,10 @@
+use std::collections::BTreeSet;
+
 use serde_json::Value;
 
 use super::file_access::{
-    CodeChangeSummary, ToolAccessKind, derive_apply_patch_file_accesses, push_access,
-    summarize_apply_patch_changes,
+    CodeChangeSummary, ToolAccessKind, apply_patch_changed_paths, derive_apply_patch_file_accesses,
+    push_access, summarize_apply_patch_changes,
 };
 
 /// Stores one shell-like command decoded from one tool-call payload.
@@ -19,6 +21,9 @@ pub(super) fn derive_shell_file_accesses(arguments_text: &str) -> Vec<(ToolAcces
     };
 
     let mut accesses = Vec::new();
+    for patch_payload in extract_apply_patch_heredoc_payloads(&command.command_text) {
+        accesses.extend(derive_apply_patch_file_accesses(&patch_payload));
+    }
     for fragment in split_shell_fragments(&command.command_text) {
         accesses.extend(derive_shell_fragment_file_accesses(
             &fragment,
@@ -40,13 +45,42 @@ pub fn summarize_shell_code_changes(arguments_text: &str) -> CodeChangeSummary {
         return CodeChangeSummary::default();
     };
 
+    let heredoc_payloads = extract_apply_patch_heredoc_payloads(&command.command_text);
     let mut summary = CodeChangeSummary::default();
+    for patch_payload in &heredoc_payloads {
+        summary = summary.saturating_add(summarize_apply_patch_changes(patch_payload));
+    }
     for fragment in split_shell_fragments(&command.command_text) {
+        if !heredoc_payloads.is_empty() && fragment.contains("<<") {
+            continue;
+        }
         if fragment.contains("*** Begin Patch") {
             summary = summary.saturating_add(summarize_apply_patch_changes(&fragment));
         }
     }
     summary
+}
+
+/// Returns the distinct patch-target paths observed in one shell-like tool payload.
+pub fn shell_apply_patch_changed_paths(arguments_text: &str) -> Vec<String> {
+    let Some(command) = parse_shell_command(arguments_text) else {
+        return Vec::new();
+    };
+
+    let heredoc_payloads = extract_apply_patch_heredoc_payloads(&command.command_text);
+    let mut paths = BTreeSet::new();
+    for patch_payload in &heredoc_payloads {
+        paths.extend(apply_patch_changed_paths(patch_payload));
+    }
+    for fragment in split_shell_fragments(&command.command_text) {
+        if !heredoc_payloads.is_empty() && fragment.contains("<<") {
+            continue;
+        }
+        if fragment.contains("*** Begin Patch") {
+            paths.extend(apply_patch_changed_paths(&fragment));
+        }
+    }
+    paths.into_iter().collect()
 }
 
 /// Returns whether one tool name carries a shell command payload.
@@ -158,6 +192,53 @@ fn split_shell_fragments(command_text: &str) -> Vec<String> {
 
     push_fragment(&mut fragments, &mut current);
     fragments
+}
+
+/// Extracts every heredoc-backed `apply_patch` payload embedded in one shell command string.
+fn extract_apply_patch_heredoc_payloads(command_text: &str) -> Vec<String> {
+    let mut payloads = Vec::new();
+    let mut terminator = None::<String>;
+    let mut current_payload = Vec::new();
+
+    for line in command_text.lines() {
+        if let Some(current_terminator) = terminator.as_deref() {
+            if line.trim() == current_terminator {
+                payloads.push(current_payload.join("\n"));
+                current_payload.clear();
+                terminator = None;
+            } else {
+                current_payload.push(line.to_owned());
+            }
+            continue;
+        }
+
+        if let Some(next_terminator) = apply_patch_heredoc_terminator(line) {
+            terminator = Some(next_terminator);
+        }
+    }
+
+    if terminator.is_some() && !current_payload.is_empty() {
+        payloads.push(current_payload.join("\n"));
+    }
+
+    payloads
+}
+
+/// Returns the heredoc terminator for one `apply_patch <<...` shell line when present.
+fn apply_patch_heredoc_terminator(line: &str) -> Option<String> {
+    let line = line.trim();
+    if !line.contains("apply_patch") || !line.contains("<<") {
+        return None;
+    }
+
+    let (_, heredoc_tail) = line.split_once("<<")?;
+    let heredoc_tail = heredoc_tail.trim();
+    let heredoc_tail = heredoc_tail.strip_prefix('-').unwrap_or(heredoc_tail);
+    let terminator = heredoc_tail
+        .split_whitespace()
+        .next()?
+        .trim_matches(['"', '\'']);
+    (!terminator.is_empty()).then(|| terminator.to_owned())
 }
 
 /// Splits one shell fragment into shell words while preserving quoted text.

@@ -192,6 +192,7 @@ Today:
 
 - session rows include `primary_model`, `total_token_count`, `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, and `removed_line_count`
 - session totals are rollups across the indexed turns in that session
+- `total_token_count` and `effective_agent_runtime_ms` are currently `null` on a session row unless every indexed turn in that session carried a value for that field
 - turn rows include `primary_model`, `total_token_count`, `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, and `removed_line_count`
 - `primary_model`, `total_token_count`, and `effective_agent_runtime_ms` may be `null` when the archived provider transcript did not report stable values
 

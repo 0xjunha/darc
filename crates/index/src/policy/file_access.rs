@@ -317,6 +317,16 @@ pub fn summarize_apply_patch_changes(text: &str) -> CodeChangeSummary {
     summary
 }
 
+/// Returns the distinct changed file paths observed in one apply-patch payload.
+pub fn apply_patch_changed_paths(text: &str) -> Vec<String> {
+    parse_apply_patch_changes(text)
+        .into_iter()
+        .map(|change| change.path)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 /// Builds concrete file-access rows from raw `(kind, path)` pairs.
 fn build_file_access_records(
     tool_call: &ToolCallRecord,

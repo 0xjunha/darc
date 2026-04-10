@@ -6,12 +6,15 @@ mod shell;
 pub use active_time::{ActiveTimePolicy, active_time_policy, should_include_turn_in_active_time};
 use darc_paths::SourceKind;
 pub use file_access::{
-    CodeChangeSummary, FileAccessRecord, ToolAccessKind, ToolCallRecord, classify_tool_access,
-    derive_file_access_records, extract_tool_call_records, extract_tool_path, extract_tool_paths,
-    summarize_apply_patch_changes,
+    CodeChangeSummary, FileAccessRecord, ToolAccessKind, ToolCallRecord, apply_patch_changed_paths,
+    classify_tool_access, derive_file_access_records, extract_tool_call_records, extract_tool_path,
+    extract_tool_paths, summarize_apply_patch_changes,
 };
 pub use search::build_turn_search_text;
-pub use shell::{ShellCommand, extract_shell_command, summarize_shell_code_changes};
+pub use shell::{
+    ShellCommand, extract_shell_command, shell_apply_patch_changed_paths,
+    summarize_shell_code_changes,
+};
 
 /// Defines the fields needed to rank hard-debugging candidates.
 pub trait HardDebuggingCandidate {

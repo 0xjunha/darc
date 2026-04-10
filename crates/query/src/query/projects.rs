@@ -50,11 +50,11 @@ const PROJECT_SESSIONS_SQL: &str = "
             MAX(turn_ordinal) AS latest_turn_ordinal,
             MAX(started_at) AS latest_turn_at,
             CASE
-                WHEN COUNT(total_token_count) > 0 THEN SUM(COALESCE(total_token_count, 0))
+                WHEN COUNT(*) = COUNT(total_token_count) THEN SUM(COALESCE(total_token_count, 0))
                 ELSE NULL
             END AS total_token_count,
             CASE
-                WHEN COUNT(effective_agent_runtime_ms) > 0 THEN SUM(COALESCE(effective_agent_runtime_ms, 0))
+                WHEN COUNT(*) = COUNT(effective_agent_runtime_ms) THEN SUM(COALESCE(effective_agent_runtime_ms, 0))
                 ELSE NULL
             END AS effective_agent_runtime_ms,
             SUM(COALESCE(changed_file_count, 0)) AS changed_file_count,
