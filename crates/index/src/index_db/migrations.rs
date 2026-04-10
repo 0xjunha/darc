@@ -4,8 +4,7 @@ use rusqlite::Connection;
 use serde_json::from_str;
 
 use super::schema::{
-    CODEX_SESSION_COMPAT_COLUMNS, SchemaTable, TURN_ANALYTICS_COLUMNS, TableColumn,
-    alter_table_add_column_sql, table_info_sql,
+    COMPAT_COLUMN_SETS, SchemaTable, TableColumn, alter_table_add_column_sql, table_has_column,
 };
 use crate::{
     derived_data::rebuild_derived_analytics_tables, turn_metrics::summarize_stored_turn_metrics,
@@ -124,19 +123,11 @@ const HAS_TABLE_SQL: &str = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'ta
 
 /// Ensures compatibility columns exist on any legacy or pre-derived tables.
 pub(super) fn ensure_legacy_compat_columns(connection: &Connection) -> Result<()> {
-    ensure_columns(
-        connection,
-        SchemaTable::Turns,
-        TURN_ANALYTICS_COLUMNS,
-        "turns",
-    )?;
-    if has_table(connection, SchemaTable::CodexSessions)? {
-        ensure_columns(
-            connection,
-            SchemaTable::CodexSessions,
-            CODEX_SESSION_COMPAT_COLUMNS,
-            "codex_sessions",
-        )?;
+    for &compat in COMPAT_COLUMN_SETS {
+        if !has_table(connection, compat.table)? {
+            continue;
+        }
+        ensure_columns(connection, compat.table, compat.columns, compat.label)?;
     }
     Ok(())
 }
@@ -254,7 +245,7 @@ fn ensure_columns(
     label: &str,
 ) -> Result<()> {
     for &column in columns {
-        if has_table_column(connection, table, column.name)? {
+        if table_has_column(connection, table, column.name)? {
             continue;
         }
         connection
@@ -262,31 +253,6 @@ fn ensure_columns(
             .with_context(|| format!("failed to add `{}` column to {label}", column.name))?;
     }
     Ok(())
-}
-
-/// Returns whether one vetted SQLite table already contains a named column.
-fn has_table_column(connection: &Connection, table: SchemaTable, column: &str) -> Result<bool> {
-    let mut statement = connection
-        .prepare(&table_info_sql(table))
-        .with_context(|| {
-            format!(
-                "failed to inspect SQLite schema for table `{}`",
-                table.sql_name()
-            )
-        })?;
-    let mut rows = statement.query([]).with_context(|| {
-        format!(
-            "failed to query SQLite schema for table `{}`",
-            table.sql_name()
-        )
-    })?;
-    while let Some(row) = rows.next().context("failed to read SQLite schema row")? {
-        let existing: String = row.get(1).context("failed to read SQLite column name")?;
-        if existing == column {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }
 
 /// Backfills derived turn analytics for rows created before these columns existed.
@@ -433,21 +399,6 @@ pub(super) fn smoke_test_sql(connection: &Connection, schema_version: i32) -> Re
             .with_context(|| format!("failed to prepare {label}"))?;
     }
 
-    for &table in &[
-        SchemaTable::Turns,
-        SchemaTable::CodexSessions,
-        SchemaTable::CodexTurns,
-    ] {
-        connection
-            .prepare(&table_info_sql(table))
-            .with_context(|| {
-                format!(
-                    "failed to prepare table info smoke test for `{}`",
-                    table.sql_name()
-                )
-            })?;
-    }
-
     let scratch = Connection::open_in_memory()
         .context("failed to open scratch SQLite connection for alter-table smoke tests")?;
     scratch
@@ -481,29 +432,20 @@ pub(super) fn smoke_test_sql(connection: &Connection, schema_version: i32) -> Re
         )
         .context("failed to create scratch pre-migration tables for SQL smoke testing")?;
 
-    for &column in TURN_ANALYTICS_COLUMNS {
-        scratch
-            .execute(&alter_table_add_column_sql(SchemaTable::Turns, column), [])
-            .with_context(|| {
-                format!(
-                    "failed to execute turns alter smoke test for `{}`",
-                    column.name
-                )
-            })?;
-    }
-
-    for &column in CODEX_SESSION_COMPAT_COLUMNS {
-        scratch
-            .execute(
-                &alter_table_add_column_sql(SchemaTable::CodexSessions, column),
-                [],
-            )
-            .with_context(|| {
-                format!(
-                    "failed to execute codex_sessions alter smoke test for `{}`",
-                    column.name
-                )
-            })?;
+    for &compat in COMPAT_COLUMN_SETS {
+        if !has_table(&scratch, compat.table)? {
+            continue;
+        }
+        for &column in compat.columns {
+            scratch
+                .execute(&alter_table_add_column_sql(compat.table, column), [])
+                .with_context(|| {
+                    format!(
+                        "failed to execute {} alter smoke test for `{}`",
+                        compat.label, column.name
+                    )
+                })?;
+        }
     }
 
     set_index_db_schema_version(connection, schema_version)?;
