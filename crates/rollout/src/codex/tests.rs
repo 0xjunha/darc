@@ -30,6 +30,8 @@ fn parses_turn_lifecycle_rollout_and_records_schema_metadata() -> Result<()> {
     assert_eq!(rollout.determinism, ParseDeterminism::Exact);
     assert_eq!(rollout.turns.len(), 1);
     assert_eq!(rollout.turns[0].status, CodexTurnStatus::Completed);
+    assert_eq!(rollout.turns[0].primary_model, None);
+    assert_eq!(rollout.turns[0].total_token_count, None);
     assert_eq!(
         rollout.turns[0].final_answer,
         Some(CodexTurnMessage {
@@ -84,4 +86,27 @@ fn rejects_response_item_variants_before_their_supported_version() {
             .to_string()
             .contains("unsupported response_item `image_generation_call`")
     );
+}
+
+#[test]
+fn extracts_model_and_tokens_from_turn_context_and_token_count() -> Result<()> {
+    let rollout = parse_rollout_reader(
+        Cursor::new(
+            r#"{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"fixture","cwd":"/tmp/repo","cli_version":"0.118.0"}}
+{"timestamp":"2026-01-01T00:00:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}
+{"timestamp":"2026-01-01T00:00:01Z","type":"turn_context","payload":{"turn_id":"turn-1","model":"gpt-5.4"}}
+{"timestamp":"2026-01-01T00:00:02Z","type":"event_msg","payload":{"type":"user_message","message":"Inspect repo"}}
+{"timestamp":"2026-01-01T00:00:03Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":100},"last_token_usage":{"total_tokens":100}}}}
+{"timestamp":"2026-01-01T00:00:04Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":160},"last_token_usage":{"total_tokens":60}}}}
+{"timestamp":"2026-01-01T00:00:05Z","type":"response_item","payload":{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"Done"}]}}
+"#,
+        ),
+        Path::new("fixture.jsonl"),
+    )?;
+
+    assert_eq!(rollout.turns.len(), 1);
+    assert_eq!(rollout.turns[0].primary_model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(rollout.turns[0].total_token_count, Some(160));
+
+    Ok(())
 }

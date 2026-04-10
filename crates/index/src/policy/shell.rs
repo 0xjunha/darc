@@ -1,6 +1,9 @@
 use serde_json::Value;
 
-use super::file_access::{ToolAccessKind, derive_apply_patch_file_accesses, push_access};
+use super::file_access::{
+    CodeChangeSummary, ToolAccessKind, derive_apply_patch_file_accesses, push_access,
+    summarize_apply_patch_changes,
+};
 
 /// Stores one shell-like command decoded from one tool-call payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +32,21 @@ pub(super) fn derive_shell_file_accesses(arguments_text: &str) -> Vec<(ToolAcces
 pub fn extract_shell_command(tool_name: &str, arguments_text: &str) -> Option<ShellCommand> {
     is_shell_tool_name(tool_name).then_some(())?;
     parse_shell_command(arguments_text)
+}
+
+/// Summarizes every apply-patch fragment embedded in one shell-like tool payload.
+pub fn summarize_shell_code_changes(arguments_text: &str) -> CodeChangeSummary {
+    let Some(command) = parse_shell_command(arguments_text) else {
+        return CodeChangeSummary::default();
+    };
+
+    let mut summary = CodeChangeSummary::default();
+    for fragment in split_shell_fragments(&command.command_text) {
+        if fragment.contains("*** Begin Patch") {
+            summary = summary.saturating_add(summarize_apply_patch_changes(&fragment));
+        }
+    }
+    summary
 }
 
 /// Returns whether one tool name carries a shell command payload.

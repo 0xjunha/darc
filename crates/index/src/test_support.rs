@@ -114,6 +114,12 @@ pub struct IndexedTurnFixture<'a> {
     pub hook_summary_count: i64,
     pub has_final_answer: bool,
     pub duration_ms: i64,
+    pub effective_agent_runtime_ms: Option<i64>,
+    pub total_token_count: Option<i64>,
+    pub primary_model: Option<&'a str>,
+    pub changed_file_count: i64,
+    pub added_line_count: i64,
+    pub removed_line_count: i64,
 }
 
 impl<'a> IndexedTurnFixture<'a> {
@@ -148,6 +154,12 @@ impl<'a> IndexedTurnFixture<'a> {
             hook_summary_count: 0,
             has_final_answer: false,
             duration_ms: 0,
+            effective_agent_runtime_ms: None,
+            total_token_count: None,
+            primary_model: None,
+            changed_file_count: 0,
+            added_line_count: 0,
+            removed_line_count: 0,
         }
     }
 }
@@ -251,6 +263,12 @@ pub fn insert_indexed_turn(connection: &Connection, fixture: IndexedTurnFixture<
             fixture.hook_summary_count,
             i64::from(fixture.has_final_answer),
             fixture.duration_ms,
+            fixture.effective_agent_runtime_ms,
+            fixture.total_token_count,
+            fixture.primary_model,
+            fixture.changed_file_count,
+            fixture.added_line_count,
+            fixture.removed_line_count,
         ],
     )?;
 

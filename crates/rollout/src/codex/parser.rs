@@ -133,6 +133,8 @@ struct RawEventPayload {
     turn_id: Option<String>,
     #[serde(default)]
     last_agent_message: Option<String>,
+    #[serde(default)]
+    info: Option<RawTokenCountInfo>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -159,6 +161,20 @@ struct RawResponseItemPayload {
     summary: Vec<Value>,
     #[serde(default)]
     encrypted_content: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawTokenCountInfo {
+    #[serde(default)]
+    total_token_usage: Option<RawTokenUsage>,
+    #[serde(default)]
+    last_token_usage: Option<RawTokenUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawTokenUsage {
+    #[serde(default)]
+    total_tokens: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -271,6 +287,10 @@ struct RolloutLineParser<'a, S> {
     cli_version: CodexCliVersion,
     has_event_user_boundaries: bool,
     pending_turn_id: Option<String>,
+    pending_turn_model: Option<String>,
+    pending_turn_token_count: u64,
+    pending_turn_has_token_count: bool,
+    last_cumulative_total_tokens: Option<u64>,
     current_turn: Option<CodexTurn>,
     sink: &'a mut S,
 }
@@ -294,6 +314,10 @@ impl<'a, S: CodexRolloutSink> RolloutLineParser<'a, S> {
             cli_version,
             has_event_user_boundaries,
             pending_turn_id: None,
+            pending_turn_model: None,
+            pending_turn_token_count: 0,
+            pending_turn_has_token_count: false,
+            last_cumulative_total_tokens: None,
             current_turn: None,
             sink,
         })
@@ -330,12 +354,22 @@ impl<'a, S: CodexRolloutSink> RolloutLineParser<'a, S> {
                             "task lifecycle events",
                         )?;
                         self.pending_turn_id = event.turn_id;
+                        self.pending_turn_model = None;
+                        self.pending_turn_token_count = 0;
+                        self.pending_turn_has_token_count = false;
                     }
                     "user_message" => {
                         if let Some(message) = event.message {
                             self.close_open_turn()?;
-                            self.current_turn =
-                                Some(start_turn(timestamp, self.pending_turn_id.take(), message));
+                            self.current_turn = Some(self.start_turn(timestamp, message));
+                        }
+                    }
+                    "token_count" => {
+                        if let Some(delta) = token_count_delta(
+                            event.info.as_ref(),
+                            &mut self.last_cumulative_total_tokens,
+                        ) {
+                            self.observe_turn_token_delta(delta);
                         }
                     }
                     "task_complete" | "turn_complete" => {
@@ -429,8 +463,7 @@ impl<'a, S: CodexRolloutSink> RolloutLineParser<'a, S> {
                         if role == "user" {
                             if !self.has_event_user_boundaries && !is_user_boilerplate(&text) {
                                 self.close_open_turn()?;
-                                self.current_turn =
-                                    Some(start_turn(timestamp, self.pending_turn_id.take(), text));
+                                self.current_turn = Some(self.start_turn(timestamp, text));
                             }
                             return Ok(());
                         }
@@ -542,7 +575,12 @@ impl<'a, S: CodexRolloutSink> RolloutLineParser<'a, S> {
                 self.source_path,
                 line_no,
                 "turn_context lines",
-            )?,
+            )
+            .map(|()| {
+                if let Some(model) = turn_context_model(&payload) {
+                    self.observe_turn_model(model);
+                }
+            })?,
             "compacted" => ensure_feature_support(
                 &self.cli_version,
                 CodexSchemaFeature::CompactedLine,
@@ -571,6 +609,20 @@ impl<'a, S: CodexRolloutSink> RolloutLineParser<'a, S> {
         self.close_open_turn()
     }
 
+    /// Starts one new turn and applies any already observed pending metadata.
+    fn start_turn(&mut self, timestamp: String, user_message: String) -> CodexTurn {
+        let mut turn = start_turn(timestamp, self.pending_turn_id.take(), user_message);
+        if let Some(model) = self.pending_turn_model.take() {
+            set_turn_primary_model(&mut turn, model);
+        }
+        if self.pending_turn_has_token_count {
+            add_turn_token_count(&mut turn, self.pending_turn_token_count);
+            self.pending_turn_has_token_count = false;
+            self.pending_turn_token_count = 0;
+        }
+        turn
+    }
+
     /// Closes the current turn and emits it to the sink when present.
     fn close_open_turn(&mut self) -> ParseIntoResult<(), S::Error> {
         if let Some(turn) = self.current_turn.take() {
@@ -579,6 +631,27 @@ impl<'a, S: CodexRolloutSink> RolloutLineParser<'a, S> {
                 .map_err(ParseIntoError::Sink)?;
         }
         Ok(())
+    }
+
+    /// Records one observed Codex model name on the pending or active turn.
+    fn observe_turn_model(&mut self, model: String) {
+        if let Some(turn) = self.current_turn.as_mut() {
+            set_turn_primary_model(turn, model);
+        } else {
+            self.pending_turn_model = Some(model);
+        }
+    }
+
+    /// Adds one observed Codex token delta to the pending or active turn.
+    fn observe_turn_token_delta(&mut self, delta: u64) {
+        if let Some(turn) = self.current_turn.as_mut() {
+            add_turn_token_count(turn, delta);
+            return;
+        }
+        if self.pending_turn_id.is_some() || self.pending_turn_model.is_some() {
+            self.pending_turn_has_token_count = true;
+            self.pending_turn_token_count = self.pending_turn_token_count.saturating_add(delta);
+        }
     }
 }
 
@@ -654,6 +727,8 @@ fn start_turn(timestamp: String, turn_id: Option<String>, user_message: String) 
         started_at: timestamp,
         completed_at: None,
         status: CodexTurnStatus::Incomplete,
+        primary_model: None,
+        total_token_count: None,
         steps: Vec::new(),
     }
 }
@@ -699,6 +774,56 @@ fn record_assistant_message(
         }
         Some(_) => {}
     }
+}
+
+/// Returns one best-effort token delta from a Codex `token_count` event.
+fn token_count_delta(
+    info: Option<&RawTokenCountInfo>,
+    last_cumulative_total_tokens: &mut Option<u64>,
+) -> Option<u64> {
+    let info = info?;
+    let current_total = info
+        .total_token_usage
+        .as_ref()
+        .and_then(|usage| usage.total_tokens)?;
+    let delta = match *last_cumulative_total_tokens {
+        Some(previous_total) if current_total >= previous_total => current_total - previous_total,
+        _ => info
+            .last_token_usage
+            .as_ref()
+            .and_then(|usage| usage.total_tokens)
+            .unwrap_or(current_total),
+    };
+    *last_cumulative_total_tokens = Some(current_total);
+    Some(delta)
+}
+
+/// Extracts one stable model name from a Codex `turn_context` payload.
+fn turn_context_model(payload: &Value) -> Option<String> {
+    payload
+        .as_object()
+        .and_then(|object| object.get("model").and_then(Value::as_str))
+        .and_then(stable_model_name)
+        .map(str::to_owned)
+}
+
+/// Sets the primary model on one normalized turn when it is still unknown.
+fn set_turn_primary_model(turn: &mut CodexTurn, model: String) {
+    if turn.primary_model.is_none() {
+        turn.primary_model = Some(model);
+    }
+}
+
+/// Adds one token delta to one normalized turn using saturating arithmetic.
+fn add_turn_token_count(turn: &mut CodexTurn, delta: u64) {
+    let total_tokens = turn.total_token_count.unwrap_or(0).saturating_add(delta);
+    turn.total_token_count = Some(total_tokens);
+}
+
+/// Filters one raw provider model string down to a user-visible stable model name.
+fn stable_model_name(value: &str) -> Option<&str> {
+    let value = value.trim();
+    (!(value.is_empty() || value.starts_with('<') && value.ends_with('>'))).then_some(value)
 }
 
 fn message_text(

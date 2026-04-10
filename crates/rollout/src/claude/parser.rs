@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs::File,
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
@@ -78,6 +79,11 @@ struct ClaudeTurnBuilder {
     completed_at: Option<String>,
     status: CodexTurnStatus,
     final_answer: Option<CodexTurnMessage>,
+    primary_model: Option<String>,
+    direct_request_token_counts: BTreeMap<String, u64>,
+    has_direct_token_usage: bool,
+    delegated_token_count: u64,
+    has_delegated_token_usage: bool,
     steps: Vec<CodexTurnStep>,
 }
 
@@ -91,12 +97,50 @@ impl ClaudeTurnBuilder {
             completed_at: None,
             status: CodexTurnStatus::Incomplete,
             final_answer: None,
+            primary_model: None,
+            direct_request_token_counts: BTreeMap::new(),
+            has_direct_token_usage: false,
+            delegated_token_count: 0,
+            has_delegated_token_usage: false,
             steps: Vec::new(),
         }
     }
 
+    /// Records one assistant model name observed during the turn.
+    fn observe_model(&mut self, model: Option<&str>) {
+        let Some(model) = model.and_then(stable_model_name) else {
+            return;
+        };
+        if self.primary_model.is_none() {
+            self.primary_model = Some(model.to_owned());
+        }
+    }
+
+    /// Records one direct assistant request token total while avoiding duplicate request counts.
+    fn observe_direct_request_tokens(&mut self, request_key: String, total_tokens: u64) {
+        self.has_direct_token_usage = true;
+        let entry = self
+            .direct_request_token_counts
+            .entry(request_key)
+            .or_insert(0);
+        *entry = (*entry).max(total_tokens);
+    }
+
+    /// Adds one delegated token total reported by the provider.
+    fn observe_delegated_tokens(&mut self, total_tokens: u64) {
+        self.has_delegated_token_usage = true;
+        self.delegated_token_count = self.delegated_token_count.saturating_add(total_tokens);
+    }
+
     /// Finalizes one in-progress turn into the shared persisted model.
     fn finish(self) -> CodexTurn {
+        let direct_token_count = self
+            .direct_request_token_counts
+            .values()
+            .copied()
+            .fold(0_u64, u64::saturating_add);
+        let total_token_count = (self.has_direct_token_usage || self.has_delegated_token_usage)
+            .then_some(direct_token_count.saturating_add(self.delegated_token_count));
         CodexTurn {
             turn_id: self.turn_id,
             user_message: self.user_message,
@@ -104,6 +148,8 @@ impl ClaudeTurnBuilder {
             started_at: self.started_at,
             completed_at: self.completed_at,
             status: self.status,
+            primary_model: self.primary_model,
+            total_token_count,
             steps: self.steps,
         }
     }
@@ -419,6 +465,13 @@ impl<'a> ClaudeRolloutParser<'a> {
         if content.is_none() {
             self.best_effort = true;
         }
+        turn.observe_model(message.get("model").and_then(Value::as_str));
+        if let Some(total_tokens) = assistant_message_total_tokens(message) {
+            turn.observe_direct_request_tokens(
+                assistant_request_token_key(object, message, &timestamp),
+                total_tokens,
+            );
+        }
 
         let mut text_items = Vec::new();
         let mut saw_tool_use = false;
@@ -532,6 +585,10 @@ impl<'a> ClaudeRolloutParser<'a> {
             return Ok(());
         };
 
+        if let Some(total_tokens) = delegated_total_tokens(user_line) {
+            turn.observe_delegated_tokens(total_tokens);
+        }
+
         for result in tool_results {
             let call_id = result
                 .get("tool_use_id")
@@ -623,6 +680,53 @@ impl<'a> ClaudeRolloutParser<'a> {
 /// Normalizes one Claude subagent id across filename and rollout payload variants.
 fn normalize_agent_id(value: &str) -> &str {
     value.strip_prefix("agent-").unwrap_or(value)
+}
+
+/// Returns one stable assistant request key used to deduplicate cumulative Claude usage rows.
+fn assistant_request_token_key(
+    object: &Map<String, Value>,
+    message: &Map<String, Value>,
+    timestamp: &str,
+) -> String {
+    object
+        .get("requestId")
+        .and_then(Value::as_str)
+        .or_else(|| message.get("id").and_then(Value::as_str))
+        .unwrap_or(timestamp)
+        .to_owned()
+}
+
+/// Returns one best-effort direct Claude assistant token total for a single provider request.
+fn assistant_message_total_tokens(message: &Map<String, Value>) -> Option<u64> {
+    let usage = message.get("usage").and_then(Value::as_object)?;
+    let has_input = usage.contains_key("input_tokens");
+    let has_output = usage.contains_key("output_tokens");
+    if !has_input && !has_output {
+        return None;
+    }
+    let input_tokens = usage
+        .get("input_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let output_tokens = usage
+        .get("output_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    Some(input_tokens.saturating_add(output_tokens))
+}
+
+/// Returns one delegated Claude token total when the user line reports completed subagent usage.
+fn delegated_total_tokens(user_line: &Map<String, Value>) -> Option<u64> {
+    user_line
+        .get("toolUseResult")
+        .and_then(Value::as_object)
+        .and_then(|payload| payload.get("totalTokens").and_then(Value::as_u64))
+}
+
+/// Filters one raw provider model string down to a user-visible stable model name.
+fn stable_model_name(value: &str) -> Option<&str> {
+    let value = value.trim();
+    (!(value.is_empty() || value.starts_with('<') && value.ends_with('>'))).then_some(value)
 }
 
 /// Returns whether one Claude user line should begin a new normalized turn.

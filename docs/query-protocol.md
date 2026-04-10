@@ -156,7 +156,11 @@ These rules may evolve before stabilization.
 
 Today:
 
-- top-level count fields such as `step_count`, `tool_call_count`, `tool_output_count`, `attachment_count`, `delegation_count`, `hook_summary_count`, `has_final_answer`, and `duration_ms` come from the indexed `turns` row for that exact turn
+- top-level fields such as `primary_model`, `duration_ms`, `effective_agent_runtime_ms`, `total_token_count`, `changed_file_count`, `added_line_count`, `removed_line_count`, `step_count`, `tool_call_count`, `tool_output_count`, `attachment_count`, `delegation_count`, `hook_summary_count`, and `has_final_answer` come from the indexed `turns` row for that exact turn
+- `primary_model` is the best-effort user-visible model name stored for that turn; it may be `null` for older provider versions or transcripts that did not report a concrete model name
+- `total_token_count` is the best-effort total token usage stored for that turn; it may be `null` for older provider versions or transcripts that did not report usable token counts
+- `effective_agent_runtime_ms` starts from the turn wall-clock duration and currently adds any delegated-runtime totals that Darc can extract from stable provider payloads
+- `changed_file_count`, `added_line_count`, and `removed_line_count` are transcript-derived patch statistics; they count observed `apply_patch`-style edits, not a live git diff against the current repository state
 - `tools` comes from normalized per-turn `tool_calls` rows, grouped by `tool_name`
 - `shell_commands` comes from Darc-owned parsing of shell-like `tool_calls` payloads such as `exec_command`, `shell_command`, `shell`, and `Bash`
 - each `shell_commands[*]` item currently reports the originating `tool_name`, the extracted `command_text`, and optional `workdir`
@@ -176,9 +180,20 @@ Clients should treat these analytics as Darc-owned derived data and should not r
 Today:
 
 - the top-level turn detail fields remain unchanged
-- `insights` includes `duration_ms`, `tool_call_count`, `tool_output_count`, `attachment_count`, `delegation_count`, `hook_summary_count`, `has_final_answer`, `tools`, and `files`
+- `insights` includes `primary_model`, `duration_ms`, `effective_agent_runtime_ms`, `total_token_count`, `changed_file_count`, `added_line_count`, `removed_line_count`, `tool_call_count`, `tool_output_count`, `attachment_count`, `delegation_count`, `hook_summary_count`, `has_final_answer`, `tools`, and `files`
 - the embedded `insights.tools` and `insights.files` arrays follow the same derivation and ordering rules as `darc.query.insights.turn.v1`
 - this command is the preferred single-round-trip protocol when a client needs both turn detail and turn analytics together
+
+### Session and turn lists
+
+`darc.query.sessions.v1` and `darc.query.turns.v1` now surface the same best-effort model, token, runtime, and observed patch-count fields needed for lightweight desktop list views.
+
+Today:
+
+- session rows include `primary_model`, `total_token_count`, `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, and `removed_line_count`
+- session totals are rollups across the indexed turns in that session
+- turn rows include `primary_model`, `total_token_count`, `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, and `removed_line_count`
+- `primary_model`, `total_token_count`, and `effective_agent_runtime_ms` may be `null` when the archived provider transcript did not report stable values
 
 ### Turn search
 
