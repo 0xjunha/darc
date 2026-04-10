@@ -18,7 +18,7 @@ use self::{
 };
 
 /// Tracks one-shot SQLite migrations for derived analytics tables.
-const INDEX_DB_SCHEMA_VERSION: i32 = 3;
+const INDEX_DB_SCHEMA_VERSION: i32 = 4;
 
 /// Opens the index database and creates the current schema when missing.
 pub fn open_index_database(path: &Path) -> Result<Connection> {
@@ -671,7 +671,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("failed to parse stored steps_json while rebuilding analytics")
+                .contains("failed to parse stored steps_json")
         );
 
         let reopened = Connection::open(&path)?;

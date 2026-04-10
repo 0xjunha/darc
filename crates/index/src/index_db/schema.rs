@@ -101,6 +101,30 @@ pub(crate) const TURN_ANALYTICS_COLUMNS: &[TableColumn] = &[
         name: "duration_ms",
         sql_type: "INTEGER",
     },
+    TableColumn {
+        name: "effective_agent_runtime_ms",
+        sql_type: "INTEGER",
+    },
+    TableColumn {
+        name: "total_token_count",
+        sql_type: "INTEGER",
+    },
+    TableColumn {
+        name: "primary_model",
+        sql_type: "TEXT",
+    },
+    TableColumn {
+        name: "changed_file_count",
+        sql_type: "INTEGER NOT NULL DEFAULT 0",
+    },
+    TableColumn {
+        name: "added_line_count",
+        sql_type: "INTEGER NOT NULL DEFAULT 0",
+    },
+    TableColumn {
+        name: "removed_line_count",
+        sql_type: "INTEGER NOT NULL DEFAULT 0",
+    },
 ];
 
 /// Lists the file-access columns required by the current derived analytics schema.
@@ -285,6 +309,12 @@ const CREATE_BASE_SCHEMA_SQL: &str = "
         hook_summary_count INTEGER NOT NULL DEFAULT 0,
         has_final_answer INTEGER NOT NULL DEFAULT 0,
         duration_ms INTEGER,
+        effective_agent_runtime_ms INTEGER,
+        total_token_count INTEGER,
+        primary_model TEXT,
+        changed_file_count INTEGER NOT NULL DEFAULT 0,
+        added_line_count INTEGER NOT NULL DEFAULT 0,
+        removed_line_count INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (project_id, provider, session_id, turn_ordinal),
         FOREIGN KEY (project_id, provider, session_id)
             REFERENCES sessions(project_id, provider, session_id)
@@ -497,8 +527,14 @@ pub(crate) const INSERT_TURN_SQL: &str = "
         delegation_count,
         hook_summary_count,
         has_final_answer,
-        duration_ms
-    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+        duration_ms,
+        effective_agent_runtime_ms,
+        total_token_count,
+        primary_model,
+        changed_file_count,
+        added_line_count,
+        removed_line_count
+    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)
 ";
 
 /// Stores the canonical derived tool-call insert statement shared across writers and helpers.

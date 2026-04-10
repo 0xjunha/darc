@@ -91,6 +91,12 @@ fn create_query_fixture_root(prefix: &str) -> Result<PathBuf> {
             hook_summary_count: 0,
             has_final_answer: true,
             duration_ms: 5_000,
+            effective_agent_runtime_ms: Some(6_500),
+            total_token_count: Some(321),
+            primary_model: Some("gpt-5.4"),
+            changed_file_count: 1,
+            added_line_count: 2,
+            removed_line_count: 1,
             ..IndexedTurnFixture::new(
                 "repo-abc123",
                 SourceKind::Codex,
@@ -173,6 +179,15 @@ fn sessions_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["project_id"], "repo-abc123");
     assert_eq!(value["data"]["sessions"][0]["session_id"], "session-1");
     assert_eq!(value["data"]["sessions"][0]["latest_status"], "completed");
+    assert_eq!(value["data"]["sessions"][0]["primary_model"], "gpt-5.4");
+    assert_eq!(value["data"]["sessions"][0]["total_token_count"], 321);
+    assert_eq!(
+        value["data"]["sessions"][0]["effective_agent_runtime_ms"],
+        6500
+    );
+    assert_eq!(value["data"]["sessions"][0]["changed_file_count"], 1);
+    assert_eq!(value["data"]["sessions"][0]["added_line_count"], 2);
+    assert_eq!(value["data"]["sessions"][0]["removed_line_count"], 1);
 
     remove_root(&root)?;
     Ok(())
@@ -201,6 +216,15 @@ fn turns_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["schema"], "darc.query.turns.v1");
     assert_eq!(value["data"]["turns"][0]["turn_id"], "turn-1");
     assert_eq!(value["data"]["turns"][0]["step_count"], 2);
+    assert_eq!(value["data"]["turns"][0]["primary_model"], "gpt-5.4");
+    assert_eq!(value["data"]["turns"][0]["total_token_count"], 321);
+    assert_eq!(
+        value["data"]["turns"][0]["effective_agent_runtime_ms"],
+        6500
+    );
+    assert_eq!(value["data"]["turns"][0]["changed_file_count"], 1);
+    assert_eq!(value["data"]["turns"][0]["added_line_count"], 2);
+    assert_eq!(value["data"]["turns"][0]["removed_line_count"], 1);
 
     remove_root(&root)?;
     Ok(())
@@ -264,7 +288,16 @@ fn turn_query_can_embed_derived_insights() -> Result<()> {
     let value = parse_json(&output.stdout, "stdout")?;
     assert_eq!(value["schema"], "darc.query.turn.v1");
     assert_eq!(value["data"]["step_count"], 2);
+    assert_eq!(value["data"]["insights"]["primary_model"], "gpt-5.4");
     assert_eq!(value["data"]["insights"]["duration_ms"], 5_000);
+    assert_eq!(
+        value["data"]["insights"]["effective_agent_runtime_ms"],
+        6_500
+    );
+    assert_eq!(value["data"]["insights"]["total_token_count"], 321);
+    assert_eq!(value["data"]["insights"]["changed_file_count"], 1);
+    assert_eq!(value["data"]["insights"]["added_line_count"], 2);
+    assert_eq!(value["data"]["insights"]["removed_line_count"], 1);
     assert_eq!(value["data"]["insights"]["tool_call_count"], 1);
     assert_eq!(value["data"]["insights"]["tool_output_count"], 1);
     assert_eq!(value["data"]["insights"]["tools"][0]["name"], "Read");
@@ -440,6 +473,12 @@ fn turn_insights_query_emits_success_envelope() -> Result<()> {
     assert!(output.stderr.is_empty());
     let value = parse_json(&output.stdout, "stdout")?;
     assert_eq!(value["schema"], "darc.query.insights.turn.v1");
+    assert_eq!(value["data"]["primary_model"], "gpt-5.4");
+    assert_eq!(value["data"]["total_token_count"], 321);
+    assert_eq!(value["data"]["effective_agent_runtime_ms"], 6500);
+    assert_eq!(value["data"]["changed_file_count"], 1);
+    assert_eq!(value["data"]["added_line_count"], 2);
+    assert_eq!(value["data"]["removed_line_count"], 1);
     assert_eq!(value["data"]["tool_call_count"], 1);
     assert_eq!(value["data"]["tool_output_count"], 1);
     assert_eq!(value["data"]["tools"][0]["name"], "Read");

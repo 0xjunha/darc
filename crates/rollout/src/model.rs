@@ -9,6 +9,8 @@ pub struct NormalizedTurn {
     pub started_at: String,
     pub completed_at: Option<String>,
     pub status: NormalizedTurnStatus,
+    pub primary_model: Option<String>,
+    pub total_token_count: Option<u64>,
     pub steps: Vec<NormalizedTurnStep>,
 }
 

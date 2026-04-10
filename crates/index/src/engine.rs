@@ -302,6 +302,8 @@ impl<'conn> SqliteSessionWriter<'conn> {
             started_at,
             completed_at,
             status,
+            primary_model,
+            total_token_count: _total_token_count,
             steps,
         } = turn;
         let steps_json = serde_json::to_string(&steps).context("failed to serialize turn steps")?;
@@ -332,6 +334,12 @@ impl<'conn> SqliteSessionWriter<'conn> {
                     metrics.hook_summary_count,
                     metrics.has_final_answer,
                     metrics.duration_ms,
+                    metrics.effective_agent_runtime_ms,
+                    metrics.total_token_count,
+                    primary_model.as_deref(),
+                    metrics.changed_file_count,
+                    metrics.added_line_count,
+                    metrics.removed_line_count,
                 ],
             )
             .with_context(|| {

@@ -23,6 +23,29 @@ pub struct ToolCallRecord {
     pub is_error: bool,
 }
 
+/// Stores one aggregated patch-derived code-change summary for one turn or tool call.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CodeChangeSummary {
+    pub changed_file_count: u32,
+    pub added_line_count: u32,
+    pub removed_line_count: u32,
+}
+
+impl CodeChangeSummary {
+    /// Adds another code-change summary using saturating arithmetic.
+    pub fn saturating_add(self, other: Self) -> Self {
+        Self {
+            changed_file_count: self
+                .changed_file_count
+                .saturating_add(other.changed_file_count),
+            added_line_count: self.added_line_count.saturating_add(other.added_line_count),
+            removed_line_count: self
+                .removed_line_count
+                .saturating_add(other.removed_line_count),
+        }
+    }
+}
+
 /// Stores one normalized file-access record derived from one tool call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileAccessRecord {
@@ -48,6 +71,15 @@ pub enum ToolAccessKind {
     Edit,
     List,
     Other,
+}
+
+/// Stores one patch-level file change parsed from one apply-patch payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ApplyPatchChange {
+    access_type: ToolAccessKind,
+    path: String,
+    added_line_count: u32,
+    removed_line_count: u32,
 }
 
 impl ToolAccessKind {
@@ -262,25 +294,37 @@ fn derive_explicit_tool_file_accesses(
 
 /// Derives file accesses from one apply-patch payload.
 pub(super) fn derive_apply_patch_file_accesses(text: &str) -> Vec<(ToolAccessKind, String)> {
-    let patch = text
-        .find("*** Begin Patch")
-        .map(|index| &text[index..])
-        .unwrap_or(text);
-    let mut accesses = Vec::new();
+    parse_apply_patch_changes(text)
+        .into_iter()
+        .map(|change| (change.access_type, change.path))
+        .collect()
+}
 
-    for line in patch.lines() {
-        if let Some(path) = line.strip_prefix("*** Add File: ") {
-            push_access(&mut accesses, ToolAccessKind::Write, path);
-        } else if let Some(path) = line.strip_prefix("*** Update File: ") {
-            push_access(&mut accesses, ToolAccessKind::Edit, path);
-        } else if let Some(path) = line.strip_prefix("*** Delete File: ") {
-            push_access(&mut accesses, ToolAccessKind::Edit, path);
-        } else if let Some(path) = line.strip_prefix("*** Move to: ") {
-            push_access(&mut accesses, ToolAccessKind::Write, path);
-        }
+/// Summarizes one apply-patch payload into stable file-count and line-count statistics.
+pub fn summarize_apply_patch_changes(text: &str) -> CodeChangeSummary {
+    let mut changed_paths = BTreeSet::new();
+    let mut summary = CodeChangeSummary::default();
+    for change in parse_apply_patch_changes(text) {
+        changed_paths.insert(change.path);
+        summary.added_line_count = summary
+            .added_line_count
+            .saturating_add(change.added_line_count);
+        summary.removed_line_count = summary
+            .removed_line_count
+            .saturating_add(change.removed_line_count);
     }
+    summary.changed_file_count = changed_paths.len().try_into().unwrap_or(u32::MAX);
+    summary
+}
 
-    accesses
+/// Returns the distinct changed file paths observed in one apply-patch payload.
+pub fn apply_patch_changed_paths(text: &str) -> Vec<String> {
+    parse_apply_patch_changes(text)
+        .into_iter()
+        .map(|change| change.path)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 /// Builds concrete file-access rows from raw `(kind, path)` pairs.
@@ -324,6 +368,128 @@ pub(super) fn push_access(
     if let Some(path) = sanitize_access_path(path) {
         accesses.push((access_type, path));
     }
+}
+
+/// Parses one apply-patch payload into per-file access and line-change records.
+fn parse_apply_patch_changes(text: &str) -> Vec<ApplyPatchChange> {
+    let patch = text
+        .find("*** Begin Patch")
+        .map(|index| &text[index..])
+        .unwrap_or(text);
+    let mut changes = Vec::new();
+    let mut current_path = None::<String>;
+    let mut current_access_type = ToolAccessKind::Edit;
+    let mut current_added_line_count = 0_u32;
+    let mut current_removed_line_count = 0_u32;
+
+    for line in patch.lines() {
+        if let Some(path) = line.strip_prefix("*** Add File: ") {
+            push_apply_patch_change(
+                &mut changes,
+                &mut current_path,
+                &mut current_added_line_count,
+                &mut current_removed_line_count,
+                current_access_type,
+            );
+            if let Some(path) = sanitize_access_path(path) {
+                current_access_type = ToolAccessKind::Write;
+                current_path = Some(path);
+            }
+            continue;
+        }
+        if let Some(path) = line.strip_prefix("*** Update File: ") {
+            push_apply_patch_change(
+                &mut changes,
+                &mut current_path,
+                &mut current_added_line_count,
+                &mut current_removed_line_count,
+                current_access_type,
+            );
+            if let Some(path) = sanitize_access_path(path) {
+                current_access_type = ToolAccessKind::Edit;
+                current_path = Some(path);
+            }
+            continue;
+        }
+        if let Some(path) = line.strip_prefix("*** Delete File: ") {
+            push_apply_patch_change(
+                &mut changes,
+                &mut current_path,
+                &mut current_added_line_count,
+                &mut current_removed_line_count,
+                current_access_type,
+            );
+            if let Some(path) = sanitize_access_path(path) {
+                current_access_type = ToolAccessKind::Edit;
+                current_path = Some(path);
+            }
+            continue;
+        }
+        if let Some(path) = line.strip_prefix("*** Move to: ") {
+            push_apply_patch_change(
+                &mut changes,
+                &mut current_path,
+                &mut current_added_line_count,
+                &mut current_removed_line_count,
+                current_access_type,
+            );
+            if let Some(path) = sanitize_access_path(path) {
+                current_access_type = ToolAccessKind::Write;
+                current_path = Some(path);
+            }
+            continue;
+        }
+        if line.starts_with("*** End") {
+            push_apply_patch_change(
+                &mut changes,
+                &mut current_path,
+                &mut current_added_line_count,
+                &mut current_removed_line_count,
+                current_access_type,
+            );
+            continue;
+        }
+        if current_path.is_none() {
+            continue;
+        }
+        if line.starts_with('+') {
+            current_added_line_count = current_added_line_count.saturating_add(1);
+        } else if line.starts_with('-') {
+            current_removed_line_count = current_removed_line_count.saturating_add(1);
+        }
+    }
+
+    push_apply_patch_change(
+        &mut changes,
+        &mut current_path,
+        &mut current_added_line_count,
+        &mut current_removed_line_count,
+        current_access_type,
+    );
+    changes
+}
+
+/// Pushes one in-progress apply-patch file change and resets the counters.
+fn push_apply_patch_change(
+    changes: &mut Vec<ApplyPatchChange>,
+    current_path: &mut Option<String>,
+    current_added_line_count: &mut u32,
+    current_removed_line_count: &mut u32,
+    current_access_type: ToolAccessKind,
+) {
+    let Some(path) = current_path.take() else {
+        *current_added_line_count = 0;
+        *current_removed_line_count = 0;
+        return;
+    };
+    changes.push(ApplyPatchChange {
+        access_type: current_access_type,
+        path,
+        added_line_count: *current_added_line_count,
+        removed_line_count: *current_removed_line_count,
+    });
+    *current_added_line_count = 0;
+    *current_removed_line_count = 0;
 }
 
 /// Sanitizes one candidate access path extracted from shell syntax or JSON arguments.

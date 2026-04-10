@@ -17,6 +17,8 @@ The daily happy path is `darc refresh`, which runs `sync` and `index` together.
 - Exposes a stable machine-readable `darc query` protocol for workspace, session, turn, search, and insights data.
 - Derives indexed insights at workspace, project, and turn scope without requiring clients to open `index.sqlite`
   directly.
+- Surfaces best-effort per-turn and per-session stats such as model, token usage, effective agent runtime, and
+  observed patch-line counts through the query protocol.
 - Preserves project continuity across checkout moves, worktrees, merges, and renames with built-in linking and
   rename workflows.
 
@@ -82,6 +84,19 @@ darc refresh --all
 - `darc query` exposes the machine-readable read protocol for workspace, session, turn, search, and insights data.
   Query commands currently require `--json`; see [Query protocol](docs/query-protocol.md).
 - `darc link`, `darc remove`, and `darc rename-from` manage renamed or merged projects.
+
+## Session And Turn Stats
+
+Darc now exposes best-effort session and turn stats through `darc query`.
+
+- turn rows and turn insights can include `primary_model`, `total_token_count`, `effective_agent_runtime_ms`,
+  `changed_file_count`, `added_line_count`, and `removed_line_count`
+- session rows roll those values up across the indexed turns in that session
+- older archived provider versions may leave model or token fields as `null` when the transcript did not report
+  stable values
+- observed diff counts come from transcript-visible patch payloads such as `apply_patch`, not from a live git diff
+
+See [Query protocol](docs/query-protocol.md) for the exact payload contract and semantics.
 
 ## Search
 

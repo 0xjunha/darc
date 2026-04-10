@@ -23,6 +23,7 @@ const SELECT_TURNS_REQUIRING_METRICS_BACKFILL_SQL: &str = "
         steps_json
     FROM turns
     WHERE duration_ms IS NULL
+        OR effective_agent_runtime_ms IS NULL
         OR (has_final_answer = 0 AND (final_answer_at IS NOT NULL OR final_answer_text IS NOT NULL))
         OR (
             step_count = 0
@@ -31,6 +32,12 @@ const SELECT_TURNS_REQUIRING_METRICS_BACKFILL_SQL: &str = "
             AND attachment_count = 0
             AND delegation_count = 0
             AND hook_summary_count = 0
+            AND steps_json <> '[]'
+        )
+        OR (
+            changed_file_count = 0
+            AND added_line_count = 0
+            AND removed_line_count = 0
             AND steps_json <> '[]'
         )
 ";
@@ -45,8 +52,12 @@ const UPDATE_TURN_METRICS_SQL: &str = "
         delegation_count = ?5,
         hook_summary_count = ?6,
         has_final_answer = ?7,
-        duration_ms = ?8
-    WHERE project_id = ?9 AND provider = ?10 AND session_id = ?11 AND turn_ordinal = ?12
+        duration_ms = ?8,
+        effective_agent_runtime_ms = ?9,
+        changed_file_count = ?10,
+        added_line_count = ?11,
+        removed_line_count = ?12
+    WHERE project_id = ?13 AND provider = ?14 AND session_id = ?15 AND turn_ordinal = ?16
 ";
 
 const INSERT_LEGACY_CODEX_SESSIONS_SQL: &str = "
@@ -301,6 +312,7 @@ fn backfill_turn_metrics(connection: &Connection) -> Result<()> {
             completed_at.as_deref(),
             final_answer_at.as_deref(),
             final_answer_text.as_deref(),
+            None,
             &steps,
         );
         connection
@@ -315,6 +327,10 @@ fn backfill_turn_metrics(connection: &Connection) -> Result<()> {
                     metrics.hook_summary_count,
                     metrics.has_final_answer,
                     metrics.duration_ms,
+                    metrics.effective_agent_runtime_ms,
+                    metrics.changed_file_count,
+                    metrics.added_line_count,
+                    metrics.removed_line_count,
                     project_id.as_str(),
                     provider.as_str(),
                     session_id.as_str(),

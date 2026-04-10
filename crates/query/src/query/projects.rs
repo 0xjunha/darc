@@ -6,8 +6,8 @@ use rusqlite::Connection;
 
 use super::{
     ProjectIndexAggregate, SessionSummary, SessionsQueryData, TurnSummary, TurnsQueryData,
-    open_existing_index_database, parse_provider, parse_session_kind, parse_turn_status,
-    preview_text, sql_count_to_u64,
+    open_existing_index_database, optional_sql_count_to_u64, parse_provider, parse_session_kind,
+    parse_turn_status, preview_text, sql_count_to_u64,
 };
 
 const PROJECT_INDEX_AGGREGATES_SQL: &str = "
@@ -48,7 +48,18 @@ const PROJECT_SESSIONS_SQL: &str = "
             session_id,
             COUNT(*) AS turn_count,
             MAX(turn_ordinal) AS latest_turn_ordinal,
-            MAX(started_at) AS latest_turn_at
+            MAX(started_at) AS latest_turn_at,
+            CASE
+                WHEN COUNT(*) = COUNT(total_token_count) THEN SUM(COALESCE(total_token_count, 0))
+                ELSE NULL
+            END AS total_token_count,
+            CASE
+                WHEN COUNT(*) = COUNT(effective_agent_runtime_ms) THEN SUM(COALESCE(effective_agent_runtime_ms, 0))
+                ELSE NULL
+            END AS effective_agent_runtime_ms,
+            SUM(COALESCE(changed_file_count, 0)) AS changed_file_count,
+            SUM(COALESCE(added_line_count, 0)) AS added_line_count,
+            SUM(COALESCE(removed_line_count, 0)) AS removed_line_count
         FROM turns
         WHERE project_id = ?1
         GROUP BY project_id, provider, session_id
@@ -62,7 +73,13 @@ const PROJECT_SESSIONS_SQL: &str = "
         s.cwd,
         COALESCE(turn_stats.turn_count, 0) AS turn_count,
         turn_stats.latest_turn_at,
-        latest.status
+        latest.status,
+        latest.primary_model,
+        turn_stats.total_token_count,
+        turn_stats.effective_agent_runtime_ms,
+        COALESCE(turn_stats.changed_file_count, 0),
+        COALESCE(turn_stats.added_line_count, 0),
+        COALESCE(turn_stats.removed_line_count, 0)
     FROM sessions AS s
     LEFT JOIN turn_stats
         ON turn_stats.project_id = s.project_id
@@ -93,7 +110,13 @@ const SESSION_TURNS_SQL: &str = "
         status,
         user_message,
         has_final_answer,
-        step_count
+        step_count,
+        primary_model,
+        total_token_count,
+        effective_agent_runtime_ms,
+        changed_file_count,
+        added_line_count,
+        removed_line_count
     FROM turns
     WHERE project_id = ?1 AND provider = ?2 AND session_id = ?3
     ORDER BY turn_ordinal ASC
@@ -178,6 +201,12 @@ fn query_sessions(connection: &Connection, project_id: &str) -> Result<Vec<Sessi
                 row.get::<_, i64>(6)?,
                 row.get::<_, Option<String>>(7)?,
                 row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<String>>(9)?,
+                row.get::<_, Option<i64>>(10)?,
+                row.get::<_, Option<i64>>(11)?,
+                row.get::<_, i64>(12)?,
+                row.get::<_, i64>(13)?,
+                row.get::<_, i64>(14)?,
             ))
         })
         .context("failed to query indexed sessions")?
@@ -195,6 +224,12 @@ fn query_sessions(connection: &Connection, project_id: &str) -> Result<Vec<Sessi
                 turn_count,
                 latest_turn_at,
                 latest_status,
+                primary_model,
+                total_token_count,
+                effective_agent_runtime_ms,
+                changed_file_count,
+                added_line_count,
+                removed_line_count,
             )|
              -> Result<_> {
                 Ok(SessionSummary {
@@ -210,6 +245,14 @@ fn query_sessions(connection: &Connection, project_id: &str) -> Result<Vec<Sessi
                         .as_deref()
                         .map(parse_turn_status)
                         .transpose()?,
+                    primary_model,
+                    total_token_count: optional_sql_count_to_u64(total_token_count)?,
+                    effective_agent_runtime_ms: optional_sql_count_to_u64(
+                        effective_agent_runtime_ms,
+                    )?,
+                    changed_file_count: sql_count_to_u64(changed_file_count)?,
+                    added_line_count: sql_count_to_u64(added_line_count)?,
+                    removed_line_count: sql_count_to_u64(removed_line_count)?,
                 })
             },
         )
@@ -240,6 +283,12 @@ fn query_turns(
                 row.get::<_, String>(8)?,
                 row.get::<_, i64>(9)?,
                 row.get::<_, i64>(10)?,
+                row.get::<_, Option<String>>(11)?,
+                row.get::<_, Option<i64>>(12)?,
+                row.get::<_, Option<i64>>(13)?,
+                row.get::<_, i64>(14)?,
+                row.get::<_, i64>(15)?,
+                row.get::<_, i64>(16)?,
             ))
         })
         .context("failed to query indexed turns")?
@@ -259,6 +308,12 @@ fn query_turns(
                 user_message,
                 has_final_answer,
                 step_count,
+                primary_model,
+                total_token_count,
+                effective_agent_runtime_ms,
+                changed_file_count,
+                added_line_count,
+                removed_line_count,
             )|
              -> Result<_> {
                 Ok(TurnSummary {
@@ -273,6 +328,14 @@ fn query_turns(
                     user_preview: preview_text(&user_message),
                     has_final_answer: has_final_answer != 0,
                     step_count: sql_count_to_u64(step_count)?,
+                    primary_model,
+                    total_token_count: optional_sql_count_to_u64(total_token_count)?,
+                    effective_agent_runtime_ms: optional_sql_count_to_u64(
+                        effective_agent_runtime_ms,
+                    )?,
+                    changed_file_count: sql_count_to_u64(changed_file_count)?,
+                    added_line_count: sql_count_to_u64(added_line_count)?,
+                    removed_line_count: sql_count_to_u64(removed_line_count)?,
                 })
             },
         )

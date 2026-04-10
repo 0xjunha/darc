@@ -860,3 +860,22 @@ fn falls_back_to_best_effort_for_unknown_versions_and_line_types() -> Result<()>
 
     Ok(())
 }
+
+#[test]
+fn extracts_model_and_total_tokens_from_assistant_usage() -> Result<()> {
+    let rollout = parse_fixture(
+        r#"{"parentUuid":null,"isSidechain":false,"promptId":"prompt-1","type":"user","message":{"role":"user","content":"Summarize this"},"uuid":"user-1","timestamp":"2026-04-01T00:00:01Z","userType":"external","entrypoint":"claude-desktop","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.87","gitBranch":"main"}
+{"parentUuid":"user-1","isSidechain":false,"message":{"model":"claude-sonnet-4-6","id":"assistant-1","type":"message","role":"assistant","content":[{"type":"text","text":"Done."}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":7}},"requestId":"req-1","type":"assistant","uuid":"assistant-1","timestamp":"2026-04-01T00:00:02Z","userType":"external","entrypoint":"claude-desktop","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.87","gitBranch":"main"}
+"#,
+        &primary_context(),
+    )?;
+
+    assert_eq!(rollout.turns.len(), 1);
+    assert_eq!(
+        rollout.turns[0].primary_model.as_deref(),
+        Some("claude-sonnet-4-6")
+    );
+    assert_eq!(rollout.turns[0].total_token_count, Some(12));
+
+    Ok(())
+}

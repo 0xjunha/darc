@@ -101,6 +101,12 @@ pub struct SessionSummary {
     pub turn_count: u64,
     pub latest_turn_at: Option<String>,
     pub latest_status: Option<NormalizedTurnStatus>,
+    pub primary_model: Option<String>,
+    pub total_token_count: Option<u64>,
+    pub effective_agent_runtime_ms: Option<u64>,
+    pub changed_file_count: u64,
+    pub added_line_count: u64,
+    pub removed_line_count: u64,
 }
 
 /// Stores the full session-list query payload for one project.
@@ -124,6 +130,12 @@ pub struct TurnSummary {
     pub user_preview: String,
     pub has_final_answer: bool,
     pub step_count: u64,
+    pub primary_model: Option<String>,
+    pub total_token_count: Option<u64>,
+    pub effective_agent_runtime_ms: Option<u64>,
+    pub changed_file_count: u64,
+    pub added_line_count: u64,
+    pub removed_line_count: u64,
 }
 
 /// Stores the full turn-list query payload for one session.
@@ -207,7 +219,13 @@ pub struct TurnDetail {
 /// Stores one optional derived insights block embedded in a turn detail payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TurnDetailInsights {
+    pub primary_model: Option<String>,
     pub duration_ms: u64,
+    pub effective_agent_runtime_ms: Option<u64>,
+    pub total_token_count: Option<u64>,
+    pub changed_file_count: u64,
+    pub added_line_count: u64,
+    pub removed_line_count: u64,
     pub tool_call_count: u64,
     pub tool_output_count: u64,
     pub attachment_count: u64,
@@ -228,7 +246,13 @@ pub struct TurnInsights {
     pub started_at: String,
     pub completed_at: Option<String>,
     pub status: NormalizedTurnStatus,
+    pub primary_model: Option<String>,
     pub duration_ms: u64,
+    pub effective_agent_runtime_ms: Option<u64>,
+    pub total_token_count: Option<u64>,
+    pub changed_file_count: u64,
+    pub added_line_count: u64,
+    pub removed_line_count: u64,
     pub step_count: u64,
     pub tool_call_count: u64,
     pub tool_output_count: u64,
@@ -404,6 +428,11 @@ fn sql_count_to_u64(value: i64) -> Result<u64> {
     u64::try_from(value).context("negative count encountered in SQLite query")
 }
 
+/// Converts one nullable SQLite aggregate count into an optional unsigned integer.
+fn optional_sql_count_to_u64(value: Option<i64>) -> Result<Option<u64>> {
+    value.map(sql_count_to_u64).transpose()
+}
+
 /// Normalizes one user message into a single-line turn preview.
 fn preview_text(text: &str) -> String {
     let single_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -474,7 +503,13 @@ struct IndexedTurnRow {
     delegation_count: u64,
     hook_summary_count: u64,
     has_final_answer: bool,
+    primary_model: Option<String>,
     duration_ms: u64,
+    effective_agent_runtime_ms: Option<u64>,
+    total_token_count: Option<u64>,
+    changed_file_count: u64,
+    added_line_count: u64,
+    removed_line_count: u64,
     steps_json: String,
 }
 
@@ -520,7 +555,13 @@ impl IndexedTurnRow {
             started_at: self.started_at,
             completed_at: self.completed_at,
             status: self.status,
+            primary_model: self.primary_model,
             duration_ms: self.duration_ms,
+            effective_agent_runtime_ms: self.effective_agent_runtime_ms,
+            total_token_count: self.total_token_count,
+            changed_file_count: self.changed_file_count,
+            added_line_count: self.added_line_count,
+            removed_line_count: self.removed_line_count,
             step_count: self.step_count,
             tool_call_count: insights.tool_call_count,
             tool_output_count: insights.tool_output_count,

@@ -69,6 +69,8 @@ fn parses_two_turns_with_event_boundaries() -> Result<()> {
                     started_at: "2026-01-01T00:00:03Z".to_owned(),
                     completed_at: Some("2026-01-01T00:00:09Z".to_owned()),
                     status: CodexTurnStatus::Completed,
+                    primary_model: None,
+                    total_token_count: None,
                     steps: vec![
                         CodexTurnStep::Commentary {
                             timestamp: "2026-01-01T00:00:05Z".to_owned(),
@@ -102,6 +104,8 @@ fn parses_two_turns_with_event_boundaries() -> Result<()> {
                     started_at: "2026-01-01T00:00:11Z".to_owned(),
                     completed_at: Some("2026-01-01T00:00:12Z".to_owned()),
                     status: CodexTurnStatus::Completed,
+                    primary_model: None,
+                    total_token_count: None,
                     steps: vec![],
                 },
             ],

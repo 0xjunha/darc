@@ -1,4 +1,12 @@
+use std::collections::BTreeSet;
+
 use darc_rollout::model::{NormalizedTurn as CodexTurn, NormalizedTurnStep as CodexTurnStep};
+use serde_json::Value;
+
+use crate::policy::{
+    apply_patch_changed_paths, shell_apply_patch_changed_paths, summarize_apply_patch_changes,
+    summarize_shell_code_changes,
+};
 
 /// Stores the derived per-turn analytics counters persisted in the SQLite index.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -11,6 +19,11 @@ pub(crate) struct IndexedTurnMetrics {
     pub(crate) hook_summary_count: u32,
     pub(crate) has_final_answer: bool,
     pub(crate) duration_ms: Option<i64>,
+    pub(crate) effective_agent_runtime_ms: Option<i64>,
+    pub(crate) total_token_count: Option<i64>,
+    pub(crate) changed_file_count: u32,
+    pub(crate) added_line_count: u32,
+    pub(crate) removed_line_count: u32,
 }
 
 /// Summarizes one normalized turn into the derived analytics counters stored in SQLite.
@@ -24,6 +37,7 @@ pub(crate) fn summarize_turn_metrics(turn: &CodexTurn) -> IndexedTurnMetrics {
         turn.final_answer
             .as_ref()
             .map(|message| message.text.as_str()),
+        turn.total_token_count,
         &turn.steps,
     )
 }
@@ -34,6 +48,7 @@ pub(crate) fn summarize_stored_turn_metrics(
     completed_at: Option<&str>,
     final_answer_at: Option<&str>,
     final_answer_text: Option<&str>,
+    total_token_count: Option<u64>,
     steps: &[CodexTurnStep],
 ) -> IndexedTurnMetrics {
     summarize_turn_parts(
@@ -41,6 +56,7 @@ pub(crate) fn summarize_stored_turn_metrics(
         completed_at,
         final_answer_at,
         final_answer_text,
+        total_token_count,
         steps,
     )
 }
@@ -51,20 +67,45 @@ fn summarize_turn_parts(
     completed_at: Option<&str>,
     final_answer_at: Option<&str>,
     final_answer_text: Option<&str>,
+    total_token_count: Option<u64>,
     steps: &[CodexTurnStep],
 ) -> IndexedTurnMetrics {
+    let duration_ms =
+        completed_at.and_then(|completed| indexed_timestamp_duration_ms(started_at, completed));
     let mut metrics = IndexedTurnMetrics {
         step_count: steps.len().try_into().unwrap_or(u32::MAX),
         has_final_answer: final_answer_at.is_some() || final_answer_text.is_some(),
-        duration_ms: completed_at
-            .and_then(|completed| indexed_timestamp_duration_ms(started_at, completed)),
+        duration_ms,
+        effective_agent_runtime_ms: duration_ms,
+        total_token_count: total_token_count.and_then(|value| i64::try_from(value).ok()),
         ..IndexedTurnMetrics::default()
     };
+    let mut changed_paths = BTreeSet::new();
 
     for step in steps {
         match step {
-            CodexTurnStep::ToolCall { .. } => {
+            CodexTurnStep::ToolCall {
+                name, arguments, ..
+            } => {
                 metrics.tool_call_count = metrics.tool_call_count.saturating_add(1);
+                let (code_changes, patch_paths) = if name == "apply_patch" {
+                    (
+                        summarize_apply_patch_changes(arguments),
+                        apply_patch_changed_paths(arguments),
+                    )
+                } else {
+                    (
+                        summarize_shell_code_changes(arguments),
+                        shell_apply_patch_changed_paths(arguments),
+                    )
+                };
+                changed_paths.extend(patch_paths);
+                metrics.added_line_count = metrics
+                    .added_line_count
+                    .saturating_add(code_changes.added_line_count);
+                metrics.removed_line_count = metrics
+                    .removed_line_count
+                    .saturating_add(code_changes.removed_line_count);
             }
             CodexTurnStep::ToolCallOutput { .. } => {
                 metrics.tool_output_count = metrics.tool_output_count.saturating_add(1);
@@ -72,8 +113,14 @@ fn summarize_turn_parts(
             CodexTurnStep::Attachment { .. } => {
                 metrics.attachment_count = metrics.attachment_count.saturating_add(1);
             }
-            CodexTurnStep::Delegation { .. } => {
+            CodexTurnStep::Delegation { payload_json, .. } => {
                 metrics.delegation_count = metrics.delegation_count.saturating_add(1);
+                if let Some(duration_ms) = delegation_duration_ms(payload_json) {
+                    let base_runtime = metrics.effective_agent_runtime_ms.unwrap_or(0);
+                    let delegated_runtime = i64::try_from(duration_ms).unwrap_or(i64::MAX);
+                    metrics.effective_agent_runtime_ms =
+                        Some(base_runtime.saturating_add(delegated_runtime));
+                }
             }
             CodexTurnStep::HookSummary { .. } => {
                 metrics.hook_summary_count = metrics.hook_summary_count.saturating_add(1);
@@ -84,7 +131,16 @@ fn summarize_turn_parts(
         }
     }
 
+    metrics.changed_file_count = changed_paths.len().try_into().unwrap_or(u32::MAX);
     metrics
+}
+
+/// Extracts one delegated runtime in milliseconds from a stored delegation payload when present.
+fn delegation_duration_ms(payload_json: &str) -> Option<u64> {
+    serde_json::from_str::<Value>(payload_json)
+        .ok()?
+        .get("totalDurationMs")
+        .and_then(Value::as_u64)
 }
 
 /// Calculates one indexed turn duration in milliseconds when both timestamps parse cleanly.
@@ -161,4 +217,75 @@ fn days_from_civil(year: i64, month: u32, day: u32) -> Option<i64> {
     let day_of_year = (153 * month_of_year + 2) / 5 + day - 1;
     let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
     Some(era * 146_097 + day_of_era - 719_468)
+}
+
+#[cfg(test)]
+mod tests {
+    use darc_rollout::model::NormalizedTurnStatus as CodexTurnStatus;
+
+    use super::*;
+
+    #[test]
+    fn summarize_turn_metrics_counts_shell_heredoc_apply_patch_changes() {
+        let turn = CodexTurn {
+            turn_id: Some("turn-1".to_owned()),
+            user_message: "Patch the file".to_owned(),
+            final_answer: None,
+            started_at: "2026-04-06T00:00:00Z".to_owned(),
+            completed_at: Some("2026-04-06T00:00:05Z".to_owned()),
+            status: CodexTurnStatus::Completed,
+            primary_model: Some("gpt-5.4".to_owned()),
+            total_token_count: Some(10),
+            steps: vec![CodexTurnStep::ToolCall {
+                timestamp: "2026-04-06T00:00:01Z".to_owned(),
+                call_id: "call-1".to_owned(),
+                name: "exec_command".to_owned(),
+                arguments: r#"{"cmd":"apply_patch <<'PATCH'\n*** Begin Patch\n*** Update File: src/main.rs\n@@\n-old\n+new\n*** End Patch\nPATCH","workdir":"/tmp/repo"}"#
+                    .to_owned(),
+            }],
+        };
+
+        let metrics = summarize_turn_metrics(&turn);
+
+        assert_eq!(metrics.changed_file_count, 1);
+        assert_eq!(metrics.added_line_count, 1);
+        assert_eq!(metrics.removed_line_count, 1);
+    }
+
+    #[test]
+    fn summarize_turn_metrics_dedupes_changed_files_across_patch_calls() {
+        let turn = CodexTurn {
+            turn_id: Some("turn-1".to_owned()),
+            user_message: "Patch twice".to_owned(),
+            final_answer: None,
+            started_at: "2026-04-06T00:00:00Z".to_owned(),
+            completed_at: Some("2026-04-06T00:00:05Z".to_owned()),
+            status: CodexTurnStatus::Completed,
+            primary_model: Some("gpt-5.4".to_owned()),
+            total_token_count: Some(10),
+            steps: vec![
+                CodexTurnStep::ToolCall {
+                    timestamp: "2026-04-06T00:00:01Z".to_owned(),
+                    call_id: "call-1".to_owned(),
+                    name: "apply_patch".to_owned(),
+                    arguments: "*** Begin Patch\n*** Update File: src/main.rs\n@@\n-old\n+new\n*** End Patch\n"
+                        .to_owned(),
+                },
+                CodexTurnStep::ToolCall {
+                    timestamp: "2026-04-06T00:00:02Z".to_owned(),
+                    call_id: "call-2".to_owned(),
+                    name: "apply_patch".to_owned(),
+                    arguments:
+                        "*** Begin Patch\n*** Update File: src/main.rs\n@@\n-older\n+newer\n*** End Patch\n"
+                            .to_owned(),
+                },
+            ],
+        };
+
+        let metrics = summarize_turn_metrics(&turn);
+
+        assert_eq!(metrics.changed_file_count, 1);
+        assert_eq!(metrics.added_line_count, 2);
+        assert_eq!(metrics.removed_line_count, 2);
+    }
 }
