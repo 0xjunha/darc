@@ -9,8 +9,9 @@ use std::{
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use darc_core::query::{
-    query_project_insight_report, query_sessions, query_turn, query_turn_insight_report,
-    query_turns, query_workspace, query_workspace_insight_report,
+    SearchMode, SearchTurnsRequest, query_project_insight_report, query_search_turns,
+    query_sessions, query_turn, query_turn_insight_report, query_turns, query_workspace,
+    query_workspace_insight_report,
 };
 use darc_core::{
     IndexOptions, InitDraft, RefreshOptions, RefreshReport, SkippedRollout, SourceKind,
@@ -182,6 +183,8 @@ enum QueryCommands {
     Turns(QueryTurnsArgs),
     /// Queries one full turn detail payload.
     Turn(QueryTurnArgs),
+    /// Queries one paginated search payload.
+    Search(QuerySearchArgs),
     /// Queries one insights payload.
     Insights(QueryInsightsArgs),
 }
@@ -269,6 +272,55 @@ struct QueryTurnArgs {
         help = "Include one derived insights block with metrics plus tool and file analytics"
     )]
     include_insights: bool,
+
+    #[arg(
+        long,
+        required = true,
+        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
+    )]
+    json: bool,
+}
+
+/// Queries one search payload.
+#[derive(Debug, Args)]
+struct QuerySearchArgs {
+    #[command(subcommand)]
+    command: QuerySearchCommands,
+}
+
+/// Represents the supported machine-readable search query commands.
+#[derive(Debug, Subcommand)]
+enum QuerySearchCommands {
+    /// Queries paginated turn search results for one configured project.
+    Turns(QuerySearchTurnsArgs),
+}
+
+/// Queries paginated turn search results for one configured project.
+#[derive(Debug, Args)]
+struct QuerySearchTurnsArgs {
+    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    root: PathBuf,
+
+    #[arg(long = "project-id", help = "Query this configured project id")]
+    project_id: String,
+
+    #[arg(long, value_enum, help = "Search in this mode")]
+    mode: SearchModeArg,
+
+    #[arg(long, help = "Search for this text or path fragment")]
+    query: String,
+
+    #[arg(long, value_enum, help = "Restrict search to this provider")]
+    provider: Option<ProviderArg>,
+
+    #[arg(long = "session-id", help = "Restrict search to this session id")]
+    session_id: Option<String>,
+
+    #[arg(long, default_value_t = 50, help = "Maximum turn hits to return")]
+    limit: usize,
+
+    #[arg(long, default_value_t = 0, help = "Number of turn hits to skip")]
+    offset: usize,
 
     #[arg(
         long,
@@ -401,6 +453,14 @@ enum ProviderArg {
     Codex,
 }
 
+/// Represents the supported search modes for machine-readable turn search.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum SearchModeArg {
+    Keyword,
+    FileName,
+    FilePath,
+}
+
 /// Represents the supported Claude schema audit survey modes.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ClaudeSurveyModeArg {
@@ -455,6 +515,7 @@ fn run_query(args: QueryArgs) -> Result<()> {
         QueryCommands::Sessions(args) => run_query_sessions(args),
         QueryCommands::Turns(args) => run_query_turns(args),
         QueryCommands::Turn(args) => run_query_turn(args),
+        QueryCommands::Search(args) => run_query_search(args),
         QueryCommands::Insights(args) => run_query_insights(args),
     }
 }
@@ -497,6 +558,31 @@ fn run_query_turn(args: QueryTurnArgs) -> Result<()> {
         args.include_insights,
     )?;
     print_query_json("darc.query.turn.v1", &data)
+}
+
+/// Dispatches the supported machine-readable search query commands.
+fn run_query_search(args: QuerySearchArgs) -> Result<()> {
+    match args.command {
+        QuerySearchCommands::Turns(args) => run_query_search_turns(args),
+    }
+}
+
+/// Queries one paginated turn-search payload.
+fn run_query_search_turns(args: QuerySearchTurnsArgs) -> Result<()> {
+    ensure_json_requested(args.json)?;
+    let data = query_search_turns(
+        Some(args.root),
+        SearchTurnsRequest {
+            project_id: &args.project_id,
+            mode: search_mode_arg_to_search_mode(args.mode),
+            query: &args.query,
+            provider: args.provider.map(provider_arg_to_source_kind),
+            session_id: args.session_id.as_deref(),
+            limit: args.limit,
+            offset: args.offset,
+        },
+    )?;
+    print_query_json("darc.query.search.turns.v1", &data)
 }
 
 /// Dispatches the supported machine-readable insights query commands.
@@ -599,6 +685,15 @@ fn provider_arg_to_source_kind(provider: ProviderArg) -> SourceKind {
     match provider {
         ProviderArg::Claude => SourceKind::Claude,
         ProviderArg::Codex => SourceKind::Codex,
+    }
+}
+
+/// Converts one parsed search-mode argument back into the shared query enum.
+fn search_mode_arg_to_search_mode(mode: SearchModeArg) -> SearchMode {
+    match mode {
+        SearchModeArg::Keyword => SearchMode::Keyword,
+        SearchModeArg::FileName => SearchMode::FileName,
+        SearchModeArg::FilePath => SearchMode::FilePath,
     }
 }
 

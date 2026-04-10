@@ -420,6 +420,20 @@ pub(super) fn smoke_test_sql(connection: &Connection, schema_version: i32) -> Re
                 PRIMARY KEY (project_id, provider, session_id, turn_ordinal)
             );
 
+            CREATE TABLE file_accesses (
+                project_id TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                turn_ordinal INTEGER NOT NULL,
+                call_ordinal INTEGER NOT NULL,
+                call_id TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                access_type TEXT NOT NULL,
+                path TEXT NOT NULL,
+                repo_relative_path TEXT
+            );
+
             CREATE TABLE codex_sessions (
                 project_id TEXT NOT NULL,
                 session_id TEXT NOT NULL,

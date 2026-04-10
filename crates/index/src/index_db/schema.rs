@@ -7,6 +7,8 @@ pub(crate) enum SchemaTable {
     Turns,
     ToolCalls,
     FileAccesses,
+    TurnSearch,
+    TurnSearchFts,
     CodexSessions,
     CodexTurns,
 }
@@ -18,6 +20,8 @@ impl SchemaTable {
             Self::Turns => "turns",
             Self::ToolCalls => "tool_calls",
             Self::FileAccesses => "file_accesses",
+            Self::TurnSearch => "turn_search",
+            Self::TurnSearchFts => "turn_search_fts",
             Self::CodexSessions => "codex_sessions",
             Self::CodexTurns => "codex_turns",
         }
@@ -99,12 +103,23 @@ pub(crate) const TURN_ANALYTICS_COLUMNS: &[TableColumn] = &[
     },
 ];
 
+/// Lists the file-access columns required by the current derived analytics schema.
+pub(crate) const FILE_ACCESS_COLUMNS: &[TableColumn] = &[TableColumn {
+    name: "file_name",
+    sql_type: "TEXT",
+}];
+
 /// Lists the additive columns that older schema snapshots may need during reopen.
 pub(crate) const COMPAT_COLUMN_SETS: &[CompatColumnSet] = &[
     CompatColumnSet {
         table: SchemaTable::Turns,
         label: "turns",
         columns: TURN_ANALYTICS_COLUMNS,
+    },
+    CompatColumnSet {
+        table: SchemaTable::FileAccesses,
+        label: "file_accesses",
+        columns: FILE_ACCESS_COLUMNS,
     },
     CompatColumnSet {
         table: SchemaTable::CodexSessions,
@@ -114,8 +129,12 @@ pub(crate) const COMPAT_COLUMN_SETS: &[CompatColumnSet] = &[
 ];
 
 /// Lists the derived analytics tables that can be rebuilt from canonical turn rows.
-pub(crate) const DERIVED_ANALYTICS_TABLES: &[SchemaTable] =
-    &[SchemaTable::ToolCalls, SchemaTable::FileAccesses];
+pub(crate) const DERIVED_ANALYTICS_TABLES: &[SchemaTable] = &[
+    SchemaTable::ToolCalls,
+    SchemaTable::FileAccesses,
+    SchemaTable::TurnSearch,
+    SchemaTable::TurnSearchFts,
+];
 
 #[cfg(test)]
 /// Stores one managed secondary schema object recreated after compatibility repair.
@@ -189,11 +208,39 @@ pub(crate) const SUPPLEMENTAL_SCHEMA_OBJECTS: &[SchemaObject] = &[
     },
     SchemaObject {
         kind: SchemaObjectKind::Index,
+        name: "file_accesses_project_file_name_idx",
+    },
+    SchemaObject {
+        kind: SchemaObjectKind::Index,
+        name: "file_accesses_project_repo_relative_path_idx",
+    },
+    SchemaObject {
+        kind: SchemaObjectKind::Index,
         name: "file_accesses_project_session_turn_idx",
     },
     SchemaObject {
         kind: SchemaObjectKind::Index,
         name: "sessions_project_provider_schema_idx",
+    },
+    SchemaObject {
+        kind: SchemaObjectKind::Table,
+        name: "turn_search",
+    },
+    SchemaObject {
+        kind: SchemaObjectKind::Table,
+        name: "turn_search_fts",
+    },
+    SchemaObject {
+        kind: SchemaObjectKind::Trigger,
+        name: "turn_search_ai",
+    },
+    SchemaObject {
+        kind: SchemaObjectKind::Trigger,
+        name: "turn_search_ad",
+    },
+    SchemaObject {
+        kind: SchemaObjectKind::Trigger,
+        name: "turn_search_au",
     },
 ];
 
@@ -275,6 +322,7 @@ const CREATE_BASE_SCHEMA_SQL: &str = "
         access_type TEXT NOT NULL,
         path TEXT NOT NULL,
         repo_relative_path TEXT,
+        file_name TEXT,
         PRIMARY KEY (
             project_id,
             provider,
@@ -313,10 +361,98 @@ const CREATE_SUPPLEMENTAL_SCHEMA_SQL: &str = "
 
     CREATE INDEX IF NOT EXISTS file_accesses_project_access_path_idx
         ON file_accesses (project_id, access_type, path);
+    CREATE INDEX IF NOT EXISTS file_accesses_project_file_name_idx
+        ON file_accesses (project_id, file_name COLLATE NOCASE);
+    CREATE INDEX IF NOT EXISTS file_accesses_project_repo_relative_path_idx
+        ON file_accesses (project_id, repo_relative_path COLLATE NOCASE);
     CREATE INDEX IF NOT EXISTS file_accesses_project_session_turn_idx
         ON file_accesses (project_id, provider, session_id, turn_ordinal);
     CREATE INDEX IF NOT EXISTS sessions_project_provider_schema_idx
         ON sessions (project_id, provider, schema_id, determinism);
+
+    CREATE TABLE IF NOT EXISTS turn_search (
+        project_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        turn_ordinal INTEGER NOT NULL,
+        user_message_text TEXT NOT NULL,
+        final_answer_text TEXT NOT NULL,
+        tool_text TEXT NOT NULL,
+        PRIMARY KEY (project_id, provider, session_id, turn_ordinal),
+        FOREIGN KEY (project_id, provider, session_id, turn_ordinal)
+            REFERENCES turns(project_id, provider, session_id, turn_ordinal)
+            ON DELETE CASCADE
+    );
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS turn_search_fts USING fts5(
+        user_message_text,
+        final_answer_text,
+        tool_text,
+        content = 'turn_search',
+        content_rowid = 'rowid',
+        tokenize = 'unicode61'
+    );
+
+    CREATE TRIGGER IF NOT EXISTS turn_search_ai AFTER INSERT ON turn_search BEGIN
+        INSERT INTO turn_search_fts (
+            rowid,
+            user_message_text,
+            final_answer_text,
+            tool_text
+        )
+        VALUES (
+            new.rowid,
+            new.user_message_text,
+            new.final_answer_text,
+            new.tool_text
+        );
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS turn_search_ad AFTER DELETE ON turn_search BEGIN
+        INSERT INTO turn_search_fts (
+            turn_search_fts,
+            rowid,
+            user_message_text,
+            final_answer_text,
+            tool_text
+        )
+        VALUES (
+            'delete',
+            old.rowid,
+            old.user_message_text,
+            old.final_answer_text,
+            old.tool_text
+        );
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS turn_search_au AFTER UPDATE ON turn_search BEGIN
+        INSERT INTO turn_search_fts (
+            turn_search_fts,
+            rowid,
+            user_message_text,
+            final_answer_text,
+            tool_text
+        )
+        VALUES (
+            'delete',
+            old.rowid,
+            old.user_message_text,
+            old.final_answer_text,
+            old.tool_text
+        );
+        INSERT INTO turn_search_fts (
+            rowid,
+            user_message_text,
+            final_answer_text,
+            tool_text
+        )
+        VALUES (
+            new.rowid,
+            new.user_message_text,
+            new.final_answer_text,
+            new.tool_text
+        );
+    END;
 ";
 
 /// Stores the canonical normalized-session insert statement shared across writers and helpers.
@@ -394,19 +530,41 @@ pub(crate) const INSERT_FILE_ACCESS_SQL: &str = "
         tool_name,
         access_type,
         path,
-        repo_relative_path
-    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        repo_relative_path,
+        file_name
+    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+";
+
+/// Stores the canonical turn-search insert statement shared across writers and helpers.
+pub(crate) const INSERT_TURN_SEARCH_SQL: &str = "
+    INSERT INTO turn_search (
+        project_id,
+        provider,
+        session_id,
+        turn_ordinal,
+        user_message_text,
+        final_answer_text,
+        tool_text
+    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
 ";
 
 /// Stores the derived-analytics clear batch used before full rebuilds.
 pub(crate) const DELETE_DERIVED_ANALYTICS_SQL: &str = "
+    DELETE FROM turn_search;
     DELETE FROM file_accesses;
     DELETE FROM tool_calls;
 ";
 
 /// Stores the turn scan query used while rebuilding derived analytics tables.
 pub(crate) const SELECT_DERIVED_ANALYTICS_REBUILD_ROWS_SQL: &str = "
-    SELECT project_id, provider, session_id, turn_ordinal, steps_json
+    SELECT
+        project_id,
+        provider,
+        session_id,
+        turn_ordinal,
+        steps_json,
+        user_message,
+        final_answer_text
     FROM turns
     ORDER BY project_id ASC, provider ASC, session_id ASC, turn_ordinal ASC
 ";
@@ -485,6 +643,7 @@ pub(super) fn smoke_test_sql(connection: &Connection) -> Result<()> {
         ("turn insert", INSERT_TURN_SQL),
         ("tool call insert", INSERT_TOOL_CALL_SQL),
         ("file access insert", INSERT_FILE_ACCESS_SQL),
+        ("turn search insert", INSERT_TURN_SEARCH_SQL),
         (
             "derived analytics rebuild select",
             SELECT_DERIVED_ANALYTICS_REBUILD_ROWS_SQL,

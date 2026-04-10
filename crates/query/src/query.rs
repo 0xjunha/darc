@@ -1,5 +1,6 @@
 mod insights;
 mod projects;
+mod search;
 mod turns;
 
 use std::path::{Path, PathBuf};
@@ -13,6 +14,7 @@ pub(crate) use insights::{build_project_insights, build_workspace_insights};
 pub use insights::{query_project_insights, query_workspace_insights};
 pub use projects::{list_project_index_aggregates, query_project_sessions, query_session_turns};
 use rusqlite::Connection;
+pub use search::query_search_turns;
 use serde::Serialize;
 #[cfg(test)]
 pub(crate) use turns::build_turn_insights;
@@ -24,6 +26,7 @@ pub(crate) fn smoke_test_sql(connection: &Connection) -> Result<()> {
     projects::smoke_test_sql(connection)?;
     turns::smoke_test_sql(connection)?;
     insights::smoke_test_sql(connection)?;
+    search::smoke_test_sql(connection)?;
     Ok(())
 }
 
@@ -130,6 +133,55 @@ pub struct TurnsQueryData {
     pub provider: SourceKind,
     pub session_id: String,
     pub turns: Vec<TurnSummary>,
+}
+
+/// Identifies the supported turn-search modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchMode {
+    Keyword,
+    FileName,
+    FilePath,
+}
+
+/// Stores one paginated turn-search response for one project.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SearchTurnsQueryData {
+    pub project_id: String,
+    pub mode: SearchMode,
+    pub query: String,
+    pub provider: Option<SourceKind>,
+    pub session_id: Option<String>,
+    pub limit: u64,
+    pub offset: u64,
+    pub has_more: bool,
+    pub hits: Vec<SearchTurnHit>,
+}
+
+/// Collects the supported filters and pagination inputs for one turn-search query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SearchTurnsRequest<'a> {
+    pub project_id: &'a str,
+    pub mode: SearchMode,
+    pub query: &'a str,
+    pub provider: Option<SourceKind>,
+    pub session_id: Option<&'a str>,
+    pub limit: usize,
+    pub offset: usize,
+}
+
+/// Stores one turn hit returned by the search protocol.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SearchTurnHit {
+    pub provider: SourceKind,
+    pub session_id: String,
+    pub turn_ordinal: u64,
+    pub started_at: String,
+    pub completed_at: Option<String>,
+    pub status: NormalizedTurnStatus,
+    pub user_preview: String,
+    pub snippet: Option<String>,
+    pub matched_paths: Vec<String>,
 }
 
 /// Stores one full normalized turn detail payload for one session turn.

@@ -6,20 +6,33 @@ use rusqlite::{Connection, params};
 use crate::{
     index_db::schema::{
         DELETE_DERIVED_ANALYTICS_SQL, INSERT_FILE_ACCESS_SQL, INSERT_TOOL_CALL_SQL,
-        SELECT_DERIVED_ANALYTICS_REBUILD_ROWS_SQL,
+        INSERT_TURN_SEARCH_SQL, SELECT_DERIVED_ANALYTICS_REBUILD_ROWS_SQL,
     },
-    policy::{derive_file_access_records, extract_tool_call_records},
+    policy::{build_turn_search_text, derive_file_access_records, extract_tool_call_records},
 };
+
+/// Stores the canonical turn identity and text needed to derive search analytics rows.
+pub(crate) struct TurnDerivedContext<'a> {
+    pub(crate) project_id: &'a str,
+    pub(crate) provider: SourceKind,
+    pub(crate) session_id: &'a str,
+    pub(crate) turn_ordinal: i64,
+    pub(crate) user_message: &'a str,
+    pub(crate) final_answer_text: Option<&'a str>,
+}
 
 /// Inserts one turn's derived tool-call and file-access records into SQLite.
 pub(crate) fn insert_turn_derived_records(
     connection: &Connection,
-    project_id: &str,
-    provider: SourceKind,
-    session_id: &str,
-    turn_ordinal: i64,
+    context: &TurnDerivedContext<'_>,
     steps: &[NormalizedTurnStep],
 ) -> Result<()> {
+    let project_id = context.project_id;
+    let provider = context.provider;
+    let session_id = context.session_id;
+    let user_message = context.user_message;
+    let final_answer_text = context.final_answer_text;
+    let turn_ordinal = context.turn_ordinal;
     let turn_ordinal = u64::try_from(turn_ordinal)
         .context("turn ordinal is negative while inserting analytics")?;
     let tool_calls =
@@ -76,6 +89,7 @@ pub(crate) fn insert_turn_derived_records(
                 record.access_type.as_sql_text(),
                 record.path.as_str(),
                 record.repo_relative_path.as_deref(),
+                record.file_name.as_deref(),
             ])
             .with_context(|| {
                 format!(
@@ -85,6 +99,27 @@ pub(crate) fn insert_turn_derived_records(
                 )
             })?;
     }
+
+    let tool_text = build_turn_search_text(steps);
+    connection
+        .execute(
+            INSERT_TURN_SEARCH_SQL,
+            params![
+                project_id,
+                provider.directory_name(),
+                session_id,
+                i64::try_from(turn_ordinal).context("turn ordinal exceeds SQLite INTEGER range")?,
+                user_message,
+                final_answer_text.unwrap_or_default(),
+                tool_text,
+            ],
+        )
+        .with_context(|| {
+            format!(
+                "failed to insert derived turn search row for {}/{session_id}#{turn_ordinal}",
+                provider.directory_name(),
+            )
+        })?;
 
     Ok(())
 }
@@ -106,6 +141,8 @@ pub(crate) fn rebuild_derived_analytics_tables(connection: &Connection) -> Resul
                 row.get::<_, String>(2)?,
                 row.get::<_, i64>(3)?,
                 row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, Option<String>>(6)?,
             ))
         })
         .context("failed to query turns for derived analytics rebuild")?
@@ -113,7 +150,9 @@ pub(crate) fn rebuild_derived_analytics_tables(connection: &Connection) -> Resul
         .context("failed to read derived analytics rebuild rows")?;
     drop(statement);
 
-    for (project_id, provider, session_id, turn_ordinal, steps_json) in rows {
+    for (project_id, provider, session_id, turn_ordinal, steps_json, user_message, final_answer) in
+        rows
+    {
         let provider = parse_provider(&provider)?;
         let steps = serde_json::from_str::<Vec<NormalizedTurnStep>>(&steps_json).with_context(|| {
             format!(
@@ -122,10 +161,14 @@ pub(crate) fn rebuild_derived_analytics_tables(connection: &Connection) -> Resul
         })?;
         insert_turn_derived_records(
             connection,
-            &project_id,
-            provider,
-            &session_id,
-            turn_ordinal,
+            &TurnDerivedContext {
+                project_id: &project_id,
+                provider,
+                session_id: &session_id,
+                turn_ordinal,
+                user_message: &user_message,
+                final_answer_text: final_answer.as_deref(),
+            },
             &steps,
         )?;
     }

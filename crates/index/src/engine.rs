@@ -29,7 +29,7 @@ use thiserror::Error;
 use walkdir::WalkDir;
 
 use crate::{
-    derived_data::insert_turn_derived_records,
+    derived_data::{TurnDerivedContext, insert_turn_derived_records},
     index_db::{
         open_index_database,
         schema::{INSERT_SESSION_SQL, INSERT_TURN_SQL},
@@ -344,10 +344,14 @@ impl<'conn> SqliteSessionWriter<'conn> {
             })?;
         insert_turn_derived_records(
             self.connection,
-            &self.project_id,
-            self.provider,
-            session_id,
-            turn_ordinal,
+            &TurnDerivedContext {
+                project_id: &self.project_id,
+                provider: self.provider,
+                session_id,
+                turn_ordinal,
+                user_message: &user_message,
+                final_answer_text: final_answer_text.map(String::as_str),
+            },
             &steps,
         )
         .with_context(|| {

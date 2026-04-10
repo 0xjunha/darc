@@ -275,6 +275,92 @@ fn turn_query_can_embed_derived_insights() -> Result<()> {
 }
 
 #[test]
+fn search_turns_query_emits_keyword_search_envelope() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-search-keyword")?;
+    let output = run_darc([
+        "query",
+        "search",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--mode",
+        "keyword",
+        "--query",
+        "Repo",
+        "--json",
+    ])?;
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.search.turns.v1");
+    assert_eq!(value["data"]["mode"], "keyword");
+    assert_eq!(value["data"]["hits"][0]["session_id"], "session-1");
+    assert_eq!(
+        value["data"]["hits"][0]["matched_paths"],
+        Value::Array(vec![])
+    );
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn search_turns_query_emits_file_search_envelope() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-search-file")?;
+    let output = run_darc([
+        "query",
+        "search",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--mode",
+        "file-name",
+        "--query",
+        "README.md",
+        "--json",
+    ])?;
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.search.turns.v1");
+    assert_eq!(value["data"]["mode"], "file_name");
+    assert_eq!(value["data"]["hits"][0]["matched_paths"][0], "README.md");
+
+    let path_output = run_darc([
+        "query",
+        "search",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--mode",
+        "file-path",
+        "--query",
+        "README.md",
+        "--json",
+    ])?;
+
+    assert!(path_output.status.success());
+    let path_value = parse_json(&path_output.stdout, "stdout")?;
+    assert_eq!(path_value["schema"], "darc.query.search.turns.v1");
+    assert_eq!(path_value["data"]["mode"], "file_path");
+    assert_eq!(
+        path_value["data"]["hits"][0]["matched_paths"][0],
+        "README.md"
+    );
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
 fn workspace_insights_query_emits_success_envelope() -> Result<()> {
     let root = create_query_fixture_root("cli-query-workspace-insights")?;
     let output = run_darc([

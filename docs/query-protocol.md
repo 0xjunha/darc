@@ -18,6 +18,7 @@ All query commands currently require `--json`.
 - `darc query turn --root <path> --project-id <id> --provider <provider> --session-id <id> --turn-ordinal <n> --json`
 - `darc query turn --root <path> --project-id <id> --provider <provider> --session-id <id> --turn-ordinal <n> --include-raw --json`
 - `darc query turn --root <path> --project-id <id> --provider <provider> --session-id <id> --turn-ordinal <n> --include-insights --json`
+- `darc query search turns --root <path> --project-id <id> --mode <keyword|file-name|file-path> --query <text> --json`
 - `darc query insights workspace --root <path> --window <days>d --json`
 - `darc query insights project --root <path> --project-id <id> --limit <n> --json`
 - `darc query insights turn --root <path> --project-id <id> --provider <provider> --session-id <id> --turn-ordinal <n> --json`
@@ -71,6 +72,7 @@ Current schema ids:
 - `darc.query.sessions.v1`
 - `darc.query.turns.v1`
 - `darc.query.turn.v1`
+- `darc.query.search.turns.v1`
 - `darc.query.insights.workspace.v1`
 - `darc.query.insights.project.v1`
 - `darc.query.insights.turn.v1`
@@ -177,6 +179,21 @@ Today:
 - `insights` includes `duration_ms`, `tool_call_count`, `tool_output_count`, `attachment_count`, `delegation_count`, `hook_summary_count`, `has_final_answer`, `tools`, and `files`
 - the embedded `insights.tools` and `insights.files` arrays follow the same derivation and ordering rules as `darc.query.insights.turn.v1`
 - this command is the preferred single-round-trip protocol when a client needs both turn detail and turn analytics together
+
+### Turn search
+
+`darc.query.search.turns.v1` reports paginated turn hits for one project-scoped search.
+
+Today:
+
+- `mode=keyword` uses Darc-owned FTS indexing over derived per-turn search text
+- keyword search currently indexes `user_message`, `final_answer_text`, and derived step text such as tool names, tool payloads, shell commands, tool outputs, commentary, and selected JSON payload summaries
+- `mode=file_name` searches the derived `file_accesses.file_name` basename field
+- `mode=file_path` searches derived path fields from `file_accesses.repo_relative_path` and `file_accesses.path`
+- all search modes return turn identities, top-level turn metadata, and optional `snippet` / `matched_paths` fields
+- `matched_paths` is empty for keyword search and populated for file-name or file-path hits
+- file-name and file-path search currently use case-insensitive exact/prefix/substring ranking before recency tie-breaks
+- keyword search currently uses FTS ranking before recency tie-breaks
 
 ### Hard debugging
 

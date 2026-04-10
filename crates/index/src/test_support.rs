@@ -4,7 +4,7 @@ use darc_rollout::model::NormalizedTurnStep;
 use rusqlite::Connection;
 
 use crate::{
-    derived_data::insert_turn_derived_records,
+    derived_data::{TurnDerivedContext, insert_turn_derived_records},
     index_db::schema::{INSERT_SESSION_SQL, INSERT_TURN_SQL},
 };
 
@@ -258,10 +258,14 @@ pub fn insert_indexed_turn(connection: &Connection, fixture: IndexedTurnFixture<
         .context("fixture steps_json should parse")?;
     insert_turn_derived_records(
         connection,
-        fixture.project_id,
-        fixture.provider,
-        fixture.session_id,
-        fixture.turn_ordinal,
+        &TurnDerivedContext {
+            project_id: fixture.project_id,
+            provider: fixture.provider,
+            session_id: fixture.session_id,
+            turn_ordinal: fixture.turn_ordinal,
+            user_message: fixture.user_message,
+            final_answer_text,
+        },
         &steps,
     )?;
 
