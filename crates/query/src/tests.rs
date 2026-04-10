@@ -17,9 +17,9 @@ use darc_test_utils::{
 };
 
 use crate::query::{
-    HardDebuggingTurn, LocalDate, ProjectInsights, SessionKind, TurnInsights,
-    build_project_insights, build_turn_insights, build_workspace_insights,
-    open_existing_index_database, parse_session_kind, smoke_test_sql,
+    HardDebuggingTurn, LocalDate, ProjectInsights, SearchMode, SearchTurnsRequest, SessionKind,
+    TurnInsights, build_project_insights, build_turn_insights, build_workspace_insights,
+    open_existing_index_database, parse_session_kind, query_search_turns, smoke_test_sql,
 };
 
 /// Builds one temporary SQLite index path for query tests.
@@ -826,5 +826,167 @@ fn local_date_add_days_round_trips() -> Result<()> {
             .to_string(),
         "2026-04-07"
     );
+    Ok(())
+}
+
+#[test]
+fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
+    let index_path = test_index_path("search-keyword");
+    let connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            user_message: "Inspect the repository heading",
+            step_count: 2,
+            tool_call_count: 1,
+            tool_output_count: 1,
+            duration_ms: 5_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                0,
+                "2026-04-06T10:00:00Z",
+                "completed",
+                r##"[{"type":"tool_call","timestamp":"2026-04-06T10:00:01Z","call_id":"call-1","name":"Read","arguments":"{\"file_path\":\"README.md\"}"},{"type":"tool_call_output","timestamp":"2026-04-06T10:00:02Z","call_id":"call-1","output":"# Repo Heading"}]"##,
+            )
+        },
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            user_message: "Check the hidden tool output",
+            step_count: 2,
+            tool_call_count: 1,
+            tool_output_count: 1,
+            duration_ms: 5_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                1,
+                "2026-04-06T10:05:00Z",
+                "completed",
+                r##"[{"type":"tool_call","timestamp":"2026-04-06T10:05:01Z","call_id":"call-2","name":"Read","arguments":"{\"file_path\":\"secret.txt\"}"},{"type":"tool_call_output","timestamp":"2026-04-06T10:05:02Z","call_id":"call-2","output":"SECRET_TOKEN=top-secret"}]"##,
+            )
+        },
+    )?;
+
+    let result = query_search_turns(
+        &index_path,
+        SearchTurnsRequest {
+            project_id: "repo-a",
+            mode: SearchMode::Keyword,
+            query: "Inspect",
+            provider: None,
+            session_id: None,
+            limit: 10,
+            offset: 0,
+        },
+    )?;
+    let secret_result = query_search_turns(
+        &index_path,
+        SearchTurnsRequest {
+            project_id: "repo-a",
+            mode: SearchMode::Keyword,
+            query: "SECRET_TOKEN",
+            provider: None,
+            session_id: None,
+            limit: 10,
+            offset: 0,
+        },
+    )?;
+
+    assert_eq!(result.mode, SearchMode::Keyword);
+    assert_eq!(result.hits.len(), 1);
+    assert_eq!(result.hits[0].session_id, "session-1");
+    assert!(
+        result.hits[0]
+            .snippet
+            .as_deref()
+            .is_some_and(|snippet| snippet.contains("Inspect"))
+    );
+    assert!(secret_result.hits.is_empty());
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn search_turns_file_modes_match_derived_paths() -> Result<()> {
+    let index_path = test_index_path("search-file");
+    let connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            user_message: "Inspect the main source file",
+            step_count: 1,
+            tool_call_count: 1,
+            duration_ms: 3_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                0,
+                "2026-04-06T11:00:00Z",
+                "completed",
+                r##"[{"type":"tool_call","timestamp":"2026-04-06T11:00:01Z","call_id":"call-1","name":"Read","arguments":"{\"file_path\":\"src/main,old.rs\"}"}]"##,
+            )
+        },
+    )?;
+
+    let file_name_result = query_search_turns(
+        &index_path,
+        SearchTurnsRequest {
+            project_id: "repo-a",
+            mode: SearchMode::FileName,
+            query: "main,old.rs",
+            provider: None,
+            session_id: None,
+            limit: 10,
+            offset: 0,
+        },
+    )?;
+    let file_path_result = query_search_turns(
+        &index_path,
+        SearchTurnsRequest {
+            project_id: "repo-a",
+            mode: SearchMode::FilePath,
+            query: "src/main,old.rs",
+            provider: None,
+            session_id: None,
+            limit: 10,
+            offset: 0,
+        },
+    )?;
+
+    assert_eq!(file_name_result.hits.len(), 1);
+    assert_eq!(file_path_result.hits.len(), 1);
+    assert_eq!(
+        file_name_result.hits[0].matched_paths,
+        vec!["src/main,old.rs"]
+    );
+    assert_eq!(
+        file_path_result.hits[0].matched_paths,
+        vec!["src/main,old.rs"]
+    );
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
     Ok(())
 }

@@ -8,15 +8,15 @@ use darc_index::INDEX_DB_FILE_NAME;
 use darc_paths::SourceKind;
 pub use darc_query::{
     DailyTimeStat, FileUsageStat, HardDebuggingTurn, ProjectInsights, ProjectSummary,
-    ProjectTimeStat, RootAvailability, RootInfo, SessionKind, SessionRuntimeStat, SessionSummary,
-    SessionsQueryData, ShellCommandSummary, ToolUsageStat, TurnDetail, TurnDetailInsights,
-    TurnInsights, TurnSummary, TurnsQueryData, WorkspaceDailyTimeStat, WorkspaceInsights,
-    WorkspaceQueryData,
+    ProjectTimeStat, RootAvailability, RootInfo, SearchMode, SearchTurnHit, SearchTurnsQueryData,
+    SearchTurnsRequest, SessionKind, SessionRuntimeStat, SessionSummary, SessionsQueryData,
+    ShellCommandSummary, ToolUsageStat, TurnDetail, TurnDetailInsights, TurnInsights, TurnSummary,
+    TurnsQueryData, WorkspaceDailyTimeStat, WorkspaceInsights, WorkspaceQueryData,
 };
 use darc_query::{
     ProjectIndexAggregate, list_project_index_aggregates, query_project_insights,
-    query_project_sessions, query_session_turns, query_turn_detail, query_turn_insights,
-    query_workspace_insights,
+    query_project_sessions, query_search_turns as query_project_search_turns, query_session_turns,
+    query_turn_detail, query_turn_insights, query_workspace_insights,
 };
 
 use crate::{
@@ -162,6 +162,21 @@ pub fn query_turn_insight_report(
         provider,
         session_id,
         turn_ordinal,
+    )
+}
+
+/// Queries one paginated turn-search payload for one configured project.
+pub fn query_search_turns(
+    root: Option<PathBuf>,
+    request: SearchTurnsRequest<'_>,
+) -> Result<SearchTurnsQueryData> {
+    let context = load_project_query_context(root, request.project_id)?;
+    query_project_search_turns(
+        &context.root.database_path,
+        SearchTurnsRequest {
+            project_id: &context.project.id,
+            ..request
+        },
     )
 }
 

@@ -37,6 +37,7 @@ pub struct FileAccessRecord {
     pub access_type: ToolAccessKind,
     pub path: String,
     pub repo_relative_path: Option<String>,
+    pub file_name: Option<String>,
 }
 
 /// Stores the coarse file-access bucket inferred from one tool call.
@@ -307,6 +308,7 @@ fn build_file_access_records(
             timestamp: tool_call.timestamp.clone(),
             tool_name: tool_name.to_owned(),
             repo_relative_path: repo_relative_path(&path),
+            file_name: path_file_name(&path),
             access_type,
             path,
         })
@@ -381,4 +383,12 @@ fn is_error_status(status: &str) -> bool {
 /// Returns the repo-relative path when the extracted path is already relative.
 fn repo_relative_path(path: &str) -> Option<String> {
     Path::new(path).is_relative().then(|| path.to_owned())
+}
+
+/// Returns the basename for one normalized access path when it is valid UTF-8.
+fn path_file_name(path: &str) -> Option<String> {
+    Path::new(path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(str::to_owned)
 }

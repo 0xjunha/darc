@@ -15,6 +15,19 @@
 - If rollout contents become corrupt without changing those values, indexing can incorrectly skip reindexing and keep stale indexed data.
 - Consider storing or deriving a stronger content identity for changed-rollout detection.
 
+### Search follow-ups
+- Improve file-search scalability for substring matching.
+  - Exact and prefix file-name/path search now use the indexed fast path.
+  - The final substring fallback still uses `%...%` matching and can scan large per-project histories.
+  - Decide whether to keep substring search as a best-effort slow path, restrict file search to exact/prefix, or add a dedicated substring/trigram-style side index.
+- Refine search indexing policy for safe, high-signal text.
+  - Keyword search is intentionally conservative today.
+  - Decide whether to selectively index more tool-call text, such as curated argument summaries or shell commands, without reintroducing raw-output or raw-payload leakage.
+  - Make the indexing policy explicit and documented as part of the query/search contract.
+- Add representative search-scale verification.
+  - Add a lightweight regression path that checks search behavior on larger synthetic histories, especially file-name/path ranking and pagination.
+  - Prefer something that can catch accidental query-plan or ranking regressions without becoming a brittle performance benchmark.
+
 ### Claude Code support
 - Add a Claude schema audit workflow similar to `codex-schema-audit`.
   - Fetch official Claude Code releases or other upstream-distributed binaries in a reproducible way.
