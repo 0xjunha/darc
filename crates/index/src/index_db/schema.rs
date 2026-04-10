@@ -31,6 +31,14 @@ pub(crate) struct TableColumn {
     pub(crate) sql_type: &'static str,
 }
 
+/// Stores one table plus the additive columns compatibility migrations must preserve.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CompatColumnSet {
+    pub(crate) table: SchemaTable,
+    pub(crate) label: &'static str,
+    pub(crate) columns: &'static [TableColumn],
+}
+
 /// Lists the legacy Codex-session columns required by the current parser schema.
 pub(crate) const CODEX_SESSION_COMPAT_COLUMNS: &[TableColumn] = &[
     TableColumn {
@@ -91,7 +99,105 @@ pub(crate) const TURN_ANALYTICS_COLUMNS: &[TableColumn] = &[
     },
 ];
 
-const CREATE_SCHEMA_SQL: &str = "
+/// Lists the additive columns that older schema snapshots may need during reopen.
+pub(crate) const COMPAT_COLUMN_SETS: &[CompatColumnSet] = &[
+    CompatColumnSet {
+        table: SchemaTable::Turns,
+        label: "turns",
+        columns: TURN_ANALYTICS_COLUMNS,
+    },
+    CompatColumnSet {
+        table: SchemaTable::CodexSessions,
+        label: "codex_sessions",
+        columns: CODEX_SESSION_COMPAT_COLUMNS,
+    },
+];
+
+/// Lists the derived analytics tables that can be rebuilt from canonical turn rows.
+pub(crate) const DERIVED_ANALYTICS_TABLES: &[SchemaTable] =
+    &[SchemaTable::ToolCalls, SchemaTable::FileAccesses];
+
+#[cfg(test)]
+/// Stores one managed secondary schema object recreated after compatibility repair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SchemaObject {
+    pub(crate) kind: SchemaObjectKind,
+    pub(crate) name: &'static str,
+}
+
+#[cfg(test)]
+/// Stores the SQLite object type for one managed secondary schema object.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SchemaObjectKind {
+    Table,
+    Index,
+    Trigger,
+}
+
+#[cfg(test)]
+impl SchemaObjectKind {
+    /// Returns the SQLite master-table type for one managed secondary schema object.
+    pub(crate) fn sqlite_master_type(self) -> &'static str {
+        match self {
+            Self::Table => "table",
+            Self::Index => "index",
+            Self::Trigger => "trigger",
+        }
+    }
+
+    /// Returns the DROP statement prefix for one managed secondary schema object.
+    pub(crate) fn drop_statement_prefix(self) -> &'static str {
+        match self {
+            Self::Table => "DROP TABLE IF EXISTS",
+            Self::Index => "DROP INDEX IF EXISTS",
+            Self::Trigger => "DROP TRIGGER IF EXISTS",
+        }
+    }
+}
+
+#[cfg(test)]
+/// Lists the managed secondary schema objects that reopen should recreate.
+pub(crate) const SUPPLEMENTAL_SCHEMA_OBJECTS: &[SchemaObject] = &[
+    SchemaObject {
+        kind: SchemaObjectKind::Index,
+        name: "turns_project_provider_started_idx",
+    },
+    SchemaObject {
+        kind: SchemaObjectKind::Index,
+        name: "turns_started_idx",
+    },
+    SchemaObject {
+        kind: SchemaObjectKind::Index,
+        name: "turns_project_started_idx",
+    },
+    SchemaObject {
+        kind: SchemaObjectKind::Index,
+        name: "tool_calls_project_tool_idx",
+    },
+    SchemaObject {
+        kind: SchemaObjectKind::Index,
+        name: "tool_calls_project_session_turn_idx",
+    },
+    SchemaObject {
+        kind: SchemaObjectKind::Index,
+        name: "tool_calls_project_timestamp_idx",
+    },
+    SchemaObject {
+        kind: SchemaObjectKind::Index,
+        name: "file_accesses_project_access_path_idx",
+    },
+    SchemaObject {
+        kind: SchemaObjectKind::Index,
+        name: "file_accesses_project_session_turn_idx",
+    },
+    SchemaObject {
+        kind: SchemaObjectKind::Index,
+        name: "sessions_project_provider_schema_idx",
+    },
+];
+
+const CREATE_BASE_SCHEMA_SQL: &str = "
     PRAGMA foreign_keys = ON;
 
     CREATE TABLE IF NOT EXISTS sessions (
@@ -138,13 +244,6 @@ const CREATE_SCHEMA_SQL: &str = "
             ON DELETE CASCADE
     );
 
-    CREATE INDEX IF NOT EXISTS turns_project_provider_started_idx
-        ON turns (project_id, provider, started_at);
-    CREATE INDEX IF NOT EXISTS turns_started_idx
-        ON turns (started_at);
-    CREATE INDEX IF NOT EXISTS turns_project_started_idx
-        ON turns (project_id, started_at);
-
     CREATE TABLE IF NOT EXISTS tool_calls (
         project_id TEXT NOT NULL,
         provider TEXT NOT NULL,
@@ -163,13 +262,6 @@ const CREATE_SCHEMA_SQL: &str = "
             REFERENCES turns(project_id, provider, session_id, turn_ordinal)
             ON DELETE CASCADE
     );
-
-    CREATE INDEX IF NOT EXISTS tool_calls_project_tool_idx
-        ON tool_calls (project_id, tool_name);
-    CREATE INDEX IF NOT EXISTS tool_calls_project_session_turn_idx
-        ON tool_calls (project_id, provider, session_id, turn_ordinal);
-    CREATE INDEX IF NOT EXISTS tool_calls_project_timestamp_idx
-        ON tool_calls (project_id, timestamp);
 
     CREATE TABLE IF NOT EXISTS file_accesses (
         project_id TEXT NOT NULL,
@@ -202,6 +294,22 @@ const CREATE_SCHEMA_SQL: &str = "
             )
             ON DELETE CASCADE
     );
+";
+
+const CREATE_SUPPLEMENTAL_SCHEMA_SQL: &str = "
+    CREATE INDEX IF NOT EXISTS turns_project_provider_started_idx
+        ON turns (project_id, provider, started_at);
+    CREATE INDEX IF NOT EXISTS turns_started_idx
+        ON turns (started_at);
+    CREATE INDEX IF NOT EXISTS turns_project_started_idx
+        ON turns (project_id, started_at);
+
+    CREATE INDEX IF NOT EXISTS tool_calls_project_tool_idx
+        ON tool_calls (project_id, tool_name);
+    CREATE INDEX IF NOT EXISTS tool_calls_project_session_turn_idx
+        ON tool_calls (project_id, provider, session_id, turn_ordinal);
+    CREATE INDEX IF NOT EXISTS tool_calls_project_timestamp_idx
+        ON tool_calls (project_id, timestamp);
 
     CREATE INDEX IF NOT EXISTS file_accesses_project_access_path_idx
         ON file_accesses (project_id, access_type, path);
@@ -303,11 +411,19 @@ pub(crate) const SELECT_DERIVED_ANALYTICS_REBUILD_ROWS_SQL: &str = "
     ORDER BY project_id ASC, provider ASC, session_id ASC, turn_ordinal ASC
 ";
 
-/// Creates the normalized schema and indexes when they are missing.
-pub(crate) fn initialize_schema(connection: &Connection) -> Result<()> {
+/// Creates the normalized base tables when they are missing.
+pub(crate) fn initialize_base_schema(connection: &Connection) -> Result<()> {
     connection
-        .execute_batch(CREATE_SCHEMA_SQL)
-        .context("failed to initialize index database schema")?;
+        .execute_batch(CREATE_BASE_SCHEMA_SQL)
+        .context("failed to initialize index database base schema")?;
+    Ok(())
+}
+
+/// Creates the managed secondary schema objects once their dependencies exist.
+pub(crate) fn initialize_supplemental_schema(connection: &Connection) -> Result<()> {
+    connection
+        .execute_batch(CREATE_SUPPLEMENTAL_SCHEMA_SQL)
+        .context("failed to initialize index database supplemental schema")?;
     Ok(())
 }
 
@@ -326,9 +442,44 @@ pub(crate) fn table_info_sql(table: SchemaTable) -> String {
     format!("PRAGMA table_info({})", table.sql_name())
 }
 
+/// Returns whether one vetted table already contains a named column.
+pub(crate) fn table_has_column(
+    connection: &Connection,
+    table: SchemaTable,
+    column: &str,
+) -> Result<bool> {
+    let mut statement = connection
+        .prepare(&table_info_sql(table))
+        .with_context(|| {
+            format!(
+                "failed to inspect SQLite schema for table `{}`",
+                table.sql_name()
+            )
+        })?;
+    let mut rows = statement.query([]).with_context(|| {
+        format!(
+            "failed to query SQLite schema for table `{}`",
+            table.sql_name()
+        )
+    })?;
+    while let Some(row) = rows.next().context("failed to read SQLite schema row")? {
+        let existing: String = row.get(1).context("failed to read SQLite column name")?;
+        if existing == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 #[cfg(test)]
 /// Prepares and runs the current-schema SQL statements to smoke test SQLite parsing.
 pub(super) fn smoke_test_sql(connection: &Connection) -> Result<()> {
+    connection
+        .execute_batch(CREATE_BASE_SCHEMA_SQL)
+        .context("failed to run base schema smoke test")?;
+    connection
+        .execute_batch(CREATE_SUPPLEMENTAL_SCHEMA_SQL)
+        .context("failed to run supplemental schema smoke test")?;
     for (label, sql) in [
         ("session insert", INSERT_SESSION_SQL),
         ("turn insert", INSERT_TURN_SQL),

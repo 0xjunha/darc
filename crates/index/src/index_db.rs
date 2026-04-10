@@ -11,7 +11,10 @@ use self::{
         compat_backfill_missing_derived_analytics, ensure_legacy_compat_columns, has_table,
         index_db_schema_version, migrate_index_db_schema_version, migrate_legacy_codex_tables,
     },
-    schema::{SchemaTable, initialize_schema},
+    schema::{
+        DERIVED_ANALYTICS_TABLES, SchemaTable, initialize_base_schema,
+        initialize_supplemental_schema,
+    },
 };
 
 /// Tracks one-shot SQLite migrations for derived analytics tables.
@@ -40,14 +43,24 @@ pub fn ensure_index_database(path: &Path) -> Result<()> {
 fn initialize_index_database(connection: &mut Connection) -> Result<()> {
     let needs_derived_analytics_compat_backfill = index_db_schema_version(connection)?
         >= INDEX_DB_SCHEMA_VERSION
-        && (!has_table(connection, SchemaTable::ToolCalls)?
-            || !has_table(connection, SchemaTable::FileAccesses)?);
-    initialize_schema(connection)?;
+        && managed_tables_are_missing(connection, DERIVED_ANALYTICS_TABLES)?;
+    initialize_base_schema(connection)?;
     ensure_legacy_compat_columns(connection)?;
+    initialize_supplemental_schema(connection)?;
     migrate_legacy_codex_tables(connection)?;
     migrate_index_db_schema_version(connection, INDEX_DB_SCHEMA_VERSION)?;
     compat_backfill_missing_derived_analytics(connection, needs_derived_analytics_compat_backfill)?;
     Ok(())
+}
+
+/// Returns whether any managed table from one vetted list is missing.
+fn managed_tables_are_missing(connection: &Connection, tables: &[SchemaTable]) -> Result<bool> {
+    for &table in tables {
+        if !has_table(connection, table)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Creates the parent directory for one SQLite database path.
@@ -97,6 +110,79 @@ mod tests {
             |row| row.get(0),
         )?;
         Ok(table_count > 0)
+    }
+
+    /// Returns whether one named SQLite schema object currently exists.
+    fn sqlite_object_exists(connection: &Connection, kind: &str, name: &str) -> Result<bool> {
+        let object_count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = ?1 AND name = ?2",
+            (kind, name),
+            |row| row.get(0),
+        )?;
+        Ok(object_count > 0)
+    }
+
+    /// Drops every managed secondary schema object so reopen must recreate them.
+    fn drop_managed_secondary_schema_objects(connection: &Connection) -> Result<()> {
+        for object in schema::SUPPLEMENTAL_SCHEMA_OBJECTS.iter().rev() {
+            connection.execute_batch(&format!(
+                "{} {};",
+                object.kind.drop_statement_prefix(),
+                object.name
+            ))?;
+        }
+        Ok(())
+    }
+
+    /// Drops every registered compatibility column from any table that currently exists.
+    fn drop_registered_compat_columns(connection: &Connection) -> Result<()> {
+        for compat in schema::COMPAT_COLUMN_SETS {
+            if !migrations::has_table(connection, compat.table)? {
+                continue;
+            }
+            for column in compat.columns {
+                if !schema::table_has_column(connection, compat.table, column.name)? {
+                    continue;
+                }
+                connection.execute_batch(&format!(
+                    "ALTER TABLE {} DROP COLUMN {};",
+                    compat.table.sql_name(),
+                    column.name
+                ))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Asserts that every registered compatibility column exists after reopen.
+    fn assert_registered_compat_columns_present(connection: &Connection) -> Result<()> {
+        for compat in schema::COMPAT_COLUMN_SETS {
+            if !migrations::has_table(connection, compat.table)? {
+                continue;
+            }
+            for column in compat.columns {
+                assert!(
+                    schema::table_has_column(connection, compat.table, column.name)?,
+                    "expected {}.{} to exist after reopen",
+                    compat.label,
+                    column.name
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Asserts that every managed secondary schema object exists after reopen.
+    fn assert_managed_secondary_schema_objects_present(connection: &Connection) -> Result<()> {
+        for object in schema::SUPPLEMENTAL_SCHEMA_OBJECTS {
+            assert!(
+                sqlite_object_exists(connection, object.kind.sqlite_master_type(), object.name)?,
+                "expected managed {} `{}` to exist after reopen",
+                object.kind.sqlite_master_type(),
+                object.name
+            );
+        }
+        Ok(())
     }
 
     #[test]
@@ -372,6 +458,82 @@ mod tests {
             ("Read".to_owned(), "read".to_owned(), "README.md".to_owned())
         );
         assert_eq!(user_version, INDEX_DB_SCHEMA_VERSION);
+
+        Ok(())
+    }
+
+    #[test]
+    fn open_index_database_repairs_registered_columns_and_managed_schema_objects() -> Result<()> {
+        let path = unique_db_path("index-db-repair-managed-schema");
+        let connection = open_index_database(&path)?;
+        insert_indexed_session(
+            &connection,
+            IndexedSessionFixture::new("project", SourceKind::Codex, "session", "/tmp/repo"),
+        )?;
+        insert_indexed_turn(
+            &connection,
+            IndexedTurnFixture {
+                turn_id: Some("turn-1"),
+                completed_at: Some("2026-04-01T00:00:05Z"),
+                status: "completed",
+                user_message: "Inspect README",
+                final_answer_at: Some("2026-04-01T00:00:05Z"),
+                final_answer_text: Some("done"),
+                step_count: 1,
+                tool_call_count: 1,
+                has_final_answer: true,
+                duration_ms: 5_000,
+                ..IndexedTurnFixture::new(
+                    "project",
+                    SourceKind::Codex,
+                    "session",
+                    0,
+                    "2026-04-01T00:00:00Z",
+                    "completed",
+                    r#"[{"type":"tool_call","timestamp":"2026-04-01T00:00:01Z","call_id":"tool-1","name":"Read","arguments":"{\"file_path\":\"README.md\"}"}]"#,
+                )
+            },
+        )?;
+        drop_managed_secondary_schema_objects(&connection)?;
+        drop_registered_compat_columns(&connection)?;
+        connection.execute_batch("PRAGMA user_version = 0;")?;
+        drop(connection);
+
+        let reopened = open_index_database(&path)?;
+        assert_registered_compat_columns_present(&reopened)?;
+        assert_managed_secondary_schema_objects_present(&reopened)?;
+        let metrics: (i64, i64, i64, i64) = reopened.query_row(
+            "
+            SELECT step_count, tool_call_count, has_final_answer, duration_ms
+            FROM turns
+            WHERE project_id = 'project' AND provider = 'codex' AND session_id = 'session'
+                AND turn_ordinal = 0
+            ",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        let file_access_row: (String, String, String) = reopened.query_row(
+            "
+            SELECT tool_name, access_type, path
+            FROM file_accesses
+            WHERE project_id = 'project' AND provider = 'codex' AND session_id = 'session'
+                AND turn_ordinal = 0 AND call_ordinal = 0
+            ",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        let user_version: i32 = reopened.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+
+        assert_eq!(metrics, (1, 1, 1, 5_000));
+        assert_eq!(
+            file_access_row,
+            ("Read".to_owned(), "read".to_owned(), "README.md".to_owned())
+        );
+        assert_eq!(user_version, INDEX_DB_SCHEMA_VERSION);
+
+        let reopened_again = open_index_database(&path)?;
+        assert_registered_compat_columns_present(&reopened_again)?;
+        assert_managed_secondary_schema_objects_present(&reopened_again)?;
 
         Ok(())
     }
