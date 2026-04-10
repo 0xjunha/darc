@@ -288,7 +288,7 @@ fn search_turns_query_emits_keyword_search_envelope() -> Result<()> {
         "--mode",
         "keyword",
         "--query",
-        "Repo",
+        "Inspect",
         "--json",
     ])?;
 

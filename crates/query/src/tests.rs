@@ -856,13 +856,44 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             )
         },
     )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            user_message: "Check the hidden tool output",
+            step_count: 2,
+            tool_call_count: 1,
+            tool_output_count: 1,
+            duration_ms: 5_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                1,
+                "2026-04-06T10:05:00Z",
+                "completed",
+                r##"[{"type":"tool_call","timestamp":"2026-04-06T10:05:01Z","call_id":"call-2","name":"Read","arguments":"{\"file_path\":\"secret.txt\"}"},{"type":"tool_call_output","timestamp":"2026-04-06T10:05:02Z","call_id":"call-2","output":"SECRET_TOKEN=top-secret"}]"##,
+            )
+        },
+    )?;
 
     let result = query_search_turns(
         &index_path,
         SearchTurnsRequest {
             project_id: "repo-a",
             mode: SearchMode::Keyword,
-            query: "Repo",
+            query: "Inspect",
+            provider: None,
+            session_id: None,
+            limit: 10,
+            offset: 0,
+        },
+    )?;
+    let secret_result = query_search_turns(
+        &index_path,
+        SearchTurnsRequest {
+            project_id: "repo-a",
+            mode: SearchMode::Keyword,
+            query: "SECRET_TOKEN",
             provider: None,
             session_id: None,
             limit: 10,
@@ -877,8 +908,9 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
         result.hits[0]
             .snippet
             .as_deref()
-            .is_some_and(|snippet| snippet.contains("Repo"))
+            .is_some_and(|snippet| snippet.contains("Inspect"))
     );
+    assert!(secret_result.hits.is_empty());
 
     fs::remove_dir_all(
         index_path
@@ -910,7 +942,7 @@ fn search_turns_file_modes_match_derived_paths() -> Result<()> {
                 0,
                 "2026-04-06T11:00:00Z",
                 "completed",
-                r##"[{"type":"tool_call","timestamp":"2026-04-06T11:00:01Z","call_id":"call-1","name":"Read","arguments":"{\"file_path\":\"src/main.rs\"}"}]"##,
+                r##"[{"type":"tool_call","timestamp":"2026-04-06T11:00:01Z","call_id":"call-1","name":"Read","arguments":"{\"file_path\":\"src/main,old.rs\"}"}]"##,
             )
         },
     )?;
@@ -920,7 +952,7 @@ fn search_turns_file_modes_match_derived_paths() -> Result<()> {
         SearchTurnsRequest {
             project_id: "repo-a",
             mode: SearchMode::FileName,
-            query: "main.rs",
+            query: "main,old.rs",
             provider: None,
             session_id: None,
             limit: 10,
@@ -932,7 +964,7 @@ fn search_turns_file_modes_match_derived_paths() -> Result<()> {
         SearchTurnsRequest {
             project_id: "repo-a",
             mode: SearchMode::FilePath,
-            query: "src/main.rs",
+            query: "src/main,old.rs",
             provider: None,
             session_id: None,
             limit: 10,
@@ -942,8 +974,14 @@ fn search_turns_file_modes_match_derived_paths() -> Result<()> {
 
     assert_eq!(file_name_result.hits.len(), 1);
     assert_eq!(file_path_result.hits.len(), 1);
-    assert_eq!(file_name_result.hits[0].matched_paths, vec!["src/main.rs"]);
-    assert_eq!(file_path_result.hits[0].matched_paths, vec!["src/main.rs"]);
+    assert_eq!(
+        file_name_result.hits[0].matched_paths,
+        vec!["src/main,old.rs"]
+    );
+    assert_eq!(
+        file_path_result.hits[0].matched_paths,
+        vec!["src/main,old.rs"]
+    );
 
     fs::remove_dir_all(
         index_path

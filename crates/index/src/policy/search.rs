@@ -1,46 +1,34 @@
 use darc_rollout::model::NormalizedTurnStep;
 
-use super::extract_shell_command;
+const MAX_SEARCH_FRAGMENT_CHARS: usize = 256;
+const MAX_SEARCH_TEXT_CHARS: usize = 2_048;
 
 /// Builds the flattened turn text indexed for keyword search.
 pub fn build_turn_search_text(steps: &[NormalizedTurnStep]) -> String {
     let mut parts = Vec::<String>::new();
+    let mut total_chars = 0_usize;
 
     for step in steps {
         match step {
-            NormalizedTurnStep::Commentary { text, .. } => push_search_text(&mut parts, text),
+            NormalizedTurnStep::Commentary { text, .. } => {
+                push_search_text(&mut parts, &mut total_chars, text);
+            }
             NormalizedTurnStep::ToolCall {
                 name, arguments, ..
             } => {
-                push_search_text(&mut parts, name);
-                if let Some(shell_command) = extract_shell_command(name, arguments) {
-                    push_search_text(&mut parts, &shell_command.command_text);
-                }
-                push_search_text(&mut parts, arguments);
+                let _ = arguments;
+                push_search_text(&mut parts, &mut total_chars, name);
             }
-            NormalizedTurnStep::ToolCallOutput { output, .. } => {
-                push_search_text(&mut parts, output);
-            }
-            NormalizedTurnStep::Attachment { payload_json, .. }
-            | NormalizedTurnStep::HookSummary { payload_json, .. }
-            | NormalizedTurnStep::ProviderResponseItem { payload_json, .. } => {
-                push_search_text(&mut parts, payload_json);
-            }
-            NormalizedTurnStep::Delegation {
-                summary,
-                payload_json,
-                ..
-            } => {
+            NormalizedTurnStep::Delegation { summary, .. } => {
                 if let Some(summary) = summary {
-                    push_search_text(&mut parts, summary);
-                }
-                push_search_text(&mut parts, payload_json);
-            }
-            NormalizedTurnStep::Reasoning { summary, .. } => {
-                for line in summary {
-                    push_search_text(&mut parts, line);
+                    push_search_text(&mut parts, &mut total_chars, summary);
                 }
             }
+            NormalizedTurnStep::Reasoning { .. }
+            | NormalizedTurnStep::ToolCallOutput { .. }
+            | NormalizedTurnStep::Attachment { .. }
+            | NormalizedTurnStep::HookSummary { .. }
+            | NormalizedTurnStep::ProviderResponseItem { .. } => {}
         }
     }
 
@@ -48,10 +36,24 @@ pub fn build_turn_search_text(steps: &[NormalizedTurnStep]) -> String {
 }
 
 /// Pushes one non-empty search fragment into the flattened turn text.
-fn push_search_text(parts: &mut Vec<String>, text: &str) {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
+fn push_search_text(parts: &mut Vec<String>, total_chars: &mut usize, text: &str) {
+    if *total_chars >= MAX_SEARCH_TEXT_CHARS {
         return;
     }
-    parts.push(trimmed.to_owned());
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        return;
+    }
+
+    let remaining = MAX_SEARCH_TEXT_CHARS.saturating_sub(*total_chars);
+    let fragment = normalized
+        .chars()
+        .take(remaining.min(MAX_SEARCH_FRAGMENT_CHARS))
+        .collect::<String>();
+    if fragment.is_empty() {
+        return;
+    }
+
+    *total_chars = total_chars.saturating_add(fragment.chars().count());
+    parts.push(fragment);
 }

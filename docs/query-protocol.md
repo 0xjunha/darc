@@ -187,7 +187,8 @@ Today:
 Today:
 
 - `mode=keyword` uses Darc-owned FTS indexing over derived per-turn search text
-- keyword search currently indexes `user_message`, `final_answer_text`, and derived step text such as tool names, tool payloads, shell commands, tool outputs, commentary, and selected JSON payload summaries
+- keyword search currently indexes `user_message`, `final_answer_text`, and selected derived step text such as commentary, tool names, and delegation summaries
+- keyword search does not currently index raw tool outputs or raw provider payload blobs
 - `mode=file_name` searches the derived `file_accesses.file_name` basename field
 - `mode=file_path` searches derived path fields from `file_accesses.repo_relative_path` and `file_accesses.path`
 - all search modes return turn identities, top-level turn metadata, and optional `snippet` / `matched_paths` fields

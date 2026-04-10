@@ -11,6 +11,9 @@ use crate::{
     policy::{build_turn_search_text, derive_file_access_records, extract_tool_call_records},
 };
 
+const MAX_USER_MESSAGE_SEARCH_CHARS: usize = 2_048;
+const MAX_FINAL_ANSWER_SEARCH_CHARS: usize = 2_048;
+
 /// Stores the canonical turn identity and text needed to derive search analytics rows.
 pub(crate) struct TurnDerivedContext<'a> {
     pub(crate) project_id: &'a str,
@@ -101,6 +104,11 @@ pub(crate) fn insert_turn_derived_records(
     }
 
     let tool_text = build_turn_search_text(steps);
+    let user_message_text = normalize_search_text(user_message, MAX_USER_MESSAGE_SEARCH_CHARS);
+    let final_answer_text = normalize_search_text(
+        final_answer_text.unwrap_or_default(),
+        MAX_FINAL_ANSWER_SEARCH_CHARS,
+    );
     connection
         .execute(
             INSERT_TURN_SEARCH_SQL,
@@ -109,8 +117,8 @@ pub(crate) fn insert_turn_derived_records(
                 provider.directory_name(),
                 session_id,
                 i64::try_from(turn_ordinal).context("turn ordinal exceeds SQLite INTEGER range")?,
-                user_message,
-                final_answer_text.unwrap_or_default(),
+                user_message_text,
+                final_answer_text,
                 tool_text,
             ],
         )
@@ -182,4 +190,14 @@ fn parse_provider(value: &str) -> Result<SourceKind> {
         "codex" => Ok(SourceKind::Codex),
         other => anyhow::bail!("unsupported provider `{other}` in index"),
     }
+}
+
+/// Normalizes one stored search field into bounded single-line text.
+fn normalize_search_text(text: &str, max_chars: usize) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(max_chars)
+        .collect()
 }

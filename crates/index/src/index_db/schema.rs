@@ -363,6 +363,8 @@ const CREATE_SUPPLEMENTAL_SCHEMA_SQL: &str = "
         ON file_accesses (project_id, access_type, path);
     CREATE INDEX IF NOT EXISTS file_accesses_project_file_name_idx
         ON file_accesses (project_id, file_name COLLATE NOCASE);
+    CREATE INDEX IF NOT EXISTS file_accesses_project_path_idx
+        ON file_accesses (project_id, path COLLATE NOCASE);
     CREATE INDEX IF NOT EXISTS file_accesses_project_repo_relative_path_idx
         ON file_accesses (project_id, repo_relative_path COLLATE NOCASE);
     CREATE INDEX IF NOT EXISTS file_accesses_project_session_turn_idx
