@@ -214,13 +214,13 @@ struct QuerySessionsArgs {
 
     #[arg(
         long,
-        help = "Only sessions with latest_turn_at at or after this ISO-8601 or `<days>d` value"
+        help = "Inclusive latest_turn_at lower bound. Example: `5d` or `2026-04-07T00:00:00Z`"
     )]
     since: Option<String>,
 
     #[arg(
         long,
-        help = "Only sessions with latest_turn_at before this ISO-8601 or `<days>d` value"
+        help = "Exclusive latest_turn_at upper bound. Example: `1d` or `2026-04-08T00:00:00Z`"
     )]
     until: Option<String>,
 
@@ -277,7 +277,7 @@ struct QueryTurnArgs {
         long,
         value_enum,
         default_value_t = ViewArg::Full,
-        help = "Control whether steps keep full payloads or only narrative structure"
+        help = "Step detail level. `narrative` omits tool arguments, outputs, and payload blobs"
     )]
     view: ViewArg,
 

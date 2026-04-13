@@ -266,6 +266,41 @@ fn query_workspace_help_mentions_json_flag() {
 }
 
 #[test]
+fn query_sessions_help_mentions_examples_for_time_bounds() {
+    let mut command = Cli::command();
+    let query = command
+        .find_subcommand_mut("query")
+        .expect("query subcommand should be present");
+    let help = query
+        .find_subcommand_mut("sessions")
+        .expect("sessions query subcommand should be present")
+        .render_long_help()
+        .to_string();
+
+    assert!(help.contains("--since"));
+    assert!(help.contains("--until"));
+    assert!(help.contains("5d"));
+    assert!(help.contains("2026-04-07T00:00:00Z"));
+}
+
+#[test]
+fn query_turn_help_mentions_narrative_view_behavior() {
+    let mut command = Cli::command();
+    let query = command
+        .find_subcommand_mut("query")
+        .expect("query subcommand should be present");
+    let help = query
+        .find_subcommand_mut("turn")
+        .expect("turn query subcommand should be present")
+        .render_long_help()
+        .to_string();
+
+    assert!(help.contains("--view"));
+    assert!(help.contains("narrative"));
+    assert!(help.contains("tool arguments"));
+}
+
+#[test]
 fn parses_query_workspace_insights_command() {
     let cli = Cli::try_parse_from([
         "darc",
