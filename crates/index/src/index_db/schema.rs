@@ -106,6 +106,30 @@ pub(crate) const TURN_ANALYTICS_COLUMNS: &[TableColumn] = &[
         sql_type: "INTEGER",
     },
     TableColumn {
+        name: "provider_total_token_count",
+        sql_type: "INTEGER",
+    },
+    TableColumn {
+        name: "input_uncached_token_count",
+        sql_type: "INTEGER",
+    },
+    TableColumn {
+        name: "cache_read_token_count",
+        sql_type: "INTEGER",
+    },
+    TableColumn {
+        name: "cache_write_token_count",
+        sql_type: "INTEGER",
+    },
+    TableColumn {
+        name: "output_token_count",
+        sql_type: "INTEGER",
+    },
+    TableColumn {
+        name: "reasoning_token_count",
+        sql_type: "INTEGER",
+    },
+    TableColumn {
         name: "total_token_count",
         sql_type: "INTEGER",
     },
@@ -310,6 +334,12 @@ const CREATE_BASE_SCHEMA_SQL: &str = "
         has_final_answer INTEGER NOT NULL DEFAULT 0,
         duration_ms INTEGER,
         effective_agent_runtime_ms INTEGER,
+        provider_total_token_count INTEGER,
+        input_uncached_token_count INTEGER,
+        cache_read_token_count INTEGER,
+        cache_write_token_count INTEGER,
+        output_token_count INTEGER,
+        reasoning_token_count INTEGER,
         total_token_count INTEGER,
         primary_model TEXT,
         changed_file_count INTEGER NOT NULL DEFAULT 0,
@@ -529,12 +559,18 @@ pub(crate) const INSERT_TURN_SQL: &str = "
         has_final_answer,
         duration_ms,
         effective_agent_runtime_ms,
+        provider_total_token_count,
+        input_uncached_token_count,
+        cache_read_token_count,
+        cache_write_token_count,
+        output_token_count,
+        reasoning_token_count,
         total_token_count,
         primary_model,
         changed_file_count,
         added_line_count,
         removed_line_count
-    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)
+    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32)
 ";
 
 /// Stores the canonical derived tool-call insert statement shared across writers and helpers.

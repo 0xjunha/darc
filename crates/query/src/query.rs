@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use darc_index::{open_index_database, policy::HardDebuggingCandidate};
 use darc_paths::SourceKind;
-use darc_rollout::model::{NormalizedTurnStatus, NormalizedTurnStep};
+use darc_rollout::model::{NormalizedTokenUsage, NormalizedTurnStatus, NormalizedTurnStep};
 #[cfg(test)]
 pub(crate) use insights::{build_project_insights, build_workspace_insights};
 pub use insights::{query_project_insights, query_workspace_insights};
@@ -102,6 +102,7 @@ pub struct SessionSummary {
     pub latest_turn_at: Option<String>,
     pub latest_status: Option<NormalizedTurnStatus>,
     pub primary_model: Option<String>,
+    pub token_usage: Option<NormalizedTokenUsage>,
     pub total_token_count: Option<u64>,
     pub effective_agent_runtime_ms: Option<u64>,
     pub changed_file_count: u64,
@@ -131,6 +132,7 @@ pub struct TurnSummary {
     pub has_final_answer: bool,
     pub step_count: u64,
     pub primary_model: Option<String>,
+    pub token_usage: Option<NormalizedTokenUsage>,
     pub total_token_count: Option<u64>,
     pub effective_agent_runtime_ms: Option<u64>,
     pub changed_file_count: u64,
@@ -220,6 +222,7 @@ pub struct TurnDetail {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TurnDetailInsights {
     pub primary_model: Option<String>,
+    pub token_usage: Option<NormalizedTokenUsage>,
     pub duration_ms: u64,
     pub effective_agent_runtime_ms: Option<u64>,
     pub total_token_count: Option<u64>,
@@ -247,6 +250,7 @@ pub struct TurnInsights {
     pub completed_at: Option<String>,
     pub status: NormalizedTurnStatus,
     pub primary_model: Option<String>,
+    pub token_usage: Option<NormalizedTokenUsage>,
     pub duration_ms: u64,
     pub effective_agent_runtime_ms: Option<u64>,
     pub total_token_count: Option<u64>,
@@ -504,6 +508,7 @@ struct IndexedTurnRow {
     hook_summary_count: u64,
     has_final_answer: bool,
     primary_model: Option<String>,
+    token_usage: Option<NormalizedTokenUsage>,
     duration_ms: u64,
     effective_agent_runtime_ms: Option<u64>,
     total_token_count: Option<u64>,
@@ -556,6 +561,7 @@ impl IndexedTurnRow {
             completed_at: self.completed_at,
             status: self.status,
             primary_model: self.primary_model,
+            token_usage: self.token_usage,
             duration_ms: self.duration_ms,
             effective_agent_runtime_ms: self.effective_agent_runtime_ms,
             total_token_count: self.total_token_count,

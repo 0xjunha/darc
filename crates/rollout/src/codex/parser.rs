@@ -21,8 +21,9 @@ use super::version::{
 use crate::{
     ParseDeterminism,
     model::{
-        NormalizedTurn as CodexTurn, NormalizedTurnMessage as CodexTurnMessage,
-        NormalizedTurnStatus as CodexTurnStatus, NormalizedTurnStep as CodexTurnStep,
+        NormalizedTokenUsage, NormalizedTurn as CodexTurn,
+        NormalizedTurnMessage as CodexTurnMessage, NormalizedTurnStatus as CodexTurnStatus,
+        NormalizedTurnStep as CodexTurnStep,
     },
 };
 
@@ -171,8 +172,16 @@ struct RawTokenCountInfo {
     last_token_usage: Option<RawTokenUsage>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
 struct RawTokenUsage {
+    #[serde(default)]
+    input_tokens: Option<u64>,
+    #[serde(default)]
+    cached_input_tokens: Option<u64>,
+    #[serde(default)]
+    output_tokens: Option<u64>,
+    #[serde(default)]
+    reasoning_output_tokens: Option<u64>,
     #[serde(default)]
     total_tokens: Option<u64>,
 }
@@ -288,9 +297,9 @@ struct RolloutLineParser<'a, S> {
     has_event_user_boundaries: bool,
     pending_turn_id: Option<String>,
     pending_turn_model: Option<String>,
-    pending_turn_token_count: u64,
-    pending_turn_has_token_count: bool,
-    last_cumulative_total_tokens: Option<u64>,
+    pending_turn_token_usage: NormalizedTokenUsage,
+    pending_turn_has_token_usage: bool,
+    last_cumulative_token_usage: Option<RawTokenUsage>,
     current_turn: Option<CodexTurn>,
     sink: &'a mut S,
 }
@@ -315,9 +324,9 @@ impl<'a, S: CodexRolloutSink> RolloutLineParser<'a, S> {
             has_event_user_boundaries,
             pending_turn_id: None,
             pending_turn_model: None,
-            pending_turn_token_count: 0,
-            pending_turn_has_token_count: false,
-            last_cumulative_total_tokens: None,
+            pending_turn_token_usage: NormalizedTokenUsage::default(),
+            pending_turn_has_token_usage: false,
+            last_cumulative_token_usage: None,
             current_turn: None,
             sink,
         })
@@ -355,8 +364,8 @@ impl<'a, S: CodexRolloutSink> RolloutLineParser<'a, S> {
                         )?;
                         self.pending_turn_id = event.turn_id;
                         self.pending_turn_model = None;
-                        self.pending_turn_token_count = 0;
-                        self.pending_turn_has_token_count = false;
+                        self.pending_turn_token_usage = NormalizedTokenUsage::default();
+                        self.pending_turn_has_token_usage = false;
                     }
                     "user_message" => {
                         if let Some(message) = event.message {
@@ -367,9 +376,9 @@ impl<'a, S: CodexRolloutSink> RolloutLineParser<'a, S> {
                     "token_count" => {
                         if let Some(delta) = token_count_delta(
                             event.info.as_ref(),
-                            &mut self.last_cumulative_total_tokens,
+                            &mut self.last_cumulative_token_usage,
                         ) {
-                            self.observe_turn_token_delta(delta);
+                            self.observe_turn_token_usage(delta);
                         }
                     }
                     "task_complete" | "turn_complete" => {
@@ -615,10 +624,10 @@ impl<'a, S: CodexRolloutSink> RolloutLineParser<'a, S> {
         if let Some(model) = self.pending_turn_model.take() {
             set_turn_primary_model(&mut turn, model);
         }
-        if self.pending_turn_has_token_count {
-            add_turn_token_count(&mut turn, self.pending_turn_token_count);
-            self.pending_turn_has_token_count = false;
-            self.pending_turn_token_count = 0;
+        if self.pending_turn_has_token_usage {
+            add_turn_token_usage(&mut turn, self.pending_turn_token_usage);
+            self.pending_turn_has_token_usage = false;
+            self.pending_turn_token_usage = NormalizedTokenUsage::default();
         }
         turn
     }
@@ -643,14 +652,14 @@ impl<'a, S: CodexRolloutSink> RolloutLineParser<'a, S> {
     }
 
     /// Adds one observed Codex token delta to the pending or active turn.
-    fn observe_turn_token_delta(&mut self, delta: u64) {
+    fn observe_turn_token_usage(&mut self, delta: NormalizedTokenUsage) {
         if let Some(turn) = self.current_turn.as_mut() {
-            add_turn_token_count(turn, delta);
+            add_turn_token_usage(turn, delta);
             return;
         }
         if self.pending_turn_id.is_some() || self.pending_turn_model.is_some() {
-            self.pending_turn_has_token_count = true;
-            self.pending_turn_token_count = self.pending_turn_token_count.saturating_add(delta);
+            self.pending_turn_has_token_usage = true;
+            self.pending_turn_token_usage.saturating_add_assign(delta);
         }
     }
 }
@@ -728,7 +737,7 @@ fn start_turn(timestamp: String, turn_id: Option<String>, user_message: String) 
         completed_at: None,
         status: CodexTurnStatus::Incomplete,
         primary_model: None,
-        total_token_count: None,
+        token_usage: None,
         steps: Vec::new(),
     }
 }
@@ -776,26 +785,75 @@ fn record_assistant_message(
     }
 }
 
-/// Returns one best-effort token delta from a Codex `token_count` event.
+/// Returns one best-effort normalized token delta from a Codex `token_count` event.
 fn token_count_delta(
     info: Option<&RawTokenCountInfo>,
-    last_cumulative_total_tokens: &mut Option<u64>,
-) -> Option<u64> {
+    last_cumulative_token_usage: &mut Option<RawTokenUsage>,
+) -> Option<NormalizedTokenUsage> {
     let info = info?;
-    let current_total = info
-        .total_token_usage
-        .as_ref()
-        .and_then(|usage| usage.total_tokens)?;
-    let delta = match *last_cumulative_total_tokens {
-        Some(previous_total) if current_total >= previous_total => current_total - previous_total,
-        _ => info
-            .last_token_usage
-            .as_ref()
-            .and_then(|usage| usage.total_tokens)
-            .unwrap_or(current_total),
+    let current_usage = *info.total_token_usage.as_ref()?;
+    let previous_usage = *last_cumulative_token_usage;
+    let last_usage = info.last_token_usage.as_ref().copied().unwrap_or_default();
+
+    let input_total_delta = token_counter_delta(
+        current_usage.input_tokens,
+        previous_usage.and_then(|usage| usage.input_tokens),
+        last_usage.input_tokens,
+    );
+    let cache_read_delta = token_counter_delta(
+        current_usage.cached_input_tokens,
+        previous_usage.and_then(|usage| usage.cached_input_tokens),
+        last_usage.cached_input_tokens,
+    );
+    let output_delta = token_counter_delta(
+        current_usage.output_tokens,
+        previous_usage.and_then(|usage| usage.output_tokens),
+        last_usage.output_tokens,
+    );
+    let reasoning_delta = token_counter_delta(
+        current_usage.reasoning_output_tokens,
+        previous_usage.and_then(|usage| usage.reasoning_output_tokens),
+        last_usage.reasoning_output_tokens,
+    );
+    let provider_total_delta = token_counter_delta(
+        current_usage.total_tokens,
+        previous_usage.and_then(|usage| usage.total_tokens),
+        last_usage.total_tokens,
+    );
+
+    *last_cumulative_token_usage = Some(current_usage);
+
+    let input_uncached_delta = input_total_delta
+        .map(|input_total| input_total.saturating_sub(cache_read_delta.unwrap_or(0)));
+    let normalized_total_delta = match (input_total_delta, output_delta) {
+        (Some(input_total), Some(output_total)) => Some(input_total.saturating_add(output_total)),
+        _ => provider_total_delta,
     };
-    *last_cumulative_total_tokens = Some(current_total);
-    Some(delta)
+    let token_usage = NormalizedTokenUsage {
+        input_uncached_token_count: input_uncached_delta,
+        cache_read_token_count: cache_read_delta,
+        cache_write_token_count: None,
+        output_token_count: output_delta,
+        reasoning_token_count: reasoning_delta,
+        provider_total_token_count: provider_total_delta,
+        normalized_total_token_count: normalized_total_delta,
+    };
+    token_usage.has_any_value().then_some(token_usage)
+}
+
+/// Returns one best-effort counter delta from cumulative and last-request token rows.
+fn token_counter_delta(
+    current_total: Option<u64>,
+    previous_total: Option<u64>,
+    last_total: Option<u64>,
+) -> Option<u64> {
+    match (current_total, previous_total) {
+        (Some(current_total), Some(previous_total)) if current_total >= previous_total => {
+            Some(current_total - previous_total)
+        }
+        (Some(current_total), _) => Some(last_total.unwrap_or(current_total)),
+        (None, _) => last_total,
+    }
 }
 
 /// Extracts one stable model name from a Codex `turn_context` payload.
@@ -814,10 +872,12 @@ fn set_turn_primary_model(turn: &mut CodexTurn, model: String) {
     }
 }
 
-/// Adds one token delta to one normalized turn using saturating arithmetic.
-fn add_turn_token_count(turn: &mut CodexTurn, delta: u64) {
-    let total_tokens = turn.total_token_count.unwrap_or(0).saturating_add(delta);
-    turn.total_token_count = Some(total_tokens);
+/// Adds one token-usage delta to one normalized turn using saturating arithmetic.
+fn add_turn_token_usage(turn: &mut CodexTurn, delta: NormalizedTokenUsage) {
+    let token_usage = turn
+        .token_usage
+        .get_or_insert_with(NormalizedTokenUsage::default);
+    token_usage.saturating_add_assign(delta);
 }
 
 /// Filters one raw provider model string down to a user-visible stable model name.

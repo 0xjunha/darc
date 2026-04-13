@@ -857,6 +857,40 @@ fn falls_back_to_best_effort_for_unknown_versions_and_line_types() -> Result<()>
     assert_eq!(rollout.determinism, ParseDeterminism::BestEffortForward);
     assert_eq!(rollout.turns.len(), 1);
     assert_eq!(rollout.turns[0].status, CodexTurnStatus::Incomplete);
+    assert_eq!(rollout.turns[0].total_token_count(), Some(0));
+    assert_eq!(
+        rollout.turns[0]
+            .token_usage
+            .and_then(|usage| usage.cache_read_token_count),
+        None
+    );
+
+    Ok(())
+}
+
+#[test]
+fn extracts_total_tokens_from_assistant_usage_without_cache_fields() -> Result<()> {
+    let rollout = parse_fixture(
+        r#"{"parentUuid":null,"isSidechain":false,"promptId":"prompt-1","type":"user","message":{"role":"user","content":"Summarize this"},"uuid":"user-1","timestamp":"2026-04-01T00:00:01Z","userType":"external","entrypoint":"claude-desktop","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.87","gitBranch":"main"}
+{"parentUuid":"user-1","isSidechain":false,"message":{"model":"claude-sonnet-4-6","id":"assistant-1","type":"message","role":"assistant","content":[{"type":"text","text":"Done."}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":7}},"requestId":"req-1","type":"assistant","uuid":"assistant-1","timestamp":"2026-04-01T00:00:02Z","userType":"external","entrypoint":"claude-desktop","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.87","gitBranch":"main"}
+"#,
+        &primary_context(),
+    )?;
+
+    assert_eq!(rollout.turns.len(), 1);
+    assert_eq!(rollout.turns[0].total_token_count(), Some(12));
+    assert_eq!(
+        rollout.turns[0]
+            .token_usage
+            .and_then(|usage| usage.cache_read_token_count),
+        None
+    );
+    assert_eq!(
+        rollout.turns[0]
+            .token_usage
+            .and_then(|usage| usage.cache_write_token_count),
+        None
+    );
 
     Ok(())
 }
@@ -865,7 +899,7 @@ fn falls_back_to_best_effort_for_unknown_versions_and_line_types() -> Result<()>
 fn extracts_model_and_total_tokens_from_assistant_usage() -> Result<()> {
     let rollout = parse_fixture(
         r#"{"parentUuid":null,"isSidechain":false,"promptId":"prompt-1","type":"user","message":{"role":"user","content":"Summarize this"},"uuid":"user-1","timestamp":"2026-04-01T00:00:01Z","userType":"external","entrypoint":"claude-desktop","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.87","gitBranch":"main"}
-{"parentUuid":"user-1","isSidechain":false,"message":{"model":"claude-sonnet-4-6","id":"assistant-1","type":"message","role":"assistant","content":[{"type":"text","text":"Done."}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":7}},"requestId":"req-1","type":"assistant","uuid":"assistant-1","timestamp":"2026-04-01T00:00:02Z","userType":"external","entrypoint":"claude-desktop","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.87","gitBranch":"main"}
+{"parentUuid":"user-1","isSidechain":false,"message":{"model":"claude-sonnet-4-6","id":"assistant-1","type":"message","role":"assistant","content":[{"type":"text","text":"Done."}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":7,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"service_tier":"standard","inference_geo":"not_available"}},"requestId":"req-1","type":"assistant","uuid":"assistant-1","timestamp":"2026-04-01T00:00:02Z","userType":"external","entrypoint":"claude-desktop","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.87","gitBranch":"main"}
 "#,
         &primary_context(),
     )?;
@@ -875,7 +909,35 @@ fn extracts_model_and_total_tokens_from_assistant_usage() -> Result<()> {
         rollout.turns[0].primary_model.as_deref(),
         Some("claude-sonnet-4-6")
     );
-    assert_eq!(rollout.turns[0].total_token_count, Some(12));
+    assert_eq!(rollout.turns[0].total_token_count(), Some(12));
+    assert_eq!(
+        rollout.turns[0]
+            .token_usage
+            .and_then(|usage| usage.cache_read_token_count),
+        Some(0)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn delegated_total_tokens_fallback_survives_partial_usage() -> Result<()> {
+    let rollout = parse_fixture(
+        r#"{"parentUuid":null,"isSidechain":false,"promptId":"prompt-1","type":"user","message":{"role":"user","content":"Inspect this"},"uuid":"user-1","timestamp":"2026-04-01T00:00:01Z","userType":"external","entrypoint":"sdk-cli","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.87","gitBranch":"main"}
+{"parentUuid":"user-1","isSidechain":false,"message":{"model":"claude-sonnet-4-6","id":"assistant-1","type":"message","role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Agent","input":{"prompt":"Inspect this"}}],"stop_reason":"tool_use","stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"service_tier":"standard","inference_geo":"not_available"}},"requestId":"req-1","type":"assistant","uuid":"assistant-1","timestamp":"2026-04-01T00:00:02Z","userType":"external","entrypoint":"sdk-cli","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.87","gitBranch":"main"}
+{"parentUuid":"assistant-1","isSidechain":false,"promptId":"prompt-1","type":"user","message":{"role":"user","content":[{"tool_use_id":"tool-1","type":"tool_result","content":[{"type":"text","text":"Done."}]}]},"uuid":"user-2","timestamp":"2026-04-01T00:00:03Z","toolUseResult":{"status":"completed","prompt":"Inspect this","agentId":"agent-1","content":[{"type":"text","text":"Done."}],"totalDurationMs":12,"totalTokens":34,"totalToolUseCount":1,"usage":{"input_tokens":5,"output_tokens":7}},"userType":"external","entrypoint":"sdk-cli","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.87","gitBranch":"main"}
+"#,
+        &primary_context(),
+    )?;
+
+    assert_eq!(rollout.turns.len(), 1);
+    assert_eq!(rollout.turns[0].total_token_count(), Some(36));
+    assert_eq!(
+        rollout.turns[0]
+            .token_usage
+            .and_then(|usage| usage.provider_total_token_count),
+        Some(34)
+    );
 
     Ok(())
 }

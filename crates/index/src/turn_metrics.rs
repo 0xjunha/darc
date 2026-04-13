@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 
-use darc_rollout::model::{NormalizedTurn as CodexTurn, NormalizedTurnStep as CodexTurnStep};
+use darc_rollout::model::{
+    NormalizedTokenUsage, NormalizedTurn as CodexTurn, NormalizedTurnStep as CodexTurnStep,
+};
 use serde_json::Value;
 
 use crate::policy::{
@@ -20,6 +22,12 @@ pub(crate) struct IndexedTurnMetrics {
     pub(crate) has_final_answer: bool,
     pub(crate) duration_ms: Option<i64>,
     pub(crate) effective_agent_runtime_ms: Option<i64>,
+    pub(crate) provider_total_token_count: Option<i64>,
+    pub(crate) input_uncached_token_count: Option<i64>,
+    pub(crate) cache_read_token_count: Option<i64>,
+    pub(crate) cache_write_token_count: Option<i64>,
+    pub(crate) output_token_count: Option<i64>,
+    pub(crate) reasoning_token_count: Option<i64>,
     pub(crate) total_token_count: Option<i64>,
     pub(crate) changed_file_count: u32,
     pub(crate) added_line_count: u32,
@@ -37,7 +45,7 @@ pub(crate) fn summarize_turn_metrics(turn: &CodexTurn) -> IndexedTurnMetrics {
         turn.final_answer
             .as_ref()
             .map(|message| message.text.as_str()),
-        turn.total_token_count,
+        turn.token_usage,
         &turn.steps,
     )
 }
@@ -56,7 +64,10 @@ pub(crate) fn summarize_stored_turn_metrics(
         completed_at,
         final_answer_at,
         final_answer_text,
-        total_token_count,
+        total_token_count.map(|total_token_count| NormalizedTokenUsage {
+            normalized_total_token_count: Some(total_token_count),
+            ..NormalizedTokenUsage::default()
+        }),
         steps,
     )
 }
@@ -67,16 +78,35 @@ fn summarize_turn_parts(
     completed_at: Option<&str>,
     final_answer_at: Option<&str>,
     final_answer_text: Option<&str>,
-    total_token_count: Option<u64>,
+    token_usage: Option<NormalizedTokenUsage>,
     steps: &[CodexTurnStep],
 ) -> IndexedTurnMetrics {
     let duration_ms =
         completed_at.and_then(|completed| indexed_timestamp_duration_ms(started_at, completed));
+    let total_token_count = token_usage.and_then(|usage| usage.normalized_total_token_count);
     let mut metrics = IndexedTurnMetrics {
         step_count: steps.len().try_into().unwrap_or(u32::MAX),
         has_final_answer: final_answer_at.is_some() || final_answer_text.is_some(),
         duration_ms,
         effective_agent_runtime_ms: duration_ms,
+        provider_total_token_count: token_usage
+            .and_then(|usage| usage.provider_total_token_count)
+            .and_then(|value| i64::try_from(value).ok()),
+        input_uncached_token_count: token_usage
+            .and_then(|usage| usage.input_uncached_token_count)
+            .and_then(|value| i64::try_from(value).ok()),
+        cache_read_token_count: token_usage
+            .and_then(|usage| usage.cache_read_token_count)
+            .and_then(|value| i64::try_from(value).ok()),
+        cache_write_token_count: token_usage
+            .and_then(|usage| usage.cache_write_token_count)
+            .and_then(|value| i64::try_from(value).ok()),
+        output_token_count: token_usage
+            .and_then(|usage| usage.output_token_count)
+            .and_then(|value| i64::try_from(value).ok()),
+        reasoning_token_count: token_usage
+            .and_then(|usage| usage.reasoning_token_count)
+            .and_then(|value| i64::try_from(value).ok()),
         total_token_count: total_token_count.and_then(|value| i64::try_from(value).ok()),
         ..IndexedTurnMetrics::default()
     };
@@ -235,7 +265,10 @@ mod tests {
             completed_at: Some("2026-04-06T00:00:05Z".to_owned()),
             status: CodexTurnStatus::Completed,
             primary_model: Some("gpt-5.4".to_owned()),
-            total_token_count: Some(10),
+            token_usage: Some(NormalizedTokenUsage {
+                normalized_total_token_count: Some(10),
+                ..NormalizedTokenUsage::default()
+            }),
             steps: vec![CodexTurnStep::ToolCall {
                 timestamp: "2026-04-06T00:00:01Z".to_owned(),
                 call_id: "call-1".to_owned(),
@@ -262,7 +295,10 @@ mod tests {
             completed_at: Some("2026-04-06T00:00:05Z".to_owned()),
             status: CodexTurnStatus::Completed,
             primary_model: Some("gpt-5.4".to_owned()),
-            total_token_count: Some(10),
+            token_usage: Some(NormalizedTokenUsage {
+                normalized_total_token_count: Some(10),
+                ..NormalizedTokenUsage::default()
+            }),
             steps: vec![
                 CodexTurnStep::ToolCall {
                     timestamp: "2026-04-06T00:00:01Z".to_owned(),

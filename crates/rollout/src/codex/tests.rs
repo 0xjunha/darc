@@ -31,7 +31,7 @@ fn parses_turn_lifecycle_rollout_and_records_schema_metadata() -> Result<()> {
     assert_eq!(rollout.turns.len(), 1);
     assert_eq!(rollout.turns[0].status, CodexTurnStatus::Completed);
     assert_eq!(rollout.turns[0].primary_model, None);
-    assert_eq!(rollout.turns[0].total_token_count, None);
+    assert_eq!(rollout.turns[0].total_token_count(), None);
     assert_eq!(
         rollout.turns[0].final_answer,
         Some(CodexTurnMessage {
@@ -106,7 +106,7 @@ fn extracts_model_and_tokens_from_turn_context_and_token_count() -> Result<()> {
 
     assert_eq!(rollout.turns.len(), 1);
     assert_eq!(rollout.turns[0].primary_model.as_deref(), Some("gpt-5.4"));
-    assert_eq!(rollout.turns[0].total_token_count, Some(160));
+    assert_eq!(rollout.turns[0].total_token_count(), Some(160));
 
     Ok(())
 }

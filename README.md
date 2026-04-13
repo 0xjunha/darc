@@ -89,11 +89,15 @@ darc refresh --all
 
 Darc now exposes best-effort session and turn stats through `darc query`.
 
-- turn rows and turn insights can include `primary_model`, `total_token_count`, `effective_agent_runtime_ms`,
-  `changed_file_count`, `added_line_count`, and `removed_line_count`
+- turn rows and turn insights can include `primary_model`, `total_token_count`, `token_usage`,
+  `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, and `removed_line_count`
 - session rows roll those values up across the indexed turns in that session
+- `total_token_count` is now the normalized cache-aware total when Darc could derive one from the archived rollout
+- `token_usage` exposes the cross-provider bucket breakdown Darc stores for `input_uncached`, `cache_read`,
+  `cache_write`, `output`, optional `reasoning`, and the provider-native total when available
+- `reasoning` is a subset of output, not an extra additive bucket, and unsupported buckets stay `null`
 - older archived provider versions may leave model or token fields as `null` when the transcript did not report
-  stable values
+  stable values, or until a project is re-indexed from archived rollouts after the token-bucket upgrade
 - observed diff counts come from transcript-visible patch payloads such as `apply_patch`, not from a live git diff
 
 See [Query protocol](docs/query-protocol.md) for the exact payload contract and semantics.

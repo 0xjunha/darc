@@ -92,6 +92,12 @@ fn create_query_fixture_root(prefix: &str) -> Result<PathBuf> {
             has_final_answer: true,
             duration_ms: 5_000,
             effective_agent_runtime_ms: Some(6_500),
+            provider_total_token_count: Some(300),
+            input_uncached_token_count: Some(120),
+            cache_read_token_count: Some(80),
+            cache_write_token_count: None,
+            output_token_count: Some(121),
+            reasoning_token_count: Some(20),
             total_token_count: Some(321),
             primary_model: Some("gpt-5.4"),
             changed_file_count: 1,
@@ -182,6 +188,34 @@ fn sessions_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["sessions"][0]["primary_model"], "gpt-5.4");
     assert_eq!(value["data"]["sessions"][0]["total_token_count"], 321);
     assert_eq!(
+        value["data"]["sessions"][0]["token_usage"]["input_uncached_token_count"],
+        120
+    );
+    assert_eq!(
+        value["data"]["sessions"][0]["token_usage"]["cache_read_token_count"],
+        80
+    );
+    assert_eq!(
+        value["data"]["sessions"][0]["token_usage"]["cache_write_token_count"],
+        Value::Null
+    );
+    assert_eq!(
+        value["data"]["sessions"][0]["token_usage"]["output_token_count"],
+        121
+    );
+    assert_eq!(
+        value["data"]["sessions"][0]["token_usage"]["reasoning_token_count"],
+        20
+    );
+    assert_eq!(
+        value["data"]["sessions"][0]["token_usage"]["provider_total_token_count"],
+        300
+    );
+    assert_eq!(
+        value["data"]["sessions"][0]["token_usage"]["normalized_total_token_count"],
+        321
+    );
+    assert_eq!(
         value["data"]["sessions"][0]["effective_agent_runtime_ms"],
         6500
     );
@@ -218,6 +252,34 @@ fn turns_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["turns"][0]["step_count"], 2);
     assert_eq!(value["data"]["turns"][0]["primary_model"], "gpt-5.4");
     assert_eq!(value["data"]["turns"][0]["total_token_count"], 321);
+    assert_eq!(
+        value["data"]["turns"][0]["token_usage"]["input_uncached_token_count"],
+        120
+    );
+    assert_eq!(
+        value["data"]["turns"][0]["token_usage"]["cache_read_token_count"],
+        80
+    );
+    assert_eq!(
+        value["data"]["turns"][0]["token_usage"]["cache_write_token_count"],
+        Value::Null
+    );
+    assert_eq!(
+        value["data"]["turns"][0]["token_usage"]["output_token_count"],
+        121
+    );
+    assert_eq!(
+        value["data"]["turns"][0]["token_usage"]["reasoning_token_count"],
+        20
+    );
+    assert_eq!(
+        value["data"]["turns"][0]["token_usage"]["provider_total_token_count"],
+        300
+    );
+    assert_eq!(
+        value["data"]["turns"][0]["token_usage"]["normalized_total_token_count"],
+        321
+    );
     assert_eq!(
         value["data"]["turns"][0]["effective_agent_runtime_ms"],
         6500
@@ -295,6 +357,34 @@ fn turn_query_can_embed_derived_insights() -> Result<()> {
         6_500
     );
     assert_eq!(value["data"]["insights"]["total_token_count"], 321);
+    assert_eq!(
+        value["data"]["insights"]["token_usage"]["input_uncached_token_count"],
+        120
+    );
+    assert_eq!(
+        value["data"]["insights"]["token_usage"]["cache_read_token_count"],
+        80
+    );
+    assert_eq!(
+        value["data"]["insights"]["token_usage"]["cache_write_token_count"],
+        Value::Null
+    );
+    assert_eq!(
+        value["data"]["insights"]["token_usage"]["output_token_count"],
+        121
+    );
+    assert_eq!(
+        value["data"]["insights"]["token_usage"]["reasoning_token_count"],
+        20
+    );
+    assert_eq!(
+        value["data"]["insights"]["token_usage"]["provider_total_token_count"],
+        300
+    );
+    assert_eq!(
+        value["data"]["insights"]["token_usage"]["normalized_total_token_count"],
+        321
+    );
     assert_eq!(value["data"]["insights"]["changed_file_count"], 1);
     assert_eq!(value["data"]["insights"]["added_line_count"], 2);
     assert_eq!(value["data"]["insights"]["removed_line_count"], 1);
@@ -475,6 +565,25 @@ fn turn_insights_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["schema"], "darc.query.insights.turn.v1");
     assert_eq!(value["data"]["primary_model"], "gpt-5.4");
     assert_eq!(value["data"]["total_token_count"], 321);
+    assert_eq!(
+        value["data"]["token_usage"]["input_uncached_token_count"],
+        120
+    );
+    assert_eq!(value["data"]["token_usage"]["cache_read_token_count"], 80);
+    assert_eq!(
+        value["data"]["token_usage"]["cache_write_token_count"],
+        Value::Null
+    );
+    assert_eq!(value["data"]["token_usage"]["output_token_count"], 121);
+    assert_eq!(value["data"]["token_usage"]["reasoning_token_count"], 20);
+    assert_eq!(
+        value["data"]["token_usage"]["provider_total_token_count"],
+        300
+    );
+    assert_eq!(
+        value["data"]["token_usage"]["normalized_total_token_count"],
+        321
+    );
     assert_eq!(value["data"]["effective_agent_runtime_ms"], 6500);
     assert_eq!(value["data"]["changed_file_count"], 1);
     assert_eq!(value["data"]["added_line_count"], 2);
