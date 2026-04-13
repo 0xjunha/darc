@@ -2,7 +2,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use darc_paths::SourceKind;
-use rusqlite::Connection;
+use rusqlite::{Connection, params};
 
 use super::turns::build_token_usage;
 use super::{
@@ -122,6 +122,8 @@ const PROJECT_SESSIONS_SQL: &str = "
         AND latest.session_id = turn_stats.session_id
         AND latest.turn_ordinal = turn_stats.latest_turn_ordinal
     WHERE s.project_id = ?1
+        AND (?2 IS NULL OR julianday(turn_stats.latest_turn_at) >= julianday(?2))
+        AND (?3 IS NULL OR julianday(turn_stats.latest_turn_at) < julianday(?3))
     ORDER BY
         turn_stats.latest_turn_at IS NULL ASC,
         turn_stats.latest_turn_at DESC,
@@ -166,11 +168,16 @@ pub fn list_project_index_aggregates(index_db_path: &Path) -> Result<Vec<Project
 }
 
 /// Queries the indexed session list for one project.
-pub fn query_project_sessions(index_db_path: &Path, project_id: &str) -> Result<SessionsQueryData> {
+pub fn query_project_sessions(
+    index_db_path: &Path,
+    project_id: &str,
+    since: Option<&str>,
+    until: Option<&str>,
+) -> Result<SessionsQueryData> {
     let connection = open_existing_index_database(index_db_path)?;
     Ok(SessionsQueryData {
         project_id: project_id.to_owned(),
-        sessions: query_sessions(&connection, project_id)?,
+        sessions: query_sessions(&connection, project_id, since, until)?,
     })
 }
 
@@ -222,12 +229,17 @@ fn query_project_index_aggregates(connection: &Connection) -> Result<Vec<Project
 }
 
 /// Queries the indexed sessions for one configured project.
-fn query_sessions(connection: &Connection, project_id: &str) -> Result<Vec<SessionSummary>> {
+fn query_sessions(
+    connection: &Connection,
+    project_id: &str,
+    since: Option<&str>,
+    until: Option<&str>,
+) -> Result<Vec<SessionSummary>> {
     let mut statement = connection
         .prepare(PROJECT_SESSIONS_SQL)
         .context("failed to prepare indexed session query")?;
     let rows = statement
-        .query_map([project_id], |row| {
+        .query_map(params![project_id, since, until], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,

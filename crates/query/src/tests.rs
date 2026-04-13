@@ -509,12 +509,95 @@ fn session_summaries_leave_partial_token_and_runtime_totals_null() -> Result<()>
         },
     )?;
 
-    let sessions = query_project_sessions(&index_path, "repo-a")?;
+    let sessions = query_project_sessions(&index_path, "repo-a", None, None)?;
 
     assert_eq!(sessions.sessions.len(), 1);
     assert_eq!(sessions.sessions[0].total_token_count, None);
     assert_eq!(sessions.sessions[0].token_usage, None);
     assert_eq!(sessions.sessions[0].effective_agent_runtime_ms, None);
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn session_summaries_filter_by_latest_turn_bounds() -> Result<()> {
+    let index_path = test_index_path("session-time-bounds");
+    let connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-early", "/tmp/repo-a"),
+    )?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-late", "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture::new(
+            "repo-a",
+            SourceKind::Codex,
+            "session-early",
+            0,
+            "2026-04-05T10:00:00Z",
+            "completed",
+            "[]",
+        ),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture::new(
+            "repo-a",
+            SourceKind::Codex,
+            "session-late",
+            0,
+            "2026-04-06T10:00:00Z",
+            "completed",
+            "[]",
+        ),
+    )?;
+
+    let all_sessions = query_project_sessions(&index_path, "repo-a", None, None)?;
+    let since_sessions =
+        query_project_sessions(&index_path, "repo-a", Some("2026-04-06T00:00:00Z"), None)?;
+    let until_sessions =
+        query_project_sessions(&index_path, "repo-a", None, Some("2026-04-06T00:00:00Z"))?;
+    let bounded_sessions = query_project_sessions(
+        &index_path,
+        "repo-a",
+        Some("2026-04-05T12:00:00Z"),
+        Some("2026-04-06T12:00:00Z"),
+    )?;
+
+    assert_eq!(all_sessions.sessions.len(), 2);
+    assert_eq!(
+        since_sessions
+            .sessions
+            .iter()
+            .map(|session| session.session_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["session-late"]
+    );
+    assert_eq!(
+        until_sessions
+            .sessions
+            .iter()
+            .map(|session| session.session_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["session-early"]
+    );
+    assert_eq!(
+        bounded_sessions
+            .sessions
+            .iter()
+            .map(|session| session.session_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["session-late"]
+    );
 
     fs::remove_dir_all(
         index_path

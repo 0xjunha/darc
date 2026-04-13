@@ -14,6 +14,7 @@ All query commands currently require `--json`.
 
 - `darc query workspace --root <path> --json`
 - `darc query sessions --root <path> --project-id <id> --json`
+- `darc query sessions --root <path> --project-id <id> --since <iso-8601|<days>d> --until <iso-8601|<days>d> --json`
 - `darc query turns --root <path> --project-id <id> --provider <provider> --session-id <id> --json`
 - `darc query turn --root <path> --project-id <id> --provider <provider> --session-id <id> --turn-ordinal <n> --json`
 - `darc query turn --root <path> --project-id <id> --provider <provider> --session-id <id> --turn-ordinal <n> --include-raw --json`
@@ -196,6 +197,8 @@ Today:
 
 - session rows include `primary_model`, `total_token_count`, `token_usage`, `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, and `removed_line_count`
 - session totals are rollups across the indexed turns in that session
+- optional `--since` and `--until` filters apply to `latest_turn_at`, using inclusive lower-bound and exclusive upper-bound semantics
+- `--since` and `--until` accept absolute ISO-8601 text or relative `<days>d` shorthand such as `5d`
 - each `token_usage.*` session field is `null` unless every indexed turn in that session carried a value for that exact field
 - `total_token_count` and `effective_agent_runtime_ms` are currently `null` on a session row unless every indexed turn in that session carried a value for that field
 - turn rows include `primary_model`, `total_token_count`, `token_usage`, `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, and `removed_line_count`

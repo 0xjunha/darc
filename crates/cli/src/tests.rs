@@ -12,6 +12,7 @@ use super::{
     Cli, Commands, QueryCommands, QueryInsightsCommands, claude_schema_audit_exit_code,
     codex_schema_audit_exit_code, format_claude_schema_audit_report,
     format_codex_schema_audit_report, format_query_error, parse_window_days,
+    resolve_query_time_bound_at,
 };
 
 fn compatible_report() -> CodexSchemaAuditReport {
@@ -200,6 +201,38 @@ fn parses_query_turn_command() {
 }
 
 #[test]
+fn parses_query_sessions_with_time_bounds() {
+    let cli = Cli::try_parse_from([
+        "darc",
+        "query",
+        "sessions",
+        "--project-id",
+        "repo-abc123",
+        "--since",
+        "5d",
+        "--until",
+        "2026-04-07T00:00:00Z",
+        "--json",
+    ])
+    .unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Query(super::QueryArgs {
+            command: QueryCommands::Sessions(super::QuerySessionsArgs {
+                project_id,
+                since,
+                until,
+                json,
+                ..
+            }),
+        }) if project_id == "repo-abc123"
+            && since.as_deref() == Some("5d")
+            && until.as_deref() == Some("2026-04-07T00:00:00Z")
+            && json
+    ));
+}
+
+#[test]
 fn query_help_mentions_machine_protocol() {
     let mut command = Cli::command();
     let help = command
@@ -257,6 +290,22 @@ fn parses_window_days() {
     assert_eq!(parse_window_days("7d").unwrap(), 7);
     assert!(parse_window_days("0d").is_err());
     assert!(parse_window_days("weekly").is_err());
+}
+
+#[test]
+fn resolves_relative_query_time_bounds() {
+    let now = UNIX_EPOCH + Duration::from_secs(1_744_022_096);
+    assert_eq!(
+        resolve_query_time_bound_at("5d", now).unwrap(),
+        "2025-04-02T10:34:56Z"
+    );
+}
+
+#[test]
+fn rejects_invalid_query_time_bounds() {
+    let now = UNIX_EPOCH + Duration::from_secs(1_744_022_096);
+    assert!(resolve_query_time_bound_at("weekly", now).is_err());
+    assert!(resolve_query_time_bound_at("", now).is_err());
 }
 
 #[test]

@@ -104,9 +104,19 @@ pub fn query_workspace(root: Option<PathBuf>) -> WorkspaceQueryData {
 }
 
 /// Queries the session-list payload for one configured project.
-pub fn query_sessions(root: Option<PathBuf>, project_id: &str) -> Result<SessionsQueryData> {
+pub fn query_sessions(
+    root: Option<PathBuf>,
+    project_id: &str,
+    since: Option<&str>,
+    until: Option<&str>,
+) -> Result<SessionsQueryData> {
     let context = load_project_query_context(root, project_id)?;
-    query_project_sessions(&context.root.database_path, &context.project.id)
+    query_project_sessions(
+        &context.root.database_path,
+        &context.project.id,
+        since,
+        until,
+    )
 }
 
 /// Queries the turn-list payload for one configured provider session.
