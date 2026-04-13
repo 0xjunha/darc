@@ -27,7 +27,9 @@ const RUN_EVENT_LEVEL_WARN: &str = "warn";
 const DEFAULT_REQUESTED_BY: &str = "cli";
 const RUN_POLL_INTERVAL: Duration = Duration::from_millis(200);
 const RUN_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
-const CANCEL_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
+const RUN_STALE_TIMEOUT: Duration = Duration::from_secs(5);
+const WAITING_FOR_AGENT_TIMEOUT: Duration = Duration::from_secs(5);
+const WORKER_REGISTRATION_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Collects the empty or populated read-side wiki payload for one configured project.
 #[derive(Debug, Clone)]
@@ -80,7 +82,6 @@ pub struct DigestCancelReport {
 pub fn ensure_project_wiki(root: Option<PathBuf>, project_id: &str) -> Result<ProjectLayout> {
     let layout = resolve_project_layout(root, project_id)?;
     ensure_registry(&layout).context("failed to initialize project wiki registry")?;
-    repair_stale_runs(&layout).context("failed to repair stale wiki runs")?;
     Ok(layout)
 }
 
@@ -92,7 +93,7 @@ pub fn load_project_wiki(root: Option<PathBuf>, project_id: &str) -> Result<Proj
         registry: load_registry(&layout).context("failed to load project wiki registry")?,
         entries: list_entries(&layout).context("failed to list wiki entries")?,
         digests: list_digests(&layout).context("failed to list wiki digests")?,
-        runs: list_runs(&layout).context("failed to list wiki runs")?,
+        runs: load_visible_run_summaries(&layout).context("failed to list wiki runs")?,
         layout,
     })
 }
@@ -104,6 +105,7 @@ pub fn load_project_wiki_run(
     run_id: &RunId,
 ) -> Result<RunState> {
     let layout = ensure_project_wiki(root, project_id)?;
+    repair_run_if_stale(&layout, run_id).context("failed to repair stale wiki run")?;
     load_run_state(&layout, run_id).context("failed to load wiki run state")
 }
 
@@ -299,6 +301,7 @@ pub fn cancel_project_wiki_digest(
     run_id: &RunId,
 ) -> Result<DigestCancelReport> {
     let layout = ensure_project_wiki(root, project_id)?;
+    repair_run_if_stale(&layout, run_id).context("failed to repair stale wiki run")?;
     let mut state = load_run_state(&layout, run_id)?;
     if is_finished_status(state.status) {
         return Ok(report_from_run_state(&state));
@@ -321,47 +324,6 @@ pub fn cancel_project_wiki_digest(
         RunEvent::info(RunPhase::WaitingForAgent, "Cancel requested".to_owned()),
     )?;
 
-    if let Some(pid) = state.pid {
-        if process_exists(pid) {
-            wait_for_worker_exit(pid, CANCEL_WAIT_TIMEOUT);
-        }
-        if process_exists(pid) {
-            terminate_process(pid)
-                .with_context(|| format!("failed to terminate worker pid {pid}"))?;
-            wait_for_worker_exit(pid, CANCEL_WAIT_TIMEOUT);
-        }
-    }
-
-    state = load_run_state(&layout, run_id)?;
-    if matches!(
-        state.status,
-        RunStatus::Running | RunStatus::Queued | RunStatus::CancelRequested
-    ) && state.pid.map(process_exists).unwrap_or(false)
-    {
-        bail!(
-            "worker process {} did not exit after cancellation",
-            state.pid.unwrap_or_default()
-        );
-    }
-    if matches!(
-        state.status,
-        RunStatus::Running | RunStatus::Queued | RunStatus::CancelRequested
-    ) {
-        let now = current_utc_timestamp();
-        state.status = RunStatus::Canceled;
-        state.cancel_requested = true;
-        state.updated_at = now.clone();
-        state.finished_at = Some(now.clone());
-        state.heartbeat_at = Some(now);
-        state.headline = Some("Digest run canceled".to_owned());
-        store_run_state(&layout, &state)?;
-        append_run_event(
-            &layout,
-            run_id,
-            RunEvent::info(RunPhase::WaitingForAgent, "Digest run canceled".to_owned()),
-        )?;
-    }
-
     Ok(report_from_run_state(&state))
 }
 
@@ -372,14 +334,14 @@ pub fn run_project_wiki_digest_worker(
     run_id: &RunId,
 ) -> Result<()> {
     let layout = ensure_project_wiki(root, project_id)?;
-    let mut state = load_run_state(&layout, run_id)?;
+    let mut state = wait_for_worker_registration(&layout, run_id)?;
     if is_finished_status(state.status) {
         return Ok(());
     }
 
     transition_worker_state(
         &layout,
-        &mut state,
+        run_id,
         RunPhase::ReadingTurns,
         Some(10),
         "Preparing context bundle",
@@ -397,7 +359,7 @@ pub fn run_project_wiki_digest_worker(
     )?;
     transition_worker_state(
         &layout,
-        &mut state,
+        run_id,
         RunPhase::WaitingForAgent,
         Some(20),
         "Waiting for agent runtime",
@@ -412,16 +374,18 @@ pub fn run_project_wiki_digest_worker(
     )?;
 
     let mut last_heartbeat = SystemTime::now();
+    let waiting_started_at = SystemTime::now();
     loop {
         if cancel_requested(&layout, run_id, &state)? {
-            let now = current_utc_timestamp();
-            state.status = RunStatus::Canceled;
-            state.cancel_requested = true;
-            state.updated_at = now.clone();
-            state.finished_at = Some(now.clone());
-            state.heartbeat_at = Some(now.clone());
-            state.headline = Some("Digest run canceled".to_owned());
-            store_run_state(&layout, &state)?;
+            update_run_state(&layout, run_id, |state| {
+                let now = current_utc_timestamp();
+                state.status = RunStatus::Canceled;
+                state.cancel_requested = true;
+                state.updated_at = now.clone();
+                state.finished_at = Some(now.clone());
+                state.heartbeat_at = Some(now.clone());
+                state.headline = Some("Digest run canceled".to_owned());
+            })?;
             append_run_event(
                 &layout,
                 run_id,
@@ -431,11 +395,38 @@ pub fn run_project_wiki_digest_worker(
         }
 
         if last_heartbeat.elapsed().unwrap_or_default() >= RUN_HEARTBEAT_INTERVAL {
-            let now = current_utc_timestamp();
-            state.updated_at = now.clone();
-            state.heartbeat_at = Some(now);
-            store_run_state(&layout, &state)?;
+            update_run_state(&layout, run_id, |state| {
+                let now = current_utc_timestamp();
+                state.updated_at = now.clone();
+                state.heartbeat_at = Some(now);
+            })?;
+            state = load_run_state(&layout, run_id)?;
             last_heartbeat = SystemTime::now();
+        }
+
+        if waiting_started_at.elapsed().unwrap_or_default() >= WAITING_FOR_AGENT_TIMEOUT {
+            update_run_state(&layout, run_id, |state| {
+                let now = current_utc_timestamp();
+                state.status = RunStatus::Failed;
+                state.updated_at = now.clone();
+                state.finished_at = Some(now.clone());
+                state.heartbeat_at = Some(now.clone());
+                state.headline = Some("Agent runtime is not implemented yet".to_owned());
+                state.error_code = Some("runtime_not_implemented".to_owned());
+                state.error_message = Some(
+                    "agent runtime integration is not implemented yet for this digest worker"
+                        .to_owned(),
+                );
+            })?;
+            append_run_event(
+                &layout,
+                run_id,
+                RunEvent::warn(
+                    RunPhase::WaitingForAgent,
+                    "Agent runtime is not implemented yet".to_owned(),
+                ),
+            )?;
+            return Ok(());
         }
 
         thread::sleep(RUN_POLL_INTERVAL);
@@ -553,19 +544,20 @@ fn append_run_event(layout: &ProjectLayout, run_id: &RunId, event: RunEvent) -> 
 /// Applies the next worker-visible phase/progress transition to one run state.
 fn transition_worker_state(
     layout: &ProjectLayout,
-    state: &mut RunState,
+    run_id: &RunId,
     phase: RunPhase,
     progress_percent: Option<u8>,
     headline: &str,
 ) -> Result<()> {
-    let now = current_utc_timestamp();
-    state.status = RunStatus::Running;
-    state.phase = phase;
-    state.updated_at = now.clone();
-    state.heartbeat_at = Some(now);
-    state.progress_percent = progress_percent;
-    state.headline = Some(headline.to_owned());
-    store_run_state(layout, state)?;
+    update_run_state(layout, run_id, |state| {
+        let now = current_utc_timestamp();
+        state.status = RunStatus::Running;
+        state.phase = phase;
+        state.updated_at = now.clone();
+        state.heartbeat_at = Some(now);
+        state.progress_percent = progress_percent;
+        state.headline = Some(headline.to_owned());
+    })?;
     Ok(())
 }
 
@@ -582,42 +574,17 @@ fn cancel_requested(
     Ok(state.cancel_requested || layout.run_cancel_flag_path(run_id).exists())
 }
 
-/// Repairs stale in-flight runs whose worker pid is no longer alive.
-fn repair_stale_runs(layout: &ProjectLayout) -> Result<()> {
-    if !layout.runs_dir.exists() {
+/// Repairs one in-flight run to `interrupted` when its heartbeat is stale.
+fn repair_run_if_stale(layout: &ProjectLayout, run_id: &RunId) -> Result<()> {
+    let state = match load_run_state(layout, run_id) {
+        Ok(state) => state,
+        Err(_) => return Ok(()),
+    };
+    if !is_run_state_stale(&state, SystemTime::now()) {
         return Ok(());
     }
 
-    let mut run_ids = fs::read_dir(&layout.runs_dir)
-        .with_context(|| format!("failed to read {}", layout.runs_dir.display()))?
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .with_context(|| format!("failed to read {}", layout.runs_dir.display()))?;
-    run_ids.sort_by_key(|entry| entry.path());
-
-    for entry in run_ids {
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("failed to inspect {}", entry.path().display()))?;
-        if !file_type.is_dir() {
-            continue;
-        }
-
-        let run_id = RunId::new(entry.file_name().to_string_lossy().into_owned())?;
-        let mut state = match load_run_state(layout, &run_id) {
-            Ok(state) => state,
-            Err(_) => continue,
-        };
-        if !matches!(
-            state.status,
-            RunStatus::Running | RunStatus::CancelRequested
-        ) {
-            continue;
-        }
-        let alive = state.pid.map(process_exists).unwrap_or(false);
-        if alive {
-            continue;
-        }
-
+    update_run_state(layout, run_id, |state| {
         let now = current_utc_timestamp();
         state.status = RunStatus::Interrupted;
         state.updated_at = now.clone();
@@ -625,19 +592,16 @@ fn repair_stale_runs(layout: &ProjectLayout) -> Result<()> {
         state.heartbeat_at = Some(now.clone());
         state.headline = Some("Digest worker interrupted".to_owned());
         state.error_code = Some("worker_interrupted".to_owned());
-        state.error_message = Some("digest worker process was not running".to_owned());
-        store_run_state(layout, &state)?;
-        append_run_event(
-            layout,
-            &run_id,
-            RunEvent::warn(
-                state.phase,
-                "Recovered stale run as interrupted because the worker pid was not running"
-                    .to_owned(),
-            ),
-        )?;
-    }
-
+        state.error_message = Some("digest worker heartbeat is stale".to_owned());
+    })?;
+    append_run_event(
+        layout,
+        run_id,
+        RunEvent::warn(
+            state.phase,
+            "Recovered stale run as interrupted because the worker heartbeat is stale".to_owned(),
+        ),
+    )?;
     Ok(())
 }
 
@@ -661,70 +625,101 @@ fn report_from_run_state(state: &RunState) -> DigestCancelReport {
     }
 }
 
-/// Waits for one worker process to exit cooperatively up to the provided timeout.
-fn wait_for_worker_exit(pid: u32, timeout: Duration) {
-    let deadline = SystemTime::now() + timeout;
-    while SystemTime::now() < deadline {
-        if !process_exists(pid) {
-            return;
+/// Updates one run state by loading the latest persisted struct, applying the callback, and storing it.
+fn update_run_state<F>(layout: &ProjectLayout, run_id: &RunId, mut update: F) -> Result<RunState>
+where
+    F: FnMut(&mut RunState),
+{
+    let mut state = load_run_state(layout, run_id)?;
+    update(&mut state);
+    store_run_state(layout, &state)?;
+    Ok(state)
+}
+
+/// Waits until the parent process persists the worker registration fields after spawning the child.
+fn wait_for_worker_registration(layout: &ProjectLayout, run_id: &RunId) -> Result<RunState> {
+    let deadline = SystemTime::now() + WORKER_REGISTRATION_TIMEOUT;
+    loop {
+        let state = load_run_state(layout, run_id)?;
+        if state.cancel_requested || is_finished_status(state.status) {
+            return Ok(state);
         }
-        thread::sleep(Duration::from_millis(100));
-    }
-}
-
-/// Returns whether the given pid currently exists.
-fn process_exists(pid: u32) -> bool {
-    #[cfg(unix)]
-    {
-        Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = pid;
-        false
-    }
-}
-
-/// Terminates one existing worker pid using best-effort host process signaling.
-fn terminate_process(pid: u32) -> Result<()> {
-    #[cfg(unix)]
-    {
-        send_signal(pid, "-TERM")?;
-        thread::sleep(Duration::from_millis(200));
-        if process_exists(pid) {
-            send_signal(pid, "-KILL")?;
+        if matches!(state.status, RunStatus::Running)
+            && state.started_at.is_some()
+            && state.pid.is_some()
+        {
+            return Ok(state);
         }
-        Ok(())
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = pid;
-        bail!("process termination is not implemented on this platform")
+        if SystemTime::now() >= deadline {
+            bail!("timed out waiting for worker registration fields for run `{run_id}`");
+        }
+        thread::sleep(Duration::from_millis(50));
     }
 }
 
-/// Sends one host signal to one pid through the platform `kill` command.
-#[cfg(unix)]
-fn send_signal(pid: u32, signal: &str) -> Result<()> {
-    let status = Command::new("kill")
-        .args([signal, &pid.to_string()])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .with_context(|| format!("failed to run kill {signal} {pid}"))?;
-    if status.success() || !process_exists(pid) {
-        Ok(())
+/// Returns whether one in-flight run heartbeat is stale enough to treat as interrupted.
+fn is_run_state_stale(state: &RunState, now: SystemTime) -> bool {
+    if !matches!(
+        state.status,
+        RunStatus::Running | RunStatus::CancelRequested
+    ) {
+        return false;
+    }
+
+    let timestamp = state
+        .heartbeat_at
+        .as_deref()
+        .or(state.started_at.as_deref())
+        .or(Some(state.updated_at.as_str()));
+    let Some(timestamp) = timestamp else {
+        return false;
+    };
+    parse_utc_timestamp(timestamp)
+        .and_then(|ts| now.duration_since(ts).ok())
+        .map(|elapsed| elapsed >= RUN_STALE_TIMEOUT)
+        .unwrap_or(false)
+}
+
+/// Returns one query-visible run summary with stale in-flight runs normalized to `interrupted`.
+pub(crate) fn visible_run_summary(summary: &darc_wiki::RunSummary) -> darc_wiki::RunSummary {
+    if is_run_summary_stale(summary, SystemTime::now()) {
+        let mut normalized = summary.clone();
+        normalized.status = RunStatus::Interrupted;
+        normalized
     } else {
-        bail!("kill {signal} {pid} failed")
+        summary.clone()
     }
+}
+
+/// Loads one project's run summaries with stale in-flight runs normalized for read-side display.
+pub(crate) fn load_visible_run_summaries(
+    layout: &ProjectLayout,
+) -> Result<Vec<darc_wiki::RunSummary>> {
+    Ok(list_runs(layout)?
+        .into_iter()
+        .map(|summary| visible_run_summary(&summary))
+        .collect())
+}
+
+/// Returns whether one run summary should be displayed as stale/interrupted.
+fn is_run_summary_stale(summary: &darc_wiki::RunSummary, now: SystemTime) -> bool {
+    if !matches!(
+        summary.status,
+        RunStatus::Running | RunStatus::CancelRequested
+    ) {
+        return false;
+    }
+    let timestamp = summary
+        .heartbeat_at
+        .as_deref()
+        .or(Some(summary.updated_at.as_str()));
+    let Some(timestamp) = timestamp else {
+        return false;
+    };
+    parse_utc_timestamp(timestamp)
+        .and_then(|ts| now.duration_since(ts).ok())
+        .map(|elapsed| elapsed >= RUN_STALE_TIMEOUT)
+        .unwrap_or(false)
 }
 
 /// Returns the current UTC timestamp in ISO 8601 format.
@@ -740,6 +735,35 @@ fn current_utc_timestamp() -> String {
     let minute = (seconds_of_day % 3_600) / 60;
     let second = seconds_of_day % 60;
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
+/// Parses one UTC ISO 8601 timestamp emitted by Darc into `SystemTime`.
+fn parse_utc_timestamp(value: &str) -> Option<SystemTime> {
+    let value = value.strip_suffix('Z')?;
+    let (date, time) = value.split_once('T')?;
+    let mut date_parts = date.split('-');
+    let year = date_parts.next()?.parse::<i64>().ok()?;
+    let month = date_parts.next()?.parse::<u32>().ok()?;
+    let day = date_parts.next()?.parse::<u32>().ok()?;
+    if date_parts.next().is_some() {
+        return None;
+    }
+
+    let mut time_parts = time.split(':');
+    let hour = time_parts.next()?.parse::<u64>().ok()?;
+    let minute = time_parts.next()?.parse::<u64>().ok()?;
+    let second = time_parts.next()?.parse::<u64>().ok()?;
+    if time_parts.next().is_some() {
+        return None;
+    }
+
+    let days = days_from_civil(year, month, day)?;
+    let days = u64::try_from(days).ok()?;
+    let seconds_of_day = hour
+        .checked_mul(3_600)?
+        .checked_add(minute.checked_mul(60)?)?
+        .checked_add(second)?;
+    Some(UNIX_EPOCH + Duration::from_secs(days.checked_mul(86_400)?.checked_add(seconds_of_day)?))
 }
 
 /// Converts one Unix-day count into a UTC civil date.
@@ -764,6 +788,21 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
         u32::try_from(month).unwrap_or(1),
         u32::try_from(day).unwrap_or(1),
     )
+}
+
+/// Converts one civil UTC date into the Unix-day count used by the timestamp formatter.
+fn days_from_civil(year: i64, month: u32, day: u32) -> Option<i64> {
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let year = year - i64::from(month <= 2);
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let month = i64::from(month);
+    let month_prime = month + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * month_prime + 2) / 5 + i64::from(day) - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    Some(era * 146_097 + day_of_era - 719_468)
 }
 
 /// Stores one persisted digest start request artifact.
@@ -1021,8 +1060,7 @@ mod tests {
         };
         store_run_state(&layout, &state)?;
 
-        let repaired_layout = ensure_project_wiki(Some(root.clone()), project_id)?;
-        let repaired = load_run_state(&repaired_layout, &run_id)?;
+        let repaired = load_project_wiki_run(Some(root.clone()), project_id, &run_id)?;
         assert_eq!(repaired.status, RunStatus::Interrupted);
         assert_eq!(repaired.error_code.as_deref(), Some("worker_interrupted"));
 

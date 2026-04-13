@@ -113,6 +113,26 @@ fn wait_for_run_visibility(root: &Path, run_id: &str) -> Result<Value> {
     }
 }
 
+/// Polls the wiki runs query until one run reaches the requested status.
+fn wait_for_run_status(root: &Path, run_id: &str, expected_status: &str) -> Result<Value> {
+    let deadline = Instant::now() + Duration::from_secs(6);
+    loop {
+        let value = wait_for_run_visibility(root, run_id)?;
+        let reached = value["data"]["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|run| run["run_id"] == run_id && run["status"] == expected_status);
+        if reached {
+            return Ok(value);
+        }
+        if Instant::now() >= deadline {
+            bail!("timed out waiting for run `{run_id}` to reach status `{expected_status}`");
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
 #[test]
 fn wiki_digest_start_query_and_cancel_round_trip() -> Result<()> {
     let root = create_wiki_fixture_root("cli-wiki-lifecycle")?;
@@ -185,11 +205,17 @@ fn wiki_digest_start_query_and_cancel_round_trip() -> Result<()> {
     let cancel_value = parse_json(&cancel_output.stdout, "stdout")?;
     assert_eq!(cancel_value["schema"], "darc.wiki.digest.cancel.v1");
     assert_eq!(cancel_value["data"]["run_id"], run_id);
-    assert_eq!(cancel_value["data"]["status"], "canceled");
+    assert_eq!(cancel_value["data"]["status"], "cancel_requested");
     assert!(run_dir.join("cancel.flag").exists());
 
-    let run_toml = fs::read_to_string(run_dir.join("run.toml"))?;
-    assert!(run_toml.contains("status = \"canceled\""));
+    let runs_value = wait_for_run_status(&root, &run_id, "canceled")?;
+    let canceled = runs_value["data"]["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|run| run["run_id"] == run_id)
+        .context("canceled run should still be visible")?;
+    assert_eq!(canceled["status"], "canceled");
 
     remove_root(&root)?;
     Ok(())
@@ -286,6 +312,55 @@ fn wiki_digest_start_repairs_stale_running_runs() -> Result<()> {
         "--json",
     ])?;
     assert!(cancel_output.status.success());
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn wiki_digest_start_times_out_to_failed_without_runtime() -> Result<()> {
+    let root = create_wiki_fixture_root("cli-wiki-runtime-timeout")?;
+
+    let start_output = run_darc([
+        "wiki",
+        "digest",
+        "start",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--session-ref",
+        "codex:session-1",
+        "--agent",
+        "codex",
+        "--runtime",
+        "external-cli",
+        "--model",
+        "gpt-5.4",
+        "--json",
+    ])?;
+    assert!(start_output.status.success());
+    let start_value = parse_json(&start_output.stdout, "stdout")?;
+    let run_id = start_value["data"]["run_id"]
+        .as_str()
+        .context("missing run id")?
+        .to_owned();
+
+    let runs_value = wait_for_run_status(&root, &run_id, "failed")?;
+    let failed = runs_value["data"]["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|run| run["run_id"] == run_id)
+        .context("failed run should be visible")?;
+    assert_eq!(failed["status"], "failed");
+
+    let run_toml = fs::read_to_string(
+        root.join("context-wiki/projects/repo-abc123/runs")
+            .join(&run_id)
+            .join("run.toml"),
+    )?;
+    assert!(run_toml.contains("error_code = \"runtime_not_implemented\""));
 
     remove_root(&root)?;
     Ok(())

@@ -30,6 +30,7 @@ use crate::{
     constants::CONFIG_FILE_NAME,
     default_root_path,
     init::normalize_project_config,
+    wiki::visible_run_summary,
 };
 
 /// Queries the workspace sidebar payload for one darc root.
@@ -374,6 +375,7 @@ pub fn query_wiki_runs(root: Option<PathBuf>, project_id: &str) -> Result<WikiRu
         project_id: context.project.id,
         runs: list_runs(&layout)?
             .into_iter()
+            .map(|summary| visible_run_summary(&summary))
             .map(WikiRunListItem::from)
             .collect(),
     })
