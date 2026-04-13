@@ -16,6 +16,15 @@ pub const CONTEXT_WIKI_DIR_NAME: &str = "context-wiki";
 /// Stores the current on-disk storage layout version text.
 pub const STORAGE_VERSION: &str = "1";
 
+const RUN_REQUEST_FILE_NAME: &str = "request.json";
+const RUN_CONTEXT_FILE_NAME: &str = "context.json";
+const RUN_PROPOSAL_FILE_NAME: &str = "proposal.json";
+const RUN_RESULT_FILE_NAME: &str = "result.json";
+const RUN_EVENTS_FILE_NAME: &str = "events.jsonl";
+const RUN_STDOUT_LOG_FILE_NAME: &str = "agent.stdout.log";
+const RUN_STDERR_LOG_FILE_NAME: &str = "agent.stderr.log";
+const RUN_CANCEL_FLAG_FILE_NAME: &str = "cancel.flag";
+
 /// Resolves the top-level Context Wiki layout rooted under one Darc root.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextWikiLayout {
@@ -121,6 +130,11 @@ pub struct ProjectLayout {
 }
 
 impl ProjectLayout {
+    /// Returns the enclosing top-level Context Wiki layout for this project.
+    pub fn context(&self) -> &ContextWikiLayout {
+        &self.context
+    }
+
     /// Creates the per-project directory tree when it does not exist yet.
     pub fn ensure(&self) -> Result<()> {
         self.context.ensure_root()?;
@@ -161,6 +175,46 @@ impl ProjectLayout {
     /// Resolves one run state TOML path under the project layout.
     pub fn run_state_path(&self, run_id: &RunId) -> PathBuf {
         self.run_dir(run_id).join("run.toml")
+    }
+
+    /// Resolves one run request artifact path under the project layout.
+    pub fn run_request_path(&self, run_id: &RunId) -> PathBuf {
+        self.run_dir(run_id).join(RUN_REQUEST_FILE_NAME)
+    }
+
+    /// Resolves one run context artifact path under the project layout.
+    pub fn run_context_path(&self, run_id: &RunId) -> PathBuf {
+        self.run_dir(run_id).join(RUN_CONTEXT_FILE_NAME)
+    }
+
+    /// Resolves one run proposal artifact path under the project layout.
+    pub fn run_proposal_path(&self, run_id: &RunId) -> PathBuf {
+        self.run_dir(run_id).join(RUN_PROPOSAL_FILE_NAME)
+    }
+
+    /// Resolves one run result artifact path under the project layout.
+    pub fn run_result_path(&self, run_id: &RunId) -> PathBuf {
+        self.run_dir(run_id).join(RUN_RESULT_FILE_NAME)
+    }
+
+    /// Resolves one run events log path under the project layout.
+    pub fn run_events_path(&self, run_id: &RunId) -> PathBuf {
+        self.run_dir(run_id).join(RUN_EVENTS_FILE_NAME)
+    }
+
+    /// Resolves one run stdout log path under the project layout.
+    pub fn run_stdout_log_path(&self, run_id: &RunId) -> PathBuf {
+        self.run_dir(run_id).join(RUN_STDOUT_LOG_FILE_NAME)
+    }
+
+    /// Resolves one run stderr log path under the project layout.
+    pub fn run_stderr_log_path(&self, run_id: &RunId) -> PathBuf {
+        self.run_dir(run_id).join(RUN_STDERR_LOG_FILE_NAME)
+    }
+
+    /// Resolves one run cancel flag path under the project layout.
+    pub fn run_cancel_flag_path(&self, run_id: &RunId) -> PathBuf {
+        self.run_dir(run_id).join(RUN_CANCEL_FLAG_FILE_NAME)
     }
 }
 

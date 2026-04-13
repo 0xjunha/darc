@@ -468,6 +468,54 @@ fn wiki_runs_query_emits_api_shaped_success_envelope_without_registry_dependency
 }
 
 #[test]
+fn wiki_runs_query_normalizes_stale_running_runs_to_interrupted() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-wiki-runs-stale")?;
+    write_file(&root.join("context-wiki/VERSION"), "1\n")?;
+    write_file(
+        &root.join("context-wiki/projects/repo-abc123/runs/cwrun_01stale/run.toml"),
+        concat!(
+            "schema_version = 1\n",
+            "run_id = \"cwrun_01stale\"\n",
+            "project_id = \"repo-abc123\"\n",
+            "status = \"running\"\n",
+            "phase = \"waiting_for_agent\"\n",
+            "created_at = \"2026-04-13T10:00:00Z\"\n",
+            "started_at = \"2026-04-13T10:00:01Z\"\n",
+            "updated_at = \"2026-04-13T10:00:02Z\"\n",
+            "heartbeat_at = \"2026-04-13T10:00:02Z\"\n",
+            "attempt = 1\n",
+            "cancel_requested = false\n",
+            "pid = 12345\n",
+            "selected_sessions = []\n",
+            "target_categories = []\n",
+            "target_domains = []\n",
+            "created_entry_ids = []\n",
+            "updated_entry_ids = []\n"
+        ),
+    )?;
+
+    let output = run_darc([
+        "query",
+        "wiki",
+        "runs",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--json",
+    ])?;
+
+    assert!(output.status.success());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.wiki.runs.v1");
+    assert_eq!(value["data"]["runs"][0]["run_id"], "cwrun_01stale");
+    assert_eq!(value["data"]["runs"][0]["status"], "interrupted");
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
 fn wiki_digests_query_emits_empty_success_envelope() -> Result<()> {
     let root = create_query_fixture_root("cli-query-wiki-digests")?;
     let output = run_darc([

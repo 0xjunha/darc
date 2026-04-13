@@ -111,9 +111,13 @@ pub struct RunSummary {
     pub created_at: String,
     pub updated_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heartbeat_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub headline: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
     pub run_dir: PathBuf,
     pub run_state_path: PathBuf,
 }
@@ -128,8 +132,10 @@ impl RunSummary {
             phase: state.phase,
             created_at: state.created_at,
             updated_at: state.updated_at,
+            heartbeat_at: state.heartbeat_at,
             finished_at: state.finished_at,
             headline: state.headline,
+            pid: state.pid,
             run_dir,
             run_state_path,
         }

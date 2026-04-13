@@ -386,14 +386,79 @@ fn parses_query_workspace_insights_command() {
 
 #[test]
 fn parses_wiki_digest_start_skeleton_command() {
-    let cli = Cli::try_parse_from(["darc", "wiki", "digest", "start"]).unwrap();
+    let cli = Cli::try_parse_from([
+        "darc",
+        "wiki",
+        "digest",
+        "start",
+        "--project-id",
+        "repo-abc123",
+        "--session-ref",
+        "codex:session-1",
+        "--agent",
+        "codex",
+        "--runtime",
+        "external-cli",
+        "--model",
+        "gpt-5.4",
+        "--auth-profile",
+        "openai/default",
+        "--target-category",
+        "architecture",
+        "--target-domain",
+        "storage",
+        "--json",
+    ])
+    .unwrap();
     assert!(matches!(
         cli.command,
         Commands::Wiki(super::WikiArgs {
             command: WikiCommands::Digest(super::WikiDigestArgs {
-                command: WikiDigestCommands::Start(_),
+                command: WikiDigestCommands::Start(super::WikiDigestStartArgs {
+                    project_id,
+                    session_ref,
+                    auth_profile,
+                    target_category,
+                    target_domain,
+                    json,
+                    ..
+                }),
             }),
-        })
+        }) if project_id == "repo-abc123"
+            && session_ref == vec!["codex:session-1".to_owned()]
+            && auth_profile.as_deref() == Some("openai/default")
+            && target_category == vec!["architecture".to_owned()]
+            && target_domain == vec!["storage".to_owned()]
+            && json
+    ));
+}
+
+#[test]
+fn parses_wiki_digest_cancel_command() {
+    let cli = Cli::try_parse_from([
+        "darc",
+        "wiki",
+        "digest",
+        "cancel",
+        "--project-id",
+        "repo-abc123",
+        "--run-id",
+        "cwrun_01abcd",
+        "--json",
+    ])
+    .unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Wiki(super::WikiArgs {
+            command: WikiCommands::Digest(super::WikiDigestArgs {
+                command: WikiDigestCommands::Cancel(super::WikiDigestCancelArgs {
+                    project_id,
+                    run_id,
+                    json,
+                    ..
+                }),
+            }),
+        }) if project_id == "repo-abc123" && run_id == "cwrun_01abcd" && json
     ));
 }
 
