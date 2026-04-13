@@ -48,8 +48,10 @@ const PROJECT_SESSIONS_SQL: &str = "
             provider,
             session_id,
             COUNT(*) AS turn_count,
+            MIN(turn_ordinal) AS first_turn_ordinal,
             MAX(turn_ordinal) AS latest_turn_ordinal,
             MAX(started_at) AS latest_turn_at,
+            SUM(CASE WHEN status = 'aborted' THEN 1 ELSE 0 END) AS aborted_turn_count,
             CASE
                 WHEN COUNT(*) = COUNT(total_token_count) THEN SUM(COALESCE(total_token_count, 0))
                 ELSE NULL
@@ -88,47 +90,115 @@ const PROJECT_SESSIONS_SQL: &str = "
         FROM turns
         WHERE project_id = ?1
         GROUP BY project_id, provider, session_id
+    ),
+    filtered_sessions AS (
+        SELECT
+            s.project_id,
+            s.provider,
+            s.session_id,
+            s.parent_session_id,
+            s.session_kind,
+            s.cwd,
+            COALESCE(turn_stats.turn_count, 0) AS turn_count,
+            turn_stats.latest_turn_at,
+            latest.status AS latest_status,
+            latest.primary_model,
+            turn_stats.total_token_count,
+            turn_stats.provider_total_token_count,
+            turn_stats.input_uncached_token_count,
+            turn_stats.cache_read_token_count,
+            turn_stats.cache_write_token_count,
+            turn_stats.output_token_count,
+            turn_stats.reasoning_token_count,
+            turn_stats.effective_agent_runtime_ms,
+            COALESCE(turn_stats.changed_file_count, 0) AS changed_file_count,
+            COALESCE(turn_stats.added_line_count, 0) AS added_line_count,
+            COALESCE(turn_stats.removed_line_count, 0) AS removed_line_count,
+            first_turn.started_at AS first_turn_at,
+            first_turn.user_message AS first_user_prompt,
+            COALESCE(turn_stats.aborted_turn_count, 0) AS aborted_turn_count
+        FROM sessions AS s
+        LEFT JOIN turn_stats
+            ON turn_stats.project_id = s.project_id
+            AND turn_stats.provider = s.provider
+            AND turn_stats.session_id = s.session_id
+        LEFT JOIN turns AS first_turn
+            ON first_turn.project_id = turn_stats.project_id
+            AND first_turn.provider = turn_stats.provider
+            AND first_turn.session_id = turn_stats.session_id
+            AND first_turn.turn_ordinal = turn_stats.first_turn_ordinal
+        LEFT JOIN turns AS latest
+            ON latest.project_id = turn_stats.project_id
+            AND latest.provider = turn_stats.provider
+            AND latest.session_id = turn_stats.session_id
+            AND latest.turn_ordinal = turn_stats.latest_turn_ordinal
+        WHERE s.project_id = ?1
+            AND (?2 IS NULL OR julianday(turn_stats.latest_turn_at) >= julianday(?2))
+            AND (?3 IS NULL OR julianday(turn_stats.latest_turn_at) < julianday(?3))
+    ),
+    session_edited_files AS (
+        SELECT
+            project_id,
+            provider,
+            session_id,
+            json_group_array(display_path) AS edited_files_json
+        FROM (
+            SELECT DISTINCT
+                file_accesses.project_id,
+                file_accesses.provider,
+                file_accesses.session_id,
+                TRIM(COALESCE(file_accesses.repo_relative_path, file_accesses.path)) AS display_path
+            FROM file_accesses
+            INNER JOIN filtered_sessions
+                ON filtered_sessions.project_id = file_accesses.project_id
+                AND filtered_sessions.provider = file_accesses.provider
+                AND filtered_sessions.session_id = file_accesses.session_id
+            WHERE file_accesses.access_type IN ('edit', 'write')
+                AND NULLIF(TRIM(COALESCE(file_accesses.repo_relative_path, file_accesses.path)), '') IS NOT NULL
+            ORDER BY
+                file_accesses.project_id ASC,
+                file_accesses.provider ASC,
+                file_accesses.session_id ASC,
+                display_path ASC
+        )
+        GROUP BY project_id, provider, session_id
     )
     SELECT
-        s.project_id,
-        s.provider,
-        s.session_id,
-        s.parent_session_id,
-        s.session_kind,
-        s.cwd,
-        COALESCE(turn_stats.turn_count, 0) AS turn_count,
-        turn_stats.latest_turn_at,
-        latest.status,
-        latest.primary_model,
-        turn_stats.total_token_count,
-        turn_stats.provider_total_token_count,
-        turn_stats.input_uncached_token_count,
-        turn_stats.cache_read_token_count,
-        turn_stats.cache_write_token_count,
-        turn_stats.output_token_count,
-        turn_stats.reasoning_token_count,
-        turn_stats.effective_agent_runtime_ms,
-        COALESCE(turn_stats.changed_file_count, 0),
-        COALESCE(turn_stats.added_line_count, 0),
-        COALESCE(turn_stats.removed_line_count, 0)
-    FROM sessions AS s
-    LEFT JOIN turn_stats
-        ON turn_stats.project_id = s.project_id
-        AND turn_stats.provider = s.provider
-        AND turn_stats.session_id = s.session_id
-    LEFT JOIN turns AS latest
-        ON latest.project_id = turn_stats.project_id
-        AND latest.provider = turn_stats.provider
-        AND latest.session_id = turn_stats.session_id
-        AND latest.turn_ordinal = turn_stats.latest_turn_ordinal
-    WHERE s.project_id = ?1
-        AND (?2 IS NULL OR julianday(turn_stats.latest_turn_at) >= julianday(?2))
-        AND (?3 IS NULL OR julianday(turn_stats.latest_turn_at) < julianday(?3))
+        filtered_sessions.project_id,
+        filtered_sessions.provider,
+        filtered_sessions.session_id,
+        filtered_sessions.parent_session_id,
+        filtered_sessions.session_kind,
+        filtered_sessions.cwd,
+        filtered_sessions.turn_count,
+        filtered_sessions.latest_turn_at,
+        filtered_sessions.latest_status,
+        filtered_sessions.primary_model,
+        filtered_sessions.total_token_count,
+        filtered_sessions.provider_total_token_count,
+        filtered_sessions.input_uncached_token_count,
+        filtered_sessions.cache_read_token_count,
+        filtered_sessions.cache_write_token_count,
+        filtered_sessions.output_token_count,
+        filtered_sessions.reasoning_token_count,
+        filtered_sessions.effective_agent_runtime_ms,
+        filtered_sessions.changed_file_count,
+        filtered_sessions.added_line_count,
+        filtered_sessions.removed_line_count,
+        filtered_sessions.first_turn_at,
+        filtered_sessions.first_user_prompt,
+        filtered_sessions.aborted_turn_count,
+        COALESCE(session_edited_files.edited_files_json, '[]')
+    FROM filtered_sessions
+    LEFT JOIN session_edited_files
+        ON session_edited_files.project_id = filtered_sessions.project_id
+        AND session_edited_files.provider = filtered_sessions.provider
+        AND session_edited_files.session_id = filtered_sessions.session_id
     ORDER BY
-        turn_stats.latest_turn_at IS NULL ASC,
-        turn_stats.latest_turn_at DESC,
-        s.provider ASC,
-        s.session_id DESC
+        filtered_sessions.latest_turn_at IS NULL ASC,
+        filtered_sessions.latest_turn_at DESC,
+        filtered_sessions.provider ASC,
+        filtered_sessions.session_id DESC
 ";
 
 const SESSION_TURNS_SQL: &str = "
@@ -262,6 +332,10 @@ fn query_sessions(
                 row.get::<_, i64>(18)?,
                 row.get::<_, i64>(19)?,
                 row.get::<_, i64>(20)?,
+                row.get::<_, Option<String>>(21)?,
+                row.get::<_, Option<String>>(22)?,
+                row.get::<_, i64>(23)?,
+                row.get::<_, String>(24)?,
             ))
         })
         .context("failed to query indexed sessions")?
@@ -291,6 +365,10 @@ fn query_sessions(
                 changed_file_count,
                 added_line_count,
                 removed_line_count,
+                first_turn_at,
+                first_user_prompt,
+                aborted_turn_count,
+                edited_files_json,
             )|
              -> Result<_> {
                 Ok(SessionSummary {
@@ -323,10 +401,20 @@ fn query_sessions(
                     changed_file_count: sql_count_to_u64(changed_file_count)?,
                     added_line_count: sql_count_to_u64(added_line_count)?,
                     removed_line_count: sql_count_to_u64(removed_line_count)?,
+                    first_turn_at,
+                    first_user_prompt,
+                    aborted_turn_count: sql_count_to_u64(aborted_turn_count)?,
+                    edited_files: parse_edited_files_json(&edited_files_json)?,
                 })
             },
         )
         .collect()
+}
+
+/// Parses one JSON array of edited session file paths from SQLite aggregation output.
+fn parse_edited_files_json(value: &str) -> Result<Vec<String>> {
+    serde_json::from_str(value)
+        .with_context(|| format!("failed to parse session edited-files JSON `{value}`"))
 }
 
 /// Queries the indexed turns for one provider session.

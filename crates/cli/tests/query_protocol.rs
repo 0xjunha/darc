@@ -208,6 +208,19 @@ fn sessions_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["sessions"][0]["session_id"], "session-1");
     assert_eq!(value["data"]["sessions"][0]["latest_status"], "completed");
     assert_eq!(value["data"]["sessions"][0]["primary_model"], "gpt-5.4");
+    assert_eq!(
+        value["data"]["sessions"][0]["first_turn_at"],
+        "2026-04-06T10:00:00Z"
+    );
+    assert_eq!(
+        value["data"]["sessions"][0]["first_user_prompt"],
+        "Inspect the repository status"
+    );
+    assert_eq!(value["data"]["sessions"][0]["aborted_turn_count"], 0);
+    assert_eq!(
+        value["data"]["sessions"][0]["edited_files"],
+        Value::Array(vec![])
+    );
     assert_eq!(value["data"]["sessions"][0]["total_token_count"], 321);
     assert_eq!(
         value["data"]["sessions"][0]["token_usage"]["input_uncached_token_count"],
@@ -244,6 +257,84 @@ fn sessions_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["sessions"][0]["changed_file_count"], 1);
     assert_eq!(value["data"]["sessions"][0]["added_line_count"], 2);
     assert_eq!(value["data"]["sessions"][0]["removed_line_count"], 1);
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn sessions_query_includes_first_turn_abort_counts_and_edited_files() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-sessions-fields")?;
+    let connection = open_index_database(&root.join("index.sqlite"))?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            turn_id: Some("turn-2"),
+            completed_at: Some("2026-04-06T10:10:05Z"),
+            user_message: "Cancel the in-flight change",
+            step_count: 0,
+            duration_ms: 5_000,
+            ..IndexedTurnFixture::new(
+                "repo-abc123",
+                SourceKind::Codex,
+                "session-1",
+                1,
+                "2026-04-06T10:10:00Z",
+                "aborted",
+                "[]",
+            )
+        },
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            turn_id: Some("turn-3"),
+            completed_at: Some("2026-04-06T10:20:05Z"),
+            user_message: "Write the follow-up patch",
+            step_count: 4,
+            tool_call_count: 4,
+            duration_ms: 5_000,
+            has_final_answer: true,
+            ..IndexedTurnFixture::new(
+                "repo-abc123",
+                SourceKind::Codex,
+                "session-1",
+                2,
+                "2026-04-06T10:20:00Z",
+                "completed",
+                r#"[{"type":"tool_call","timestamp":"2026-04-06T10:20:01Z","call_id":"call-2","name":"Write","arguments":"{\"file_path\":\"src/z.rs\"}"},{"type":"tool_call","timestamp":"2026-04-06T10:20:02Z","call_id":"call-3","name":"Edit","arguments":"{\"file_path\":\"src/a.rs\"}"},{"type":"tool_call","timestamp":"2026-04-06T10:20:03Z","call_id":"call-4","name":"Edit","arguments":"{\"file_path\":\"src/a.rs\"}"},{"type":"tool_call","timestamp":"2026-04-06T10:20:04Z","call_id":"call-5","name":"Read","arguments":"{\"file_path\":\"README.md\"}"}]"#,
+            )
+        },
+    )?;
+    drop(connection);
+
+    let output = run_darc([
+        "query",
+        "sessions",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--json",
+    ])?;
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.sessions.v1");
+    assert_eq!(
+        value["data"]["sessions"][0]["first_turn_at"],
+        "2026-04-06T10:00:00Z"
+    );
+    assert_eq!(
+        value["data"]["sessions"][0]["first_user_prompt"],
+        "Inspect the repository status"
+    );
+    assert_eq!(value["data"]["sessions"][0]["aborted_turn_count"], 1);
+    assert_eq!(
+        value["data"]["sessions"][0]["edited_files"],
+        serde_json::json!(["src/a.rs", "src/z.rs"])
+    );
 
     remove_root(&root)?;
     Ok(())
