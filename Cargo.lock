@@ -231,6 +231,7 @@ dependencies = [
  "directories",
  "rusqlite",
  "serde",
+ "serde_json",
  "toml",
  "walkdir",
 ]
