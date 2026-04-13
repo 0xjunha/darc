@@ -3,15 +3,15 @@ mod tests;
 
 use std::{
     path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use darc_core::query::{
-    SearchMode, SearchTurnsRequest, query_project_insight_report, query_search_turns,
-    query_sessions, query_turn, query_turn_insight_report, query_turns, query_workspace,
-    query_workspace_insight_report,
+    SearchMode, SearchTurnsRequest, TurnDetailOptions, query_project_insight_report,
+    query_search_turns, query_sessions, query_turn, query_turn_insight_report, query_turns,
+    query_workspace, query_workspace_insight_report,
 };
 use darc_core::{
     IndexOptions, InitDraft, RefreshOptions, RefreshReport, SkippedRollout, SourceKind,
@@ -214,6 +214,18 @@ struct QuerySessionsArgs {
 
     #[arg(
         long,
+        help = "Inclusive latest_turn_at lower bound. Example: `5d` or `2026-04-07T00:00:00Z`"
+    )]
+    since: Option<String>,
+
+    #[arg(
+        long,
+        help = "Exclusive latest_turn_at upper bound. Example: `1d` or `2026-04-08T00:00:00Z`"
+    )]
+    until: Option<String>,
+
+    #[arg(
+        long,
         required = true,
         help = "Required. Emit the stable machine-readable JSON envelope on stdout"
     )]
@@ -260,6 +272,14 @@ struct QueryTurnArgs {
 
     #[arg(long = "turn-ordinal", help = "Query this turn ordinal")]
     turn_ordinal: u64,
+
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = ViewArg::Full,
+        help = "Step detail level. `narrative` omits tool arguments, outputs, and payload blobs"
+    )]
+    view: ViewArg,
 
     #[arg(
         long,
@@ -461,6 +481,13 @@ enum SearchModeArg {
     FilePath,
 }
 
+/// Represents the supported turn-detail projection modes.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ViewArg {
+    Full,
+    Narrative,
+}
+
 /// Represents the supported Claude schema audit survey modes.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ClaudeSurveyModeArg {
@@ -529,7 +556,22 @@ fn run_query_workspace(args: QueryWorkspaceArgs) -> Result<()> {
 /// Queries the session list for one configured project.
 fn run_query_sessions(args: QuerySessionsArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
-    let data = query_sessions(Some(args.root), &args.project_id)?;
+    let since = args
+        .since
+        .as_deref()
+        .map(resolve_query_time_bound)
+        .transpose()?;
+    let until = args
+        .until
+        .as_deref()
+        .map(resolve_query_time_bound)
+        .transpose()?;
+    let data = query_sessions(
+        Some(args.root),
+        &args.project_id,
+        since.as_deref(),
+        until.as_deref(),
+    )?;
     print_query_json("darc.query.sessions.v1", &data)
 }
 
@@ -554,8 +596,11 @@ fn run_query_turn(args: QueryTurnArgs) -> Result<()> {
         provider_arg_to_source_kind(args.provider),
         &args.session_id,
         args.turn_ordinal,
-        args.include_raw,
-        args.include_insights,
+        TurnDetailOptions {
+            include_raw: args.include_raw,
+            include_insights: args.include_insights,
+            narrative: matches!(args.view, ViewArg::Narrative),
+        },
     )?;
     print_query_json("darc.query.turn.v1", &data)
 }
@@ -680,6 +725,49 @@ fn parse_window_days(value: &str) -> Result<u32, String> {
     Ok(days)
 }
 
+/// Resolves one query time bound from relative shorthand or absolute ISO-like text.
+fn resolve_query_time_bound(value: &str) -> Result<String> {
+    resolve_query_time_bound_at(value, SystemTime::now()).map_err(|message| anyhow!(message))
+}
+
+/// Resolves one query time bound against one fixed clock for deterministic tests.
+fn resolve_query_time_bound_at(
+    value: &str,
+    now: SystemTime,
+) -> std::result::Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("time bound must not be empty".to_owned());
+    }
+    if let Some(days) = value.strip_suffix('d') {
+        return resolve_relative_query_days(days, now);
+    }
+    if value.contains('-') {
+        return Ok(value.to_owned());
+    }
+    Err(format!(
+        "time bound `{value}` must be ISO-8601 text or `<days>d`, for example `5d`"
+    ))
+}
+
+/// Resolves one `<days>d` shorthand into an absolute UTC timestamp string.
+fn resolve_relative_query_days(days: &str, now: SystemTime) -> std::result::Result<String, String> {
+    let days = days
+        .parse::<u64>()
+        .map_err(|_| format!("invalid day shorthand `{days}d`"))?;
+    let delta_seconds = days
+        .checked_mul(86_400)
+        .ok_or_else(|| "relative day shorthand overflowed".to_owned())?;
+    let unix_seconds = now
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .saturating_sub(delta_seconds);
+    Ok(current_utc_timestamp_at(
+        UNIX_EPOCH + Duration::from_secs(unix_seconds),
+    ))
+}
+
 /// Converts one parsed provider argument back into the shared source kind.
 fn provider_arg_to_source_kind(provider: ProviderArg) -> SourceKind {
     match provider {
@@ -724,9 +812,12 @@ struct QueryErrorData {
 
 /// Returns the current UTC timestamp formatted for query protocol envelopes.
 fn current_utc_timestamp() -> String {
-    let duration = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
+    current_utc_timestamp_at(SystemTime::now())
+}
+
+/// Returns one UTC timestamp for one provided system time.
+fn current_utc_timestamp_at(timestamp: SystemTime) -> String {
+    let duration = timestamp.duration_since(UNIX_EPOCH).unwrap_or_default();
     let total_seconds = duration.as_secs();
     let days = i64::try_from(total_seconds / 86_400).unwrap_or(i64::MAX);
     let seconds_of_day = total_seconds % 86_400;

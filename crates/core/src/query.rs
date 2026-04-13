@@ -10,8 +10,9 @@ pub use darc_query::{
     DailyTimeStat, FileUsageStat, HardDebuggingTurn, ProjectInsights, ProjectSummary,
     ProjectTimeStat, RootAvailability, RootInfo, SearchMode, SearchTurnHit, SearchTurnsQueryData,
     SearchTurnsRequest, SessionKind, SessionRuntimeStat, SessionSummary, SessionsQueryData,
-    ShellCommandSummary, ToolUsageStat, TurnDetail, TurnDetailInsights, TurnInsights, TurnSummary,
-    TurnsQueryData, WorkspaceDailyTimeStat, WorkspaceInsights, WorkspaceQueryData,
+    ShellCommandSummary, ToolUsageStat, TurnDetail, TurnDetailInsights, TurnDetailOptions,
+    TurnInsights, TurnSummary, TurnsQueryData, WorkspaceDailyTimeStat, WorkspaceInsights,
+    WorkspaceQueryData,
 };
 use darc_query::{
     ProjectIndexAggregate, list_project_index_aggregates, query_project_insights,
@@ -104,9 +105,19 @@ pub fn query_workspace(root: Option<PathBuf>) -> WorkspaceQueryData {
 }
 
 /// Queries the session-list payload for one configured project.
-pub fn query_sessions(root: Option<PathBuf>, project_id: &str) -> Result<SessionsQueryData> {
+pub fn query_sessions(
+    root: Option<PathBuf>,
+    project_id: &str,
+    since: Option<&str>,
+    until: Option<&str>,
+) -> Result<SessionsQueryData> {
     let context = load_project_query_context(root, project_id)?;
-    query_project_sessions(&context.root.database_path, &context.project.id)
+    query_project_sessions(
+        &context.root.database_path,
+        &context.project.id,
+        since,
+        until,
+    )
 }
 
 /// Queries the turn-list payload for one configured provider session.
@@ -132,8 +143,7 @@ pub fn query_turn(
     provider: SourceKind,
     session_id: &str,
     turn_ordinal: u64,
-    include_raw: bool,
-    include_insights: bool,
+    options: TurnDetailOptions,
 ) -> Result<TurnDetail> {
     let context = load_project_query_context(root, project_id)?;
     query_turn_detail(
@@ -142,8 +152,7 @@ pub fn query_turn(
         provider,
         session_id,
         turn_ordinal,
-        include_raw,
-        include_insights,
+        options,
     )
 }
 

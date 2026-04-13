@@ -18,9 +18,9 @@ use darc_test_utils::{
 
 use crate::query::{
     HardDebuggingTurn, LocalDate, ProjectInsights, SearchMode, SearchTurnsRequest, SessionKind,
-    TurnInsights, build_project_insights, build_turn_insights, build_workspace_insights,
-    open_existing_index_database, parse_session_kind, query_project_sessions, query_search_turns,
-    smoke_test_sql,
+    TurnDetailOptions, TurnInsights, build_project_insights, build_turn_insights,
+    build_workspace_insights, open_existing_index_database, parse_session_kind,
+    query_project_sessions, query_search_turns, query_turn_detail, smoke_test_sql,
 };
 
 /// Builds one temporary SQLite index path for query tests.
@@ -509,12 +509,198 @@ fn session_summaries_leave_partial_token_and_runtime_totals_null() -> Result<()>
         },
     )?;
 
-    let sessions = query_project_sessions(&index_path, "repo-a")?;
+    let sessions = query_project_sessions(&index_path, "repo-a", None, None)?;
 
     assert_eq!(sessions.sessions.len(), 1);
     assert_eq!(sessions.sessions[0].total_token_count, None);
     assert_eq!(sessions.sessions[0].token_usage, None);
     assert_eq!(sessions.sessions[0].effective_agent_runtime_ms, None);
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn session_summaries_filter_by_latest_turn_bounds() -> Result<()> {
+    let index_path = test_index_path("session-time-bounds");
+    let connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-early", "/tmp/repo-a"),
+    )?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-late", "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture::new(
+            "repo-a",
+            SourceKind::Codex,
+            "session-early",
+            0,
+            "2026-04-05T10:00:00Z",
+            "completed",
+            "[]",
+        ),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture::new(
+            "repo-a",
+            SourceKind::Codex,
+            "session-late",
+            0,
+            "2026-04-06T10:00:00Z",
+            "completed",
+            "[]",
+        ),
+    )?;
+
+    let all_sessions = query_project_sessions(&index_path, "repo-a", None, None)?;
+    let since_sessions =
+        query_project_sessions(&index_path, "repo-a", Some("2026-04-06T00:00:00Z"), None)?;
+    let until_sessions =
+        query_project_sessions(&index_path, "repo-a", None, Some("2026-04-06T00:00:00Z"))?;
+    let bounded_sessions = query_project_sessions(
+        &index_path,
+        "repo-a",
+        Some("2026-04-05T12:00:00Z"),
+        Some("2026-04-06T12:00:00Z"),
+    )?;
+
+    assert_eq!(all_sessions.sessions.len(), 2);
+    assert_eq!(
+        since_sessions
+            .sessions
+            .iter()
+            .map(|session| session.session_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["session-late"]
+    );
+    assert_eq!(
+        until_sessions
+            .sessions
+            .iter()
+            .map(|session| session.session_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["session-early"]
+    );
+    assert_eq!(
+        bounded_sessions
+            .sessions
+            .iter()
+            .map(|session| session.session_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["session-late"]
+    );
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn turn_detail_narrative_view_strips_bulky_step_fields() -> Result<()> {
+    let index_path = test_index_path("turn-detail-narrative");
+    let connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            step_count: 8,
+            tool_call_count: 1,
+            tool_output_count: 1,
+            attachment_count: 1,
+            delegation_count: 1,
+            hook_summary_count: 1,
+            has_final_answer: true,
+            duration_ms: 3_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                0,
+                "2026-04-06T10:00:00Z",
+                "completed",
+                r##"[{"type":"reasoning","timestamp":"2026-04-06T10:00:01Z","summary":["inspect"],"encrypted":true},{"type":"commentary","timestamp":"2026-04-06T10:00:02Z","text":"Checking files."},{"type":"tool_call","timestamp":"2026-04-06T10:00:03Z","call_id":"call-1","name":"Read","arguments":"{\"file_path\":\"README.md\"}"},{"type":"tool_call_output","timestamp":"2026-04-06T10:00:04Z","call_id":"call-1","output":"# Repo"},{"type":"attachment","timestamp":"2026-04-06T10:00:05Z","attachment_type":"deferred_tools_delta","payload_json":"{\"added\":[\"Read\"]}"},{"type":"delegation","timestamp":"2026-04-06T10:00:06Z","call_id":"call-2","task_id":"task-1","event":"completed","agent_id":"agent-1","agent_type":"general-purpose","status":"completed","summary":"done","payload_json":"{\"totalDurationMs\":12}"},{"type":"hook_summary","timestamp":"2026-04-06T10:00:07Z","call_id":"call-3","hook_count":2,"prevented_continuation":false,"has_output":true,"level":"suggestion","payload_json":"{\"command\":\"callback\"}"},{"type":"provider_response_item","timestamp":"2026-04-06T10:00:08Z","item_type":"web_search_call","payload_json":"{\"status\":\"completed\"}"}]"##,
+            )
+        },
+    )?;
+
+    let detail = query_turn_detail(
+        &index_path,
+        "repo-a",
+        SourceKind::Codex,
+        "session-1",
+        0,
+        TurnDetailOptions {
+            include_raw: true,
+            include_insights: false,
+            narrative: true,
+        },
+    )?;
+
+    assert_eq!(detail.steps.len(), 8);
+    assert_eq!(detail.raw_steps_json, None);
+    assert!(matches!(
+        &detail.steps[0],
+        NormalizedTurnStep::Reasoning {
+            summary,
+            encrypted,
+            ..
+        } if summary == &vec!["inspect".to_owned()] && *encrypted
+    ));
+    assert!(matches!(
+        &detail.steps[1],
+        NormalizedTurnStep::Commentary { text, .. } if text == "Checking files."
+    ));
+    assert!(matches!(
+        &detail.steps[2],
+        NormalizedTurnStep::ToolCall { arguments, .. } if arguments.is_empty()
+    ));
+    assert!(matches!(
+        &detail.steps[3],
+        NormalizedTurnStep::ToolCallOutput { output, .. } if output.is_empty()
+    ));
+    assert!(matches!(
+        &detail.steps[4],
+        NormalizedTurnStep::Attachment { payload_json, .. } if payload_json.is_empty()
+    ));
+    assert!(matches!(
+        &detail.steps[5],
+        NormalizedTurnStep::Delegation {
+            payload_json,
+            summary,
+            ..
+        } if payload_json.is_empty() && summary.as_deref() == Some("done")
+    ));
+    assert!(matches!(
+        &detail.steps[6],
+        NormalizedTurnStep::HookSummary {
+            payload_json,
+            hook_count,
+            ..
+        } if payload_json.is_empty() && *hook_count == 2
+    ));
+    assert!(matches!(
+        &detail.steps[7],
+        NormalizedTurnStep::ProviderResponseItem {
+            payload_json,
+            item_type,
+            ..
+        } if payload_json.is_empty() && item_type == "web_search_call"
+    ));
 
     fs::remove_dir_all(
         index_path

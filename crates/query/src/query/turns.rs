@@ -6,9 +6,10 @@ use darc_rollout::model::NormalizedTokenUsage;
 use rusqlite::Connection;
 
 use super::{
-    FileUsageScope, IndexedTurnRow, ToolUsageScope, TurnDetail, TurnDetailInsights, TurnInsights,
-    open_existing_index_database, optional_sql_count_to_u64, parse_provider, parse_turn_status,
-    sort_tool_usage_stats, sort_turn_file_usage_stats, sql_count_to_u64,
+    FileUsageScope, IndexedTurnRow, ToolUsageScope, TurnDetail, TurnDetailInsights,
+    TurnDetailOptions, TurnInsights, open_existing_index_database, optional_sql_count_to_u64,
+    parse_provider, parse_turn_status, sort_tool_usage_stats, sort_turn_file_usage_stats,
+    sql_count_to_u64,
 };
 use crate::query::insights::{
     query_file_usage_stats, query_tool_usage_stats, query_turn_shell_commands,
@@ -59,8 +60,7 @@ pub fn query_turn_detail(
     provider: SourceKind,
     session_id: &str,
     turn_ordinal: u64,
-    include_raw: bool,
-    include_insights: bool,
+    options: TurnDetailOptions,
 ) -> Result<TurnDetail> {
     let connection = open_existing_index_database(index_db_path)?;
     build_turn_detail(
@@ -69,8 +69,7 @@ pub fn query_turn_detail(
         provider,
         session_id,
         turn_ordinal,
-        include_raw,
-        include_insights,
+        options,
     )
 }
 
@@ -93,14 +92,14 @@ fn build_turn_detail(
     provider: SourceKind,
     session_id: &str,
     turn_ordinal: u64,
-    include_raw: bool,
-    include_insights: bool,
+    options: TurnDetailOptions,
 ) -> Result<TurnDetail> {
     let row = query_indexed_turn_row(connection, project_id, provider, session_id, turn_ordinal)?;
-    let insights = include_insights
+    let insights = options
+        .include_insights
         .then(|| build_turn_detail_insights(connection, &row))
         .transpose()?;
-    row.into_turn_detail(include_raw, insights)
+    row.into_turn_detail(options, insights)
 }
 
 /// Builds one turn insights report from indexed turn, tool, and file rows.

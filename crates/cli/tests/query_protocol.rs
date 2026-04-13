@@ -119,6 +119,28 @@ fn create_query_fixture_root(prefix: &str) -> Result<PathBuf> {
     Ok(root)
 }
 
+/// Adds one extra indexed session fixture at one specified latest-turn timestamp.
+fn insert_query_fixture_session(root: &Path, session_id: &str, started_at: &str) -> Result<()> {
+    let connection = open_index_database(&root.join("index.sqlite"))?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-abc123", SourceKind::Codex, session_id, "/tmp/repo"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture::new(
+            "repo-abc123",
+            SourceKind::Codex,
+            session_id,
+            0,
+            started_at,
+            "completed",
+            "[]",
+        ),
+    )?;
+    Ok(())
+}
+
 /// Runs the compiled `darc` binary and returns its captured output.
 fn run_darc<I, S>(args: I) -> Result<std::process::Output>
 where
@@ -222,6 +244,87 @@ fn sessions_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["sessions"][0]["changed_file_count"], 1);
     assert_eq!(value["data"]["sessions"][0]["added_line_count"], 2);
     assert_eq!(value["data"]["sessions"][0]["removed_line_count"], 1);
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn sessions_query_applies_since_and_until_filters() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-sessions-bounds")?;
+    insert_query_fixture_session(&root, "session-0", "2026-04-05T10:00:00Z")?;
+    insert_query_fixture_session(&root, "session-2", "2026-04-07T10:00:00Z")?;
+
+    let since_output = run_darc([
+        "query",
+        "sessions",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--since",
+        "2026-04-06T00:00:00Z",
+        "--json",
+    ])?;
+    assert!(since_output.status.success());
+    let since_value = parse_json(&since_output.stdout, "stdout")?;
+    assert_eq!(
+        since_value["data"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|session| session["session_id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["session-2", "session-1"]
+    );
+
+    let until_output = run_darc([
+        "query",
+        "sessions",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--until",
+        "2026-04-07T00:00:00Z",
+        "--json",
+    ])?;
+    assert!(until_output.status.success());
+    let until_value = parse_json(&until_output.stdout, "stdout")?;
+    assert_eq!(
+        until_value["data"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|session| session["session_id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["session-1", "session-0"]
+    );
+
+    let bounded_output = run_darc([
+        "query",
+        "sessions",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--since",
+        "2026-04-06T00:00:00Z",
+        "--until",
+        "2026-04-07T00:00:00Z",
+        "--json",
+    ])?;
+    assert!(bounded_output.status.success());
+    let bounded_value = parse_json(&bounded_output.stdout, "stdout")?;
+    assert_eq!(
+        bounded_value["data"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|session| session["session_id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["session-1"]
+    );
 
     remove_root(&root)?;
     Ok(())
@@ -392,6 +495,42 @@ fn turn_query_can_embed_derived_insights() -> Result<()> {
     assert_eq!(value["data"]["insights"]["tool_output_count"], 1);
     assert_eq!(value["data"]["insights"]["tools"][0]["name"], "Read");
     assert_eq!(value["data"]["insights"]["files"][0]["path"], "README.md");
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn turn_query_narrative_view_strips_bulky_fields() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-turn-narrative")?;
+    let output = run_darc([
+        "query",
+        "turn",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--provider",
+        "codex",
+        "--session-id",
+        "session-1",
+        "--turn-ordinal",
+        "0",
+        "--view",
+        "narrative",
+        "--include-raw",
+        "--json",
+    ])?;
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.turn.v1");
+    assert_eq!(value["data"]["steps"][0]["type"], "tool_call");
+    assert_eq!(value["data"]["steps"][0]["arguments"], "");
+    assert_eq!(value["data"]["steps"][1]["type"], "tool_call_output");
+    assert_eq!(value["data"]["steps"][1]["output"], "");
+    assert!(value["data"]["raw_steps_json"].is_null());
 
     remove_root(&root)?;
     Ok(())

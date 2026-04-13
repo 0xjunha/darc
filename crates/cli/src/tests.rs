@@ -1,3 +1,5 @@
+use std::time::{Duration, UNIX_EPOCH};
+
 use anyhow::anyhow;
 use clap::{CommandFactory, Parser};
 use darc_rollout_audit::claude::{
@@ -12,6 +14,7 @@ use super::{
     Cli, Commands, QueryCommands, QueryInsightsCommands, claude_schema_audit_exit_code,
     codex_schema_audit_exit_code, format_claude_schema_audit_report,
     format_codex_schema_audit_report, format_query_error, parse_window_days,
+    resolve_query_time_bound_at,
 };
 
 fn compatible_report() -> CodexSchemaAuditReport {
@@ -173,6 +176,8 @@ fn parses_query_turn_command() {
         "session-1",
         "--turn-ordinal",
         "2",
+        "--view",
+        "narrative",
         "--include-raw",
         "--include-insights",
         "--json",
@@ -185,6 +190,7 @@ fn parses_query_turn_command() {
                 project_id,
                 session_id,
                 turn_ordinal,
+                view,
                 include_raw,
                 include_insights,
                 json,
@@ -193,8 +199,41 @@ fn parses_query_turn_command() {
         }) if project_id == "repo-abc123"
             && session_id == "session-1"
             && turn_ordinal == 2
+            && matches!(view, super::ViewArg::Narrative)
             && include_raw
             && include_insights
+            && json
+    ));
+}
+
+#[test]
+fn parses_query_sessions_with_time_bounds() {
+    let cli = Cli::try_parse_from([
+        "darc",
+        "query",
+        "sessions",
+        "--project-id",
+        "repo-abc123",
+        "--since",
+        "5d",
+        "--until",
+        "2026-04-07T00:00:00Z",
+        "--json",
+    ])
+    .unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Query(super::QueryArgs {
+            command: QueryCommands::Sessions(super::QuerySessionsArgs {
+                project_id,
+                since,
+                until,
+                json,
+                ..
+            }),
+        }) if project_id == "repo-abc123"
+            && since.as_deref() == Some("5d")
+            && until.as_deref() == Some("2026-04-07T00:00:00Z")
             && json
     ));
 }
@@ -224,6 +263,41 @@ fn query_workspace_help_mentions_json_flag() {
         .to_string();
 
     assert!(help.contains("--json"));
+}
+
+#[test]
+fn query_sessions_help_mentions_examples_for_time_bounds() {
+    let mut command = Cli::command();
+    let query = command
+        .find_subcommand_mut("query")
+        .expect("query subcommand should be present");
+    let help = query
+        .find_subcommand_mut("sessions")
+        .expect("sessions query subcommand should be present")
+        .render_long_help()
+        .to_string();
+
+    assert!(help.contains("--since"));
+    assert!(help.contains("--until"));
+    assert!(help.contains("5d"));
+    assert!(help.contains("2026-04-07T00:00:00Z"));
+}
+
+#[test]
+fn query_turn_help_mentions_narrative_view_behavior() {
+    let mut command = Cli::command();
+    let query = command
+        .find_subcommand_mut("query")
+        .expect("query subcommand should be present");
+    let help = query
+        .find_subcommand_mut("turn")
+        .expect("turn query subcommand should be present")
+        .render_long_help()
+        .to_string();
+
+    assert!(help.contains("--view"));
+    assert!(help.contains("narrative"));
+    assert!(help.contains("tool arguments"));
 }
 
 #[test]
@@ -257,6 +331,22 @@ fn parses_window_days() {
     assert_eq!(parse_window_days("7d").unwrap(), 7);
     assert!(parse_window_days("0d").is_err());
     assert!(parse_window_days("weekly").is_err());
+}
+
+#[test]
+fn resolves_relative_query_time_bounds() {
+    let now = UNIX_EPOCH + Duration::from_secs(1_744_022_096);
+    assert_eq!(
+        resolve_query_time_bound_at("5d", now).unwrap(),
+        "2025-04-02T10:34:56Z"
+    );
+}
+
+#[test]
+fn rejects_invalid_query_time_bounds() {
+    let now = UNIX_EPOCH + Duration::from_secs(1_744_022_096);
+    assert!(resolve_query_time_bound_at("weekly", now).is_err());
+    assert!(resolve_query_time_bound_at("", now).is_err());
 }
 
 #[test]

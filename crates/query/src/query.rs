@@ -218,6 +218,14 @@ pub struct TurnDetail {
     pub insights: Option<TurnDetailInsights>,
 }
 
+/// Stores one turn-detail projection and enrichment configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TurnDetailOptions {
+    pub include_raw: bool,
+    pub include_insights: bool,
+    pub narrative: bool,
+}
+
 /// Stores one optional derived insights block embedded in a turn detail payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TurnDetailInsights {
@@ -522,11 +530,16 @@ impl IndexedTurnRow {
     /// Converts one indexed turn row into the public turn detail payload.
     fn into_turn_detail(
         self,
-        include_raw: bool,
+        options: TurnDetailOptions,
         insights: Option<TurnDetailInsights>,
     ) -> Result<TurnDetail> {
         let steps = serde_json::from_str::<Vec<NormalizedTurnStep>>(&self.steps_json)
             .context("failed to parse stored normalized turn steps")?;
+        let steps = if options.narrative {
+            steps.into_iter().map(to_narrative_turn_step).collect()
+        } else {
+            steps
+        };
         Ok(TurnDetail {
             project_id: self.project_id,
             provider: self.provider,
@@ -541,7 +554,7 @@ impl IndexedTurnRow {
             final_answer_text: self.final_answer_text,
             step_count: self.step_count,
             steps,
-            raw_steps_json: include_raw.then_some(self.steps_json),
+            raw_steps_json: (options.include_raw && !options.narrative).then_some(self.steps_json),
             insights,
         })
     }
@@ -579,6 +592,87 @@ impl IndexedTurnRow {
             shell_commands,
             files: insights.files,
         }
+    }
+}
+
+/// Projects one normalized turn step into one narrative-only view.
+fn to_narrative_turn_step(step: NormalizedTurnStep) -> NormalizedTurnStep {
+    match step {
+        NormalizedTurnStep::Reasoning { .. } | NormalizedTurnStep::Commentary { .. } => step,
+        NormalizedTurnStep::ToolCall {
+            timestamp,
+            call_id,
+            name,
+            ..
+        } => NormalizedTurnStep::ToolCall {
+            timestamp,
+            call_id,
+            name,
+            arguments: String::new(),
+        },
+        NormalizedTurnStep::ToolCallOutput {
+            timestamp, call_id, ..
+        } => NormalizedTurnStep::ToolCallOutput {
+            timestamp,
+            call_id,
+            output: String::new(),
+        },
+        NormalizedTurnStep::Attachment {
+            timestamp,
+            attachment_type,
+            ..
+        } => NormalizedTurnStep::Attachment {
+            timestamp,
+            attachment_type,
+            payload_json: String::new(),
+        },
+        NormalizedTurnStep::Delegation {
+            timestamp,
+            call_id,
+            task_id,
+            event,
+            agent_id,
+            agent_type,
+            status,
+            summary,
+            ..
+        } => NormalizedTurnStep::Delegation {
+            timestamp,
+            call_id,
+            task_id,
+            event,
+            agent_id,
+            agent_type,
+            status,
+            summary,
+            payload_json: String::new(),
+        },
+        NormalizedTurnStep::HookSummary {
+            timestamp,
+            call_id,
+            hook_count,
+            prevented_continuation,
+            has_output,
+            level,
+            ..
+        } => NormalizedTurnStep::HookSummary {
+            timestamp,
+            call_id,
+            hook_count,
+            prevented_continuation,
+            has_output,
+            level,
+            payload_json: String::new(),
+        },
+        NormalizedTurnStep::ProviderResponseItem {
+            timestamp,
+            item_type,
+            ..
+        } => NormalizedTurnStep::ProviderResponseItem {
+            timestamp,
+            item_type,
+            payload_json: String::new(),
+        },
     }
 }
 

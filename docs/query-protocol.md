@@ -14,8 +14,10 @@ All query commands currently require `--json`.
 
 - `darc query workspace --root <path> --json`
 - `darc query sessions --root <path> --project-id <id> --json`
+- `darc query sessions --root <path> --project-id <id> --since <iso-8601|<days>d> --until <iso-8601|<days>d> --json`
 - `darc query turns --root <path> --project-id <id> --provider <provider> --session-id <id> --json`
 - `darc query turn --root <path> --project-id <id> --provider <provider> --session-id <id> --turn-ordinal <n> --json`
+- `darc query turn --root <path> --project-id <id> --provider <provider> --session-id <id> --turn-ordinal <n> --view <full|narrative> --json`
 - `darc query turn --root <path> --project-id <id> --provider <provider> --session-id <id> --turn-ordinal <n> --include-raw --json`
 - `darc query turn --root <path> --project-id <id> --provider <provider> --session-id <id> --turn-ordinal <n> --include-insights --json`
 - `darc query search turns --root <path> --project-id <id> --mode <keyword|file-name|file-path> --query <text> --json`
@@ -196,10 +198,24 @@ Today:
 
 - session rows include `primary_model`, `total_token_count`, `token_usage`, `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, and `removed_line_count`
 - session totals are rollups across the indexed turns in that session
+- optional `--since` and `--until` filters apply to `latest_turn_at`, using inclusive lower-bound and exclusive upper-bound semantics
+- `--since` and `--until` accept absolute ISO-8601 text or relative `<days>d` shorthand such as `5d`
 - each `token_usage.*` session field is `null` unless every indexed turn in that session carried a value for that exact field
 - `total_token_count` and `effective_agent_runtime_ms` are currently `null` on a session row unless every indexed turn in that session carried a value for that field
 - turn rows include `primary_model`, `total_token_count`, `token_usage`, `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, and `removed_line_count`
 - `primary_model`, `total_token_count`, `token_usage`, and `effective_agent_runtime_ms` may be `null` when the archived provider transcript did not report stable values, or until older projects are re-indexed after additive schema upgrades
+
+### Narrative turn detail
+
+`darc query turn --view narrative --json` keeps the same `darc.query.turn.v1` schema but projects each step down to the conversational structure without the bulky tool arguments, tool outputs, or raw payload blobs.
+
+Today:
+
+- `reasoning` and `commentary` steps keep their full fields
+- `tool_call` keeps `timestamp`, `call_id`, and `name`, but clears `arguments`
+- `tool_call_output` keeps `timestamp` and `call_id`, but clears `output`
+- `attachment`, `delegation`, `hook_summary`, and `provider_response_item` keep their identifying metadata, but clear `payload_json`
+- `raw_steps_json` is forced to `null` in narrative view even when `--include-raw` is set
 
 ### Turn search
 
