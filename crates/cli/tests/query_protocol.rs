@@ -501,6 +501,42 @@ fn turn_query_can_embed_derived_insights() -> Result<()> {
 }
 
 #[test]
+fn turn_query_narrative_view_strips_bulky_fields() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-turn-narrative")?;
+    let output = run_darc([
+        "query",
+        "turn",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--provider",
+        "codex",
+        "--session-id",
+        "session-1",
+        "--turn-ordinal",
+        "0",
+        "--view",
+        "narrative",
+        "--include-raw",
+        "--json",
+    ])?;
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.turn.v1");
+    assert_eq!(value["data"]["steps"][0]["type"], "tool_call");
+    assert_eq!(value["data"]["steps"][0]["arguments"], "");
+    assert_eq!(value["data"]["steps"][1]["type"], "tool_call_output");
+    assert_eq!(value["data"]["steps"][1]["output"], "");
+    assert!(value["data"]["raw_steps_json"].is_null());
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
 fn search_turns_query_emits_keyword_search_envelope() -> Result<()> {
     let root = create_query_fixture_root("cli-query-search-keyword")?;
     let output = run_darc([

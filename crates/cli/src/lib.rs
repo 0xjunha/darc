@@ -9,9 +9,9 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use darc_core::query::{
-    SearchMode, SearchTurnsRequest, query_project_insight_report, query_search_turns,
-    query_sessions, query_turn, query_turn_insight_report, query_turns, query_workspace,
-    query_workspace_insight_report,
+    SearchMode, SearchTurnsRequest, TurnDetailOptions, query_project_insight_report,
+    query_search_turns, query_sessions, query_turn, query_turn_insight_report, query_turns,
+    query_workspace, query_workspace_insight_report,
 };
 use darc_core::{
     IndexOptions, InitDraft, RefreshOptions, RefreshReport, SkippedRollout, SourceKind,
@@ -275,6 +275,14 @@ struct QueryTurnArgs {
 
     #[arg(
         long,
+        value_enum,
+        default_value_t = ViewArg::Full,
+        help = "Control whether steps keep full payloads or only narrative structure"
+    )]
+    view: ViewArg,
+
+    #[arg(
+        long,
         help = "Include optional raw/debug fields such as raw_steps_json"
     )]
     include_raw: bool,
@@ -473,6 +481,13 @@ enum SearchModeArg {
     FilePath,
 }
 
+/// Represents the supported turn-detail projection modes.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ViewArg {
+    Full,
+    Narrative,
+}
+
 /// Represents the supported Claude schema audit survey modes.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ClaudeSurveyModeArg {
@@ -581,8 +596,11 @@ fn run_query_turn(args: QueryTurnArgs) -> Result<()> {
         provider_arg_to_source_kind(args.provider),
         &args.session_id,
         args.turn_ordinal,
-        args.include_raw,
-        args.include_insights,
+        TurnDetailOptions {
+            include_raw: args.include_raw,
+            include_insights: args.include_insights,
+            narrative: matches!(args.view, ViewArg::Narrative),
+        },
     )?;
     print_query_json("darc.query.turn.v1", &data)
 }

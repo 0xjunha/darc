@@ -176,6 +176,8 @@ fn parses_query_turn_command() {
         "session-1",
         "--turn-ordinal",
         "2",
+        "--view",
+        "narrative",
         "--include-raw",
         "--include-insights",
         "--json",
@@ -188,6 +190,7 @@ fn parses_query_turn_command() {
                 project_id,
                 session_id,
                 turn_ordinal,
+                view,
                 include_raw,
                 include_insights,
                 json,
@@ -196,6 +199,7 @@ fn parses_query_turn_command() {
         }) if project_id == "repo-abc123"
             && session_id == "session-1"
             && turn_ordinal == 2
+            && matches!(view, super::ViewArg::Narrative)
             && include_raw
             && include_insights
             && json
