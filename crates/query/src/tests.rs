@@ -496,6 +496,7 @@ fn session_summaries_leave_partial_token_and_runtime_totals_null() -> Result<()>
             duration_ms: 2_000,
             effective_agent_runtime_ms: Some(2_000),
             total_token_count: Some(321),
+            input_uncached_token_count: Some(120),
             ..IndexedTurnFixture::new(
                 "repo-a",
                 SourceKind::Codex,
@@ -512,6 +513,7 @@ fn session_summaries_leave_partial_token_and_runtime_totals_null() -> Result<()>
 
     assert_eq!(sessions.sessions.len(), 1);
     assert_eq!(sessions.sessions[0].total_token_count, None);
+    assert_eq!(sessions.sessions[0].token_usage, None);
     assert_eq!(sessions.sessions[0].effective_agent_runtime_ms, None);
 
     fs::remove_dir_all(
@@ -622,6 +624,12 @@ fn turn_insights_collect_turn_scoped_stats_and_ordering() -> Result<()> {
             hook_summary_count: 1,
             has_final_answer: true,
             duration_ms: 12_000,
+            provider_total_token_count: Some(300),
+            input_uncached_token_count: Some(120),
+            cache_read_token_count: Some(80),
+            output_token_count: Some(121),
+            reasoning_token_count: Some(20),
+            total_token_count: Some(321),
             ..IndexedTurnFixture::new(
                 "repo-a",
                 SourceKind::Codex,
@@ -668,6 +676,37 @@ fn turn_insights_collect_turn_scoped_stats_and_ordering() -> Result<()> {
         darc_rollout::model::NormalizedTurnStatus::Completed
     );
     assert_eq!(insights.duration_ms, 12_000);
+    assert_eq!(insights.total_token_count, Some(321));
+    assert_eq!(
+        insights
+            .token_usage
+            .and_then(|usage| usage.input_uncached_token_count),
+        Some(120)
+    );
+    assert_eq!(
+        insights
+            .token_usage
+            .and_then(|usage| usage.cache_read_token_count),
+        Some(80)
+    );
+    assert_eq!(
+        insights
+            .token_usage
+            .and_then(|usage| usage.cache_write_token_count),
+        None
+    );
+    assert_eq!(
+        insights
+            .token_usage
+            .and_then(|usage| usage.output_token_count),
+        Some(121)
+    );
+    assert_eq!(
+        insights
+            .token_usage
+            .and_then(|usage| usage.reasoning_token_count),
+        Some(20)
+    );
     assert_eq!(insights.step_count, 9);
     assert_eq!(insights.tool_call_count, 4);
     assert_eq!(insights.tool_output_count, 2);

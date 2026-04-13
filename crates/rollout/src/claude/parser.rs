@@ -12,8 +12,9 @@ use super::version::{ClaudeSchemaEpoch, ClaudeSchemaResolution, resolve_claude_s
 use crate::{
     ParseDeterminism,
     model::{
-        NormalizedTurn as CodexTurn, NormalizedTurnMessage as CodexTurnMessage,
-        NormalizedTurnStatus as CodexTurnStatus, NormalizedTurnStep as CodexTurnStep,
+        NormalizedTokenUsage, NormalizedTurn as CodexTurn,
+        NormalizedTurnMessage as CodexTurnMessage, NormalizedTurnStatus as CodexTurnStatus,
+        NormalizedTurnStep as CodexTurnStep,
     },
 };
 
@@ -80,9 +81,9 @@ struct ClaudeTurnBuilder {
     status: CodexTurnStatus,
     final_answer: Option<CodexTurnMessage>,
     primary_model: Option<String>,
-    direct_request_token_counts: BTreeMap<String, u64>,
+    direct_request_token_usage: BTreeMap<String, NormalizedTokenUsage>,
     has_direct_token_usage: bool,
-    delegated_token_count: u64,
+    delegated_token_usage: NormalizedTokenUsage,
     has_delegated_token_usage: bool,
     steps: Vec<CodexTurnStep>,
 }
@@ -98,9 +99,9 @@ impl ClaudeTurnBuilder {
             status: CodexTurnStatus::Incomplete,
             final_answer: None,
             primary_model: None,
-            direct_request_token_counts: BTreeMap::new(),
+            direct_request_token_usage: BTreeMap::new(),
             has_direct_token_usage: false,
-            delegated_token_count: 0,
+            delegated_token_usage: NormalizedTokenUsage::default(),
             has_delegated_token_usage: false,
             steps: Vec::new(),
         }
@@ -116,31 +117,42 @@ impl ClaudeTurnBuilder {
         }
     }
 
-    /// Records one direct assistant request token total while avoiding duplicate request counts.
-    fn observe_direct_request_tokens(&mut self, request_key: String, total_tokens: u64) {
+    /// Records one direct assistant usage row while avoiding duplicate request counts.
+    fn observe_direct_request_usage(
+        &mut self,
+        request_key: String,
+        token_usage: NormalizedTokenUsage,
+    ) {
         self.has_direct_token_usage = true;
         let entry = self
-            .direct_request_token_counts
+            .direct_request_token_usage
             .entry(request_key)
-            .or_insert(0);
-        *entry = (*entry).max(total_tokens);
+            .or_default();
+        entry.saturating_max_assign(token_usage);
     }
 
-    /// Adds one delegated token total reported by the provider.
-    fn observe_delegated_tokens(&mut self, total_tokens: u64) {
+    /// Adds one delegated usage row reported by the provider.
+    fn observe_delegated_token_usage(&mut self, token_usage: NormalizedTokenUsage) {
         self.has_delegated_token_usage = true;
-        self.delegated_token_count = self.delegated_token_count.saturating_add(total_tokens);
+        self.delegated_token_usage
+            .saturating_add_assign(token_usage);
     }
 
     /// Finalizes one in-progress turn into the shared persisted model.
     fn finish(self) -> CodexTurn {
-        let direct_token_count = self
-            .direct_request_token_counts
-            .values()
-            .copied()
-            .fold(0_u64, u64::saturating_add);
-        let total_token_count = (self.has_direct_token_usage || self.has_delegated_token_usage)
-            .then_some(direct_token_count.saturating_add(self.delegated_token_count));
+        let mut token_usage = self.direct_request_token_usage.values().copied().fold(
+            NormalizedTokenUsage::default(),
+            |mut total, usage| {
+                total.saturating_add_assign(usage);
+                total
+            },
+        );
+        if self.has_delegated_token_usage {
+            token_usage.saturating_add_assign(self.delegated_token_usage);
+        }
+        let token_usage = (self.has_direct_token_usage || self.has_delegated_token_usage)
+            .then_some(token_usage)
+            .filter(|usage| usage.has_any_value());
         CodexTurn {
             turn_id: self.turn_id,
             user_message: self.user_message,
@@ -149,7 +161,7 @@ impl ClaudeTurnBuilder {
             completed_at: self.completed_at,
             status: self.status,
             primary_model: self.primary_model,
-            total_token_count,
+            token_usage,
             steps: self.steps,
         }
     }
@@ -466,10 +478,10 @@ impl<'a> ClaudeRolloutParser<'a> {
             self.best_effort = true;
         }
         turn.observe_model(message.get("model").and_then(Value::as_str));
-        if let Some(total_tokens) = assistant_message_total_tokens(message) {
-            turn.observe_direct_request_tokens(
+        if let Some(token_usage) = assistant_message_token_usage(message) {
+            turn.observe_direct_request_usage(
                 assistant_request_token_key(object, message, &timestamp),
-                total_tokens,
+                token_usage,
             );
         }
 
@@ -585,8 +597,8 @@ impl<'a> ClaudeRolloutParser<'a> {
             return Ok(());
         };
 
-        if let Some(total_tokens) = delegated_total_tokens(user_line) {
-            turn.observe_delegated_tokens(total_tokens);
+        if let Some(token_usage) = delegated_token_usage(user_line) {
+            turn.observe_delegated_token_usage(token_usage);
         }
 
         for result in tool_results {
@@ -696,31 +708,91 @@ fn assistant_request_token_key(
         .to_owned()
 }
 
-/// Returns one best-effort direct Claude assistant token total for a single provider request.
-fn assistant_message_total_tokens(message: &Map<String, Value>) -> Option<u64> {
+/// Returns one best-effort direct Claude assistant token usage for a request.
+fn assistant_message_token_usage(message: &Map<String, Value>) -> Option<NormalizedTokenUsage> {
     let usage = message.get("usage").and_then(Value::as_object)?;
-    let has_input = usage.contains_key("input_tokens");
-    let has_output = usage.contains_key("output_tokens");
-    if !has_input && !has_output {
-        return None;
-    }
-    let input_tokens = usage
-        .get("input_tokens")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    let output_tokens = usage
-        .get("output_tokens")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    Some(input_tokens.saturating_add(output_tokens))
+    assistant_usage_from_object(usage, None)
 }
 
-/// Returns one delegated Claude token total when the user line reports completed subagent usage.
-fn delegated_total_tokens(user_line: &Map<String, Value>) -> Option<u64> {
-    user_line
-        .get("toolUseResult")
-        .and_then(Value::as_object)
-        .and_then(|payload| payload.get("totalTokens").and_then(Value::as_u64))
+/// Returns one normalized Claude token usage row for delegated tool results.
+fn delegated_token_usage(user_line: &Map<String, Value>) -> Option<NormalizedTokenUsage> {
+    let payload = user_line.get("toolUseResult").and_then(Value::as_object)?;
+    let provider_total_token_count = payload.get("totalTokens").and_then(Value::as_u64);
+    let usage = payload.get("usage").and_then(Value::as_object);
+    usage
+        .and_then(|usage| assistant_usage_from_object(usage, provider_total_token_count))
+        .map(|mut usage| {
+            if let Some(provider_total_token_count) = provider_total_token_count {
+                usage.provider_total_token_count = Some(provider_total_token_count);
+                usage.normalized_total_token_count = Some(provider_total_token_count);
+            }
+            usage
+        })
+        .or_else(|| {
+            provider_total_token_count.map(|provider_total_token_count| NormalizedTokenUsage {
+                input_uncached_token_count: None,
+                cache_read_token_count: None,
+                cache_write_token_count: None,
+                output_token_count: None,
+                reasoning_token_count: None,
+                provider_total_token_count: Some(provider_total_token_count),
+                normalized_total_token_count: Some(provider_total_token_count),
+            })
+        })
+}
+
+/// Builds one normalized Claude usage record from one provider usage object.
+fn assistant_usage_from_object(
+    usage: &Map<String, Value>,
+    provider_total_token_count: Option<u64>,
+) -> Option<NormalizedTokenUsage> {
+    let has_usage = usage.contains_key("input_tokens")
+        || usage.contains_key("output_tokens")
+        || usage.contains_key("cache_creation_input_tokens")
+        || usage.contains_key("cache_read_input_tokens");
+    if !has_usage {
+        return None;
+    }
+    let input_uncached_token_count = usage_counter_value(usage, "input_tokens");
+    let cache_read_token_count = usage_counter_value(usage, "cache_read_input_tokens");
+    let cache_write_token_count = usage_counter_value(usage, "cache_creation_input_tokens");
+    let output_token_count = usage_counter_value(usage, "output_tokens");
+    let normalized_total_token_count = match (
+        input_uncached_token_count,
+        cache_read_token_count,
+        cache_write_token_count,
+        output_token_count,
+    ) {
+        (
+            Some(input_uncached_token_count),
+            Some(cache_read_token_count),
+            Some(cache_write_token_count),
+            Some(output_token_count),
+        ) => Some(
+            input_uncached_token_count
+                .saturating_add(cache_read_token_count)
+                .saturating_add(cache_write_token_count)
+                .saturating_add(output_token_count),
+        ),
+        (Some(input_uncached_token_count), None, None, Some(output_token_count)) => {
+            Some(input_uncached_token_count.saturating_add(output_token_count))
+        }
+        _ => provider_total_token_count,
+    };
+    Some(NormalizedTokenUsage {
+        input_uncached_token_count,
+        cache_read_token_count,
+        cache_write_token_count,
+        output_token_count,
+        reasoning_token_count: None,
+        provider_total_token_count,
+        normalized_total_token_count,
+    })
+}
+
+/// Returns one optional usage counter from one Claude usage object.
+fn usage_counter_value(usage: &Map<String, Value>, key: &str) -> Option<u64> {
+    usage.get(key).and_then(Value::as_u64)
 }
 
 /// Filters one raw provider model string down to a user-visible stable model name.

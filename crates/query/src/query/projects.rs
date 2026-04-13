@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use darc_paths::SourceKind;
 use rusqlite::Connection;
 
+use super::turns::build_token_usage;
 use super::{
     ProjectIndexAggregate, SessionSummary, SessionsQueryData, TurnSummary, TurnsQueryData,
     open_existing_index_database, optional_sql_count_to_u64, parse_provider, parse_session_kind,
@@ -54,6 +55,30 @@ const PROJECT_SESSIONS_SQL: &str = "
                 ELSE NULL
             END AS total_token_count,
             CASE
+                WHEN COUNT(*) = COUNT(provider_total_token_count) THEN SUM(COALESCE(provider_total_token_count, 0))
+                ELSE NULL
+            END AS provider_total_token_count,
+            CASE
+                WHEN COUNT(*) = COUNT(input_uncached_token_count) THEN SUM(COALESCE(input_uncached_token_count, 0))
+                ELSE NULL
+            END AS input_uncached_token_count,
+            CASE
+                WHEN COUNT(*) = COUNT(cache_read_token_count) THEN SUM(COALESCE(cache_read_token_count, 0))
+                ELSE NULL
+            END AS cache_read_token_count,
+            CASE
+                WHEN COUNT(*) = COUNT(cache_write_token_count) THEN SUM(COALESCE(cache_write_token_count, 0))
+                ELSE NULL
+            END AS cache_write_token_count,
+            CASE
+                WHEN COUNT(*) = COUNT(output_token_count) THEN SUM(COALESCE(output_token_count, 0))
+                ELSE NULL
+            END AS output_token_count,
+            CASE
+                WHEN COUNT(*) = COUNT(reasoning_token_count) THEN SUM(COALESCE(reasoning_token_count, 0))
+                ELSE NULL
+            END AS reasoning_token_count,
+            CASE
                 WHEN COUNT(*) = COUNT(effective_agent_runtime_ms) THEN SUM(COALESCE(effective_agent_runtime_ms, 0))
                 ELSE NULL
             END AS effective_agent_runtime_ms,
@@ -76,6 +101,12 @@ const PROJECT_SESSIONS_SQL: &str = "
         latest.status,
         latest.primary_model,
         turn_stats.total_token_count,
+        turn_stats.provider_total_token_count,
+        turn_stats.input_uncached_token_count,
+        turn_stats.cache_read_token_count,
+        turn_stats.cache_write_token_count,
+        turn_stats.output_token_count,
+        turn_stats.reasoning_token_count,
         turn_stats.effective_agent_runtime_ms,
         COALESCE(turn_stats.changed_file_count, 0),
         COALESCE(turn_stats.added_line_count, 0),
@@ -113,6 +144,12 @@ const SESSION_TURNS_SQL: &str = "
         step_count,
         primary_model,
         total_token_count,
+        provider_total_token_count,
+        input_uncached_token_count,
+        cache_read_token_count,
+        cache_write_token_count,
+        output_token_count,
+        reasoning_token_count,
         effective_agent_runtime_ms,
         changed_file_count,
         added_line_count,
@@ -204,9 +241,15 @@ fn query_sessions(connection: &Connection, project_id: &str) -> Result<Vec<Sessi
                 row.get::<_, Option<String>>(9)?,
                 row.get::<_, Option<i64>>(10)?,
                 row.get::<_, Option<i64>>(11)?,
-                row.get::<_, i64>(12)?,
-                row.get::<_, i64>(13)?,
-                row.get::<_, i64>(14)?,
+                row.get::<_, Option<i64>>(12)?,
+                row.get::<_, Option<i64>>(13)?,
+                row.get::<_, Option<i64>>(14)?,
+                row.get::<_, Option<i64>>(15)?,
+                row.get::<_, Option<i64>>(16)?,
+                row.get::<_, Option<i64>>(17)?,
+                row.get::<_, i64>(18)?,
+                row.get::<_, i64>(19)?,
+                row.get::<_, i64>(20)?,
             ))
         })
         .context("failed to query indexed sessions")?
@@ -226,6 +269,12 @@ fn query_sessions(connection: &Connection, project_id: &str) -> Result<Vec<Sessi
                 latest_status,
                 primary_model,
                 total_token_count,
+                provider_total_token_count,
+                input_uncached_token_count,
+                cache_read_token_count,
+                cache_write_token_count,
+                output_token_count,
+                reasoning_token_count,
                 effective_agent_runtime_ms,
                 changed_file_count,
                 added_line_count,
@@ -246,6 +295,15 @@ fn query_sessions(connection: &Connection, project_id: &str) -> Result<Vec<Sessi
                         .map(parse_turn_status)
                         .transpose()?,
                     primary_model,
+                    token_usage: build_token_usage(
+                        provider_total_token_count,
+                        input_uncached_token_count,
+                        cache_read_token_count,
+                        cache_write_token_count,
+                        output_token_count,
+                        reasoning_token_count,
+                        total_token_count,
+                    )?,
                     total_token_count: optional_sql_count_to_u64(total_token_count)?,
                     effective_agent_runtime_ms: optional_sql_count_to_u64(
                         effective_agent_runtime_ms,
@@ -286,9 +344,15 @@ fn query_turns(
                 row.get::<_, Option<String>>(11)?,
                 row.get::<_, Option<i64>>(12)?,
                 row.get::<_, Option<i64>>(13)?,
-                row.get::<_, i64>(14)?,
-                row.get::<_, i64>(15)?,
-                row.get::<_, i64>(16)?,
+                row.get::<_, Option<i64>>(14)?,
+                row.get::<_, Option<i64>>(15)?,
+                row.get::<_, Option<i64>>(16)?,
+                row.get::<_, Option<i64>>(17)?,
+                row.get::<_, Option<i64>>(18)?,
+                row.get::<_, Option<i64>>(19)?,
+                row.get::<_, i64>(20)?,
+                row.get::<_, i64>(21)?,
+                row.get::<_, i64>(22)?,
             ))
         })
         .context("failed to query indexed turns")?
@@ -310,6 +374,12 @@ fn query_turns(
                 step_count,
                 primary_model,
                 total_token_count,
+                provider_total_token_count,
+                input_uncached_token_count,
+                cache_read_token_count,
+                cache_write_token_count,
+                output_token_count,
+                reasoning_token_count,
                 effective_agent_runtime_ms,
                 changed_file_count,
                 added_line_count,
@@ -329,6 +399,15 @@ fn query_turns(
                     has_final_answer: has_final_answer != 0,
                     step_count: sql_count_to_u64(step_count)?,
                     primary_model,
+                    token_usage: build_token_usage(
+                        provider_total_token_count,
+                        input_uncached_token_count,
+                        cache_read_token_count,
+                        cache_write_token_count,
+                        output_token_count,
+                        reasoning_token_count,
+                        total_token_count,
+                    )?,
                     total_token_count: optional_sql_count_to_u64(total_token_count)?,
                     effective_agent_runtime_ms: optional_sql_count_to_u64(
                         effective_agent_runtime_ms,

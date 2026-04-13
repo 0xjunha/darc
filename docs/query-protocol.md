@@ -156,9 +156,13 @@ These rules may evolve before stabilization.
 
 Today:
 
-- top-level fields such as `primary_model`, `duration_ms`, `effective_agent_runtime_ms`, `total_token_count`, `changed_file_count`, `added_line_count`, `removed_line_count`, `step_count`, `tool_call_count`, `tool_output_count`, `attachment_count`, `delegation_count`, `hook_summary_count`, and `has_final_answer` come from the indexed `turns` row for that exact turn
+- top-level fields such as `primary_model`, `duration_ms`, `effective_agent_runtime_ms`, `total_token_count`, `token_usage`, `changed_file_count`, `added_line_count`, `removed_line_count`, `step_count`, `tool_call_count`, `tool_output_count`, `attachment_count`, `delegation_count`, `hook_summary_count`, and `has_final_answer` come from the indexed `turns` row for that exact turn
 - `primary_model` is the best-effort user-visible model name stored for that turn; it may be `null` for older provider versions or transcripts that did not report a concrete model name
-- `total_token_count` is the best-effort total token usage stored for that turn; it may be `null` for older provider versions or transcripts that did not report usable token counts
+- `total_token_count` is the best-effort normalized cache-aware total token usage stored for that turn; it may be `null` for older provider versions or transcripts that did not report usable token counts
+- `token_usage` reports the normalized per-turn token buckets Darc could derive: `input_uncached_token_count`, `cache_read_token_count`, `cache_write_token_count`, `output_token_count`, optional `reasoning_token_count`, `provider_total_token_count`, and `normalized_total_token_count`
+- `reasoning_token_count` is currently a subset of `output_token_count`, not an additive peer bucket, so clients must not add it on top of `output_token_count`
+- `provider_total_token_count` preserves provider-native semantics when the rollout reported one; for example, current Codex/OpenAI rollout totals can exclude cache buckets while Claude direct assistant rows do not report a native total at all
+- unsupported or unreported buckets remain `null`; Darc does not synthesize zeroes for missing provider fields
 - `effective_agent_runtime_ms` starts from the turn wall-clock duration and currently adds any delegated-runtime totals that Darc can extract from stable provider payloads
 - `changed_file_count`, `added_line_count`, and `removed_line_count` are transcript-derived patch statistics; they count observed `apply_patch`-style edits, not a live git diff against the current repository state
 - `tools` comes from normalized per-turn `tool_calls` rows, grouped by `tool_name`
@@ -180,7 +184,7 @@ Clients should treat these analytics as Darc-owned derived data and should not r
 Today:
 
 - the top-level turn detail fields remain unchanged
-- `insights` includes `primary_model`, `duration_ms`, `effective_agent_runtime_ms`, `total_token_count`, `changed_file_count`, `added_line_count`, `removed_line_count`, `tool_call_count`, `tool_output_count`, `attachment_count`, `delegation_count`, `hook_summary_count`, `has_final_answer`, `tools`, and `files`
+- `insights` includes `primary_model`, `duration_ms`, `effective_agent_runtime_ms`, `total_token_count`, `token_usage`, `changed_file_count`, `added_line_count`, `removed_line_count`, `tool_call_count`, `tool_output_count`, `attachment_count`, `delegation_count`, `hook_summary_count`, `has_final_answer`, `tools`, and `files`
 - the embedded `insights.tools` and `insights.files` arrays follow the same derivation and ordering rules as `darc.query.insights.turn.v1`
 - this command is the preferred single-round-trip protocol when a client needs both turn detail and turn analytics together
 
@@ -190,11 +194,12 @@ Today:
 
 Today:
 
-- session rows include `primary_model`, `total_token_count`, `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, and `removed_line_count`
+- session rows include `primary_model`, `total_token_count`, `token_usage`, `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, and `removed_line_count`
 - session totals are rollups across the indexed turns in that session
+- each `token_usage.*` session field is `null` unless every indexed turn in that session carried a value for that exact field
 - `total_token_count` and `effective_agent_runtime_ms` are currently `null` on a session row unless every indexed turn in that session carried a value for that field
-- turn rows include `primary_model`, `total_token_count`, `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, and `removed_line_count`
-- `primary_model`, `total_token_count`, and `effective_agent_runtime_ms` may be `null` when the archived provider transcript did not report stable values
+- turn rows include `primary_model`, `total_token_count`, `token_usage`, `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, and `removed_line_count`
+- `primary_model`, `total_token_count`, `token_usage`, and `effective_agent_runtime_ms` may be `null` when the archived provider transcript did not report stable values, or until older projects are re-indexed after additive schema upgrades
 
 ### Turn search
 

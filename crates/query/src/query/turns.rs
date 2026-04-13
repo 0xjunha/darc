@@ -2,6 +2,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use darc_paths::SourceKind;
+use darc_rollout::model::NormalizedTokenUsage;
 use rusqlite::Connection;
 
 use super::{
@@ -30,6 +31,12 @@ const INDEXED_TURN_SQL: &str = "
         primary_model,
         COALESCE(duration_ms, 0),
         effective_agent_runtime_ms,
+        provider_total_token_count,
+        input_uncached_token_count,
+        cache_read_token_count,
+        cache_write_token_count,
+        output_token_count,
+        reasoning_token_count,
         total_token_count,
         COALESCE(changed_file_count, 0),
         COALESCE(added_line_count, 0),
@@ -148,16 +155,22 @@ fn query_indexed_turn_row(
                     row.get::<_, i64>(13)?,
                     row.get::<_, Option<i64>>(14)?,
                     row.get::<_, Option<i64>>(15)?,
-                    row.get::<_, i64>(16)?,
-                    row.get::<_, i64>(17)?,
-                    row.get::<_, i64>(18)?,
-                    row.get::<_, i64>(19)?,
-                    row.get::<_, i64>(20)?,
-                    row.get::<_, i64>(21)?,
+                    row.get::<_, Option<i64>>(16)?,
+                    row.get::<_, Option<i64>>(17)?,
+                    row.get::<_, Option<i64>>(18)?,
+                    row.get::<_, Option<i64>>(19)?,
+                    row.get::<_, Option<i64>>(20)?,
+                    row.get::<_, Option<i64>>(21)?,
                     row.get::<_, i64>(22)?,
                     row.get::<_, i64>(23)?,
                     row.get::<_, i64>(24)?,
                     row.get::<_, i64>(25)?,
+                    row.get::<_, i64>(26)?,
+                    row.get::<_, i64>(27)?,
+                    row.get::<_, i64>(28)?,
+                    row.get::<_, i64>(29)?,
+                    row.get::<_, i64>(30)?,
+                    row.get::<_, i64>(31)?,
                 ))
             },
         )
@@ -183,18 +196,41 @@ fn query_indexed_turn_row(
         primary_model: row.12,
         duration_ms: sql_count_to_u64(row.13)?,
         effective_agent_runtime_ms: optional_sql_count_to_u64(row.14)?,
-        total_token_count: optional_sql_count_to_u64(row.15)?,
-        changed_file_count: sql_count_to_u64(row.16)?,
-        added_line_count: sql_count_to_u64(row.17)?,
-        removed_line_count: sql_count_to_u64(row.18)?,
-        step_count: sql_count_to_u64(row.19)?,
-        tool_call_count: sql_count_to_u64(row.20)?,
-        tool_output_count: sql_count_to_u64(row.21)?,
-        attachment_count: sql_count_to_u64(row.22)?,
-        delegation_count: sql_count_to_u64(row.23)?,
-        hook_summary_count: sql_count_to_u64(row.24)?,
-        has_final_answer: row.25 != 0,
+        token_usage: build_token_usage(row.15, row.16, row.17, row.18, row.19, row.20, row.21)?,
+        total_token_count: optional_sql_count_to_u64(row.21)?,
+        changed_file_count: sql_count_to_u64(row.22)?,
+        added_line_count: sql_count_to_u64(row.23)?,
+        removed_line_count: sql_count_to_u64(row.24)?,
+        step_count: sql_count_to_u64(row.25)?,
+        tool_call_count: sql_count_to_u64(row.26)?,
+        tool_output_count: sql_count_to_u64(row.27)?,
+        attachment_count: sql_count_to_u64(row.28)?,
+        delegation_count: sql_count_to_u64(row.29)?,
+        hook_summary_count: sql_count_to_u64(row.30)?,
+        has_final_answer: row.31 != 0,
     })
+}
+
+/// Builds one optional token-usage summary from one indexed turn or session row.
+pub(crate) fn build_token_usage(
+    provider_total_token_count: Option<i64>,
+    input_uncached_token_count: Option<i64>,
+    cache_read_token_count: Option<i64>,
+    cache_write_token_count: Option<i64>,
+    output_token_count: Option<i64>,
+    reasoning_token_count: Option<i64>,
+    normalized_total_token_count: Option<i64>,
+) -> Result<Option<NormalizedTokenUsage>> {
+    let token_usage = NormalizedTokenUsage {
+        input_uncached_token_count: optional_sql_count_to_u64(input_uncached_token_count)?,
+        cache_read_token_count: optional_sql_count_to_u64(cache_read_token_count)?,
+        cache_write_token_count: optional_sql_count_to_u64(cache_write_token_count)?,
+        output_token_count: optional_sql_count_to_u64(output_token_count)?,
+        reasoning_token_count: optional_sql_count_to_u64(reasoning_token_count)?,
+        provider_total_token_count: optional_sql_count_to_u64(provider_total_token_count)?,
+        normalized_total_token_count: optional_sql_count_to_u64(normalized_total_token_count)?,
+    };
+    Ok(token_usage.has_any_value().then_some(token_usage))
 }
 
 /// Builds one derived insights block for a turn detail payload.
@@ -226,6 +262,7 @@ fn build_turn_detail_insights(
 
     Ok(TurnDetailInsights {
         primary_model: turn.primary_model.clone(),
+        token_usage: turn.token_usage,
         duration_ms: turn.duration_ms,
         effective_agent_runtime_ms: turn.effective_agent_runtime_ms,
         total_token_count: turn.total_token_count,
