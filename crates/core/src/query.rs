@@ -19,6 +19,11 @@ use darc_query::{
     query_project_sessions, query_search_turns as query_project_search_turns, query_session_turns,
     query_turn_detail, query_turn_insights, query_workspace_insights,
 };
+use darc_wiki::{
+    ContextWikiLayout, DigestSummary, EntrySummary, RunSummary, list_digests, list_entries,
+    list_runs, load_registry,
+};
+use serde::Serialize;
 
 use crate::{
     config::{ProjectConfig, SharedConfig, load_config},
@@ -209,6 +214,85 @@ pub fn query_project_insight_report(
     query_project_insights(&context.root.database_path, &context.project.id, limit)
 }
 
+/// Stores the registry payload for one project-scoped wiki query.
+#[derive(Debug, Clone, Serialize)]
+pub struct WikiRegistryQueryData {
+    pub project_id: String,
+    pub schema_version: u32,
+    pub categories: Vec<String>,
+    pub domains: Vec<String>,
+}
+
+/// Stores the entry-list payload for one project-scoped wiki query.
+#[derive(Debug, Clone, Serialize)]
+pub struct WikiEntriesQueryData {
+    pub project_id: String,
+    pub entries: Vec<EntrySummary>,
+}
+
+/// Stores the digest-list payload for one project-scoped wiki query.
+#[derive(Debug, Clone, Serialize)]
+pub struct WikiDigestsQueryData {
+    pub project_id: String,
+    pub digests: Vec<DigestSummary>,
+}
+
+/// Stores the run-list payload for one project-scoped wiki query.
+#[derive(Debug, Clone, Serialize)]
+pub struct WikiRunsQueryData {
+    pub project_id: String,
+    pub runs: Vec<RunSummary>,
+}
+
+/// Queries the wiki registry payload for one configured project.
+pub fn query_wiki_registry(
+    root: Option<PathBuf>,
+    project_id: &str,
+) -> Result<WikiRegistryQueryData> {
+    let context = load_project_config_context(root, project_id)?;
+    let layout = load_project_wiki_layout(&context);
+    let registry = load_registry(&layout)?;
+    Ok(WikiRegistryQueryData {
+        project_id: context.project.id,
+        schema_version: registry.schema_version,
+        categories: registry.categories,
+        domains: registry.domains,
+    })
+}
+
+/// Queries the wiki entry-list payload for one configured project.
+pub fn query_wiki_entries(root: Option<PathBuf>, project_id: &str) -> Result<WikiEntriesQueryData> {
+    let context = load_project_config_context(root, project_id)?;
+    let layout = load_project_wiki_layout(&context);
+    load_registry(&layout)?;
+    Ok(WikiEntriesQueryData {
+        project_id: context.project.id,
+        entries: list_entries(&layout)?,
+    })
+}
+
+/// Queries the wiki digest-list payload for one configured project.
+pub fn query_wiki_digests(root: Option<PathBuf>, project_id: &str) -> Result<WikiDigestsQueryData> {
+    let context = load_project_config_context(root, project_id)?;
+    let layout = load_project_wiki_layout(&context);
+    load_registry(&layout)?;
+    Ok(WikiDigestsQueryData {
+        project_id: context.project.id,
+        digests: list_digests(&layout)?,
+    })
+}
+
+/// Queries the wiki run-list payload for one configured project.
+pub fn query_wiki_runs(root: Option<PathBuf>, project_id: &str) -> Result<WikiRunsQueryData> {
+    let context = load_project_config_context(root, project_id)?;
+    let layout = load_project_wiki_layout(&context);
+    load_registry(&layout)?;
+    Ok(WikiRunsQueryData {
+        project_id: context.project.id,
+        runs: list_runs(&layout)?,
+    })
+}
+
 /// Inspects one darc root without requiring the workspace to be initialized.
 pub fn inspect_root(root: Option<PathBuf>) -> RootInfo {
     let default_root_path = default_root_path();
@@ -260,9 +344,18 @@ fn load_project_query_context(
     root: Option<PathBuf>,
     project_id: &str,
 ) -> Result<ProjectQueryContext> {
+    let context = load_project_config_context(root, project_id)?;
+    ensure_database_exists(&context.root)?;
+    Ok(context)
+}
+
+/// Loads one configured project context for project-scoped config-only queries.
+fn load_project_config_context(
+    root: Option<PathBuf>,
+    project_id: &str,
+) -> Result<ProjectQueryContext> {
     let root = inspect_root(root);
     ensure_config_exists(&root)?;
-    ensure_database_exists(&root)?;
 
     let config = load_normalized_config(&root.config_path)?;
     let project = config
@@ -342,6 +435,12 @@ fn ensure_database_exists(root: &RootInfo) -> Result<()> {
                 root.database_path.display()
             ))
     )
+}
+
+/// Resolves one project-scoped wiki layout under the configured Darc root.
+fn load_project_wiki_layout(context: &ProjectQueryContext) -> darc_wiki::ProjectLayout {
+    ContextWikiLayout::new(context.root.resolved_root_path.clone())
+        .project_layout(context.project.id.clone())
 }
 
 /// Stores the validated root and project context for one project-scoped query.

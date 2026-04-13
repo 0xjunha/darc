@@ -11,10 +11,10 @@ use darc_rollout_audit::{claude::ClaudeSchemaAuditOutcome, codex::CodexSchemaAud
 use serde_json::Value;
 
 use super::{
-    Cli, Commands, QueryCommands, QueryInsightsCommands, claude_schema_audit_exit_code,
-    codex_schema_audit_exit_code, format_claude_schema_audit_report,
-    format_codex_schema_audit_report, format_query_error, parse_window_days,
-    resolve_query_time_bound_at,
+    Cli, Commands, QueryCommands, QueryInsightsCommands, QueryWikiCommands, WikiCommands,
+    WikiDigestCommands, claude_schema_audit_exit_code, codex_schema_audit_exit_code,
+    format_claude_schema_audit_report, format_codex_schema_audit_report, format_query_error,
+    parse_window_days, resolve_query_time_bound_at,
 };
 
 fn compatible_report() -> CodexSchemaAuditReport {
@@ -163,6 +163,47 @@ fn query_workspace_requires_json_flag() {
 }
 
 #[test]
+fn parses_query_wiki_registry_command() {
+    let cli = Cli::try_parse_from([
+        "darc",
+        "query",
+        "wiki",
+        "registry",
+        "--project-id",
+        "repo-abc123",
+        "--json",
+    ])
+    .unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Query(super::QueryArgs {
+            command: QueryCommands::Wiki(super::QueryWikiArgs {
+                command: QueryWikiCommands::Registry(super::QueryWikiRegistryArgs {
+                    project_id,
+                    json,
+                    ..
+                }),
+            }),
+        }) if project_id == "repo-abc123" && json
+    ));
+}
+
+#[test]
+fn query_wiki_registry_requires_json_flag() {
+    let error = Cli::try_parse_from([
+        "darc",
+        "query",
+        "wiki",
+        "registry",
+        "--project-id",
+        "repo-abc123",
+    ])
+    .unwrap_err();
+
+    assert!(error.to_string().contains("--json"));
+}
+
+#[test]
 fn parses_query_turn_command() {
     let cli = Cli::try_parse_from([
         "darc",
@@ -266,6 +307,23 @@ fn query_workspace_help_mentions_json_flag() {
 }
 
 #[test]
+fn query_wiki_help_mentions_registry_subcommand() {
+    let mut command = Cli::command();
+    let query = command
+        .find_subcommand_mut("query")
+        .expect("query subcommand should be present");
+    let help = query
+        .find_subcommand_mut("wiki")
+        .expect("wiki query subcommand should be present")
+        .render_long_help()
+        .to_string();
+
+    assert!(help.contains("registry"));
+    assert!(help.contains("entries"));
+    assert!(help.contains("runs"));
+}
+
+#[test]
 fn query_sessions_help_mentions_examples_for_time_bounds() {
     let mut command = Cli::command();
     let query = command
@@ -323,6 +381,19 @@ fn parses_query_workspace_insights_command() {
                 }),
             }),
         }) if window_days == 14 && json
+    ));
+}
+
+#[test]
+fn parses_wiki_digest_start_skeleton_command() {
+    let cli = Cli::try_parse_from(["darc", "wiki", "digest", "start"]).unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Wiki(super::WikiArgs {
+            command: WikiCommands::Digest(super::WikiDigestArgs {
+                command: WikiDigestCommands::Start(_),
+            }),
+        })
     ));
 }
 

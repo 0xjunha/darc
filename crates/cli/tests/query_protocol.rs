@@ -188,6 +188,118 @@ fn workspace_query_emits_success_envelope() -> Result<()> {
 }
 
 #[test]
+fn wiki_registry_query_emits_success_envelope_without_database() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-wiki-registry")?;
+    fs::remove_file(root.join("index.sqlite"))?;
+
+    let output = run_darc([
+        "query",
+        "wiki",
+        "registry",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--json",
+    ])?;
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.wiki.registry.v1");
+    assert_eq!(value["data"]["project_id"], "repo-abc123");
+    assert_eq!(value["data"]["schema_version"], 1);
+    assert_eq!(
+        value["data"]["categories"],
+        serde_json::json!(["architecture", "data", "product", "process"])
+    );
+    assert_eq!(value["data"]["domains"], Value::Array(vec![]));
+    assert!(root.join("context-wiki/VERSION").exists());
+    assert!(
+        root.join("context-wiki/projects/repo-abc123/registry/categories.toml")
+            .exists()
+    );
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn wiki_entries_query_emits_empty_success_envelope() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-wiki-entries")?;
+    let output = run_darc([
+        "query",
+        "wiki",
+        "entries",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--json",
+    ])?;
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.wiki.entries.v1");
+    assert_eq!(value["data"]["project_id"], "repo-abc123");
+    assert_eq!(value["data"]["entries"], Value::Array(vec![]));
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn wiki_runs_query_emits_empty_success_envelope() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-wiki-runs")?;
+    let output = run_darc([
+        "query",
+        "wiki",
+        "runs",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--json",
+    ])?;
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.wiki.runs.v1");
+    assert_eq!(value["data"]["project_id"], "repo-abc123");
+    assert_eq!(value["data"]["runs"], Value::Array(vec![]));
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn wiki_digests_query_emits_empty_success_envelope() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-wiki-digests")?;
+    let output = run_darc([
+        "query",
+        "wiki",
+        "digests",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--json",
+    ])?;
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.wiki.digests.v1");
+    assert_eq!(value["data"]["project_id"], "repo-abc123");
+    assert_eq!(value["data"]["digests"], Value::Array(vec![]));
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
 fn sessions_query_emits_success_envelope() -> Result<()> {
     let root = create_query_fixture_root("cli-query-sessions")?;
     let output = run_darc([
