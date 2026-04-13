@@ -24,12 +24,12 @@ pub fn build_codex_external_cli_command(request: &RuntimeRequest) -> Result<Runt
         request.schema_path.to_string_lossy().into_owned(),
         "--output-last-message".to_owned(),
         request.proposal_path.to_string_lossy().into_owned(),
-        request.prompt.clone(),
     ];
     Ok(RuntimeCommand {
         program,
         args,
         workdir: request.workdir.clone(),
+        stdin: request.prompt.as_bytes().to_vec(),
         proposal_output: ProposalOutputSource::File(request.proposal_path.clone()),
         display_name: "Codex CLI".to_owned(),
     })

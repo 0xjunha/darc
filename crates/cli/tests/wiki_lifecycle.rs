@@ -154,6 +154,20 @@ fn wait_for_run_status(root: &Path, run_id: &str, expected_status: &str) -> Resu
     }
 }
 
+/// Polls one filesystem path until it exists or the timeout expires.
+fn wait_for_path(path: &Path) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(6);
+    loop {
+        if path.exists() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            bail!("timed out waiting for path `{}`", path.display());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// Seeds one minimal indexed session/turn fixture so the worker can build digest context.
 fn seed_wiki_index(root: &Path) -> Result<()> {
     let connection = open_index_database(&root.join(INDEX_DB_FILE_NAME))?;
@@ -212,37 +226,53 @@ fn write_fake_cli(root: &Path, name: &str, body: &str) -> Result<PathBuf> {
 #[test]
 fn wiki_digest_start_query_and_cancel_round_trip() -> Result<()> {
     let root = create_wiki_fixture_root("cli-wiki-lifecycle")?;
+    let marker = root.join("fake-codex-slow.started");
     let codex = write_fake_cli(
         &root,
         "fake-codex-slow",
-        concat!(
-            "output=\"\"\n",
-            "while [ \"$#\" -gt 0 ]; do\n",
-            "  case \"$1\" in\n",
-            "    -o|--output-last-message)\n",
-            "      output=\"$2\"\n",
-            "      shift 2\n",
-            "      ;;\n",
-            "    *)\n",
-            "      shift\n",
-            "      ;;\n",
-            "  esac\n",
-            "done\n",
-            "sleep 2\n",
-            "cat > \"$output\" <<'JSON'\n",
-            "{\n",
-            "  \"schema\": \"darc.wiki.digest.proposal.v1\",\n",
-            "  \"project_id\": \"repo-abc123\",\n",
-            "  \"run_id\": \"cwrun-placeholder\",\n",
-            "  \"entries\": [],\n",
-            "  \"run_summary\": {\n",
-            "    \"title\": \"Canceled run\",\n",
-            "    \"summary\": \"Canceled before validation completed.\",\n",
-            "    \"themes\": [\"cancellation\"],\n",
-            "    \"extracted_decision_count\": 0\n",
-            "  }\n",
-            "}\n",
-            "JSON\n"
+        &format!(
+            concat!(
+                "output=\"\"\n",
+                "unexpected=\"\"\n",
+                "while [ \"$#\" -gt 0 ]; do\n",
+                "  case \"$1\" in\n",
+                "    -o|--output-last-message)\n",
+                "      output=\"$2\"\n",
+                "      shift 2\n",
+                "      ;;\n",
+                "    --output-schema|--model|-m|--cd|-C|--sandbox)\n",
+                "      shift 2\n",
+                "      ;;\n",
+                "    --skip-git-repo-check|--ephemeral|exec)\n",
+                "      shift\n",
+                "      ;;\n",
+                "    *)\n",
+                "      unexpected=\"$unexpected $1\"\n",
+                "      shift\n",
+                "      ;;\n",
+                "  esac\n",
+                "done\n",
+                "prompt=$(cat)\n",
+                "[ -z \"$unexpected\" ] || {{ echo \"unexpected args:$unexpected\" >&2; exit 64; }}\n",
+                "touch \"{}\"\n",
+                "while :; do :; done\n",
+                "run_id=$(printf '%s' \"$prompt\" | sed -n 's/^.*\"run_id\": \"\\(cwrun_[^\"]*\\)\".*$/\\1/p' | head -n 1)\n",
+                "cat > \"$output\" <<JSON\n",
+                "{{\n",
+                "  \"schema\": \"darc.wiki.digest.proposal.v1\",\n",
+                "  \"project_id\": \"repo-abc123\",\n",
+                "  \"run_id\": \"$run_id\",\n",
+                "  \"entries\": [],\n",
+                "  \"run_summary\": {{\n",
+                "    \"title\": \"Canceled run\",\n",
+                "    \"summary\": \"Canceled before validation completed.\",\n",
+                "    \"themes\": [\"cancellation\"],\n",
+                "    \"extracted_decision_count\": 0\n",
+                "  }}\n",
+                "}}\n",
+                "JSON\n"
+            ),
+            marker.display()
         ),
     )?;
 
@@ -299,6 +329,7 @@ fn wiki_digest_start_query_and_cancel_round_trip() -> Result<()> {
         .find(|run| run["run_id"] == run_id)
         .context("run should be present in query output")?;
     assert_eq!(run["status"], "running");
+    wait_for_path(&marker)?;
 
     let cancel_output = run_darc_with_env(
         [
@@ -331,6 +362,10 @@ fn wiki_digest_start_query_and_cancel_round_trip() -> Result<()> {
         .find(|run| run["run_id"] == run_id)
         .context("canceled run should still be visible")?;
     assert_eq!(canceled["status"], "canceled");
+    let result_path = run_dir.join("result.json");
+    wait_for_path(&result_path)?;
+    let result = fs::read_to_string(result_path)?;
+    assert!(result.contains("\"status\": \"canceled\""));
 
     remove_root(&root)?;
     Ok(())
@@ -344,23 +379,34 @@ fn wiki_digest_start_repairs_stale_running_runs() -> Result<()> {
         "fake-codex-delay",
         concat!(
             "output=\"\"\n",
+            "unexpected=\"\"\n",
             "while [ \"$#\" -gt 0 ]; do\n",
             "  case \"$1\" in\n",
             "    -o|--output-last-message)\n",
             "      output=\"$2\"\n",
             "      shift 2\n",
             "      ;;\n",
+            "    --output-schema|--model|-m|--cd|-C|--sandbox)\n",
+            "      shift 2\n",
+            "      ;;\n",
+            "    --skip-git-repo-check|--ephemeral|exec)\n",
+            "      shift\n",
+            "      ;;\n",
             "    *)\n",
+            "      unexpected=\"$unexpected $1\"\n",
             "      shift\n",
             "      ;;\n",
             "  esac\n",
             "done\n",
+            "prompt=$(cat)\n",
+            "[ -z \"$unexpected\" ] || { echo \"unexpected args:$unexpected\" >&2; exit 64; }\n",
             "sleep 2\n",
-            "cat > \"$output\" <<'JSON'\n",
+            "run_id=$(printf '%s' \"$prompt\" | sed -n 's/^.*\"run_id\": \"\\(cwrun_[^\"]*\\)\".*$/\\1/p' | head -n 1)\n",
+            "cat > \"$output\" <<JSON\n",
             "{\n",
             "  \"schema\": \"darc.wiki.digest.proposal.v1\",\n",
             "  \"project_id\": \"repo-abc123\",\n",
-            "  \"run_id\": \"cwrun-placeholder\",\n",
+            "  \"run_id\": \"$run_id\",\n",
             "  \"entries\": [],\n",
             "  \"run_summary\": {\n",
             "    \"title\": \"Delayed run\",\n",
@@ -466,6 +512,7 @@ fn wiki_digest_start_repairs_stale_running_runs() -> Result<()> {
         [("DARC_WIKI_CODEX_BIN", codex.as_os_str())],
     )?;
     assert!(cancel_output.status.success());
+    let _ = wait_for_run_status(&root, &new_run_id, "canceled")?;
 
     remove_root(&root)?;
     Ok(())
@@ -479,7 +526,7 @@ fn wiki_digest_succeeds_after_valid_codex_proposal() -> Result<()> {
         "fake-codex-success",
         concat!(
             "output=\"\"\n",
-            "prompt=\"\"\n",
+            "unexpected=\"\"\n",
             "while [ \"$#\" -gt 0 ]; do\n",
             "  case \"$1\" in\n",
             "    -o|--output-last-message)\n",
@@ -493,11 +540,13 @@ fn wiki_digest_succeeds_after_valid_codex_proposal() -> Result<()> {
             "      shift\n",
             "      ;;\n",
             "    *)\n",
-            "      prompt=\"$1\"\n",
+            "      unexpected=\"$unexpected $1\"\n",
             "      shift\n",
             "      ;;\n",
             "  esac\n",
             "done\n",
+            "prompt=$(cat)\n",
+            "[ -z \"$unexpected\" ] || { echo \"unexpected args:$unexpected\" >&2; exit 64; }\n",
             "run_id=$(printf '%s' \"$prompt\" | sed -n 's/^.*\"run_id\": \"\\(cwrun_[^\"]*\\)\".*$/\\1/p' | head -n 1)\n",
             "printf 'codex runtime stdout\\n'\n",
             "printf 'codex runtime stderr\\n' >&2\n",
@@ -583,6 +632,7 @@ fn wiki_digest_succeeds_after_valid_codex_proposal() -> Result<()> {
     let proposal = fs::read_to_string(run_dir.join("proposal.json"))?;
     assert!(proposal.contains("\"entry_type\": \"decision_trace\""));
     let result = fs::read_to_string(run_dir.join("result.json"))?;
+    assert!(result.contains("\"status\": \"succeeded\""));
     assert!(result.contains("\"valid\": true"));
     assert!(fs::read_to_string(run_dir.join("agent.stdout.log"))?.contains("codex runtime stdout"));
 
@@ -597,21 +647,23 @@ fn wiki_digest_fails_on_invalid_claude_proposal() -> Result<()> {
         &root,
         "fake-claude-invalid",
         concat!(
-            "prompt=\"\"\n",
+            "unexpected=\"\"\n",
             "while [ \"$#\" -gt 0 ]; do\n",
             "  case \"$1\" in\n",
-            "    --model|--output-format|--json-schema|--permission-mode|--tools)\n",
+            "    --model|--input-format|--output-format|--permission-mode|--tools)\n",
             "      shift 2\n",
             "      ;;\n",
             "    --print|--no-session-persistence)\n",
             "      shift\n",
             "      ;;\n",
             "    *)\n",
-            "      prompt=\"$1\"\n",
+            "      unexpected=\"$unexpected $1\"\n",
             "      shift\n",
             "      ;;\n",
             "  esac\n",
             "done\n",
+            "prompt=$(cat)\n",
+            "[ -z \"$unexpected\" ] || { echo \"unexpected args:$unexpected\" >&2; exit 64; }\n",
             "run_id=$(printf '%s' \"$prompt\" | sed -n 's/^.*\"run_id\": \"\\(cwrun_[^\"]*\\)\".*$/\\1/p' | head -n 1)\n",
             "cat <<JSON\n",
             "{\n",
@@ -688,6 +740,7 @@ fn wiki_digest_fails_on_invalid_claude_proposal() -> Result<()> {
     let run_toml = fs::read_to_string(run_dir.join("run.toml"))?;
     assert!(run_toml.contains("error_code = \"proposal_validation_failed\""));
     let result = fs::read_to_string(run_dir.join("result.json"))?;
+    assert!(result.contains("\"status\": \"failed\""));
     assert!(result.contains("\"valid\": false"));
     assert!(result.contains("entries[0].domains[0]"));
 
@@ -745,6 +798,7 @@ fn wiki_digest_fails_when_runtime_cannot_be_invoked() -> Result<()> {
     let run_toml = fs::read_to_string(run_dir.join("run.toml"))?;
     assert!(run_toml.contains("error_code = \"runtime_invocation_failed\""));
     let result = fs::read_to_string(run_dir.join("result.json"))?;
+    assert!(result.contains("\"status\": \"failed\""));
     assert!(result.contains("\"error_code\": \"runtime_invocation_failed\""));
 
     remove_root(&root)?;

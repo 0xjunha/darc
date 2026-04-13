@@ -156,7 +156,7 @@ pub struct ProposalValidationOptions<'a> {
     pub run_id: &'a str,
     pub allowed_categories: &'a [String],
     pub allowed_domains: &'a [String],
-    pub selected_sessions: &'a [String],
+    pub allowed_evidence_refs: &'a [String],
 }
 
 /// Stores one structured proposal validation error for durable reporting.
@@ -241,8 +241,8 @@ pub fn validate_digest_proposal(
         .iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
-    let selected_sessions = options
-        .selected_sessions
+    let allowed_evidence_refs = options
+        .allowed_evidence_refs
         .iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
@@ -428,13 +428,13 @@ pub fn validate_digest_proposal(
         for (evidence_index, evidence) in entry.evidence.iter().enumerate() {
             let path = format!("{base}.evidence[{evidence_index}]");
             match parse_evidence_reference(evidence) {
-                Some(reference) => {
-                    if !selected_sessions.contains(reference.session_ref.as_str()) {
+                Some(_) => {
+                    if !allowed_evidence_refs.contains(evidence.as_str()) {
                         push_error(
                             &mut errors,
                             path,
                             format!(
-                                "evidence `{evidence}` must reference one of the selected sessions"
+                                "evidence `{evidence}` must reference one of the selected session turns"
                             ),
                         );
                     }
@@ -465,6 +465,7 @@ pub fn validate_digest_proposal(
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct EvidenceReference {
     session_ref: String,
+    turn_ordinal: u64,
 }
 
 /// Parses one evidence reference into its selected-session components.
@@ -477,8 +478,9 @@ fn parse_evidence_reference(value: &str) -> Option<EvidenceReference> {
     let turn_ordinal = turn_ordinal.parse::<u64>().ok()?;
     Some(EvidenceReference {
         session_ref: format!("{provider}:{session_id}"),
+        turn_ordinal,
     })
-    .filter(|_| value.ends_with(&format!("#{turn_ordinal}")))
+    .filter(|reference| value == format!("{}#{}", reference.session_ref, reference.turn_ordinal))
 }
 
 /// Validates one ISO date string against the fixed `YYYY-MM-DD` shape.
@@ -527,7 +529,7 @@ mod tests {
     use super::*;
 
     fn validation_options<'a>(
-        selected_sessions: &'a [String],
+        allowed_evidence_refs: &'a [String],
         allowed_domains: &'a [String],
     ) -> ProposalValidationOptions<'a> {
         const CATEGORIES: &[&str] = &["architecture", "data", "product", "process"];
@@ -540,13 +542,13 @@ mod tests {
             run_id: "cwrun_01proposal",
             allowed_categories: Box::leak(allowed_categories.into_boxed_slice()),
             allowed_domains,
-            selected_sessions,
+            allowed_evidence_refs,
         }
     }
 
     #[test]
     fn validation_allows_zero_entries_with_required_run_summary() {
-        let selected_sessions = vec!["codex:session-1".to_owned()];
+        let allowed_evidence_refs = vec!["codex:session-1#0".to_owned()];
         let proposal = DigestProposal {
             schema: DIGEST_PROPOSAL_SCHEMA.to_owned(),
             project_id: "repo-abc123".to_owned(),
@@ -562,15 +564,15 @@ mod tests {
         };
 
         let summary =
-            validate_digest_proposal(&proposal, &validation_options(&selected_sessions, &[]))
+            validate_digest_proposal(&proposal, &validation_options(&allowed_evidence_refs, &[]))
                 .expect("proposal should be valid");
         assert_eq!(summary.entry_count, 0);
         assert_eq!(summary.extracted_decision_count, 0);
     }
 
     #[test]
-    fn validation_rejects_invalid_domain_and_evidence_reference() {
-        let selected_sessions = vec!["codex:session-1".to_owned()];
+    fn validation_rejects_invalid_domain_and_nonexistent_turn_reference() {
+        let allowed_evidence_refs = vec!["codex:session-1#0".to_owned()];
         let allowed_domains = vec!["query-protocol".to_owned()];
         let proposal = DigestProposal {
             schema: DIGEST_PROPOSAL_SCHEMA.to_owned(),
@@ -591,7 +593,7 @@ mod tests {
                 final_decision: "Stay additive".to_owned(),
                 rationale: "Desktop depends on it".to_owned(),
                 consequences: "Protocol changes need migration".to_owned(),
-                evidence: vec!["codex:session-9".to_owned()],
+                evidence: vec!["codex:session-1#9999".to_owned()],
             }],
             run_summary: DigestProposalRunSummary {
                 title: "Summary".to_owned(),
@@ -603,7 +605,7 @@ mod tests {
 
         let errors = validate_digest_proposal(
             &proposal,
-            &validation_options(&selected_sessions, &allowed_domains),
+            &validation_options(&allowed_evidence_refs, &allowed_domains),
         )
         .expect_err("proposal should be invalid");
         assert!(

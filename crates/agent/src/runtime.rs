@@ -95,6 +95,7 @@ pub struct RuntimeCommand {
     pub program: PathBuf,
     pub args: Vec<String>,
     pub workdir: PathBuf,
+    pub stdin: Vec<u8>,
     pub proposal_output: ProposalOutputSource,
     pub display_name: String,
 }

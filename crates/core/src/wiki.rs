@@ -2,7 +2,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     sync::atomic::{AtomicU64, Ordering},
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -41,6 +41,7 @@ const DEFAULT_REQUESTED_BY: &str = "cli";
 const RUN_POLL_INTERVAL: Duration = Duration::from_millis(200);
 const RUN_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 const RUN_STALE_TIMEOUT: Duration = Duration::from_secs(5);
+const RUNTIME_CANCEL_GRACE_PERIOD: Duration = Duration::from_secs(5);
 const WORKER_REGISTRATION_TIMEOUT: Duration = Duration::from_secs(2);
 const PROPOSAL_SCHEMA_FILE_NAME: &str = "proposal.schema.json";
 
@@ -379,27 +380,21 @@ pub fn run_project_wiki_digest_worker(
     {
         Ok(data) => data.sessions,
         Err(error) => {
-            let finished_at = current_utc_timestamp();
-            write_digest_result(
-                &layout,
-                run_id,
-                &build_result_artifact(
-                    &state,
-                    finished_at.clone(),
-                    None,
-                    DigestValidationArtifact::default(),
-                    Some("context_build_failed".to_owned()),
-                    Some(error.to_string()),
-                    None,
-                ),
-            )?;
-            finalize_run_failed(
+            let final_state = finalize_run_failed(
                 &layout,
                 run_id,
                 RunPhase::ReadingTurns,
                 "Context build failed",
                 "context_build_failed",
                 &error.to_string(),
+            )?;
+            write_terminal_result(
+                &layout,
+                run_id,
+                &final_state,
+                None,
+                DigestValidationArtifact::default(),
+                None,
             )?;
             append_run_event(
                 &layout,
@@ -445,27 +440,21 @@ pub fn run_project_wiki_digest_worker(
             {
                 Ok(session) => session,
                 Err(error) => {
-                    let finished_at = current_utc_timestamp();
-                    write_digest_result(
-                        &layout,
-                        run_id,
-                        &build_result_artifact(
-                            &state,
-                            finished_at.clone(),
-                            None,
-                            DigestValidationArtifact::default(),
-                            Some("context_build_failed".to_owned()),
-                            Some(error.to_string()),
-                            None,
-                        ),
-                    )?;
-                    finalize_run_failed(
+                    let final_state = finalize_run_failed(
                         &layout,
                         run_id,
                         RunPhase::ReadingTurns,
                         "Context build failed",
                         "context_build_failed",
                         &error.to_string(),
+                    )?;
+                    write_terminal_result(
+                        &layout,
+                        run_id,
+                        &final_state,
+                        None,
+                        DigestValidationArtifact::default(),
+                        None,
                     )?;
                     append_run_event(
                         &layout,
@@ -567,27 +556,21 @@ pub fn run_project_wiki_digest_worker(
     ) {
         Ok(request) => request,
         Err(error) => {
-            let finished_at = current_utc_timestamp();
-            write_digest_result(
-                &layout,
-                run_id,
-                &build_result_artifact(
-                    &state,
-                    finished_at.clone(),
-                    None,
-                    DigestValidationArtifact::default(),
-                    Some("runtime_prepare_failed".to_owned()),
-                    Some(error.to_string()),
-                    None,
-                ),
-            )?;
-            finalize_run_failed(
+            let final_state = finalize_run_failed(
                 &layout,
                 run_id,
                 RunPhase::WaitingForAgent,
                 "Agent runtime preparation failed",
                 "runtime_prepare_failed",
                 &error.to_string(),
+            )?;
+            write_terminal_result(
+                &layout,
+                run_id,
+                &final_state,
+                None,
+                DigestValidationArtifact::default(),
+                None,
             )?;
             append_run_event(
                 &layout,
@@ -603,27 +586,21 @@ pub fn run_project_wiki_digest_worker(
     let runtime_command = match build_runtime_command(&runtime_request) {
         Ok(command) => command,
         Err(error) => {
-            let finished_at = current_utc_timestamp();
-            write_digest_result(
-                &layout,
-                run_id,
-                &build_result_artifact(
-                    &state,
-                    finished_at.clone(),
-                    None,
-                    DigestValidationArtifact::default(),
-                    Some("runtime_prepare_failed".to_owned()),
-                    Some(error.to_string()),
-                    None,
-                ),
-            )?;
-            finalize_run_failed(
+            let final_state = finalize_run_failed(
                 &layout,
                 run_id,
                 RunPhase::WaitingForAgent,
                 "Agent runtime preparation failed",
                 "runtime_prepare_failed",
                 &error.to_string(),
+            )?;
+            write_terminal_result(
+                &layout,
+                run_id,
+                &final_state,
+                None,
+                DigestValidationArtifact::default(),
+                None,
             )?;
             append_run_event(
                 &layout,
@@ -654,27 +631,21 @@ pub fn run_project_wiki_digest_worker(
     let runtime_execution = match execute_runtime_command(&layout, run_id, runtime_command) {
         Ok(execution) => execution,
         Err(error) => {
-            let finished_at = current_utc_timestamp();
-            write_digest_result(
-                &layout,
-                run_id,
-                &build_result_artifact(
-                    &state,
-                    finished_at.clone(),
-                    None,
-                    DigestValidationArtifact::default(),
-                    Some("runtime_invocation_failed".to_owned()),
-                    Some(error.to_string()),
-                    None,
-                ),
-            )?;
-            finalize_run_failed(
+            let final_state = finalize_run_failed(
                 &layout,
                 run_id,
                 RunPhase::WaitingForAgent,
                 "Agent runtime invocation failed",
                 "runtime_invocation_failed",
                 &error.to_string(),
+            )?;
+            write_terminal_result(
+                &layout,
+                run_id,
+                &final_state,
+                None,
+                DigestValidationArtifact::default(),
+                None,
             )?;
             append_run_event(
                 &layout,
@@ -689,28 +660,22 @@ pub fn run_project_wiki_digest_worker(
     };
     state = load_run_state(&layout, run_id)?;
     if cancel_requested(&layout, run_id, &state)? {
-        let finished_at = current_utc_timestamp();
         let note = runtime_execution.proposal_bytes.is_some().then_some(
             "Proposal capture completed but validation was skipped after cancel request".to_owned(),
         );
-        write_digest_result(
-            &layout,
-            run_id,
-            &build_result_artifact(
-                &state,
-                finished_at.clone(),
-                Some(&runtime_execution),
-                DigestValidationArtifact::default(),
-                None,
-                None,
-                note.clone(),
-            ),
-        )?;
-        finalize_run_canceled(
+        let final_state = finalize_run_canceled(
             &layout,
             run_id,
             RunPhase::WaitingForAgent,
             "Digest run canceled",
+        )?;
+        write_terminal_result(
+            &layout,
+            run_id,
+            &final_state,
+            Some(&runtime_execution),
+            DigestValidationArtifact::default(),
+            note.clone(),
         )?;
         append_run_event(
             &layout,
@@ -728,27 +693,21 @@ pub fn run_project_wiki_digest_worker(
                 .map(|code| code.to_string())
                 .unwrap_or_else(|| "unknown".to_owned())
         );
-        let finished_at = current_utc_timestamp();
-        write_digest_result(
-            &layout,
-            run_id,
-            &build_result_artifact(
-                &state,
-                finished_at.clone(),
-                Some(&runtime_execution),
-                DigestValidationArtifact::default(),
-                Some("runtime_invocation_failed".to_owned()),
-                Some(message.clone()),
-                None,
-            ),
-        )?;
-        finalize_run_failed(
+        let final_state = finalize_run_failed(
             &layout,
             run_id,
             RunPhase::WaitingForAgent,
             "Agent runtime invocation failed",
             "runtime_invocation_failed",
             &message,
+        )?;
+        write_terminal_result(
+            &layout,
+            run_id,
+            &final_state,
+            Some(&runtime_execution),
+            DigestValidationArtifact::default(),
+            None,
         )?;
         append_run_event(
             &layout,
@@ -762,27 +721,21 @@ pub fn run_project_wiki_digest_worker(
     }
     let Some(proposal_bytes) = runtime_execution.proposal_bytes.as_ref() else {
         let message = "agent runtime did not produce a proposal artifact".to_owned();
-        let finished_at = current_utc_timestamp();
-        write_digest_result(
-            &layout,
-            run_id,
-            &build_result_artifact(
-                &state,
-                finished_at.clone(),
-                Some(&runtime_execution),
-                DigestValidationArtifact::default(),
-                Some("proposal_missing".to_owned()),
-                Some(message.clone()),
-                None,
-            ),
-        )?;
-        finalize_run_failed(
+        let final_state = finalize_run_failed(
             &layout,
             run_id,
             RunPhase::WaitingForAgent,
             "Proposal artifact missing",
             "proposal_missing",
             &message,
+        )?;
+        write_terminal_result(
+            &layout,
+            run_id,
+            &final_state,
+            Some(&runtime_execution),
+            DigestValidationArtifact::default(),
+            None,
         )?;
         append_run_event(
             &layout,
@@ -811,27 +764,21 @@ pub fn run_project_wiki_digest_worker(
     let proposal_text = match String::from_utf8(proposal_bytes.clone()) {
         Ok(text) => text,
         Err(error) => {
-            let finished_at = current_utc_timestamp();
-            write_digest_result(
-                &layout,
-                run_id,
-                &build_result_artifact(
-                    &state,
-                    finished_at.clone(),
-                    Some(&runtime_execution),
-                    DigestValidationArtifact::default(),
-                    Some("proposal_not_utf8".to_owned()),
-                    Some(error.to_string()),
-                    None,
-                ),
-            )?;
-            finalize_run_failed(
+            let final_state = finalize_run_failed(
                 &layout,
                 run_id,
                 RunPhase::ValidatingProposal,
                 "Proposal artifact is not UTF-8",
                 "proposal_not_utf8",
                 &error.to_string(),
+            )?;
+            write_terminal_result(
+                &layout,
+                run_id,
+                &final_state,
+                Some(&runtime_execution),
+                DigestValidationArtifact::default(),
+                None,
             )?;
             append_run_event(
                 &layout,
@@ -847,30 +794,24 @@ pub fn run_project_wiki_digest_worker(
     let proposal = match serde_json::from_str::<DigestProposal>(&proposal_text) {
         Ok(proposal) => proposal,
         Err(error) => {
-            let finished_at = current_utc_timestamp();
-            write_digest_result(
-                &layout,
-                run_id,
-                &build_result_artifact(
-                    &state,
-                    finished_at.clone(),
-                    Some(&runtime_execution),
-                    DigestValidationArtifact {
-                        attempted: true,
-                        ..DigestValidationArtifact::default()
-                    },
-                    Some("proposal_json_invalid".to_owned()),
-                    Some(error.to_string()),
-                    None,
-                ),
-            )?;
-            finalize_run_failed(
+            let final_state = finalize_run_failed(
                 &layout,
                 run_id,
                 RunPhase::ValidatingProposal,
                 "Proposal artifact is invalid JSON",
                 "proposal_json_invalid",
                 &error.to_string(),
+            )?;
+            write_terminal_result(
+                &layout,
+                run_id,
+                &final_state,
+                Some(&runtime_execution),
+                DigestValidationArtifact {
+                    attempted: true,
+                    ..DigestValidationArtifact::default()
+                },
+                None,
             )?;
             append_run_event(
                 &layout,
@@ -884,6 +825,7 @@ pub fn run_project_wiki_digest_worker(
         }
     };
     let allowed_domains = build_allowed_domains(&registry, &state);
+    let allowed_evidence_refs = build_allowed_evidence_refs(&context);
     let validation = match validate_digest_proposal(
         &proposal,
         &ProposalValidationOptions {
@@ -891,7 +833,7 @@ pub fn run_project_wiki_digest_worker(
             run_id: run_id.as_str(),
             allowed_categories: &registry.categories,
             allowed_domains: &allowed_domains,
-            selected_sessions: &state.selected_sessions,
+            allowed_evidence_refs: &allowed_evidence_refs,
         },
     ) {
         Ok(summary) => DigestValidationArtifact {
@@ -911,27 +853,21 @@ pub fn run_project_wiki_digest_worker(
                 extracted_decision_count: Some(proposal.run_summary.extracted_decision_count),
                 errors: errors.into_errors(),
             };
-            let finished_at = current_utc_timestamp();
-            write_digest_result(
-                &layout,
-                run_id,
-                &build_result_artifact(
-                    &state,
-                    finished_at.clone(),
-                    Some(&runtime_execution),
-                    validation.clone(),
-                    Some("proposal_validation_failed".to_owned()),
-                    Some("proposal artifact failed validation".to_owned()),
-                    None,
-                ),
-            )?;
-            finalize_run_failed(
+            let final_state = finalize_run_failed(
                 &layout,
                 run_id,
                 RunPhase::ValidatingProposal,
                 "Proposal validation failed",
                 "proposal_validation_failed",
                 "proposal artifact failed validation",
+            )?;
+            write_terminal_result(
+                &layout,
+                run_id,
+                &final_state,
+                Some(&runtime_execution),
+                validation.clone(),
+                None,
             )?;
             append_run_event(
                 &layout,
@@ -952,28 +888,22 @@ pub fn run_project_wiki_digest_worker(
         Some(100),
         "Writing validation result",
     )?;
-    let finished_at = current_utc_timestamp();
     let note = Some(
         "Canonical merge is deferred; this run succeeded after proposal validation only".to_owned(),
     );
-    write_digest_result(
-        &layout,
-        run_id,
-        &build_result_artifact(
-            &state,
-            finished_at.clone(),
-            Some(&runtime_execution),
-            validation.clone(),
-            None,
-            None,
-            note,
-        ),
-    )?;
-    finalize_run_succeeded(
+    let final_state = finalize_run_succeeded(
         &layout,
         run_id,
         RunPhase::WritingArtifacts,
         "Validated proposal artifacts",
+    )?;
+    write_terminal_result(
+        &layout,
+        run_id,
+        &final_state,
+        Some(&runtime_execution),
+        validation.clone(),
+        note,
     )?;
     append_run_event(
         &layout,
@@ -1420,11 +1350,18 @@ fn execute_runtime_command(
     let mut child = Command::new(&command.program)
         .args(&command.args)
         .current_dir(&command.workdir)
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .with_context(|| format!("failed to spawn {}", command.display_name))?;
+    let stdin_handle = write_process_stdin(
+        child
+            .stdin
+            .take()
+            .context("runtime child stdin pipe was not captured")?,
+        command.stdin,
+    );
     let stdout_handle = capture_process_stream(
         child
             .stdout
@@ -1442,6 +1379,7 @@ fn execute_runtime_command(
 
     let mut last_heartbeat = SystemTime::now();
     let mut cancel_noted = false;
+    let mut cancel_sent_at = None;
     let exit_status = loop {
         if let Some(status) = child.try_wait().context("failed to poll runtime child")? {
             break status;
@@ -1462,19 +1400,33 @@ fn execute_runtime_command(
 
         let state = load_run_state(layout, run_id)?;
         if cancel_requested(layout, run_id, &state)? && !cancel_noted {
+            terminate_runtime_process(&mut child, &command.display_name)
+                .context("failed to terminate runtime after cancel requested")?;
             append_run_event(
                 layout,
                 run_id,
                 RunEvent::info(
                     RunPhase::WaitingForAgent,
-                    "Cancel requested; waiting for runtime process to exit".to_owned(),
+                    "Cancel requested; sent termination to runtime process".to_owned(),
                 ),
             )?;
             cancel_noted = true;
+            cancel_sent_at = Some(SystemTime::now());
+        }
+        if let Some(cancel_sent_at) = cancel_sent_at
+            && cancel_sent_at.elapsed().unwrap_or_default() >= RUNTIME_CANCEL_GRACE_PERIOD
+        {
+            bail!(
+                "runtime process did not exit within {:?} after cancellation",
+                RUNTIME_CANCEL_GRACE_PERIOD
+            );
         }
 
         thread::sleep(RUN_POLL_INTERVAL);
     };
+    stdin_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("runtime stdin writer thread panicked"))??;
 
     let stdout = stdout_handle
         .join()
@@ -1496,6 +1448,26 @@ fn execute_runtime_command(
         stdout,
         stderr,
         proposal_bytes,
+    })
+}
+
+/// Writes one runtime prompt payload into the child stdin stream.
+fn write_process_stdin<W>(mut writer: W, input: Vec<u8>) -> thread::JoinHandle<Result<()>>
+where
+    W: Write + Send + 'static,
+{
+    thread::spawn(move || {
+        if let Err(error) = writer.write_all(&input)
+            && error.kind() != std::io::ErrorKind::BrokenPipe
+        {
+            return Err(error).context("failed to write runtime stdin payload");
+        }
+        if let Err(error) = writer.flush()
+            && error.kind() != std::io::ErrorKind::BrokenPipe
+        {
+            return Err(error).context("failed to flush runtime stdin payload");
+        }
+        Ok(())
     })
 }
 
@@ -1527,6 +1499,22 @@ where
             .with_context(|| format!("failed to flush {}", path.display()))?;
         Ok(collected)
     })
+}
+
+/// Terminates one runtime child process after the user requests cancellation.
+fn terminate_runtime_process(child: &mut Child, display_name: &str) -> Result<()> {
+    match child.kill() {
+        Ok(()) => Ok(()),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::InvalidInput | std::io::ErrorKind::NotFound
+            ) =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(error).with_context(|| format!("failed to kill {display_name}")),
+    }
 }
 
 /// Builds the prompt supplied to the external agent runtime for one digest run.
@@ -1570,6 +1558,24 @@ fn build_allowed_domains(registry: &ProjectRegistry, state: &RunState) -> Vec<St
     domains
 }
 
+/// Builds the exact evidence-reference allowlist from the loaded digest context.
+fn build_allowed_evidence_refs(context: &DigestContextArtifact) -> Vec<String> {
+    context
+        .sessions
+        .iter()
+        .flat_map(|session| {
+            session.turns.iter().map(|turn| {
+                format!(
+                    "{}:{}#{}",
+                    session.session.provider.directory_name(),
+                    session.session.session_id,
+                    turn.turn_ordinal
+                )
+            })
+        })
+        .collect()
+}
+
 /// Writes one digest result artifact into the durable run directory.
 fn write_digest_result(
     layout: &ProjectLayout,
@@ -1579,14 +1585,32 @@ fn write_digest_result(
     write_json_artifact(&layout.run_result_path(run_id), artifact)
 }
 
-/// Builds one digest result artifact from runtime and validation outcomes.
+/// Writes one terminal digest result artifact from the finalized run state.
+fn write_terminal_result(
+    layout: &ProjectLayout,
+    run_id: &RunId,
+    state: &RunState,
+    runtime: Option<&RuntimeExecution>,
+    validation: DigestValidationArtifact,
+    note: Option<String>,
+) -> Result<()> {
+    let completed_at = state
+        .finished_at
+        .clone()
+        .unwrap_or_else(|| state.updated_at.clone());
+    write_digest_result(
+        layout,
+        run_id,
+        &build_result_artifact(state, completed_at, runtime, validation, note),
+    )
+}
+
+/// Builds one digest result artifact from the finalized runtime and validation outcomes.
 fn build_result_artifact(
     state: &RunState,
     completed_at: String,
     runtime: Option<&RuntimeExecution>,
     validation: DigestValidationArtifact,
-    error_code: Option<String>,
-    error_message: Option<String>,
     note: Option<String>,
 ) -> DigestResultArtifact {
     DigestResultArtifact {
@@ -1595,8 +1619,8 @@ fn build_result_artifact(
         run_id: state.run_id.to_string(),
         status: state.status,
         completed_at,
-        error_code,
-        error_message,
+        error_code: state.error_code.clone(),
+        error_message: state.error_message.clone(),
         runtime: DigestRuntimeArtifact {
             agent_id: state.agent_id.clone(),
             runtime: state.runtime.clone(),
