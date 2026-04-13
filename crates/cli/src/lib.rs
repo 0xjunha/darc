@@ -15,10 +15,11 @@ use darc_core::query::{
     query_workspace_insight_report,
 };
 use darc_core::{
-    IndexOptions, InitDraft, RefreshOptions, RefreshReport, SkippedRollout, SourceKind,
-    SyncOptions, default_root_path, execute_sync, index_project_sessions, link_project,
-    prepare_init, prepare_sync, refresh_all_projects, refresh_project, remove_project,
-    rename_project, write_init,
+    DigestStartOptions, IndexOptions, InitDraft, RefreshOptions, RefreshReport, RunId,
+    SkippedRollout, SourceKind, SyncOptions, cancel_project_wiki_digest, default_root_path,
+    execute_sync, index_project_sessions, link_project, prepare_init, prepare_sync,
+    refresh_all_projects, refresh_project, remove_project, rename_project,
+    run_project_wiki_digest_worker, start_project_wiki_digest, write_init,
 };
 use darc_rollout_audit::claude::{
     ClaudeSchemaAuditOptions, ClaudeSchemaAuditOutcome, ClaudeSchemaAuditReport,
@@ -573,15 +574,92 @@ enum WikiDigestCommands {
 
 /// Stores the placeholder CLI surface for `darc wiki digest start`.
 #[derive(Debug, Args)]
-struct WikiDigestStartArgs {}
+struct WikiDigestStartArgs {
+    #[arg(long, default_value_os_t = default_root_path())]
+    root: PathBuf,
+
+    #[arg(
+        long = "project-id",
+        help = "Start a digest run for this configured project id"
+    )]
+    project_id: String,
+
+    #[arg(
+        long = "session-ref",
+        required = true,
+        help = "Select one archived session using `<provider>:<session-id>`"
+    )]
+    session_ref: Vec<String>,
+
+    #[arg(
+        long = "agent",
+        value_enum,
+        help = "Select the future agent runtime id"
+    )]
+    agent: WikiAgentArg,
+
+    #[arg(long = "runtime", value_enum, help = "Select the future runtime kind")]
+    runtime: WikiRuntimeArg,
+
+    #[arg(long, help = "Record the target model name for this run")]
+    model: String,
+
+    #[arg(
+        long = "auth-profile",
+        help = "Record the named auth profile for this run"
+    )]
+    auth_profile: Option<String>,
+
+    #[arg(long = "target-category", help = "Prioritize this decision category")]
+    target_category: Vec<String>,
+
+    #[arg(long = "target-domain", help = "Prioritize this project-scoped domain")]
+    target_domain: Vec<String>,
+
+    #[arg(
+        long,
+        help = "Emit the stable machine-readable JSON envelope on stdout"
+    )]
+    json: bool,
+}
 
 /// Stores the placeholder CLI surface for `darc wiki digest cancel`.
 #[derive(Debug, Args)]
-struct WikiDigestCancelArgs {}
+struct WikiDigestCancelArgs {
+    #[arg(long, default_value_os_t = default_root_path())]
+    root: PathBuf,
+
+    #[arg(
+        long = "project-id",
+        help = "Cancel a digest run for this configured project id"
+    )]
+    project_id: String,
+
+    #[arg(long = "run-id", help = "Cancel this digest run id")]
+    run_id: String,
+
+    #[arg(
+        long,
+        help = "Emit the stable machine-readable JSON envelope on stdout"
+    )]
+    json: bool,
+}
 
 /// Stores the placeholder CLI surface for `darc wiki digest worker`.
 #[derive(Debug, Args)]
-struct WikiDigestWorkerArgs {}
+struct WikiDigestWorkerArgs {
+    #[arg(long, default_value_os_t = default_root_path())]
+    root: PathBuf,
+
+    #[arg(
+        long = "project-id",
+        help = "Run the worker for this configured project id"
+    )]
+    project_id: String,
+
+    #[arg(long = "run-id", help = "Run the worker for this digest run id")]
+    run_id: String,
+}
 
 /// Hosts entry mutation commands.
 #[derive(Debug, Args)]
@@ -638,6 +716,19 @@ struct ClaudeSchemaAuditArgs {
 enum ProviderArg {
     Claude,
     Codex,
+}
+
+/// Represents the supported agent ids for digest runs.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum WikiAgentArg {
+    Claude,
+    Codex,
+}
+
+/// Represents the supported runtime kinds for digest runs.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum WikiRuntimeArg {
+    ExternalCli,
 }
 
 /// Represents the supported search modes for machine-readable turn search.
@@ -877,15 +968,9 @@ fn run_query_turn_insights(args: QueryTurnInsightsArgs) -> Result<()> {
 fn run_wiki(args: WikiArgs) -> Result<()> {
     match args.command {
         WikiCommands::Digest(args) => match args.command {
-            WikiDigestCommands::Start(_) => bail!(
-                "darc wiki digest start is not implemented yet\nuse `darc query wiki ... --json` for read-side access today"
-            ),
-            WikiDigestCommands::Cancel(_) => bail!(
-                "darc wiki digest cancel is not implemented yet\nuse `darc query wiki ... --json` for read-side access today"
-            ),
-            WikiDigestCommands::Worker(_) => {
-                bail!("darc wiki digest worker is not implemented yet")
-            }
+            WikiDigestCommands::Start(args) => run_wiki_digest_start(args),
+            WikiDigestCommands::Cancel(args) => run_wiki_digest_cancel(args),
+            WikiDigestCommands::Worker(args) => run_wiki_digest_worker(args),
         },
         WikiCommands::Entry(args) => match args.command {
             WikiEntryCommands::Discard(_) => bail!(
@@ -896,6 +981,63 @@ fn run_wiki(args: WikiArgs) -> Result<()> {
             ),
         },
     }
+}
+
+/// Starts one new Context Wiki digest run.
+fn run_wiki_digest_start(args: WikiDigestStartArgs) -> Result<()> {
+    let worker_executable =
+        std::env::current_exe().context("failed to resolve the current darc executable path")?;
+    let report = start_project_wiki_digest(
+        Some(args.root.clone()),
+        &args.project_id,
+        &DigestStartOptions {
+            session_refs: args.session_ref,
+            agent_id: wiki_agent_arg_to_id(args.agent),
+            runtime: wiki_runtime_arg_to_id(args.runtime),
+            model: args.model,
+            auth_profile: args.auth_profile,
+            requested_by: None,
+            request_source: None,
+            target_categories: args.target_category,
+            target_domains: args.target_domain,
+            worker_executable,
+        },
+    )?;
+    if args.json {
+        return print_json_envelope("darc.wiki.digest.start.v1", &report);
+    }
+
+    println!("Project ID: {}", report.project_id);
+    println!("Run ID: {}", report.run_id);
+    println!("Status: {:?}", report.status);
+    println!("Phase: {:?}", report.phase);
+    println!("Worker PID: {}", report.pid);
+    Ok(())
+}
+
+/// Cancels one existing Context Wiki digest run.
+fn run_wiki_digest_cancel(args: WikiDigestCancelArgs) -> Result<()> {
+    let run_id = RunId::new(args.run_id)?;
+    let report = cancel_project_wiki_digest(Some(args.root), &args.project_id, &run_id)?;
+    if args.json {
+        return print_json_envelope("darc.wiki.digest.cancel.v1", &report);
+    }
+
+    println!("Project ID: {}", report.project_id);
+    println!("Run ID: {}", report.run_id);
+    println!("Status: {:?}", report.status);
+    println!("Phase: {:?}", report.phase);
+    println!("Cancel Requested: {}", report.cancel_requested);
+    if let Some(pid) = report.pid {
+        println!("Worker PID: {pid}");
+    }
+    Ok(())
+}
+
+/// Runs the hidden digest worker for one existing run.
+fn run_wiki_digest_worker(args: WikiDigestWorkerArgs) -> Result<()> {
+    let run_id = RunId::new(args.run_id)?;
+    run_project_wiki_digest_worker(Some(args.root), &args.project_id, &run_id)
 }
 
 /// Writes one machine-readable JSON envelope to stdout.
@@ -1005,6 +1147,21 @@ fn provider_arg_to_source_kind(provider: ProviderArg) -> SourceKind {
     match provider {
         ProviderArg::Claude => SourceKind::Claude,
         ProviderArg::Codex => SourceKind::Codex,
+    }
+}
+
+/// Converts one parsed digest agent argument into the persisted run-state id.
+fn wiki_agent_arg_to_id(agent: WikiAgentArg) -> String {
+    match agent {
+        WikiAgentArg::Claude => "claude".to_owned(),
+        WikiAgentArg::Codex => "codex".to_owned(),
+    }
+}
+
+/// Converts one parsed digest runtime argument into the persisted run-state id.
+fn wiki_runtime_arg_to_id(runtime: WikiRuntimeArg) -> String {
+    match runtime {
+        WikiRuntimeArg::ExternalCli => "external_cli".to_owned(),
     }
 }
 
