@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use darc_wiki::{
-    ContextWikiLayout, ProjectLayout, ProjectRegistry, RunId, RunState, list_digests, list_entries,
-    list_runs, load_registry, load_run_state, store_run_state,
+    ContextWikiLayout, ProjectLayout, ProjectRegistry, RunId, RunState, ensure_registry,
+    list_digests, list_entries, list_runs, load_registry, load_run_state, store_run_state,
 };
 
 use crate::{default_root_path, project::registered_projects};
@@ -22,9 +22,7 @@ pub struct ProjectWikiData {
 /// Ensures the per-project wiki directory tree exists for one configured project.
 pub fn ensure_project_wiki(root: Option<PathBuf>, project_id: &str) -> Result<ProjectLayout> {
     let layout = resolve_project_layout(root, project_id)?;
-    let top_level = context_wiki_layout(&layout);
-    top_level.ensure_root()?;
-    load_registry(&layout).context("failed to initialize project wiki registry")?;
+    ensure_registry(&layout).context("failed to initialize project wiki registry")?;
     Ok(layout)
 }
 
@@ -68,18 +66,9 @@ fn resolve_project_layout(root: Option<PathBuf>, project_id: &str) -> Result<Pro
         .into_iter()
         .find(|project| project.id == project_id)
         .with_context(|| format!("project id `{project_id}` was not found in the shared config"))?;
-    Ok(ContextWikiLayout::new(root).project_layout(project.id))
-}
-
-/// Rebuilds the top-level wiki layout from one project-specific layout.
-fn context_wiki_layout(layout: &ProjectLayout) -> ContextWikiLayout {
-    let darc_root = layout
-        .root
-        .ancestors()
-        .nth(3)
-        .expect("project wiki layout should have the darc root as an ancestor")
-        .to_path_buf();
-    ContextWikiLayout::new(darc_root)
+    ContextWikiLayout::new(root)
+        .project_layout(project.id)
+        .context("failed to resolve project wiki layout")
 }
 
 #[cfg(test)]

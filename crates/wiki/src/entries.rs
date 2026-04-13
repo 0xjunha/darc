@@ -105,9 +105,15 @@ pub fn load_entry(path: &Path) -> Result<EntryDocument> {
 
 /// Lists every canonical entry document for one project in deterministic order.
 pub fn list_entries(layout: &ProjectLayout) -> Result<Vec<EntrySummary>> {
+    layout.validate_storage()?;
     let mut entries = collect_markdown_files(&layout.entries_dir)?
         .into_iter()
-        .map(|path| load_entry(&path).map(EntrySummary::from))
+        .map(|path| {
+            let document = load_entry(&path)?;
+            validate_entry_schema_version(&path, document.frontmatter.schema_version)?;
+            validate_entry_project(layout, &document.frontmatter)?;
+            Ok(EntrySummary::from(document))
+        })
         .collect::<Result<Vec<_>>>()?;
     entries.sort_by(|left, right| left.entry_id.cmp(&right.entry_id));
     Ok(entries)
@@ -116,4 +122,30 @@ pub fn list_entries(layout: &ProjectLayout) -> Result<Vec<EntrySummary>> {
 /// Returns the fixed entry schema version.
 fn default_schema_version() -> u32 {
     ENTRY_SCHEMA_VERSION
+}
+
+/// Validates one persisted entry schema version against the current implementation.
+fn validate_entry_schema_version(path: &Path, schema_version: u32) -> Result<()> {
+    if schema_version == ENTRY_SCHEMA_VERSION {
+        Ok(())
+    } else {
+        Err(crate::WikiError::UnsupportedSchemaVersion {
+            path: path.to_path_buf(),
+            expected: ENTRY_SCHEMA_VERSION,
+            actual: schema_version,
+        })
+    }
+}
+
+/// Validates that one stored entry belongs to the requested project layout.
+fn validate_entry_project(layout: &ProjectLayout, frontmatter: &EntryFrontmatter) -> Result<()> {
+    if frontmatter.project_id == layout.project_id {
+        Ok(())
+    } else {
+        Err(crate::WikiError::EntryProjectMismatch {
+            entry_id: frontmatter.entry_id.to_string(),
+            expected_project_id: layout.project_id.clone(),
+            actual_project_id: frontmatter.project_id.clone(),
+        })
+    }
 }

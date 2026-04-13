@@ -2,7 +2,7 @@ use std::fs;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ProjectLayout, Result, WikiError, layout::ContextWikiLayout};
+use crate::{ProjectLayout, Result, WikiError};
 
 const REGISTRY_SCHEMA_VERSION: u32 = 1;
 
@@ -42,20 +42,16 @@ impl ProjectRegistry {
 /// Creates the per-project registry files when they do not exist yet.
 pub fn ensure_registry(layout: &ProjectLayout) -> Result<()> {
     layout.ensure()?;
-    let wiki_root = layout
-        .root
-        .ancestors()
-        .nth(3)
-        .map(ContextWikiLayout::new)
-        .unwrap_or_else(|| ContextWikiLayout::new("."));
-    wiki_root.ensure_root()?;
+    let registry = load_registry(layout)?;
 
     if !layout.categories_path.exists() {
-        let content = toml::to_string_pretty(&CategoriesFile::default()).map_err(|source| {
-            WikiError::SerializeToml {
-                path: layout.categories_path.clone(),
-                source,
-            }
+        let content = toml::to_string_pretty(&CategoriesFile {
+            schema_version: REGISTRY_SCHEMA_VERSION,
+            categories: registry.categories.clone(),
+        })
+        .map_err(|source| WikiError::SerializeToml {
+            path: layout.categories_path.clone(),
+            source,
         })?;
         fs::write(&layout.categories_path, content).map_err(|source| WikiError::WriteFile {
             path: layout.categories_path.clone(),
@@ -64,11 +60,13 @@ pub fn ensure_registry(layout: &ProjectLayout) -> Result<()> {
     }
 
     if !layout.domains_path.exists() {
-        let content = toml::to_string_pretty(&DomainsFile::default()).map_err(|source| {
-            WikiError::SerializeToml {
-                path: layout.domains_path.clone(),
-                source,
-            }
+        let content = toml::to_string_pretty(&DomainsFile {
+            schema_version: REGISTRY_SCHEMA_VERSION,
+            domains: registry.domains.clone(),
+        })
+        .map_err(|source| WikiError::SerializeToml {
+            path: layout.domains_path.clone(),
+            source,
         })?;
         fs::write(&layout.domains_path, content).map_err(|source| WikiError::WriteFile {
             path: layout.domains_path.clone(),
@@ -79,11 +77,23 @@ pub fn ensure_registry(layout: &ProjectLayout) -> Result<()> {
     Ok(())
 }
 
-/// Loads the project-scoped registry after creating the default files when needed.
+/// Loads the project-scoped registry without mutating the filesystem.
 pub fn load_registry(layout: &ProjectLayout) -> Result<ProjectRegistry> {
-    ensure_registry(layout)?;
-    let categories = read_toml_file::<CategoriesFile>(&layout.categories_path)?.categories;
-    let domains = read_toml_file::<DomainsFile>(&layout.domains_path)?.domains;
+    layout.validate_storage()?;
+    let categories = if layout.categories_path.exists() {
+        let file = read_toml_file::<CategoriesFile>(&layout.categories_path)?;
+        validate_schema_version(&layout.categories_path, file.schema_version)?;
+        file.categories
+    } else {
+        default_categories()
+    };
+    let domains = if layout.domains_path.exists() {
+        let file = read_toml_file::<DomainsFile>(&layout.domains_path)?;
+        validate_schema_version(&layout.domains_path, file.schema_version)?;
+        file.domains
+    } else {
+        Vec::new()
+    };
     Ok(ProjectRegistry {
         schema_version: REGISTRY_SCHEMA_VERSION,
         categories,
@@ -139,6 +149,19 @@ fn default_categories() -> Vec<String> {
         .iter()
         .map(|category| (*category).to_owned())
         .collect()
+}
+
+/// Validates one persisted registry schema version against the current implementation.
+fn validate_schema_version(path: &std::path::Path, schema_version: u32) -> Result<()> {
+    if schema_version == REGISTRY_SCHEMA_VERSION {
+        Ok(())
+    } else {
+        Err(WikiError::UnsupportedSchemaVersion {
+            path: path.to_path_buf(),
+            expected: REGISTRY_SCHEMA_VERSION,
+            actual: schema_version,
+        })
+    }
 }
 
 /// Loads and deserializes one TOML file from disk.

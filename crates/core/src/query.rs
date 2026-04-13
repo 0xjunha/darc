@@ -20,8 +20,8 @@ use darc_query::{
     query_turn_detail, query_turn_insights, query_workspace_insights,
 };
 use darc_wiki::{
-    ContextWikiLayout, DigestSummary, EntrySummary, RunSummary, list_digests, list_entries,
-    list_runs, load_registry,
+    ContextWikiLayout, DigestId, DigestSummary, EntryId, EntryStatus, EntrySummary, EntryType,
+    RunId, RunPhase, RunStatus, RunSummary, list_digests, list_entries, list_runs, load_registry,
 };
 use serde::Serialize;
 
@@ -227,21 +227,101 @@ pub struct WikiRegistryQueryData {
 #[derive(Debug, Clone, Serialize)]
 pub struct WikiEntriesQueryData {
     pub project_id: String,
-    pub entries: Vec<EntrySummary>,
+    pub entries: Vec<WikiEntryListItem>,
 }
 
 /// Stores the digest-list payload for one project-scoped wiki query.
 #[derive(Debug, Clone, Serialize)]
 pub struct WikiDigestsQueryData {
     pub project_id: String,
-    pub digests: Vec<DigestSummary>,
+    pub digests: Vec<WikiDigestListItem>,
 }
 
 /// Stores the run-list payload for one project-scoped wiki query.
 #[derive(Debug, Clone, Serialize)]
 pub struct WikiRunsQueryData {
     pub project_id: String,
-    pub runs: Vec<RunSummary>,
+    pub runs: Vec<WikiRunListItem>,
+}
+
+/// Stores one API-shaped wiki entry row for the read protocol.
+#[derive(Debug, Clone, Serialize)]
+pub struct WikiEntryListItem {
+    pub entry_id: EntryId,
+    pub display_id: Option<String>,
+    pub entry_type: EntryType,
+    pub title: String,
+    pub category: String,
+    pub domains: Vec<String>,
+    pub status: EntryStatus,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl From<EntrySummary> for WikiEntryListItem {
+    fn from(summary: EntrySummary) -> Self {
+        Self {
+            entry_id: summary.entry_id,
+            display_id: summary.display_id,
+            entry_type: summary.entry_type,
+            title: summary.title,
+            category: summary.category,
+            domains: summary.domains,
+            status: summary.status,
+            created_at: summary.created_at,
+            updated_at: summary.updated_at,
+        }
+    }
+}
+
+/// Stores one API-shaped wiki digest row for the read protocol.
+#[derive(Debug, Clone, Serialize)]
+pub struct WikiDigestListItem {
+    pub digest_id: DigestId,
+    pub run_id: RunId,
+    pub title: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub extracted_decision_count: usize,
+}
+
+impl From<DigestSummary> for WikiDigestListItem {
+    fn from(summary: DigestSummary) -> Self {
+        Self {
+            digest_id: summary.digest_id,
+            run_id: summary.run_id,
+            title: summary.title,
+            created_at: summary.created_at,
+            updated_at: summary.updated_at,
+            extracted_decision_count: summary.extracted_decision_count,
+        }
+    }
+}
+
+/// Stores one API-shaped wiki run row for the read protocol.
+#[derive(Debug, Clone, Serialize)]
+pub struct WikiRunListItem {
+    pub run_id: RunId,
+    pub status: RunStatus,
+    pub phase: RunPhase,
+    pub created_at: String,
+    pub updated_at: String,
+    pub finished_at: Option<String>,
+    pub headline: Option<String>,
+}
+
+impl From<RunSummary> for WikiRunListItem {
+    fn from(summary: RunSummary) -> Self {
+        Self {
+            run_id: summary.run_id,
+            status: summary.status,
+            phase: summary.phase,
+            created_at: summary.created_at,
+            updated_at: summary.updated_at,
+            finished_at: summary.finished_at,
+            headline: summary.headline,
+        }
+    }
 }
 
 /// Queries the wiki registry payload for one configured project.
@@ -250,7 +330,7 @@ pub fn query_wiki_registry(
     project_id: &str,
 ) -> Result<WikiRegistryQueryData> {
     let context = load_project_config_context(root, project_id)?;
-    let layout = load_project_wiki_layout(&context);
+    let layout = load_project_wiki_layout(&context)?;
     let registry = load_registry(&layout)?;
     Ok(WikiRegistryQueryData {
         project_id: context.project.id,
@@ -263,33 +343,39 @@ pub fn query_wiki_registry(
 /// Queries the wiki entry-list payload for one configured project.
 pub fn query_wiki_entries(root: Option<PathBuf>, project_id: &str) -> Result<WikiEntriesQueryData> {
     let context = load_project_config_context(root, project_id)?;
-    let layout = load_project_wiki_layout(&context);
-    load_registry(&layout)?;
+    let layout = load_project_wiki_layout(&context)?;
     Ok(WikiEntriesQueryData {
         project_id: context.project.id,
-        entries: list_entries(&layout)?,
+        entries: list_entries(&layout)?
+            .into_iter()
+            .map(WikiEntryListItem::from)
+            .collect(),
     })
 }
 
 /// Queries the wiki digest-list payload for one configured project.
 pub fn query_wiki_digests(root: Option<PathBuf>, project_id: &str) -> Result<WikiDigestsQueryData> {
     let context = load_project_config_context(root, project_id)?;
-    let layout = load_project_wiki_layout(&context);
-    load_registry(&layout)?;
+    let layout = load_project_wiki_layout(&context)?;
     Ok(WikiDigestsQueryData {
         project_id: context.project.id,
-        digests: list_digests(&layout)?,
+        digests: list_digests(&layout)?
+            .into_iter()
+            .map(WikiDigestListItem::from)
+            .collect(),
     })
 }
 
 /// Queries the wiki run-list payload for one configured project.
 pub fn query_wiki_runs(root: Option<PathBuf>, project_id: &str) -> Result<WikiRunsQueryData> {
     let context = load_project_config_context(root, project_id)?;
-    let layout = load_project_wiki_layout(&context);
-    load_registry(&layout)?;
+    let layout = load_project_wiki_layout(&context)?;
     Ok(WikiRunsQueryData {
         project_id: context.project.id,
-        runs: list_runs(&layout)?,
+        runs: list_runs(&layout)?
+            .into_iter()
+            .map(WikiRunListItem::from)
+            .collect(),
     })
 }
 
@@ -438,9 +524,10 @@ fn ensure_database_exists(root: &RootInfo) -> Result<()> {
 }
 
 /// Resolves one project-scoped wiki layout under the configured Darc root.
-fn load_project_wiki_layout(context: &ProjectQueryContext) -> darc_wiki::ProjectLayout {
+fn load_project_wiki_layout(context: &ProjectQueryContext) -> Result<darc_wiki::ProjectLayout> {
     ContextWikiLayout::new(context.root.resolved_root_path.clone())
         .project_layout(context.project.id.clone())
+        .context("failed to resolve project wiki layout")
 }
 
 /// Stores the validated root and project context for one project-scoped query.

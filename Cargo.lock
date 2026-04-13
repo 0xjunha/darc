@@ -327,6 +327,7 @@ dependencies = [
 name = "darc-wiki"
 version = "0.1.0"
 dependencies = [
+ "darc-paths",
  "serde",
  "thiserror",
  "toml",

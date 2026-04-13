@@ -69,9 +69,15 @@ pub fn load_digest(path: &Path) -> Result<DigestDocument> {
 
 /// Lists every canonical digest report for one project in deterministic order.
 pub fn list_digests(layout: &ProjectLayout) -> Result<Vec<DigestSummary>> {
+    layout.validate_storage()?;
     let mut digests = collect_markdown_files(&layout.digests_dir)?
         .into_iter()
-        .map(|path| load_digest(&path).map(DigestSummary::from))
+        .map(|path| {
+            let document = load_digest(&path)?;
+            validate_digest_schema_version(&path, document.frontmatter.schema_version)?;
+            validate_digest_project(layout, &document.frontmatter)?;
+            Ok(DigestSummary::from(document))
+        })
         .collect::<Result<Vec<_>>>()?;
     digests.sort_by(|left, right| left.digest_id.cmp(&right.digest_id));
     Ok(digests)
@@ -80,4 +86,30 @@ pub fn list_digests(layout: &ProjectLayout) -> Result<Vec<DigestSummary>> {
 /// Returns the fixed digest report schema version.
 fn default_schema_version() -> u32 {
     DIGEST_SCHEMA_VERSION
+}
+
+/// Validates one persisted digest schema version against the current implementation.
+fn validate_digest_schema_version(path: &Path, schema_version: u32) -> Result<()> {
+    if schema_version == DIGEST_SCHEMA_VERSION {
+        Ok(())
+    } else {
+        Err(crate::WikiError::UnsupportedSchemaVersion {
+            path: path.to_path_buf(),
+            expected: DIGEST_SCHEMA_VERSION,
+            actual: schema_version,
+        })
+    }
+}
+
+/// Validates that one stored digest belongs to the requested project layout.
+fn validate_digest_project(layout: &ProjectLayout, frontmatter: &DigestFrontmatter) -> Result<()> {
+    if frontmatter.project_id == layout.project_id {
+        Ok(())
+    } else {
+        Err(crate::WikiError::DigestProjectMismatch {
+            digest_id: frontmatter.digest_id.to_string(),
+            expected_project_id: layout.project_id.clone(),
+            actual_project_id: frontmatter.project_id.clone(),
+        })
+    }
 }

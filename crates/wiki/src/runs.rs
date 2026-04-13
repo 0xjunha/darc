@@ -138,6 +138,7 @@ impl RunSummary {
 
 /// Loads one durable run state from the canonical `run.toml` path.
 pub fn load_run_state(layout: &ProjectLayout, run_id: &RunId) -> Result<RunState> {
+    layout.validate_storage()?;
     let path = layout.run_state_path(run_id);
     let content = fs::read_to_string(&path).map_err(|source| WikiError::ReadFile {
         path: path.clone(),
@@ -147,20 +148,22 @@ pub fn load_run_state(layout: &ProjectLayout, run_id: &RunId) -> Result<RunState
         path: path.clone(),
         source,
     })?;
+    validate_run_schema_version(&path, state.schema_version)?;
     validate_run_project(layout, &state)?;
     Ok(state)
 }
 
 /// Stores one durable run state into the canonical `run.toml` location.
 pub fn store_run_state(layout: &ProjectLayout, state: &RunState) -> Result<()> {
-    validate_run_project(layout, state)?;
     layout.ensure()?;
+    let path = layout.run_state_path(&state.run_id);
+    validate_run_schema_version(&path, state.schema_version)?;
+    validate_run_project(layout, state)?;
     let run_dir = layout.run_dir(&state.run_id);
     fs::create_dir_all(&run_dir).map_err(|source| WikiError::CreateDir {
         path: run_dir.clone(),
         source,
     })?;
-    let path = layout.run_state_path(&state.run_id);
     let content = toml::to_string_pretty(state).map_err(|source| WikiError::SerializeToml {
         path: path.clone(),
         source,
@@ -174,6 +177,7 @@ pub fn store_run_state(layout: &ProjectLayout, state: &RunState) -> Result<()> {
 
 /// Lists every durable run summary for one project in deterministic order.
 pub fn list_runs(layout: &ProjectLayout) -> Result<Vec<RunSummary>> {
+    layout.validate_storage()?;
     if !layout.runs_dir.exists() {
         return Ok(Vec::new());
     }
@@ -217,6 +221,19 @@ fn validate_run_project(layout: &ProjectLayout, state: &RunState) -> Result<()> 
     }
 }
 
+/// Validates one persisted run schema version against the current implementation.
+fn validate_run_schema_version(path: &std::path::Path, schema_version: u32) -> Result<()> {
+    if schema_version == RUN_SCHEMA_VERSION {
+        Ok(())
+    } else {
+        Err(WikiError::UnsupportedSchemaVersion {
+            path: path.to_path_buf(),
+            expected: RUN_SCHEMA_VERSION,
+            actual: schema_version,
+        })
+    }
+}
+
 /// Returns the fixed run schema version.
 fn default_schema_version() -> u32 {
     RUN_SCHEMA_VERSION
@@ -256,7 +273,7 @@ mod tests {
     #[test]
     fn run_state_round_trips_and_lists_in_run_id_order() -> Result<()> {
         let darc_root = unique_test_dir("run-state");
-        let layout = ContextWikiLayout::new(&darc_root).project_layout("repo-123");
+        let layout = ContextWikiLayout::new(&darc_root).project_layout("repo-123")?;
         layout.ensure()?;
 
         let later = RunState {

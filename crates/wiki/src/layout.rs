@@ -3,6 +3,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use darc_paths::is_valid_project_id;
+
 use crate::{
     Result, WikiError,
     ids::{DigestId, EntryId, RunId},
@@ -38,7 +40,11 @@ impl ContextWikiLayout {
 
     /// Creates the top-level Context Wiki directories and version file when missing.
     pub fn ensure_root(&self) -> Result<()> {
-        ensure_directory(&self.root)?;
+        if self.root.exists() {
+            self.validate_root()?;
+        } else {
+            ensure_directory(&self.root)?;
+        }
         ensure_directory(&self.projects_root)?;
         if !self.version_path.exists() {
             fs::write(&self.version_path, format!("{STORAGE_VERSION}\n")).map_err(|source| {
@@ -51,11 +57,43 @@ impl ContextWikiLayout {
         Ok(())
     }
 
+    /// Validates the top-level Context Wiki storage version when the root exists.
+    pub fn validate_root(&self) -> Result<()> {
+        if !self.root.exists() {
+            return Ok(());
+        }
+        if !self.version_path.exists() {
+            return Err(WikiError::MissingStorageVersion {
+                path: self.version_path.clone(),
+            });
+        }
+
+        let actual =
+            fs::read_to_string(&self.version_path).map_err(|source| WikiError::ReadFile {
+                path: self.version_path.clone(),
+                source,
+            })?;
+        let actual = actual.trim().to_owned();
+        if actual == STORAGE_VERSION {
+            Ok(())
+        } else {
+            Err(WikiError::UnsupportedStorageVersion {
+                path: self.version_path.clone(),
+                expected: STORAGE_VERSION.to_owned(),
+                actual,
+            })
+        }
+    }
+
     /// Resolves one per-project Context Wiki layout from the top-level wiki root.
-    pub fn project_layout(&self, project_id: impl Into<String>) -> ProjectLayout {
+    pub fn project_layout(&self, project_id: impl Into<String>) -> Result<ProjectLayout> {
         let project_id = project_id.into();
+        if !is_valid_project_id(&project_id) {
+            return Err(WikiError::InvalidProjectId { value: project_id });
+        }
         let root = self.projects_root.join(&project_id);
-        ProjectLayout {
+        Ok(ProjectLayout {
+            context: self.clone(),
             project_id,
             root: root.clone(),
             registry_dir: root.join("registry"),
@@ -64,13 +102,14 @@ impl ContextWikiLayout {
             entries_dir: root.join("entries"),
             digests_dir: root.join("digests"),
             runs_dir: root.join("runs"),
-        }
+        })
     }
 }
 
 /// Resolves the full on-disk directory layout for one project wiki.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectLayout {
+    context: ContextWikiLayout,
     pub project_id: String,
     pub root: PathBuf,
     pub registry_dir: PathBuf,
@@ -84,12 +123,18 @@ pub struct ProjectLayout {
 impl ProjectLayout {
     /// Creates the per-project directory tree when it does not exist yet.
     pub fn ensure(&self) -> Result<()> {
+        self.context.ensure_root()?;
         ensure_directory(&self.root)?;
         ensure_directory(&self.registry_dir)?;
         ensure_directory(&self.entries_dir)?;
         ensure_directory(&self.digests_dir)?;
         ensure_directory(&self.runs_dir)?;
         Ok(())
+    }
+
+    /// Validates the enclosing Context Wiki storage version for read-side access.
+    pub fn validate_storage(&self) -> Result<()> {
+        self.context.validate_root()
     }
 
     /// Resolves one category directory path under the canonical entries root.

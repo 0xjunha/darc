@@ -9,9 +9,53 @@ pub enum WikiError {
     #[error("invalid wiki id `{value}`")]
     InvalidId { value: String },
 
+    /// Reports one invalid project identifier before filesystem resolution.
+    #[error("invalid project id `{value}`")]
+    InvalidProjectId { value: String },
+
     /// Reports one missing Markdown frontmatter block.
     #[error("missing TOML frontmatter in {path}")]
     MissingFrontmatter { path: PathBuf },
+
+    /// Reports one missing storage version marker in an existing wiki root.
+    #[error("missing storage version marker at {path}")]
+    MissingStorageVersion { path: PathBuf },
+
+    /// Reports one unsupported storage layout version marker.
+    #[error("unsupported storage version `{actual}` at {path}, expected `{expected}`")]
+    UnsupportedStorageVersion {
+        path: PathBuf,
+        expected: String,
+        actual: String,
+    },
+
+    /// Reports one unsupported schema version in a persisted artifact file.
+    #[error("unsupported schema version `{actual}` in {path}, expected `{expected}`")]
+    UnsupportedSchemaVersion {
+        path: PathBuf,
+        expected: u32,
+        actual: u32,
+    },
+
+    /// Reports one project mismatch between one stored entry and its enclosing project layout.
+    #[error(
+        "entry `{entry_id}` belongs to project `{actual_project_id}`, expected `{expected_project_id}`"
+    )]
+    EntryProjectMismatch {
+        entry_id: String,
+        expected_project_id: String,
+        actual_project_id: String,
+    },
+
+    /// Reports one project mismatch between one stored digest and its enclosing project layout.
+    #[error(
+        "digest `{digest_id}` belongs to project `{actual_project_id}`, expected `{expected_project_id}`"
+    )]
+    DigestProjectMismatch {
+        digest_id: String,
+        expected_project_id: String,
+        actual_project_id: String,
+    },
 
     /// Reports one project mismatch between layout and persisted run state.
     #[error(

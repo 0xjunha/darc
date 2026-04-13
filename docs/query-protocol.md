@@ -98,12 +98,14 @@ Today:
 
 - wiki queries require a configured project id in `config.toml`
 - wiki queries do not require `index.sqlite`
-- the first successful wiki read creates the empty per-project wiki layout if it does not exist yet
+- wiki queries are read-only and do not create the on-disk wiki layout
+- when no on-disk registry exists yet, `darc.query.wiki.registry.v1` returns the default category set and an empty domain list
 - `darc.query.wiki.registry.v1` returns `project_id`, `schema_version`, `categories`, and `domains`
 - `darc.query.wiki.entries.v1` returns `project_id` plus deterministic `entries`
 - `darc.query.wiki.digests.v1` returns `project_id` plus deterministic `digests`
 - `darc.query.wiki.runs.v1` returns `project_id` plus deterministic `runs`
 - empty lists are returned when no canonical entries, digests, or runs exist yet
+- wiki list payloads do not expose internal storage paths
 
 ## Stability rules
 
