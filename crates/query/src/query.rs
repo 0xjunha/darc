@@ -108,6 +108,10 @@ pub struct SessionSummary {
     pub changed_file_count: u64,
     pub added_line_count: u64,
     pub removed_line_count: u64,
+    pub first_turn_at: Option<String>,
+    pub first_user_prompt: Option<String>,
+    pub aborted_turn_count: u64,
+    pub edited_files: Vec<String>,
 }
 
 /// Stores the full session-list query payload for one project.
