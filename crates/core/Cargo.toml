@@ -11,6 +11,7 @@ darc-query = { workspace = true }
 darc-index = { workspace = true }
 darc-paths = { workspace = true }
 darc-sync = { workspace = true }
+darc-wiki = { workspace = true }
 anyhow = { workspace = true }
 directories = { workspace = true }
 rusqlite = { workspace = true }

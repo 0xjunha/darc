@@ -9,7 +9,7 @@ use crate::{
 };
 
 /// Loads the shared config and normalizes legacy project entries in memory.
-pub(super) fn load_normalized_shared_config(config_path: &Path) -> Result<SharedConfig> {
+pub(crate) fn load_normalized_shared_config(config_path: &Path) -> Result<SharedConfig> {
     let mut config = load_config(config_path)?;
     config.projects = config
         .projects
@@ -20,7 +20,7 @@ pub(super) fn load_normalized_shared_config(config_path: &Path) -> Result<Shared
 }
 
 /// Loads the registered project list from the shared config.
-pub(super) fn registered_projects(root: &Path) -> Result<Vec<ProjectConfig>> {
+pub(crate) fn registered_projects(root: &Path) -> Result<Vec<ProjectConfig>> {
     let config_path = root.join(CONFIG_FILE_NAME);
     if !config_path.exists() {
         bail!(
