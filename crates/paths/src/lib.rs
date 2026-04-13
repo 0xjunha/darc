@@ -3,6 +3,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result};
@@ -43,6 +44,53 @@ pub fn is_valid_project_id(project_id: &str) -> bool {
             .as_bytes()
             .iter()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
+}
+
+/// Returns the current UTC timestamp formatted in Darc's stable ISO 8601 shape.
+pub fn current_utc_timestamp() -> String {
+    current_utc_timestamp_at(SystemTime::now())
+}
+
+/// Returns one UTC timestamp for the provided system time.
+pub fn current_utc_timestamp_at(timestamp: SystemTime) -> String {
+    let duration = timestamp.duration_since(UNIX_EPOCH).unwrap_or_default();
+    let total_seconds = duration.as_secs();
+    let days = i64::try_from(total_seconds / 86_400).unwrap_or(i64::MAX);
+    let seconds_of_day = total_seconds % 86_400;
+    let (year, month, day) = civil_from_days(days);
+    let hour = seconds_of_day / 3_600;
+    let minute = (seconds_of_day % 3_600) / 60;
+    let second = seconds_of_day % 60;
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
+/// Parses one Darc UTC ISO 8601 timestamp back into `SystemTime`.
+pub fn parse_utc_timestamp(value: &str) -> Option<SystemTime> {
+    let value = value.strip_suffix('Z')?;
+    let (date, time) = value.split_once('T')?;
+    let mut date_parts = date.split('-');
+    let year = date_parts.next()?.parse::<i64>().ok()?;
+    let month = date_parts.next()?.parse::<u32>().ok()?;
+    let day = date_parts.next()?.parse::<u32>().ok()?;
+    if date_parts.next().is_some() {
+        return None;
+    }
+
+    let mut time_parts = time.split(':');
+    let hour = time_parts.next()?.parse::<u64>().ok()?;
+    let minute = time_parts.next()?.parse::<u64>().ok()?;
+    let second = time_parts.next()?.parse::<u64>().ok()?;
+    if time_parts.next().is_some() {
+        return None;
+    }
+
+    let days = days_from_civil(year, month, day)?;
+    let days = u64::try_from(days).ok()?;
+    let seconds_of_day = hour
+        .checked_mul(3_600)?
+        .checked_add(minute.checked_mul(60)?)?
+        .checked_add(second)?;
+    Some(UNIX_EPOCH + Duration::from_secs(days.checked_mul(86_400)?.checked_add(seconds_of_day)?))
 }
 
 /// Encodes a project path using Claude's directory naming rule.
@@ -174,6 +222,45 @@ fn normalize_path_textually(path: &Path) -> PathBuf {
     }
 }
 
+/// Converts one Unix-day count into a UTC civil date.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 {
+        z / 146_097
+    } else {
+        (z - 146_096) / 146_097
+    };
+    let day_of_era = z - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    year += if month <= 2 { 1 } else { 0 };
+    (
+        year,
+        u32::try_from(month).unwrap_or(1),
+        u32::try_from(day).unwrap_or(1),
+    )
+}
+
+/// Converts one civil UTC date into the Unix-day count used by the timestamp formatter.
+fn days_from_civil(year: i64, month: u32, day: u32) -> Option<i64> {
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let year = year - i64::from(month <= 2);
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let month = i64::from(month);
+    let month_prime = month + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * month_prime + 2) / 5 + i64::from(day) - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    Some(era * 146_097 + day_of_era - 719_468)
+}
+
 /// Parses the `git worktree list --porcelain` output into raw filesystem paths.
 fn parse_git_worktree_output(output: &str) -> Vec<PathBuf> {
     output
@@ -252,5 +339,14 @@ branch refs/heads/feature
         assert!(!is_valid_project_id("repo_abc123"));
         assert!(!is_valid_project_id("Repo-abc123"));
         assert!(!is_valid_project_id(""));
+    }
+
+    #[test]
+    fn utc_timestamp_round_trips() {
+        let timestamp = UNIX_EPOCH + Duration::from_secs(1_744_022_096);
+        let text = current_utc_timestamp_at(timestamp);
+
+        assert_eq!(text, "2025-04-07T10:34:56Z");
+        assert_eq!(parse_utc_timestamp(&text), Some(timestamp));
     }
 }

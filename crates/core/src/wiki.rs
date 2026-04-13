@@ -2,13 +2,13 @@ use std::{
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
     sync::atomic::{AtomicU64, Ordering},
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, bail};
+use darc_paths::{current_utc_timestamp, parse_utc_timestamp};
 use darc_wiki::{
     ContextWikiLayout, ProjectLayout, ProjectRegistry, RunId, RunPhase, RunState, RunStatus,
     ensure_registry, list_digests, list_entries, list_runs, load_registry, load_run_state,
@@ -54,7 +54,17 @@ pub struct DigestStartOptions {
     pub request_source: Option<String>,
     pub target_categories: Vec<String>,
     pub target_domains: Vec<String>,
-    pub worker_executable: PathBuf,
+}
+
+/// Stores one prepared digest run before the CLI spawns the hidden worker.
+#[derive(Debug, Clone, Serialize)]
+pub struct PreparedDigestRun {
+    pub project_id: String,
+    pub run_id: RunId,
+    pub status: RunStatus,
+    pub phase: RunPhase,
+    pub stdout_log_path: PathBuf,
+    pub stderr_log_path: PathBuf,
 }
 
 /// Reports one started digest run back to the CLI.
@@ -119,12 +129,12 @@ pub fn store_project_wiki_run(
     store_run_state(&layout, run_state).context("failed to store wiki run state")
 }
 
-/// Starts one new digest run, writes the initial artifacts, and spawns the hidden worker.
-pub fn start_project_wiki_digest(
+/// Prepares one new digest run and writes the initial artifacts before worker spawn.
+pub fn prepare_project_wiki_digest_start(
     root: Option<PathBuf>,
     project_id: &str,
     options: &DigestStartOptions,
-) -> Result<DigestStartReport> {
+) -> Result<PreparedDigestRun> {
     validate_digest_start_options(options)?;
     let layout = ensure_project_wiki(root, project_id)?;
     let now = current_utc_timestamp();
@@ -171,7 +181,7 @@ pub fn start_project_wiki_digest(
     touch_file(&layout.run_stdout_log_path(&run_id))?;
     touch_file(&layout.run_stderr_log_path(&run_id))?;
 
-    let mut state = RunState {
+    let state = RunState {
         schema_version: 1,
         run_id: run_id.clone(),
         project_id: project_id.to_owned(),
@@ -220,54 +230,25 @@ pub fn start_project_wiki_digest(
         ),
     )?;
 
-    let stdout = OpenOptions::new()
-        .append(true)
-        .open(layout.run_stdout_log_path(&run_id))
-        .context("failed to open worker stdout log")?;
-    let stderr = OpenOptions::new()
-        .append(true)
-        .open(layout.run_stderr_log_path(&run_id))
-        .context("failed to open worker stderr log")?;
-    let child = Command::new(&options.worker_executable)
-        .args([
-            "wiki",
-            "digest",
-            "worker",
-            "--root",
-            layout.context().darc_root.to_string_lossy().as_ref(),
-            "--project-id",
-            project_id,
-            "--run-id",
-            run_id.as_str(),
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr))
-        .spawn();
-    let pid = match child {
-        Ok(child) => child.id(),
-        Err(error) => {
-            let failed_at = current_utc_timestamp();
-            state.status = RunStatus::Failed;
-            state.updated_at = failed_at.clone();
-            state.finished_at = Some(failed_at.clone());
-            state.heartbeat_at = Some(failed_at);
-            state.headline = Some("Failed to spawn digest worker".to_owned());
-            state.error_code = Some("worker_spawn_failed".to_owned());
-            state.error_message = Some(error.to_string());
-            store_run_state(&layout, &state)?;
-            append_run_event(
-                &layout,
-                &run_id,
-                RunEvent::warn(
-                    RunPhase::PreparingContext,
-                    "Failed to spawn digest worker".to_owned(),
-                ),
-            )?;
-            return Err(error).context("failed to spawn wiki digest worker");
-        }
-    };
+    Ok(PreparedDigestRun {
+        project_id: project_id.to_owned(),
+        run_id,
+        status: state.status,
+        phase: state.phase,
+        stdout_log_path: layout.run_stdout_log_path(&state.run_id),
+        stderr_log_path: layout.run_stderr_log_path(&state.run_id),
+    })
+}
 
+/// Marks one prepared digest run as actively started after the CLI spawns the worker.
+pub fn mark_project_wiki_digest_started(
+    root: Option<PathBuf>,
+    project_id: &str,
+    run_id: &RunId,
+    pid: u32,
+) -> Result<DigestStartReport> {
+    let layout = ensure_project_wiki(root, project_id)?;
+    let mut state = load_run_state(&layout, run_id)?;
     let started_at = current_utc_timestamp();
     state.status = RunStatus::Running;
     state.started_at = Some(started_at.clone());
@@ -278,7 +259,7 @@ pub fn start_project_wiki_digest(
     store_run_state(&layout, &state)?;
     append_run_event(
         &layout,
-        &run_id,
+        run_id,
         RunEvent::info(
             RunPhase::PreparingContext,
             format!("Started digest worker process with pid {pid}"),
@@ -287,11 +268,40 @@ pub fn start_project_wiki_digest(
 
     Ok(DigestStartReport {
         project_id: project_id.to_owned(),
-        run_id,
+        run_id: run_id.clone(),
         status: state.status,
         phase: state.phase,
         pid,
     })
+}
+
+/// Marks one prepared digest run as failed because the worker could not be spawned.
+pub fn fail_project_wiki_digest_start(
+    root: Option<PathBuf>,
+    project_id: &str,
+    run_id: &RunId,
+    error_message: &str,
+) -> Result<()> {
+    let layout = ensure_project_wiki(root, project_id)?;
+    let mut state = load_run_state(&layout, run_id)?;
+    let failed_at = current_utc_timestamp();
+    state.status = RunStatus::Failed;
+    state.updated_at = failed_at.clone();
+    state.finished_at = Some(failed_at.clone());
+    state.heartbeat_at = Some(failed_at);
+    state.headline = Some("Failed to spawn digest worker".to_owned());
+    state.error_code = Some("worker_spawn_failed".to_owned());
+    state.error_message = Some(error_message.to_owned());
+    store_run_state(&layout, &state)?;
+    append_run_event(
+        &layout,
+        run_id,
+        RunEvent::warn(
+            RunPhase::PreparingContext,
+            "Failed to spawn digest worker".to_owned(),
+        ),
+    )?;
+    Ok(())
 }
 
 /// Cancels one existing digest run and finalizes durable state when the worker exits.
@@ -720,89 +730,6 @@ fn is_run_summary_stale(summary: &darc_wiki::RunSummary, now: SystemTime) -> boo
         .and_then(|ts| now.duration_since(ts).ok())
         .map(|elapsed| elapsed >= RUN_STALE_TIMEOUT)
         .unwrap_or(false)
-}
-
-/// Returns the current UTC timestamp in ISO 8601 format.
-fn current_utc_timestamp() -> String {
-    let duration = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    let total_seconds = duration.as_secs();
-    let days = i64::try_from(total_seconds / 86_400).unwrap_or(i64::MAX);
-    let seconds_of_day = total_seconds % 86_400;
-    let (year, month, day) = civil_from_days(days);
-    let hour = seconds_of_day / 3_600;
-    let minute = (seconds_of_day % 3_600) / 60;
-    let second = seconds_of_day % 60;
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
-}
-
-/// Parses one UTC ISO 8601 timestamp emitted by Darc into `SystemTime`.
-fn parse_utc_timestamp(value: &str) -> Option<SystemTime> {
-    let value = value.strip_suffix('Z')?;
-    let (date, time) = value.split_once('T')?;
-    let mut date_parts = date.split('-');
-    let year = date_parts.next()?.parse::<i64>().ok()?;
-    let month = date_parts.next()?.parse::<u32>().ok()?;
-    let day = date_parts.next()?.parse::<u32>().ok()?;
-    if date_parts.next().is_some() {
-        return None;
-    }
-
-    let mut time_parts = time.split(':');
-    let hour = time_parts.next()?.parse::<u64>().ok()?;
-    let minute = time_parts.next()?.parse::<u64>().ok()?;
-    let second = time_parts.next()?.parse::<u64>().ok()?;
-    if time_parts.next().is_some() {
-        return None;
-    }
-
-    let days = days_from_civil(year, month, day)?;
-    let days = u64::try_from(days).ok()?;
-    let seconds_of_day = hour
-        .checked_mul(3_600)?
-        .checked_add(minute.checked_mul(60)?)?
-        .checked_add(second)?;
-    Some(UNIX_EPOCH + Duration::from_secs(days.checked_mul(86_400)?.checked_add(seconds_of_day)?))
-}
-
-/// Converts one Unix-day count into a UTC civil date.
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let z = days + 719_468;
-    let era = if z >= 0 {
-        z / 146_097
-    } else {
-        (z - 146_096) / 146_097
-    };
-    let day_of_era = z - era * 146_097;
-    let year_of_era =
-        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let mut year = year_of_era + era * 400;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_prime = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
-    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
-    year += if month <= 2 { 1 } else { 0 };
-    (
-        year,
-        u32::try_from(month).unwrap_or(1),
-        u32::try_from(day).unwrap_or(1),
-    )
-}
-
-/// Converts one civil UTC date into the Unix-day count used by the timestamp formatter.
-fn days_from_civil(year: i64, month: u32, day: u32) -> Option<i64> {
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
-        return None;
-    }
-    let year = year - i64::from(month <= 2);
-    let era = if year >= 0 { year } else { year - 399 } / 400;
-    let year_of_era = year - era * 400;
-    let month = i64::from(month);
-    let month_prime = month + if month > 2 { -3 } else { 9 };
-    let day_of_year = (153 * month_prime + 2) / 5 + i64::from(day) - 1;
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    Some(era * 146_097 + day_of_era - 719_468)
 }
 
 /// Stores one persisted digest start request artifact.

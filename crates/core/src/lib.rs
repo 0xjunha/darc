@@ -26,7 +26,8 @@ pub use project::{
 };
 pub use sync::{SyncOptions, SyncPlan, SyncReport, execute_sync, prepare_sync};
 pub use wiki::{
-    DigestCancelReport, DigestStartOptions, DigestStartReport, ProjectWikiData,
-    cancel_project_wiki_digest, ensure_project_wiki, load_project_wiki, load_project_wiki_run,
-    run_project_wiki_digest_worker, start_project_wiki_digest, store_project_wiki_run,
+    DigestCancelReport, DigestStartOptions, DigestStartReport, PreparedDigestRun, ProjectWikiData,
+    cancel_project_wiki_digest, ensure_project_wiki, fail_project_wiki_digest_start,
+    load_project_wiki, load_project_wiki_run, mark_project_wiki_digest_started,
+    prepare_project_wiki_digest_start, run_project_wiki_digest_worker, store_project_wiki_run,
 };

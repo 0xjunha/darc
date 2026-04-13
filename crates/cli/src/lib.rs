@@ -3,6 +3,7 @@ mod tests;
 
 use std::{
     path::PathBuf,
+    process::Command,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -17,10 +18,12 @@ use darc_core::query::{
 use darc_core::{
     DigestStartOptions, IndexOptions, InitDraft, RefreshOptions, RefreshReport, RunId,
     SkippedRollout, SourceKind, SyncOptions, cancel_project_wiki_digest, default_root_path,
-    execute_sync, index_project_sessions, link_project, prepare_init, prepare_sync,
-    refresh_all_projects, refresh_project, remove_project, rename_project,
-    run_project_wiki_digest_worker, start_project_wiki_digest, write_init,
+    execute_sync, fail_project_wiki_digest_start, index_project_sessions, link_project,
+    mark_project_wiki_digest_started, prepare_init, prepare_project_wiki_digest_start,
+    prepare_sync, refresh_all_projects, refresh_project, remove_project, rename_project,
+    run_project_wiki_digest_worker, write_init,
 };
+use darc_paths::{current_utc_timestamp, current_utc_timestamp_at};
 use darc_rollout_audit::claude::{
     ClaudeSchemaAuditOptions, ClaudeSchemaAuditOutcome, ClaudeSchemaAuditReport,
     ClaudeSchemaSurveyMode, run_claude_schema_audit_with_progress,
@@ -987,7 +990,7 @@ fn run_wiki(args: WikiArgs) -> Result<()> {
 fn run_wiki_digest_start(args: WikiDigestStartArgs) -> Result<()> {
     let worker_executable =
         std::env::current_exe().context("failed to resolve the current darc executable path")?;
-    let report = start_project_wiki_digest(
+    let prepared = prepare_project_wiki_digest_start(
         Some(args.root.clone()),
         &args.project_id,
         &DigestStartOptions {
@@ -1000,9 +1003,49 @@ fn run_wiki_digest_start(args: WikiDigestStartArgs) -> Result<()> {
             request_source: None,
             target_categories: args.target_category,
             target_domains: args.target_domain,
-            worker_executable,
         },
     )?;
+    let stdout = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&prepared.stdout_log_path)
+        .with_context(|| format!("failed to open {}", prepared.stdout_log_path.display()))?;
+    let stderr = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&prepared.stderr_log_path)
+        .with_context(|| format!("failed to open {}", prepared.stderr_log_path.display()))?;
+    let child = Command::new(&worker_executable)
+        .args([
+            "wiki",
+            "digest",
+            "worker",
+            "--root",
+            args.root.to_string_lossy().as_ref(),
+            "--project-id",
+            &args.project_id,
+            "--run-id",
+            prepared.run_id.as_str(),
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::from(stdout))
+        .stderr(std::process::Stdio::from(stderr))
+        .spawn();
+    let report = match child {
+        Ok(child) => mark_project_wiki_digest_started(
+            Some(args.root.clone()),
+            &args.project_id,
+            &prepared.run_id,
+            child.id(),
+        )?,
+        Err(error) => {
+            fail_project_wiki_digest_start(
+                Some(args.root.clone()),
+                &args.project_id,
+                &prepared.run_id,
+                &error.to_string(),
+            )?;
+            return Err(error).context("failed to spawn wiki digest worker");
+        }
+    };
     if args.json {
         return print_json_envelope("darc.wiki.digest.start.v1", &report);
     }
@@ -1197,48 +1240,6 @@ struct QueryErrorEnvelope<'a> {
 struct QueryErrorData {
     message: String,
     causes: Vec<String>,
-}
-
-/// Returns the current UTC timestamp formatted for query protocol envelopes.
-fn current_utc_timestamp() -> String {
-    current_utc_timestamp_at(SystemTime::now())
-}
-
-/// Returns one UTC timestamp for one provided system time.
-fn current_utc_timestamp_at(timestamp: SystemTime) -> String {
-    let duration = timestamp.duration_since(UNIX_EPOCH).unwrap_or_default();
-    let total_seconds = duration.as_secs();
-    let days = i64::try_from(total_seconds / 86_400).unwrap_or(i64::MAX);
-    let seconds_of_day = total_seconds % 86_400;
-    let (year, month, day) = civil_from_days(days);
-    let hour = seconds_of_day / 3_600;
-    let minute = (seconds_of_day % 3_600) / 60;
-    let second = seconds_of_day % 60;
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
-}
-
-/// Converts one Unix-day count into a UTC civil date.
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let z = days + 719_468;
-    let era = if z >= 0 {
-        z / 146_097
-    } else {
-        (z - 146_096) / 146_097
-    };
-    let day_of_era = z - era * 146_097;
-    let year_of_era =
-        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let mut year = year_of_era + era * 400;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_prime = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
-    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
-    year += if month <= 2 { 1 } else { 0 };
-    (
-        year,
-        u32::try_from(month).unwrap_or(1),
-        u32::try_from(day).unwrap_or(1),
-    )
 }
 
 /// Prepares and optionally writes the shared init draft.
