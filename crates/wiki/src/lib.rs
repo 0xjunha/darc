@@ -5,6 +5,7 @@ mod frontmatter;
 mod fs_utils;
 mod ids;
 mod layout;
+mod proposal;
 mod registry;
 mod runs;
 
@@ -15,6 +16,13 @@ pub use entries::{
 pub use errors::{Result, WikiError};
 pub use ids::{DigestId, EntryId, RunId};
 pub use layout::{CONTEXT_WIKI_DIR_NAME, ContextWikiLayout, ProjectLayout, STORAGE_VERSION};
+pub use proposal::{
+    DIGEST_PROPOSAL_OUTPUT_SCHEMA_JSON, DIGEST_PROPOSAL_SCHEMA, DigestProposal,
+    DigestProposalEntry, DigestProposalOption, DigestProposalOptionStatus,
+    DigestProposalRunSummary, ProposalEntryOperation, ProposalValidationError,
+    ProposalValidationErrors, ProposalValidationOptions, ProposalValidationSummary,
+    is_valid_domain_id, validate_digest_proposal,
+};
 pub use registry::{DEFAULT_CATEGORY_IDS, ProjectRegistry, ensure_registry, load_registry};
 pub use runs::{
     RUN_STATE_FILE_NAME, RunPhase, RunState, RunStatus, RunSummary, list_runs, load_run_state,
