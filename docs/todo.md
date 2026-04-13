@@ -1,5 +1,22 @@
 # TODO
 
+### Context Wiki pre-production blockers
+- Harden external agent runtime auth boundaries before serious production deploy.
+  - Today `darc wiki digest` launches external Codex/Claude CLIs with inherited host environment and ambient login state.
+  - `auth_profile` is currently metadata only; it does not select or constrain credentials at runtime.
+  - Decide and implement one explicit production policy:
+    - Darc-managed profile-to-credential mapping with a constrained runtime environment.
+    - A deliberately named host-auth passthrough mode that is not the default.
+    - Provider-native runtimes where Darc owns auth directly.
+  - Ensure runtime execution does not accidentally expose unrelated host secrets to digest runs.
+
+### Context Wiki follow-ups
+- Remove the N+1 context-loading path for digest context assembly.
+  - `load_selected_session_context()` currently queries the turn list and then calls `query_turn()` once per turn.
+  - That rebuilds query context and reopens SQLite repeatedly for long sessions or multi-session digests.
+  - Add a batch/session-scoped turn-detail query path in `darc-query` so one digest session can be loaded with one connection and one coherent query flow.
+  - This is not a correctness blocker for production, but it should be addressed before higher-scale Context Wiki usage.
+
 ### Add historical checkout detection for deleted worktrees.
 - Persist enough evidence for live Codex/CC or git checkouts to recognize the same project after deletion, including observed path, resolved repo root, remote origin, and last-seen time.
 - Make `sync` treat old rollout `cwd` values as the same project only when backed by prior evidence; otherwise surface them as low-confidence candidates instead of silently adding them to `known_paths`.
