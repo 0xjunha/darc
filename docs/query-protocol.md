@@ -13,6 +13,10 @@ Use it instead of:
 All query commands currently require `--json`.
 
 - `darc query workspace --root <path> --json`
+- `darc query wiki registry --root <path> --project-id <id> --json`
+- `darc query wiki entries --root <path> --project-id <id> --json`
+- `darc query wiki digests --root <path> --project-id <id> --json`
+- `darc query wiki runs --root <path> --project-id <id> --json`
 - `darc query sessions --root <path> --project-id <id> --json`
 - `darc query sessions --root <path> --project-id <id> --since <iso-8601|<days>d> --until <iso-8601|<days>d> --json`
 - `darc query turns --root <path> --project-id <id> --provider <provider> --session-id <id> --json`
@@ -71,6 +75,10 @@ Fields:
 Current schema ids:
 
 - `darc.query.workspace.v1`
+- `darc.query.wiki.registry.v1`
+- `darc.query.wiki.entries.v1`
+- `darc.query.wiki.digests.v1`
+- `darc.query.wiki.runs.v1`
 - `darc.query.sessions.v1`
 - `darc.query.turns.v1`
 - `darc.query.turn.v1`
@@ -81,6 +89,23 @@ Current schema ids:
 - `darc.error.v1`
 
 Clients should branch on `schema`, not on `darc_version`.
+
+## Context Wiki queries
+
+`darc query wiki ...` reads canonical Context Wiki artifacts stored under `~/.darc/context-wiki/`.
+
+Today:
+
+- wiki queries require a configured project id in `config.toml`
+- wiki queries do not require `index.sqlite`
+- wiki queries are read-only and do not create the on-disk wiki layout
+- when no on-disk registry exists yet, `darc.query.wiki.registry.v1` returns the default category set and an empty domain list
+- `darc.query.wiki.registry.v1` returns `project_id`, `schema_version`, `categories`, and `domains`
+- `darc.query.wiki.entries.v1` returns `project_id` plus deterministic `entries`
+- `darc.query.wiki.digests.v1` returns `project_id` plus deterministic `digests`
+- `darc.query.wiki.runs.v1` returns `project_id` plus deterministic `runs`
+- empty lists are returned when no canonical entries, digests, or runs exist yet
+- wiki list payloads do not expose internal storage paths
 
 ## Stability rules
 

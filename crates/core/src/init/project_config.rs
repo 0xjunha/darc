@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use darc_paths::{normalized_known_paths, seed_known_paths, try_git_output};
+use darc_paths::{is_valid_project_id, normalized_known_paths, seed_known_paths, try_git_output};
 
 use crate::config::ProjectConfig;
 
@@ -64,6 +64,8 @@ pub(crate) fn normalize_project_config(mut project: ProjectConfig) -> Result<Pro
         .collect();
     if project.id.is_empty() {
         project.id = project_id_from_path(&project.local_path)?;
+    } else if !is_valid_project_id(&project.id) {
+        anyhow::bail!("configured project id `{}` is invalid", project.id);
     }
     Ok(project)
 }

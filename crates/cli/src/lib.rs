@@ -11,7 +11,8 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use darc_core::query::{
     SearchMode, SearchTurnsRequest, TurnDetailOptions, query_project_insight_report,
     query_search_turns, query_sessions, query_turn, query_turn_insight_report, query_turns,
-    query_workspace, query_workspace_insight_report,
+    query_wiki_digests, query_wiki_entries, query_wiki_registry, query_wiki_runs, query_workspace,
+    query_workspace_insight_report,
 };
 use darc_core::{
     IndexOptions, InitDraft, RefreshOptions, RefreshReport, SkippedRollout, SourceKind,
@@ -68,6 +69,11 @@ enum Commands {
     Index(IndexArgs),
     /// Query darc state through the machine-readable read protocol.
     Query(QueryArgs),
+    #[command(
+        about = "Manage Context Wiki workflows",
+        long_about = "Manage Context Wiki workflows.\n\nThis top-level command will host imperative Context Wiki operations such as digest run lifecycle and entry state changes.\nUse `darc query wiki ... --json` for read-side access today."
+    )]
+    Wiki(WikiArgs),
     #[command(
         hide = true,
         about = "Audit Codex rollout schema compatibility against stable release tags",
@@ -177,6 +183,8 @@ struct QueryArgs {
 enum QueryCommands {
     /// Queries the workspace/sidebar payload for one darc root.
     Workspace(QueryWorkspaceArgs),
+    /// Queries canonical Context Wiki artifacts for one configured project.
+    Wiki(QueryWikiArgs),
     /// Queries the session list for one configured project.
     Sessions(QuerySessionsArgs),
     /// Queries the turn list for one provider session.
@@ -194,6 +202,94 @@ enum QueryCommands {
 struct QueryWorkspaceArgs {
     #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
     root: PathBuf,
+
+    #[arg(
+        long,
+        required = true,
+        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
+    )]
+    json: bool,
+}
+
+/// Queries one Context Wiki registry, entries, digests, or runs payload.
+#[derive(Debug, Args)]
+struct QueryWikiArgs {
+    #[command(subcommand)]
+    command: QueryWikiCommands,
+}
+
+/// Represents the supported machine-readable Context Wiki query commands.
+#[derive(Debug, Subcommand)]
+enum QueryWikiCommands {
+    /// Queries the project-scoped Context Wiki registry payload.
+    Registry(QueryWikiRegistryArgs),
+    /// Queries the project-scoped Context Wiki entry list.
+    Entries(QueryWikiEntriesArgs),
+    /// Queries the project-scoped Context Wiki digest list.
+    Digests(QueryWikiDigestsArgs),
+    /// Queries the project-scoped Context Wiki run list.
+    Runs(QueryWikiRunsArgs),
+}
+
+/// Queries the project-scoped Context Wiki registry payload.
+#[derive(Debug, Args)]
+struct QueryWikiRegistryArgs {
+    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    root: PathBuf,
+
+    #[arg(long = "project-id", help = "Query this configured project id")]
+    project_id: String,
+
+    #[arg(
+        long,
+        required = true,
+        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
+    )]
+    json: bool,
+}
+
+/// Queries the project-scoped Context Wiki entry list.
+#[derive(Debug, Args)]
+struct QueryWikiEntriesArgs {
+    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    root: PathBuf,
+
+    #[arg(long = "project-id", help = "Query this configured project id")]
+    project_id: String,
+
+    #[arg(
+        long,
+        required = true,
+        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
+    )]
+    json: bool,
+}
+
+/// Queries the project-scoped Context Wiki digest list.
+#[derive(Debug, Args)]
+struct QueryWikiDigestsArgs {
+    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    root: PathBuf,
+
+    #[arg(long = "project-id", help = "Query this configured project id")]
+    project_id: String,
+
+    #[arg(
+        long,
+        required = true,
+        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
+    )]
+    json: bool,
+}
+
+/// Queries the project-scoped Context Wiki run list.
+#[derive(Debug, Args)]
+struct QueryWikiRunsArgs {
+    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    root: PathBuf,
+
+    #[arg(long = "project-id", help = "Query this configured project id")]
+    project_id: String,
 
     #[arg(
         long,
@@ -440,6 +536,77 @@ struct QueryTurnInsightsArgs {
     json: bool,
 }
 
+/// Hosts the top-level imperative Context Wiki CLI surface.
+#[derive(Debug, Args)]
+struct WikiArgs {
+    #[command(subcommand)]
+    command: WikiCommands,
+}
+
+/// Represents the planned imperative Context Wiki command groups.
+#[derive(Debug, Subcommand)]
+enum WikiCommands {
+    /// Hosts digest-run lifecycle commands.
+    Digest(WikiDigestArgs),
+    /// Hosts entry mutation commands.
+    Entry(WikiEntryArgs),
+}
+
+/// Hosts digest-run lifecycle commands.
+#[derive(Debug, Args)]
+struct WikiDigestArgs {
+    #[command(subcommand)]
+    command: WikiDigestCommands,
+}
+
+/// Represents the planned digest-run lifecycle commands.
+#[derive(Debug, Subcommand)]
+enum WikiDigestCommands {
+    /// Starts one new digest run.
+    Start(WikiDigestStartArgs),
+    /// Cancels one existing digest run.
+    Cancel(WikiDigestCancelArgs),
+    #[command(hide = true)]
+    /// Runs one internal digest worker.
+    Worker(WikiDigestWorkerArgs),
+}
+
+/// Stores the placeholder CLI surface for `darc wiki digest start`.
+#[derive(Debug, Args)]
+struct WikiDigestStartArgs {}
+
+/// Stores the placeholder CLI surface for `darc wiki digest cancel`.
+#[derive(Debug, Args)]
+struct WikiDigestCancelArgs {}
+
+/// Stores the placeholder CLI surface for `darc wiki digest worker`.
+#[derive(Debug, Args)]
+struct WikiDigestWorkerArgs {}
+
+/// Hosts entry mutation commands.
+#[derive(Debug, Args)]
+struct WikiEntryArgs {
+    #[command(subcommand)]
+    command: WikiEntryCommands,
+}
+
+/// Represents the planned entry mutation commands.
+#[derive(Debug, Subcommand)]
+enum WikiEntryCommands {
+    /// Marks one entry as discarded.
+    Discard(WikiEntryDiscardArgs),
+    /// Restores one discarded entry.
+    Restore(WikiEntryRestoreArgs),
+}
+
+/// Stores the placeholder CLI surface for `darc wiki entry discard`.
+#[derive(Debug, Args)]
+struct WikiEntryDiscardArgs {}
+
+/// Stores the placeholder CLI surface for `darc wiki entry restore`.
+#[derive(Debug, Args)]
+struct WikiEntryRestoreArgs {}
+
 /// Audit Codex rollout schema compatibility against stable release tags.
 #[derive(Debug, Args)]
 struct CodexSchemaAuditArgs {
@@ -507,6 +674,7 @@ pub fn run() -> i32 {
         Commands::Sync(args) => standard_exit(run_sync(args)),
         Commands::Index(args) => standard_exit(run_index(args)),
         Commands::Query(args) => query_exit(run_query(args)),
+        Commands::Wiki(args) => standard_exit(run_wiki(args)),
         Commands::CodexSchemaAudit(args) => run_codex_schema_audit_command(args),
         Commands::ClaudeSchemaAudit(args) => run_claude_schema_audit_command(args),
     }
@@ -539,6 +707,7 @@ fn query_exit(result: Result<()>) -> i32 {
 fn run_query(args: QueryArgs) -> Result<()> {
     match args.command {
         QueryCommands::Workspace(args) => run_query_workspace(args),
+        QueryCommands::Wiki(args) => run_query_wiki(args),
         QueryCommands::Sessions(args) => run_query_sessions(args),
         QueryCommands::Turns(args) => run_query_turns(args),
         QueryCommands::Turn(args) => run_query_turn(args),
@@ -550,7 +719,45 @@ fn run_query(args: QueryArgs) -> Result<()> {
 /// Queries the workspace/sidebar payload for one darc root.
 fn run_query_workspace(args: QueryWorkspaceArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
-    print_query_json("darc.query.workspace.v1", &query_workspace(Some(args.root)))
+    print_json_envelope("darc.query.workspace.v1", &query_workspace(Some(args.root)))
+}
+
+/// Dispatches the supported machine-readable Context Wiki query commands.
+fn run_query_wiki(args: QueryWikiArgs) -> Result<()> {
+    match args.command {
+        QueryWikiCommands::Registry(args) => run_query_wiki_registry(args),
+        QueryWikiCommands::Entries(args) => run_query_wiki_entries(args),
+        QueryWikiCommands::Digests(args) => run_query_wiki_digests(args),
+        QueryWikiCommands::Runs(args) => run_query_wiki_runs(args),
+    }
+}
+
+/// Queries the project-scoped Context Wiki registry payload.
+fn run_query_wiki_registry(args: QueryWikiRegistryArgs) -> Result<()> {
+    ensure_json_requested(args.json)?;
+    let data = query_wiki_registry(Some(args.root), &args.project_id)?;
+    print_json_envelope("darc.query.wiki.registry.v1", &data)
+}
+
+/// Queries the project-scoped Context Wiki entry list.
+fn run_query_wiki_entries(args: QueryWikiEntriesArgs) -> Result<()> {
+    ensure_json_requested(args.json)?;
+    let data = query_wiki_entries(Some(args.root), &args.project_id)?;
+    print_json_envelope("darc.query.wiki.entries.v1", &data)
+}
+
+/// Queries the project-scoped Context Wiki digest list.
+fn run_query_wiki_digests(args: QueryWikiDigestsArgs) -> Result<()> {
+    ensure_json_requested(args.json)?;
+    let data = query_wiki_digests(Some(args.root), &args.project_id)?;
+    print_json_envelope("darc.query.wiki.digests.v1", &data)
+}
+
+/// Queries the project-scoped Context Wiki run list.
+fn run_query_wiki_runs(args: QueryWikiRunsArgs) -> Result<()> {
+    ensure_json_requested(args.json)?;
+    let data = query_wiki_runs(Some(args.root), &args.project_id)?;
+    print_json_envelope("darc.query.wiki.runs.v1", &data)
 }
 
 /// Queries the session list for one configured project.
@@ -572,7 +779,7 @@ fn run_query_sessions(args: QuerySessionsArgs) -> Result<()> {
         since.as_deref(),
         until.as_deref(),
     )?;
-    print_query_json("darc.query.sessions.v1", &data)
+    print_json_envelope("darc.query.sessions.v1", &data)
 }
 
 /// Queries the turn list for one provider session.
@@ -584,7 +791,7 @@ fn run_query_turns(args: QueryTurnsArgs) -> Result<()> {
         provider_arg_to_source_kind(args.provider),
         &args.session_id,
     )?;
-    print_query_json("darc.query.turns.v1", &data)
+    print_json_envelope("darc.query.turns.v1", &data)
 }
 
 /// Queries one full turn detail payload.
@@ -602,7 +809,7 @@ fn run_query_turn(args: QueryTurnArgs) -> Result<()> {
             narrative: matches!(args.view, ViewArg::Narrative),
         },
     )?;
-    print_query_json("darc.query.turn.v1", &data)
+    print_json_envelope("darc.query.turn.v1", &data)
 }
 
 /// Dispatches the supported machine-readable search query commands.
@@ -627,7 +834,7 @@ fn run_query_search_turns(args: QuerySearchTurnsArgs) -> Result<()> {
             offset: args.offset,
         },
     )?;
-    print_query_json("darc.query.search.turns.v1", &data)
+    print_json_envelope("darc.query.search.turns.v1", &data)
 }
 
 /// Dispatches the supported machine-readable insights query commands.
@@ -643,14 +850,14 @@ fn run_query_insights(args: QueryInsightsArgs) -> Result<()> {
 fn run_query_workspace_insights(args: QueryWorkspaceInsightsArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
     let data = query_workspace_insight_report(Some(args.root), args.window_days)?;
-    print_query_json("darc.query.insights.workspace.v1", &data)
+    print_json_envelope("darc.query.insights.workspace.v1", &data)
 }
 
 /// Queries the project insights payload for one configured project.
 fn run_query_project_insights(args: QueryProjectInsightsArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
     let data = query_project_insight_report(Some(args.root), &args.project_id, args.limit)?;
-    print_query_json("darc.query.insights.project.v1", &data)
+    print_json_envelope("darc.query.insights.project.v1", &data)
 }
 
 /// Queries the turn insights payload for one provider session turn.
@@ -663,12 +870,37 @@ fn run_query_turn_insights(args: QueryTurnInsightsArgs) -> Result<()> {
         &args.session_id,
         args.turn_ordinal,
     )?;
-    print_query_json("darc.query.insights.turn.v1", &data)
+    print_json_envelope("darc.query.insights.turn.v1", &data)
+}
+
+/// Dispatches the placeholder imperative Context Wiki command surface.
+fn run_wiki(args: WikiArgs) -> Result<()> {
+    match args.command {
+        WikiCommands::Digest(args) => match args.command {
+            WikiDigestCommands::Start(_) => bail!(
+                "darc wiki digest start is not implemented yet\nuse `darc query wiki ... --json` for read-side access today"
+            ),
+            WikiDigestCommands::Cancel(_) => bail!(
+                "darc wiki digest cancel is not implemented yet\nuse `darc query wiki ... --json` for read-side access today"
+            ),
+            WikiDigestCommands::Worker(_) => {
+                bail!("darc wiki digest worker is not implemented yet")
+            }
+        },
+        WikiCommands::Entry(args) => match args.command {
+            WikiEntryCommands::Discard(_) => bail!(
+                "darc wiki entry discard is not implemented yet\nuse `darc query wiki ... --json` for read-side access today"
+            ),
+            WikiEntryCommands::Restore(_) => bail!(
+                "darc wiki entry restore is not implemented yet\nuse `darc query wiki ... --json` for read-side access today"
+            ),
+        },
+    }
 }
 
 /// Writes one machine-readable JSON envelope to stdout.
-fn print_query_json<T: Serialize>(schema: &'static str, data: &T) -> Result<()> {
-    let payload = QueryEnvelope {
+fn print_json_envelope<T: Serialize>(schema: &'static str, data: &T) -> Result<()> {
+    let payload = JsonEnvelope {
         schema,
         generated_at: current_utc_timestamp(),
         darc_version: env!("CARGO_PKG_VERSION"),
@@ -787,7 +1019,7 @@ fn search_mode_arg_to_search_mode(mode: SearchModeArg) -> SearchMode {
 
 /// Stores one machine-readable query success envelope.
 #[derive(Debug, Serialize)]
-struct QueryEnvelope<'a, T> {
+struct JsonEnvelope<'a, T> {
     schema: &'a str,
     generated_at: String,
     darc_version: &'a str,

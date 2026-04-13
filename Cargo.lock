@@ -227,6 +227,7 @@ dependencies = [
  "darc-query",
  "darc-sync",
  "darc-test-utils",
+ "darc-wiki",
  "directories",
  "rusqlite",
  "serde",
@@ -320,6 +321,16 @@ dependencies = [
  "darc-rollout",
  "rusqlite",
  "serde_json",
+]
+
+[[package]]
+name = "darc-wiki"
+version = "0.1.0"
+dependencies = [
+ "darc-paths",
+ "serde",
+ "thiserror",
+ "toml",
 ]
 
 [[package]]

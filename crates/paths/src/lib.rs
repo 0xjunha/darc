@@ -36,6 +36,15 @@ impl SourceKind {
     }
 }
 
+/// Returns whether one project id is safe to use as a path component.
+pub fn is_valid_project_id(project_id: &str) -> bool {
+    !project_id.is_empty()
+        && project_id
+            .as_bytes()
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
+}
+
 /// Encodes a project path using Claude's directory naming rule.
 pub fn encode_path_for_claude(path: &Path) -> String {
     path.to_string_lossy().replace('/', "-")
@@ -234,5 +243,14 @@ branch refs/heads/feature
             paths,
             vec![PathBuf::from("/tmp/main"), PathBuf::from("/tmp/wt")]
         );
+    }
+
+    #[test]
+    fn project_id_validation_rejects_path_escape_text() {
+        assert!(is_valid_project_id("repo-abc123"));
+        assert!(!is_valid_project_id("../../escape"));
+        assert!(!is_valid_project_id("repo_abc123"));
+        assert!(!is_valid_project_id("Repo-abc123"));
+        assert!(!is_valid_project_id(""));
     }
 }
