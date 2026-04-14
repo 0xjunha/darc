@@ -59,7 +59,7 @@ Key flags:
 - `--model <name>` is required and is forwarded to the external CLI.
 - `--auth-profile <name>` is optional metadata recorded in run artifacts. It does not currently select credentials.
 - `--target-category <name>` prioritizes an existing registry category and must already exist in the project registry.
-- `--target-domain <slug>` prioritizes a lowercase domain slug and extends the allowed proposal-domain list for that run.
+- `--target-domain <slug>` prioritizes a project-scoped registry domain and must already exist in the project registry.
 - `--json` emits the `darc.wiki.digest.start.v1` envelope on stdout.
 
 ## Monitoring And Canceling
@@ -160,7 +160,8 @@ Current validation rules include:
 - only `decision_trace` entries are allowed
 - only `create` operations are allowed
 - categories must come from the project registry
-- domains must come from registry domains plus any `--target-domain` hints supplied for the run
+- domains must come from registry domains
+- `--target-domain` only prioritizes existing registry domains for the run
 - evidence references must use `<provider>:<session-id>#<turn-ordinal>` and only reference selected sessions
 - zero proposed entries is valid when the selected sessions contain no durable decisions worth preserving
 

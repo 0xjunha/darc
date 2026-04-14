@@ -101,12 +101,10 @@ impl<'a> DigestWorker<'a> {
             None => return Ok(()),
         };
 
-        let state = load_run_state(&self.layout, self.run_id)?;
-        let validation =
-            match self.validate_proposal(&state, &registry, &context, &runtime_execution)? {
-                Some(validation) => validation,
-                None => return Ok(()),
-            };
+        let validation = match self.validate_proposal(&registry, &context, &runtime_execution)? {
+            Some(validation) => validation,
+            None => return Ok(()),
+        };
 
         self.complete(&validation, &runtime_execution)
     }
@@ -410,7 +408,6 @@ impl<'a> DigestWorker<'a> {
     /// Validates the captured proposal artifact against Darc's schema and allowlists.
     fn validate_proposal(
         &self,
-        state: &RunState,
         registry: &ProjectRegistry,
         context: &DigestContextArtifact,
         runtime_execution: &RuntimeExecution,
@@ -475,7 +472,7 @@ impl<'a> DigestWorker<'a> {
                 });
             }
         };
-        let allowed_domains = build_allowed_domains(registry, state);
+        let allowed_domains = build_allowed_domains(registry);
         let allowed_evidence_refs = build_allowed_evidence_refs(context);
         let validation = match validate_digest_proposal(
             &proposal,
