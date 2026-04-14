@@ -10,12 +10,15 @@ use darc_wiki::{
 use super::{
     DEFAULT_REQUESTED_BY, DigestCancelReport, DigestStartOptions, DigestStartReport,
     PreparedDigestRun, ProjectWikiData, RUN_CONTEXT_SCHEMA, RUN_REQUEST_SCHEMA,
-    artifacts::{append_run_event, relative_artifact_name, touch_file, write_json_artifact},
+    artifacts::{
+        append_run_event, relative_artifact_name, touch_file, write_json_artifact,
+        write_terminal_result,
+    },
     context::{validate_digest_start_options, validate_digest_targets},
-    models::{DigestContextArtifact, DigestRequestArtifact, RunEvent},
+    models::{DigestContextArtifact, DigestRequestArtifact, DigestValidationArtifact, RunEvent},
     state::{
-        is_finished_status, load_visible_run_summaries, next_run_id, repair_run_if_stale,
-        report_from_run_state, update_run_state,
+        finalize_run_failed, is_finished_status, load_visible_run_summaries, next_run_id,
+        repair_run_if_stale, report_from_run_state, update_run_state,
     },
     worker,
 };
@@ -219,16 +222,22 @@ pub fn fail_project_wiki_digest_start(
     error_message: &str,
 ) -> Result<()> {
     let layout = ensure_project_wiki(root, project_id)?;
-    let failed_at = current_utc_timestamp();
-    update_run_state(&layout, run_id, |state| {
-        state.status = RunStatus::Failed;
-        state.updated_at = failed_at.clone();
-        state.finished_at = Some(failed_at.clone());
-        state.heartbeat_at = Some(failed_at.clone());
-        state.headline = Some("Failed to spawn digest worker".to_owned());
-        state.error_code = Some("worker_spawn_failed".to_owned());
-        state.error_message = Some(error_message.to_owned());
-    })?;
+    let final_state = finalize_run_failed(
+        &layout,
+        run_id,
+        RunPhase::PreparingContext,
+        "Failed to spawn digest worker",
+        "worker_spawn_failed",
+        error_message,
+    )?;
+    write_terminal_result(
+        &layout,
+        run_id,
+        &final_state,
+        None,
+        DigestValidationArtifact::default(),
+        None,
+    )?;
     append_run_event(
         &layout,
         run_id,
@@ -248,15 +257,11 @@ pub fn cancel_project_wiki_digest(
 ) -> Result<DigestCancelReport> {
     let layout = ensure_project_wiki(root, project_id)?;
     repair_run_if_stale(&layout, run_id).context("failed to repair stale wiki run")?;
-    let state = load_run_state(&layout, run_id)?;
-    if is_finished_status(state.status) {
-        return Ok(report_from_run_state(&state));
-    }
-
-    let cancel_flag_path = layout.run_cancel_flag_path(run_id);
-    touch_file(&cancel_flag_path)?;
     let now = current_utc_timestamp();
     let state = update_run_state(&layout, run_id, |state| {
+        if is_finished_status(state.status) {
+            return;
+        }
         state.cancel_requested = true;
         if matches!(state.status, RunStatus::Queued | RunStatus::Running) {
             state.status = RunStatus::CancelRequested;
@@ -265,6 +270,11 @@ pub fn cancel_project_wiki_digest(
         state.heartbeat_at = Some(now.clone());
         state.headline = Some("Cancel requested".to_owned());
     })?;
+    if is_finished_status(state.status) {
+        return Ok(report_from_run_state(&state));
+    }
+
+    touch_file(&layout.run_cancel_flag_path(run_id))?;
     append_run_event(
         &layout,
         run_id,
@@ -284,7 +294,10 @@ pub fn run_project_wiki_digest_worker(
 }
 
 /// Resolves one validated project wiki layout from the configured Darc root.
-fn resolve_project_layout(root: Option<PathBuf>, project_id: &str) -> Result<ProjectLayout> {
+pub(super) fn resolve_project_layout(
+    root: Option<PathBuf>,
+    project_id: &str,
+) -> Result<ProjectLayout> {
     let root = root.unwrap_or_else(default_root_path);
     let project = registered_projects(&root)?
         .into_iter()

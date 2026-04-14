@@ -8,7 +8,7 @@ use std::{
 use anyhow::Result;
 use darc_paths::current_utc_timestamp_at;
 use darc_test_utils::unique_test_dir;
-use darc_wiki::{RunId, RunPhase, RunState, RunStatus, store_run_state};
+use darc_wiki::{RunId, RunPhase, RunState, RunStatus, load_run_state, store_run_state};
 
 use super::*;
 use crate::{
@@ -267,6 +267,110 @@ fn recent_reading_turns_run_stays_running_on_read_side() -> Result<()> {
     let wiki = load_project_wiki(Some(root.clone()), project_id)?;
     assert_eq!(wiki.runs.len(), 1);
     assert_eq!(wiki.runs[0].status, RunStatus::Running);
+
+    fs::remove_dir_all(&root)?;
+    Ok(())
+}
+
+#[test]
+fn worker_setup_failure_still_writes_terminal_result() -> Result<()> {
+    let root = unique_test_dir("core-wiki-worker-failure");
+    let project_root = root.join("repo");
+    let project_id = "repo-123";
+    fs::create_dir_all(&project_root)?;
+    write_config(
+        &root,
+        &SharedConfig::new(
+            root.clone(),
+            vec![build_project(&root, project_id, project_root)],
+            SourcesConfig::default(),
+        ),
+    )?;
+
+    let prepared = prepare_project_wiki_digest_start(
+        Some(root.clone()),
+        project_id,
+        &DigestStartOptions {
+            session_refs: vec!["codex:session-1".to_owned()],
+            agent_id: "codex".to_owned(),
+            runtime: "external_cli".to_owned(),
+            model: "gpt-5.4".to_owned(),
+            auth_profile: None,
+            requested_by: None,
+            request_source: None,
+            target_categories: Vec::new(),
+            target_domains: Vec::new(),
+        },
+    )?;
+    mark_project_wiki_digest_started(
+        Some(root.clone()),
+        project_id,
+        &prepared.run_id,
+        std::process::id(),
+    )?;
+
+    let layout = ensure_project_wiki(Some(root.clone()), project_id)?;
+    fs::write(&layout.categories_path, "not valid toml")?;
+    let error = run_project_wiki_digest_worker(Some(root.clone()), project_id, &prepared.run_id)
+        .expect_err("worker should fail after registry corruption");
+    assert!(!error.to_string().is_empty());
+
+    let run = load_run_state(&layout, &prepared.run_id)?;
+    assert_eq!(run.status, RunStatus::Failed);
+    assert_eq!(run.error_code.as_deref(), Some("worker_failed"));
+    let result = fs::read_to_string(layout.run_result_path(&prepared.run_id))?;
+    assert!(result.contains("\"status\": \"failed\""));
+    assert!(result.contains("\"error_code\": \"worker_failed\""));
+
+    fs::remove_dir_all(&root)?;
+    Ok(())
+}
+
+#[test]
+fn spawn_failure_writes_terminal_result() -> Result<()> {
+    let root = unique_test_dir("core-wiki-spawn-failure");
+    let project_root = root.join("repo");
+    let project_id = "repo-123";
+    fs::create_dir_all(&project_root)?;
+    write_config(
+        &root,
+        &SharedConfig::new(
+            root.clone(),
+            vec![build_project(&root, project_id, project_root)],
+            SourcesConfig::default(),
+        ),
+    )?;
+
+    let prepared = prepare_project_wiki_digest_start(
+        Some(root.clone()),
+        project_id,
+        &DigestStartOptions {
+            session_refs: vec!["codex:session-1".to_owned()],
+            agent_id: "codex".to_owned(),
+            runtime: "external_cli".to_owned(),
+            model: "gpt-5.4".to_owned(),
+            auth_profile: None,
+            requested_by: None,
+            request_source: None,
+            target_categories: Vec::new(),
+            target_domains: Vec::new(),
+        },
+    )?;
+
+    fail_project_wiki_digest_start(
+        Some(root.clone()),
+        project_id,
+        &prepared.run_id,
+        "failed to spawn worker",
+    )?;
+
+    let layout = ensure_project_wiki(Some(root.clone()), project_id)?;
+    let run = load_project_wiki_run(Some(root.clone()), project_id, &prepared.run_id)?;
+    assert_eq!(run.status, RunStatus::Failed);
+    assert_eq!(run.error_code.as_deref(), Some("worker_spawn_failed"));
+    let result = fs::read_to_string(layout.run_result_path(&prepared.run_id))?;
+    assert!(result.contains("\"status\": \"failed\""));
+    assert!(result.contains("\"error_code\": \"worker_spawn_failed\""));
 
     fs::remove_dir_all(&root)?;
     Ok(())

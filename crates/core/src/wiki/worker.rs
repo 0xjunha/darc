@@ -61,7 +61,7 @@ impl<'a> DigestWorker<'a> {
     /// Builds one digest worker wrapper from the configured Darc root and run id.
     fn new(root: Option<PathBuf>, project_id: &'a str, run_id: &'a RunId) -> Result<Self> {
         let root = root.unwrap_or_else(default_root_path);
-        let layout = super::ensure_project_wiki(Some(root.clone()), project_id)?;
+        let layout = super::api::resolve_project_layout(Some(root.clone()), project_id)?;
         Ok(Self {
             root,
             project_id,
@@ -72,6 +72,17 @@ impl<'a> DigestWorker<'a> {
 
     /// Executes the full digest worker state machine for one run.
     fn run(&self) -> Result<()> {
+        match self.run_inner() {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.fail_unhandled_error(&error)?;
+                Err(error)
+            }
+        }
+    }
+
+    /// Executes the full digest worker state machine for one run without outer error finalization.
+    fn run_inner(&self) -> Result<()> {
         let state = wait_for_worker_registration(&self.layout, self.run_id)?;
         if is_finished_status(state.status) {
             return Ok(());
@@ -203,7 +214,7 @@ impl<'a> DigestWorker<'a> {
 
             let current_state = load_run_state(&self.layout, self.run_id)?;
             if cancel_requested(&self.layout, self.run_id, &current_state)? {
-                return self.cancel(RunPhase::ReadingTurns, None, None, false);
+                return self.cancel(RunPhase::ReadingTurns, None, None);
             }
         }
 
@@ -233,7 +244,7 @@ impl<'a> DigestWorker<'a> {
 
         let current_state = load_run_state(&self.layout, self.run_id)?;
         if cancel_requested(&self.layout, self.run_id, &current_state)? {
-            return self.cancel(RunPhase::ReadingTurns, None, None, false);
+            return self.cancel(RunPhase::ReadingTurns, None, None);
         }
 
         Ok(Some(context))
@@ -306,12 +317,7 @@ impl<'a> DigestWorker<'a> {
                 "Proposal capture completed but validation was skipped after cancel request"
                     .to_owned(),
             );
-            return self.cancel(
-                RunPhase::WaitingForAgent,
-                Some(&runtime_execution),
-                note,
-                true,
-            );
+            return self.cancel(RunPhase::WaitingForAgent, Some(&runtime_execution), note);
         }
 
         if runtime_execution.exit_code != Some(0) {
@@ -566,31 +572,63 @@ impl<'a> DigestWorker<'a> {
         Ok(None)
     }
 
-    /// Finalizes one canceled worker step and optionally writes the terminal result.
+    /// Finalizes one canceled worker step and writes the terminal result.
     fn cancel<T>(
         &self,
         phase: RunPhase,
         runtime: Option<&RuntimeExecution>,
         note: Option<String>,
-        write_result: bool,
     ) -> Result<Option<T>> {
         let final_state =
             finalize_run_canceled(&self.layout, self.run_id, phase, "Digest run canceled")?;
-        if write_result {
-            write_terminal_result(
-                &self.layout,
-                self.run_id,
-                &final_state,
-                runtime,
-                DigestValidationArtifact::default(),
-                note,
-            )?;
-        }
+        write_terminal_result(
+            &self.layout,
+            self.run_id,
+            &final_state,
+            runtime,
+            DigestValidationArtifact::default(),
+            note,
+        )?;
         append_run_event(
             &self.layout,
             self.run_id,
             RunEvent::info(phase, "Digest run canceled".to_owned()),
         )?;
         Ok(None)
+    }
+
+    /// Finalizes one unexpected worker error so early setup failures still leave durable artifacts.
+    fn fail_unhandled_error(&self, error: &anyhow::Error) -> Result<()> {
+        let phase = match load_run_state(&self.layout, self.run_id) {
+            Ok(state) => {
+                if is_finished_status(state.status) {
+                    return Ok(());
+                }
+                state.phase
+            }
+            Err(_) => RunPhase::PreparingContext,
+        };
+        let final_state = finalize_run_failed(
+            &self.layout,
+            self.run_id,
+            phase,
+            "Digest worker failed",
+            "worker_failed",
+            &error.to_string(),
+        )?;
+        write_terminal_result(
+            &self.layout,
+            self.run_id,
+            &final_state,
+            None,
+            DigestValidationArtifact::default(),
+            None,
+        )?;
+        append_run_event(
+            &self.layout,
+            self.run_id,
+            RunEvent::warn(phase, "Digest worker failed before completion".to_owned()),
+        )?;
+        Ok(())
     }
 }

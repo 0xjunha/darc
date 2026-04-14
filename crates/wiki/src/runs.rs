@@ -2,7 +2,10 @@ use std::{fs, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ProjectLayout, Result, RunId, WikiError, fs_utils::read_dir_sorted};
+use crate::{
+    ProjectLayout, Result, RunId, WikiError,
+    fs_utils::{read_dir_sorted, write_string_atomically},
+};
 
 /// Names the canonical TOML file used for durable run state.
 pub const RUN_STATE_FILE_NAME: &str = "run.toml";
@@ -174,11 +177,7 @@ pub fn store_run_state(layout: &ProjectLayout, state: &RunState) -> Result<()> {
         path: path.clone(),
         source,
     })?;
-    fs::write(&path, content).map_err(|source| WikiError::WriteFile {
-        path: path.clone(),
-        source,
-    })?;
-    Ok(())
+    write_string_atomically(&path, &content)
 }
 
 /// Lists every durable run summary for one project in deterministic order.

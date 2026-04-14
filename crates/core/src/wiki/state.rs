@@ -1,10 +1,11 @@
 use std::{
+    fs::OpenOptions,
     sync::atomic::{AtomicU64, Ordering},
     thread,
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use darc_paths::{current_utc_timestamp, parse_utc_timestamp};
 use darc_wiki::{
     ProjectLayout, RunId, RunPhase, RunState, RunStatus, list_runs, load_run_state, store_run_state,
@@ -92,15 +93,17 @@ pub(super) fn cancel_requested(
 
 /// Repairs one in-flight run to `interrupted` when its heartbeat is stale.
 pub(super) fn repair_run_if_stale(layout: &ProjectLayout, run_id: &RunId) -> Result<()> {
-    let state = match load_run_state(layout, run_id) {
-        Ok(state) => state,
-        Err(_) => return Ok(()),
-    };
-    if !is_run_state_stale(&state, SystemTime::now()) {
+    if !layout.run_state_path(run_id).exists() {
         return Ok(());
     }
 
+    let now = SystemTime::now();
+    let mut repaired_phase = None;
     update_run_state(layout, run_id, |state| {
+        if !is_run_state_stale(state, now) {
+            return;
+        }
+        repaired_phase = Some(state.phase);
         let now = current_utc_timestamp();
         state.status = RunStatus::Interrupted;
         state.updated_at = now.clone();
@@ -110,14 +113,17 @@ pub(super) fn repair_run_if_stale(layout: &ProjectLayout, run_id: &RunId) -> Res
         state.error_code = Some("worker_interrupted".to_owned());
         state.error_message = Some("digest worker heartbeat is stale".to_owned());
     })?;
-    append_run_event(
-        layout,
-        run_id,
-        RunEvent::warn(
-            state.phase,
-            "Recovered stale run as interrupted because the worker heartbeat is stale".to_owned(),
-        ),
-    )?;
+    if let Some(phase) = repaired_phase {
+        append_run_event(
+            layout,
+            run_id,
+            RunEvent::warn(
+                phase,
+                "Recovered stale run as interrupted because the worker heartbeat is stale"
+                    .to_owned(),
+            ),
+        )?;
+    }
     Ok(())
 }
 
@@ -150,10 +156,26 @@ pub(super) fn update_run_state<F>(
 where
     F: FnMut(&mut RunState),
 {
+    let _lock = lock_run_state(layout, run_id)?;
     let mut state = load_run_state(layout, run_id)?;
     update(&mut state);
     store_run_state(layout, &state)?;
     Ok(state)
+}
+
+/// Locks one run-state mutation path so concurrent writers cannot interleave updates.
+fn lock_run_state(layout: &ProjectLayout, run_id: &RunId) -> Result<std::fs::File> {
+    let path = layout.run_state_lock_path(run_id);
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    file.lock()
+        .with_context(|| format!("failed to lock {}", path.display()))?;
+    Ok(file)
 }
 
 /// Finalizes one digest run as failed with durable headline and error metadata.
