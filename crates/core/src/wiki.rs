@@ -14,9 +14,9 @@ use darc_agent::{
 };
 use darc_paths::{SourceKind, current_utc_timestamp, parse_utc_timestamp};
 use darc_wiki::{
-    ContextWikiLayout, DIGEST_PROPOSAL_OUTPUT_SCHEMA_JSON, DIGEST_PROPOSAL_SCHEMA, DigestProposal,
-    ProjectLayout, ProjectRegistry, ProposalValidationError, ProposalValidationOptions, RunId,
-    RunPhase, RunState, RunStatus, ensure_registry, is_valid_domain_id, list_digests, list_entries,
+    ContextWikiLayout, DigestProposal, DigestRuntimePrompt, ProjectLayout, ProjectRegistry,
+    ProposalValidationError, ProposalValidationOptions, RunId, RunPhase, RunState, RunStatus,
+    build_digest_runtime_prompt, ensure_registry, is_valid_domain_id, list_digests, list_entries,
     list_runs, load_registry, load_run_state, store_run_state, validate_digest_proposal,
 };
 use serde::Serialize;
@@ -543,8 +543,10 @@ pub fn run_project_wiki_digest_worker(
         "Preparing agent runtime",
     )?;
     let proposal_schema_path = layout.run_dir(run_id).join(PROPOSAL_SCHEMA_FILE_NAME);
-    write_text_artifact(&proposal_schema_path, DIGEST_PROPOSAL_OUTPUT_SCHEMA_JSON)?;
-    let prompt = build_digest_runtime_prompt(&context)?;
+    let context_json = serde_json::to_string_pretty(&context)
+        .context("failed to serialize digest context JSON")?;
+    let prompt = build_digest_runtime_prompt(&context_json, &context.project_id, &context.run_id);
+    write_text_artifact(&proposal_schema_path, &prompt.schema_json)?;
     let runtime_request = match build_runtime_request(
         &root,
         project_id,
@@ -1298,7 +1300,7 @@ fn build_runtime_request(
     layout: &ProjectLayout,
     run_id: &RunId,
     state: &RunState,
-    prompt: &str,
+    prompt: &DigestRuntimePrompt,
     schema_path: &Path,
 ) -> Result<RuntimeRequest> {
     let agent = AgentId::parse(state.agent_id.as_deref().unwrap_or_default())
@@ -1310,7 +1312,8 @@ fn build_runtime_request(
         runtime,
         model: state.model.clone().unwrap_or_default(),
         auth_profile: state.auth_profile.clone(),
-        prompt: prompt.to_owned(),
+        prompt: prompt.prompt.clone(),
+        schema_json: prompt.schema_json.clone(),
         workdir: resolve_runtime_workdir(root, project_id, layout, run_id)?,
         schema_path: schema_path.to_path_buf(),
         proposal_path: layout.run_proposal_path(run_id),
@@ -1515,36 +1518,6 @@ fn terminate_runtime_process(child: &mut Child, display_name: &str) -> Result<()
         }
         Err(error) => Err(error).with_context(|| format!("failed to kill {display_name}")),
     }
-}
-
-/// Builds the prompt supplied to the external agent runtime for one digest run.
-fn build_digest_runtime_prompt(context: &DigestContextArtifact) -> Result<String> {
-    let context_json =
-        serde_json::to_string_pretty(context).context("failed to serialize digest context JSON")?;
-    Ok(format!(
-        concat!(
-            "You are generating a Context Wiki digest proposal for Darc.\n\n",
-            "Return exactly one JSON object that matches the provided output schema.\n",
-            "Do not return Markdown, prose, code fences, or commentary.\n\n",
-            "Rules:\n",
-            "- Set `schema` to `{schema}`.\n",
-            "- Set `project_id` to `{project_id}`.\n",
-            "- Set `run_id` to `{run_id}`.\n",
-            "- The only allowed entry type is `decision_trace`.\n",
-            "- The only allowed operation is `create`.\n",
-            "- Use only categories from `registry.categories`.\n",
-            "- Use only domains from `registry.domains` or `target_domains`.\n",
-            "- Evidence references must use `<provider>:<session-id>#<turn-ordinal>` and only reference selected sessions.\n",
-            "- It is valid to return zero entries when the context does not contain durable decisions.\n",
-            "- Always include `run_summary`, even when `entries` is empty.\n",
-            "- Set `run_summary.extracted_decision_count` to the number of entries you return.\n\n",
-            "Context bundle:\n{context_json}\n"
-        ),
-        schema = DIGEST_PROPOSAL_SCHEMA,
-        project_id = context.project_id,
-        run_id = context.run_id,
-        context_json = context_json,
-    ))
 }
 
 /// Builds the allowed proposal domain list from persisted registry and run-target hints.

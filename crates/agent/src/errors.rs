@@ -1,5 +1,3 @@
-use std::{io, path::PathBuf};
-
 use thiserror::Error;
 
 /// Represents one typed runtime preparation error from the leaf agent crate.
@@ -16,14 +14,6 @@ pub enum AgentError {
     /// Reports one invalid runtime request field.
     #[error("invalid runtime request: {message}")]
     InvalidRequest { message: String },
-
-    /// Reports one schema read failure for a runtime that expects inline schema text.
-    #[error("failed to read runtime schema file {path}: {source}")]
-    ReadSchema {
-        path: PathBuf,
-        #[source]
-        source: io::Error,
-    },
 }
 
 /// Aliases the crate-local result type for agent runtime preparation operations.

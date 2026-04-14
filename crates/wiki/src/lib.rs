@@ -5,6 +5,7 @@ mod frontmatter;
 mod fs_utils;
 mod ids;
 mod layout;
+mod prompt;
 mod proposal;
 mod registry;
 mod runs;
@@ -16,6 +17,7 @@ pub use entries::{
 pub use errors::{Result, WikiError};
 pub use ids::{DigestId, EntryId, RunId};
 pub use layout::{CONTEXT_WIKI_DIR_NAME, ContextWikiLayout, ProjectLayout, STORAGE_VERSION};
+pub use prompt::{DigestRuntimePrompt, build_digest_runtime_prompt};
 pub use proposal::{
     DIGEST_PROPOSAL_OUTPUT_SCHEMA_JSON, DIGEST_PROPOSAL_SCHEMA, DigestProposal,
     DigestProposalEntry, DigestProposalOption, DigestProposalOptionStatus,

@@ -84,6 +84,7 @@ pub struct RuntimeRequest {
     pub model: String,
     pub auth_profile: Option<String>,
     pub prompt: String,
+    pub schema_json: String,
     pub workdir: PathBuf,
     pub schema_path: PathBuf,
     pub proposal_path: PathBuf,
@@ -110,6 +111,11 @@ pub fn build_runtime_command(request: &RuntimeRequest) -> Result<RuntimeCommand>
     if request.prompt.trim().is_empty() {
         return Err(AgentError::InvalidRequest {
             message: "prompt must not be empty".to_owned(),
+        });
+    }
+    if request.schema_json.trim().is_empty() {
+        return Err(AgentError::InvalidRequest {
+            message: "schema_json must not be empty".to_owned(),
         });
     }
 

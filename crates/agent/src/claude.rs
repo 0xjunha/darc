@@ -1,22 +1,14 @@
-use std::{env, fs, path::PathBuf};
+use std::{env, path::PathBuf};
 
 use crate::{
-    AgentError, Result,
+    Result,
+    prompt::build_inline_schema_prompt,
     runtime::{CLAUDE_BINARY_ENV_VAR, ProposalOutputSource, RuntimeCommand, RuntimeRequest},
 };
 
 /// Prepares one Claude CLI command for a digest proposal run.
 pub fn build_claude_external_cli_command(request: &RuntimeRequest) -> Result<RuntimeCommand> {
-    let schema =
-        fs::read_to_string(&request.schema_path).map_err(|source| AgentError::ReadSchema {
-            path: request.schema_path.clone(),
-            source,
-        })?;
-    let stdin = format!(
-        "{}\n\nReturn JSON that matches this schema exactly:\n{}\n",
-        request.prompt, schema
-    )
-    .into_bytes();
+    let stdin = build_inline_schema_prompt(&request.prompt, &request.schema_json).into_bytes();
     let program = env::var_os(CLAUDE_BINARY_ENV_VAR)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("claude"));
