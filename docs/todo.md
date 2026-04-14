@@ -11,6 +11,10 @@
   - Ensure runtime execution does not accidentally expose unrelated host secrets to digest runs.
 
 ### Context Wiki follow-ups
+- Add Windows support for stale-run pid liveness checks.
+  - Stale run repair currently uses a Unix-only `kill(pid, 0)` existence check before rewriting a run to `interrupted`.
+  - On non-Unix targets the fallback treats worker pids as not live, which is not the intended long-term behavior for Windows support.
+  - Introduce a Windows-capable process-liveness path so stale-run repair semantics stay consistent across supported hosts.
 - Remove the N+1 context-loading path for digest context assembly.
   - `load_selected_session_context()` currently queries the turn list and then calls `query_turn()` once per turn.
   - That rebuilds query context and reopens SQLite repeatedly for long sessions or multi-session digests.
