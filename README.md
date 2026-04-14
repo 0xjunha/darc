@@ -15,6 +15,8 @@ The daily happy path is `darc refresh`, which runs `sync` and `index` together.
 - Archives matching Claude and Codex session history into a per-project rollout archive.
 - Rebuilds a normalized SQLite index from archived rollouts for insights, reporting, and downstream tooling.
 - Exposes a stable machine-readable `darc query` protocol for workspace, session, turn, search, and insights data.
+- Provides an experimental Context Wiki workflow with read-side wiki queries plus agent-backed digest runs that
+  validate structured proposal artifacts and persist durable run logs under `~/.darc/context-wiki/`.
 - Derives indexed insights at workspace, project, and turn scope without requiring clients to open `index.sqlite`
   directly.
 - Surfaces best-effort per-turn and per-session stats such as model, token usage, effective agent runtime, and
@@ -26,9 +28,9 @@ The daily happy path is `darc refresh`, which runs `sync` and `index` together.
 
 Darc is organized as a small workspace of focused crates with `darc-core` kept as a thin facade and orchestration layer.
 
+- `darc-agent`: external agent runtime command preparation for Context Wiki digest workers.
 - `darc-cli`: CLI entrypoint and command surface.
-- `darc-core`: stable public API plus project/workspace orchestration such as `init`, `refresh`, `link`, and
-  `rename-from`.
+- `darc-core`: stable public API and top-level orchestration across Darc workflows.
 - `darc-index`: normalized session ingestion, SQLite schema/migrations, and indexing metrics.
 - `darc-paths`: shared path normalization, source-kind modeling, and project/worktree discovery helpers used across
   lower-level crates.
@@ -38,6 +40,7 @@ Darc is organized as a small workspace of focused crates with `darc-core` kept a
 - `darc-sync`: archive discovery, sync planning, and file copy execution.
 - `darc-test-utils`: shared test fixtures and helpers for Git repositories, temporary directories, and seeded index
   data.
+- `darc-wiki`: canonical Context Wiki storage, proposal validation, and durable run-state models.
 
 #### Crate boundaries follow three rules:
 
@@ -82,7 +85,10 @@ darc refresh --all
 - `darc sync` archives matching Claude and Codex sessions for the active project.
 - `darc index` indexes archived sessions into SQLite.
 - `darc query` exposes the machine-readable read protocol for workspace, session, turn, search, and insights data.
-  Query commands currently require `--json`; see [Query protocol](docs/query-protocol.md).
+  This includes the read-side `darc query wiki ...` commands. Query commands currently require `--json`; see
+  [Query protocol](docs/query-protocol.md).
+- `darc wiki` hosts the experimental imperative Context Wiki workflow, including digest start/cancel commands that
+  invoke external Codex or Claude Code CLIs.
 - `darc link`, `darc remove`, and `darc rename-from` manage renamed or merged projects.
 
 ## Session And Turn Stats
@@ -123,11 +129,39 @@ darc query search turns \
 
 See [Query protocol](docs/query-protocol.md) for the full search payload contract and filters.
 
+## Context Wiki
+
+Darc includes an experimental backend-owned Context Wiki workflow under `~/.darc/context-wiki/`.
+
+- Use `darc query wiki ... --json` for read-side access to registry, entries, digests, and runs.
+- Use `darc wiki digest start` to assemble selected session context, invoke an external Codex or Claude Code CLI,
+  and validate the returned structured proposal artifact.
+- Use `darc wiki digest cancel` to request cancellation for an in-flight run.
+- Successful digest runs currently mean proposal validation succeeded; canonical merge of entries and digest documents
+  is still deferred in this branch.
+
+Example:
+
+```bash
+darc wiki digest start \
+  --project-id repo-abc123 \
+  --session-ref codex:session-1 \
+  --agent codex \
+  --runtime external-cli \
+  --model gpt-5.4 \
+  --target-domain query-protocol \
+  --json
+```
+
+See [Context Wiki](docs/context-wiki.md) for workflow details, runtime requirements, run artifacts, and current
+limitations.
+
 Run `darc --help` for the visible CLI surface. Hidden maintainer commands are documented separately.
 
 ## Documentation
 
 - [Documentation index](docs/README.md)
+- [Context Wiki](docs/context-wiki.md)
 - [Query protocol](docs/query-protocol.md)
 - [Project rename and linking](docs/project-rename.md)
 - [Schema audits](docs/schema-audits.md)
