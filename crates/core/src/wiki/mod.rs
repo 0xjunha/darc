@@ -18,7 +18,7 @@ pub use models::{
     DigestCancelReport, DigestStartOptions, DigestStartReport, PreparedDigestRun, ProjectWikiData,
 };
 pub(crate) use models::{DigestResultArtifact, DigestRuntimeArtifact, DigestValidationArtifact};
-pub(crate) use state::visible_run_summary;
+pub(crate) use state::load_visible_run_summaries;
 
 const RUN_REQUEST_SCHEMA: &str = "darc.wiki.digest.request.v1";
 const RUN_CONTEXT_SCHEMA: &str = "darc.wiki.digest.context.v1";

@@ -2,6 +2,7 @@ use std::{
     fs,
     path::Path,
     path::PathBuf,
+    process::Command,
     time::{Duration, SystemTime},
 };
 
@@ -201,6 +202,73 @@ fn stale_running_run_is_repaired_to_interrupted() -> Result<()> {
     assert_eq!(repaired.status, RunStatus::Interrupted);
     assert_eq!(repaired.error_code.as_deref(), Some("worker_interrupted"));
 
+    fs::remove_dir_all(&root)?;
+    Ok(())
+}
+
+#[test]
+fn stale_running_run_with_live_pid_stays_running() -> Result<()> {
+    let root = unique_test_dir("core-wiki-live-stale");
+    let project_root = root.join("repo");
+    let project_id = "repo-123";
+    fs::create_dir_all(&project_root)?;
+    write_config(
+        &root,
+        &SharedConfig::new(
+            root.clone(),
+            vec![build_project(&root, project_id, project_root)],
+            SourcesConfig::default(),
+        ),
+    )?;
+
+    let layout = ensure_project_wiki(Some(root.clone()), project_id)?;
+    let run_id = RunId::new("cwrun_01live")?;
+    let heartbeat_at = current_utc_timestamp_at(SystemTime::now() - Duration::from_secs(120));
+    let mut child = Command::new("sleep").arg("30").spawn()?;
+    let state = RunState {
+        schema_version: 1,
+        run_id: run_id.clone(),
+        project_id: project_id.to_owned(),
+        status: RunStatus::Running,
+        phase: RunPhase::ReadingTurns,
+        created_at: heartbeat_at.clone(),
+        started_at: Some(heartbeat_at.clone()),
+        updated_at: heartbeat_at.clone(),
+        finished_at: None,
+        heartbeat_at: Some(heartbeat_at),
+        requested_by: Some("desktop".to_owned()),
+        request_source: Some("darc-desktop/0.1.0".to_owned()),
+        attempt: 1,
+        cancel_requested: false,
+        pid: Some(child.id()),
+        agent_id: Some("codex".to_owned()),
+        runtime: Some("external_cli".to_owned()),
+        model: Some("gpt-5.4".to_owned()),
+        auth_profile: Some("openai/default".to_owned()),
+        selected_sessions: vec!["codex:session-1".to_owned()],
+        target_categories: Vec::new(),
+        target_domains: Vec::new(),
+        progress_percent: Some(20),
+        headline: Some("Reading turns".to_owned()),
+        proposal_path: Some("proposal.json".to_owned()),
+        result_path: Some("result.json".to_owned()),
+        events_path: Some("events.jsonl".to_owned()),
+        stdout_log_path: Some("agent.stdout.log".to_owned()),
+        stderr_log_path: Some("agent.stderr.log".to_owned()),
+        created_entry_ids: Vec::new(),
+        updated_entry_ids: Vec::new(),
+        digest_id: None,
+        error_code: None,
+        error_message: None,
+    };
+    store_run_state(&layout, &state)?;
+
+    let loaded = load_project_wiki_run(Some(root.clone()), project_id, &run_id)?;
+    assert_eq!(loaded.status, RunStatus::Running);
+    assert_eq!(loaded.error_code, None);
+
+    child.kill()?;
+    let _ = child.wait();
     fs::remove_dir_all(&root)?;
     Ok(())
 }

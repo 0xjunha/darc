@@ -21,8 +21,7 @@ use darc_query::{
 };
 use darc_wiki::{
     ContextWikiLayout, DigestId, DigestSummary, EntryId, EntryStatus, EntrySummary, EntryType,
-    RunId, RunPhase, RunState, RunStatus, RunSummary, list_digests, list_entries, list_runs,
-    load_registry,
+    RunId, RunPhase, RunState, RunStatus, RunSummary, list_digests, list_entries, load_registry,
 };
 use serde::Serialize;
 
@@ -31,10 +30,9 @@ use crate::{
     constants::CONFIG_FILE_NAME,
     default_root_path,
     init::normalize_project_config,
-    wiki::visible_run_summary,
     wiki::{
         DigestResultArtifact, DigestRuntimeArtifact, DigestValidationArtifact,
-        load_project_wiki_run_from_layout,
+        load_project_wiki_run_from_layout, load_visible_run_summaries,
     },
 };
 
@@ -536,9 +534,8 @@ pub fn query_wiki_runs(root: Option<PathBuf>, project_id: &str) -> Result<WikiRu
     let layout = load_project_wiki_layout(&context)?;
     Ok(WikiRunsQueryData {
         project_id: context.project.id,
-        runs: list_runs(&layout)?
+        runs: load_visible_run_summaries(&layout)?
             .into_iter()
-            .map(|summary| visible_run_summary(&summary))
             .map(WikiRunListItem::from)
             .collect(),
     })
