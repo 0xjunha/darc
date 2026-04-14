@@ -14,7 +14,7 @@ pub const DIGEST_PROPOSAL_OUTPUT_SCHEMA_JSON: &str = r#"{
   "additionalProperties": false,
   "required": ["schema", "project_id", "run_id", "entries", "run_summary"],
   "properties": {
-    "schema": { "const": "darc.wiki.digest.proposal.v1" },
+    "schema": { "type": "string", "const": "darc.wiki.digest.proposal.v1" },
     "project_id": { "type": "string", "minLength": 1 },
     "run_id": { "type": "string", "minLength": 1 },
     "entries": {
@@ -37,8 +37,8 @@ pub const DIGEST_PROPOSAL_OUTPUT_SCHEMA_JSON: &str = r#"{
           "evidence"
         ],
         "properties": {
-          "operation": { "const": "create" },
-          "entry_type": { "const": "decision_trace" },
+          "operation": { "type": "string", "const": "create" },
+          "entry_type": { "type": "string", "const": "decision_trace" },
           "title": { "type": "string", "minLength": 1 },
           "category": { "type": "string", "minLength": 1 },
           "domains": {
@@ -54,7 +54,7 @@ pub const DIGEST_PROPOSAL_OUTPUT_SCHEMA_JSON: &str = r#"{
               "additionalProperties": false,
               "required": ["status", "description"],
               "properties": {
-                "status": { "enum": ["chosen", "rejected"] },
+                "status": { "type": "string", "enum": ["chosen", "rejected"] },
                 "description": { "type": "string", "minLength": 1 }
               }
             }
