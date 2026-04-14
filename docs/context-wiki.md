@@ -24,6 +24,7 @@ Use `darc query wiki ... --json` to inspect Context Wiki state without invoking 
 - `darc query wiki registry --root <path> --project-id <id> --json`
 - `darc query wiki entries --root <path> --project-id <id> --json`
 - `darc query wiki digests --root <path> --project-id <id> --json`
+- `darc query wiki run --root <path> --project-id <id> --run-id <id> --json`
 - `darc query wiki runs --root <path> --project-id <id> --json`
 
 The query protocol remains the machine-readable contract for desktop and other clients. See
@@ -69,6 +70,16 @@ List run state through the read-side query surface:
 darc query wiki runs \
   --root ~/.darc \
   --project-id repo-abc123 \
+  --json
+```
+
+Inspect one run plus parsed terminal result detail:
+
+```bash
+darc query wiki run \
+  --root ~/.darc \
+  --project-id repo-abc123 \
+  --run-id cwrun_0123456789abcdef \
   --json
 ```
 
@@ -158,4 +169,4 @@ Current validation rules include:
 - Context Wiki imperative workflows are experimental and may still change.
 - `darc query wiki ...` is the stable read-side contract; imperative `darc wiki ...` behavior is still MVP-stage.
 - Entry discard/restore commands remain placeholders.
-- Read-side wiki queries do not expose internal run artifact paths; inspect the on-disk run directory directly when you need logs or `result.json`.
+- Read-side wiki queries do not expose internal artifact paths; use `darc query wiki run ... --json` for run/result detail and inspect the run directory directly only when you need raw logs.

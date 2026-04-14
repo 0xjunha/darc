@@ -8,6 +8,7 @@ mod worker;
 
 use std::time::Duration;
 
+pub(crate) use api::load_project_wiki_run_from_layout;
 pub use api::{
     cancel_project_wiki_digest, ensure_project_wiki, fail_project_wiki_digest_start,
     load_project_wiki, load_project_wiki_run, mark_project_wiki_digest_started,
@@ -16,6 +17,7 @@ pub use api::{
 pub use models::{
     DigestCancelReport, DigestStartOptions, DigestStartReport, PreparedDigestRun, ProjectWikiData,
 };
+pub(crate) use models::{DigestResultArtifact, DigestRuntimeArtifact, DigestValidationArtifact};
 pub(crate) use state::visible_run_summary;
 
 const RUN_REQUEST_SCHEMA: &str = "darc.wiki.digest.request.v1";

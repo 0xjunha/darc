@@ -5,7 +5,7 @@ use darc_paths::current_utc_timestamp;
 use darc_wiki::{
     ProjectLayout, ProjectRegistry, ProposalValidationError, RunId, RunPhase, RunStatus,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::{RUN_EVENT_LEVEL_INFO, RUN_EVENT_LEVEL_WARN};
 use crate::query::{SessionSummary, TurnDetail};
@@ -118,8 +118,8 @@ pub(super) struct RuntimeExecution {
 }
 
 /// Stores one durable result artifact for runtime and validation reporting.
-#[derive(Debug, Clone, Serialize)]
-pub(super) struct DigestResultArtifact {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct DigestResultArtifact {
     pub schema: String,
     pub project_id: String,
     pub run_id: String,
@@ -133,8 +133,8 @@ pub(super) struct DigestResultArtifact {
 }
 
 /// Stores the runtime execution details embedded in `result.json`.
-#[derive(Debug, Clone, Serialize)]
-pub(super) struct DigestRuntimeArtifact {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct DigestRuntimeArtifact {
     pub agent_id: Option<String>,
     pub runtime: Option<String>,
     pub model: Option<String>,
@@ -148,8 +148,8 @@ pub(super) struct DigestRuntimeArtifact {
 }
 
 /// Stores the proposal validation summary embedded in `result.json`.
-#[derive(Debug, Clone, Default, Serialize)]
-pub(super) struct DigestValidationArtifact {
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(crate) struct DigestValidationArtifact {
     pub attempted: bool,
     pub valid: bool,
     pub entry_count: Option<usize>,

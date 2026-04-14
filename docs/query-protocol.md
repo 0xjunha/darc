@@ -16,6 +16,7 @@ All query commands currently require `--json`.
 - `darc query wiki registry --root <path> --project-id <id> --json`
 - `darc query wiki entries --root <path> --project-id <id> --json`
 - `darc query wiki digests --root <path> --project-id <id> --json`
+- `darc query wiki run --root <path> --project-id <id> --run-id <id> --json`
 - `darc query wiki runs --root <path> --project-id <id> --json`
 - `darc query sessions --root <path> --project-id <id> --json`
 - `darc query sessions --root <path> --project-id <id> --since <iso-8601|<days>d> --until <iso-8601|<days>d> --json`
@@ -78,6 +79,7 @@ Current schema ids:
 - `darc.query.wiki.registry.v1`
 - `darc.query.wiki.entries.v1`
 - `darc.query.wiki.digests.v1`
+- `darc.query.wiki.run.v1`
 - `darc.query.wiki.runs.v1`
 - `darc.query.sessions.v1`
 - `darc.query.turns.v1`
@@ -106,9 +108,10 @@ Today:
 - `darc.query.wiki.registry.v1` returns `project_id`, `schema_version`, `categories`, and `domains`
 - `darc.query.wiki.entries.v1` returns `project_id` plus deterministic `entries`
 - `darc.query.wiki.digests.v1` returns `project_id` plus deterministic `digests`
+- `darc.query.wiki.run.v1` returns one run state plus parsed terminal result detail when `result.json` exists
 - `darc.query.wiki.runs.v1` returns `project_id` plus deterministic `runs`
 - empty lists are returned when no canonical entries, digests, or runs exist yet
-- wiki list payloads do not expose internal storage paths
+- wiki payloads do not expose internal storage paths
 
 ## Stability rules
 

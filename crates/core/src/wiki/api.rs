@@ -51,8 +51,7 @@ pub fn load_project_wiki_run(
     run_id: &RunId,
 ) -> Result<RunState> {
     let layout = ensure_project_wiki(root, project_id)?;
-    repair_run_if_stale(&layout, run_id).context("failed to repair stale wiki run")?;
-    load_run_state(&layout, run_id).context("failed to load wiki run state")
+    load_project_wiki_run_from_layout(&layout, run_id)
 }
 
 /// Stores one durable wiki run state for one configured project.
@@ -291,6 +290,15 @@ pub fn run_project_wiki_digest_worker(
     run_id: &RunId,
 ) -> Result<()> {
     worker::run_project_wiki_digest_worker(root, project_id, run_id)
+}
+
+/// Loads one durable wiki run state from one already-resolved project wiki layout.
+pub(crate) fn load_project_wiki_run_from_layout(
+    layout: &ProjectLayout,
+    run_id: &RunId,
+) -> Result<RunState> {
+    repair_run_if_stale(layout, run_id).context("failed to repair stale wiki run")?;
+    load_run_state(layout, run_id).context("failed to load wiki run state")
 }
 
 /// Resolves one validated project wiki layout from the configured Darc root.

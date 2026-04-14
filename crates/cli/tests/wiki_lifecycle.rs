@@ -744,6 +744,36 @@ fn wiki_digest_fails_on_invalid_claude_proposal() -> Result<()> {
     assert!(result.contains("\"valid\": false"));
     assert!(result.contains("entries[0].domains[0]"));
 
+    let query_output = run_darc([
+        "query",
+        "wiki",
+        "run",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--run-id",
+        &run_id,
+        "--json",
+    ])?;
+    assert!(query_output.status.success());
+    let query_value = parse_json(&query_output.stdout, "stdout")?;
+    assert_eq!(query_value["schema"], "darc.query.wiki.run.v1");
+    assert_eq!(query_value["data"]["run"]["run_id"], run_id);
+    assert_eq!(
+        query_value["data"]["run"]["error_code"],
+        "proposal_validation_failed"
+    );
+    assert_eq!(query_value["data"]["run"]["result"]["status"], "failed");
+    assert_eq!(
+        query_value["data"]["run"]["result"]["validation"]["valid"],
+        false
+    );
+    assert_eq!(
+        query_value["data"]["run"]["result"]["validation"]["errors"][0]["path"],
+        "entries[0].domains[0]"
+    );
+
     remove_root(&root)?;
     Ok(())
 }
