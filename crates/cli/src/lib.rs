@@ -12,8 +12,8 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use darc_core::query::{
     SearchMode, SearchTurnsRequest, TurnDetailOptions, query_project_insight_report,
     query_search_turns, query_sessions, query_turn, query_turn_insight_report, query_turns,
-    query_wiki_digests, query_wiki_entries, query_wiki_registry, query_wiki_runs, query_workspace,
-    query_workspace_insight_report,
+    query_wiki_digests, query_wiki_entries, query_wiki_registry, query_wiki_run, query_wiki_runs,
+    query_workspace, query_workspace_insight_report,
 };
 use darc_core::{
     DigestStartOptions, IndexOptions, InitDraft, RefreshOptions, RefreshReport, RunId,
@@ -231,6 +231,8 @@ enum QueryWikiCommands {
     Entries(QueryWikiEntriesArgs),
     /// Queries the project-scoped Context Wiki digest list.
     Digests(QueryWikiDigestsArgs),
+    /// Queries one project-scoped Context Wiki run detail payload.
+    Run(QueryWikiRunArgs),
     /// Queries the project-scoped Context Wiki run list.
     Runs(QueryWikiRunsArgs),
 }
@@ -294,6 +296,26 @@ struct QueryWikiRunsArgs {
 
     #[arg(long = "project-id", help = "Query this configured project id")]
     project_id: String,
+
+    #[arg(
+        long,
+        required = true,
+        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
+    )]
+    json: bool,
+}
+
+/// Queries one project-scoped Context Wiki run detail payload.
+#[derive(Debug, Args)]
+struct QueryWikiRunArgs {
+    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    root: PathBuf,
+
+    #[arg(long = "project-id", help = "Query this configured project id")]
+    project_id: String,
+
+    #[arg(long = "run-id", help = "Query this wiki run id")]
+    run_id: String,
 
     #[arg(
         long,
@@ -822,6 +844,7 @@ fn run_query_wiki(args: QueryWikiArgs) -> Result<()> {
         QueryWikiCommands::Registry(args) => run_query_wiki_registry(args),
         QueryWikiCommands::Entries(args) => run_query_wiki_entries(args),
         QueryWikiCommands::Digests(args) => run_query_wiki_digests(args),
+        QueryWikiCommands::Run(args) => run_query_wiki_run(args),
         QueryWikiCommands::Runs(args) => run_query_wiki_runs(args),
     }
 }
@@ -852,6 +875,14 @@ fn run_query_wiki_runs(args: QueryWikiRunsArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
     let data = query_wiki_runs(Some(args.root), &args.project_id)?;
     print_json_envelope("darc.query.wiki.runs.v1", &data)
+}
+
+/// Queries one project-scoped Context Wiki run detail payload.
+fn run_query_wiki_run(args: QueryWikiRunArgs) -> Result<()> {
+    ensure_json_requested(args.json)?;
+    let run_id = RunId::new(args.run_id)?;
+    let data = query_wiki_run(Some(args.root), &args.project_id, &run_id)?;
+    print_json_envelope("darc.query.wiki.run.v1", &data)
 }
 
 /// Queries the session list for one configured project.

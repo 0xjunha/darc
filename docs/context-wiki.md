@@ -1,0 +1,172 @@
+# Context Wiki
+
+Darc's Context Wiki is an experimental backend-owned workflow for durable project knowledge stored under
+`~/.darc/context-wiki/`.
+
+Current MVP scope:
+
+- read-side wiki queries via `darc query wiki ... --json`
+- imperative digest lifecycle via `darc wiki digest start` and `darc wiki digest cancel`
+- external CLI runtimes for `codex` and `claude`
+- structured `decision_trace` proposal validation
+- durable run artifacts and logs for each digest run
+
+Current non-goals:
+
+- canonical merge of validated proposals into entry or digest markdown is still deferred
+- `darc wiki entry discard` and `darc wiki entry restore` are not implemented yet
+- `auth_profile` is recorded as run metadata only and does not constrain runtime credentials
+
+## Read Side
+
+Use `darc query wiki ... --json` to inspect Context Wiki state without invoking a runtime.
+
+- `darc query wiki registry --root <path> --project-id <id> --json`
+- `darc query wiki entries --root <path> --project-id <id> --json`
+- `darc query wiki digests --root <path> --project-id <id> --json`
+- `darc query wiki run --root <path> --project-id <id> --run-id <id> --json`
+- `darc query wiki runs --root <path> --project-id <id> --json`
+
+The query protocol remains the machine-readable contract for desktop and other clients. See
+[Query protocol](query-protocol.md).
+
+## Starting A Digest
+
+`darc wiki digest start` creates a new run, snapshots the request and context artifacts, spawns a background worker,
+and returns either human-readable status or a machine-readable JSON envelope.
+
+Example:
+
+```bash
+darc wiki digest start \
+  --root ~/.darc \
+  --project-id repo-abc123 \
+  --session-ref codex:session-1 \
+  --session-ref claude:session-2 \
+  --agent codex \
+  --runtime external-cli \
+  --model gpt-5.4 \
+  --target-category product \
+  --target-domain query-protocol \
+  --json
+```
+
+Key flags:
+
+- `--session-ref <provider>:<session-id>` selects one archived session. Pass it more than once to build a multi-session digest.
+- `--agent <codex|claude>` selects the agent family.
+- `--runtime external-cli` selects the currently supported runtime kind.
+- `--model <name>` is required and is forwarded to the external CLI.
+- `--auth-profile <name>` is optional metadata recorded in run artifacts. It does not currently select credentials.
+- `--target-category <name>` prioritizes an existing registry category and must already exist in the project registry.
+- `--target-domain <slug>` prioritizes a lowercase domain slug and extends the allowed proposal-domain list for that run.
+- `--json` emits the `darc.wiki.digest.start.v1` envelope on stdout.
+
+## Monitoring And Canceling
+
+List run state through the read-side query surface:
+
+```bash
+darc query wiki runs \
+  --root ~/.darc \
+  --project-id repo-abc123 \
+  --json
+```
+
+Inspect one run plus parsed terminal result detail:
+
+```bash
+darc query wiki run \
+  --root ~/.darc \
+  --project-id repo-abc123 \
+  --run-id cwrun_0123456789abcdef \
+  --json
+```
+
+Cancel a run by `run_id`:
+
+```bash
+darc wiki digest cancel \
+  --root ~/.darc \
+  --project-id repo-abc123 \
+  --run-id cwrun_0123456789abcdef \
+  --json
+```
+
+The cancel command returns the `darc.wiki.digest.cancel.v1` envelope when `--json` is set.
+
+## Runtime Requirements
+
+The current MVP uses external CLIs already installed on the host machine.
+
+- `--agent codex` expects the `codex` CLI.
+- `--agent claude` expects the `claude` CLI.
+- Set `DARC_WIKI_CODEX_BIN` to override the Codex executable path.
+- Set `DARC_WIKI_CLAUDE_BIN` to override the Claude executable path.
+- Digest workers invoke these CLIs in a background process and capture stdout/stderr into run-local log files.
+
+Current auth caveat:
+
+- Darc currently launches these CLIs with inherited host environment and ambient login state.
+- `auth_profile` is metadata only in this branch. It does not enforce profile selection or sandbox credentials.
+
+## Run Artifacts
+
+Each run lives under:
+
+```text
+~/.darc/context-wiki/projects/<project-id>/runs/<run-id>/
+```
+
+Important files:
+
+- `run.toml`: durable lifecycle state, selected sessions, runtime metadata, progress, and terminal error fields
+- `request.json`: original digest request payload
+- `context.json`: assembled registry and narrative-turn context given to the runtime
+- `proposal.schema.json`: JSON Schema supplied to the runtime
+- `proposal.json`: captured structured proposal artifact when one is produced
+- `result.json`: terminal runtime and validation summary
+- `events.jsonl`: progress and warning events emitted by the worker
+- `agent.stdout.log`: captured runtime stdout
+- `agent.stderr.log`: captured runtime stderr
+- `cancel.flag`: cancellation signal written by `darc wiki digest cancel`
+
+## Current Success Semantics
+
+Currently, a `succeeded` run means:
+
+- the selected session context was assembled successfully
+- the external runtime exited successfully
+- the returned JSON matched Darc's proposal contract
+- proposal validation passed
+
+It does not yet mean:
+
+- canonical entry markdown was written
+- canonical digest markdown was written
+- `created_entry_ids`, `updated_entry_ids`, or `digest_id` were populated with merged artifacts
+
+`result.json` records this explicitly with a note that canonical merge is deferred and the run succeeded after proposal
+validation only.
+
+## Proposal Rules
+
+The worker instructs the runtime to return exactly one JSON object matching Darc's schema.
+
+Current validation rules include:
+
+- `schema` must be `darc.wiki.digest.proposal.v1`
+- `project_id` and `run_id` must match the current run
+- only `decision_trace` entries are allowed
+- only `create` operations are allowed
+- categories must come from the project registry
+- domains must come from registry domains plus any `--target-domain` hints supplied for the run
+- evidence references must use `<provider>:<session-id>#<turn-ordinal>` and only reference selected sessions
+- zero proposed entries is valid when the selected sessions contain no durable decisions worth preserving
+
+## Current Limitations
+
+- Context Wiki imperative workflows are experimental and may still change.
+- `darc query wiki ...` is the stable read-side contract; imperative `darc wiki ...` behavior is still MVP-stage.
+- Entry discard/restore commands remain placeholders.
+- Read-side wiki queries do not expose internal artifact paths; use `darc query wiki run ... --json` for run/result detail and inspect the run directory directly only when you need raw logs.

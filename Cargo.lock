@@ -200,6 +200,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "darc-agent"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "darc-cli"
 version = "0.1.0"
 dependencies = [
@@ -222,6 +229,7 @@ name = "darc-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "darc-agent",
  "darc-index",
  "darc-paths",
  "darc-query",

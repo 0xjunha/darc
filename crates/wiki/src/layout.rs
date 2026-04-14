@@ -20,6 +20,7 @@ const RUN_REQUEST_FILE_NAME: &str = "request.json";
 const RUN_CONTEXT_FILE_NAME: &str = "context.json";
 const RUN_PROPOSAL_FILE_NAME: &str = "proposal.json";
 const RUN_RESULT_FILE_NAME: &str = "result.json";
+const RUN_STATE_LOCK_FILE_NAME: &str = "run.toml.lock";
 const RUN_EVENTS_FILE_NAME: &str = "events.jsonl";
 const RUN_STDOUT_LOG_FILE_NAME: &str = "agent.stdout.log";
 const RUN_STDERR_LOG_FILE_NAME: &str = "agent.stderr.log";
@@ -175,6 +176,11 @@ impl ProjectLayout {
     /// Resolves one run state TOML path under the project layout.
     pub fn run_state_path(&self, run_id: &RunId) -> PathBuf {
         self.run_dir(run_id).join("run.toml")
+    }
+
+    /// Resolves one run-state lock path under the project layout.
+    pub fn run_state_lock_path(&self, run_id: &RunId) -> PathBuf {
+        self.run_dir(run_id).join(RUN_STATE_LOCK_FILE_NAME)
     }
 
     /// Resolves one run request artifact path under the project layout.

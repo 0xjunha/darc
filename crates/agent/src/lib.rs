@@ -1,0 +1,12 @@
+mod claude;
+mod codex;
+mod errors;
+mod external_cli;
+mod prompt;
+mod runtime;
+
+pub use errors::{AgentError, Result};
+pub use runtime::{
+    AgentId, ProposalOutputSource, RuntimeCommand, RuntimeKind, RuntimeRequest,
+    build_runtime_command,
+};

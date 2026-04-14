@@ -21,7 +21,7 @@ use darc_query::{
 };
 use darc_wiki::{
     ContextWikiLayout, DigestId, DigestSummary, EntryId, EntryStatus, EntrySummary, EntryType,
-    RunId, RunPhase, RunStatus, RunSummary, list_digests, list_entries, list_runs, load_registry,
+    RunId, RunPhase, RunState, RunStatus, RunSummary, list_digests, list_entries, load_registry,
 };
 use serde::Serialize;
 
@@ -30,7 +30,10 @@ use crate::{
     constants::CONFIG_FILE_NAME,
     default_root_path,
     init::normalize_project_config,
-    wiki::visible_run_summary,
+    wiki::{
+        DigestResultArtifact, DigestRuntimeArtifact, DigestValidationArtifact,
+        load_project_wiki_run_from_layout, load_visible_run_summaries,
+    },
 };
 
 /// Queries the workspace sidebar payload for one darc root.
@@ -245,6 +248,13 @@ pub struct WikiRunsQueryData {
     pub runs: Vec<WikiRunListItem>,
 }
 
+/// Stores the run-detail payload for one project-scoped wiki query.
+#[derive(Debug, Clone, Serialize)]
+pub struct WikiRunQueryData {
+    pub project_id: String,
+    pub run: WikiRunDetailItem,
+}
+
 /// Stores one API-shaped wiki entry row for the read protocol.
 #[derive(Debug, Clone, Serialize)]
 pub struct WikiEntryListItem {
@@ -325,6 +335,157 @@ impl From<RunSummary> for WikiRunListItem {
     }
 }
 
+/// Stores one API-shaped wiki run detail payload for the read protocol.
+#[derive(Debug, Clone, Serialize)]
+pub struct WikiRunDetailItem {
+    pub run_id: RunId,
+    pub status: RunStatus,
+    pub phase: RunPhase,
+    pub created_at: String,
+    pub started_at: Option<String>,
+    pub updated_at: String,
+    pub heartbeat_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub requested_by: Option<String>,
+    pub request_source: Option<String>,
+    pub attempt: u32,
+    pub cancel_requested: bool,
+    pub pid: Option<u32>,
+    pub agent_id: Option<String>,
+    pub runtime: Option<String>,
+    pub model: Option<String>,
+    pub auth_profile: Option<String>,
+    pub selected_sessions: Vec<String>,
+    pub target_categories: Vec<String>,
+    pub target_domains: Vec<String>,
+    pub progress_percent: Option<u8>,
+    pub headline: Option<String>,
+    pub created_entry_ids: Vec<String>,
+    pub updated_entry_ids: Vec<String>,
+    pub digest_id: Option<String>,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+    pub result: Option<WikiRunResultItem>,
+}
+
+impl WikiRunDetailItem {
+    /// Builds one run-detail payload from one durable run state plus optional result artifact.
+    fn from_state(state: RunState, result: Option<DigestResultArtifact>) -> Self {
+        Self {
+            run_id: state.run_id,
+            status: state.status,
+            phase: state.phase,
+            created_at: state.created_at,
+            started_at: state.started_at,
+            updated_at: state.updated_at,
+            heartbeat_at: state.heartbeat_at,
+            finished_at: state.finished_at,
+            requested_by: state.requested_by,
+            request_source: state.request_source,
+            attempt: state.attempt,
+            cancel_requested: state.cancel_requested,
+            pid: state.pid,
+            agent_id: state.agent_id,
+            runtime: state.runtime,
+            model: state.model,
+            auth_profile: state.auth_profile,
+            selected_sessions: state.selected_sessions,
+            target_categories: state.target_categories,
+            target_domains: state.target_domains,
+            progress_percent: state.progress_percent,
+            headline: state.headline,
+            created_entry_ids: state.created_entry_ids,
+            updated_entry_ids: state.updated_entry_ids,
+            digest_id: state.digest_id,
+            error_code: state.error_code,
+            error_message: state.error_message,
+            result: result.map(WikiRunResultItem::from),
+        }
+    }
+}
+
+/// Stores the parsed terminal result detail for one wiki run.
+#[derive(Debug, Clone, Serialize)]
+pub struct WikiRunResultItem {
+    pub status: RunStatus,
+    pub completed_at: String,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+    pub runtime: WikiRunRuntimeResultItem,
+    pub validation: WikiRunValidationResultItem,
+    pub note: Option<String>,
+}
+
+impl From<DigestResultArtifact> for WikiRunResultItem {
+    fn from(result: DigestResultArtifact) -> Self {
+        Self {
+            status: result.status,
+            completed_at: result.completed_at,
+            error_code: result.error_code,
+            error_message: result.error_message,
+            runtime: WikiRunRuntimeResultItem::from(result.runtime),
+            validation: WikiRunValidationResultItem::from(result.validation),
+            note: result.note,
+        }
+    }
+}
+
+/// Stores the runtime section parsed from one wiki run result artifact.
+#[derive(Debug, Clone, Serialize)]
+pub struct WikiRunRuntimeResultItem {
+    pub agent_id: Option<String>,
+    pub runtime: Option<String>,
+    pub model: Option<String>,
+    pub auth_profile: Option<String>,
+    pub display_name: Option<String>,
+    pub exit_code: Option<i32>,
+    pub stdout_bytes: usize,
+    pub stderr_bytes: usize,
+    pub proposal_source: Option<String>,
+    pub proposal_captured: bool,
+}
+
+impl From<DigestRuntimeArtifact> for WikiRunRuntimeResultItem {
+    fn from(runtime: DigestRuntimeArtifact) -> Self {
+        Self {
+            agent_id: runtime.agent_id,
+            runtime: runtime.runtime,
+            model: runtime.model,
+            auth_profile: runtime.auth_profile,
+            display_name: runtime.display_name,
+            exit_code: runtime.exit_code,
+            stdout_bytes: runtime.stdout_bytes,
+            stderr_bytes: runtime.stderr_bytes,
+            proposal_source: runtime.proposal_source,
+            proposal_captured: runtime.proposal_captured,
+        }
+    }
+}
+
+/// Stores the validation section parsed from one wiki run result artifact.
+#[derive(Debug, Clone, Serialize)]
+pub struct WikiRunValidationResultItem {
+    pub attempted: bool,
+    pub valid: bool,
+    pub entry_count: Option<usize>,
+    pub run_summary_title: Option<String>,
+    pub extracted_decision_count: Option<usize>,
+    pub errors: Vec<darc_wiki::ProposalValidationError>,
+}
+
+impl From<DigestValidationArtifact> for WikiRunValidationResultItem {
+    fn from(validation: DigestValidationArtifact) -> Self {
+        Self {
+            attempted: validation.attempted,
+            valid: validation.valid,
+            entry_count: validation.entry_count,
+            run_summary_title: validation.run_summary_title,
+            extracted_decision_count: validation.extracted_decision_count,
+            errors: validation.errors,
+        }
+    }
+}
+
 /// Queries the wiki registry payload for one configured project.
 pub fn query_wiki_registry(
     root: Option<PathBuf>,
@@ -373,11 +534,26 @@ pub fn query_wiki_runs(root: Option<PathBuf>, project_id: &str) -> Result<WikiRu
     let layout = load_project_wiki_layout(&context)?;
     Ok(WikiRunsQueryData {
         project_id: context.project.id,
-        runs: list_runs(&layout)?
+        runs: load_visible_run_summaries(&layout)?
             .into_iter()
-            .map(|summary| visible_run_summary(&summary))
             .map(WikiRunListItem::from)
             .collect(),
+    })
+}
+
+/// Queries the wiki run-detail payload for one configured project and run id.
+pub fn query_wiki_run(
+    root: Option<PathBuf>,
+    project_id: &str,
+    run_id: &RunId,
+) -> Result<WikiRunQueryData> {
+    let context = load_project_config_context(root, project_id)?;
+    let layout = load_project_wiki_layout(&context)?;
+    let run = load_project_wiki_run_from_layout(&layout, run_id)?;
+    let result = load_run_result_artifact(&layout.run_result_path(run_id))?;
+    Ok(WikiRunQueryData {
+        project_id: context.project.id,
+        run: WikiRunDetailItem::from_state(run, result),
     })
 }
 
@@ -530,6 +706,18 @@ fn load_project_wiki_layout(context: &ProjectQueryContext) -> Result<darc_wiki::
     ContextWikiLayout::new(context.root.resolved_root_path.clone())
         .project_layout(context.project.id.clone())
         .context("failed to resolve project wiki layout")
+}
+
+/// Loads one parsed run result artifact when the durable result file exists.
+fn load_run_result_artifact(path: &Path) -> Result<Option<DigestResultArtifact>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let artifact = serde_json::from_str(&content)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    Ok(Some(artifact))
 }
 
 /// Stores the validated root and project context for one project-scoped query.
