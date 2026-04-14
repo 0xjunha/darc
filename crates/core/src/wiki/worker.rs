@@ -7,9 +7,9 @@ use anyhow::{Context, Result};
 use darc_agent::{RuntimeCommand, build_runtime_command};
 use darc_paths::current_utc_timestamp;
 use darc_wiki::{
-    DigestProposal, DigestRuntimePrompt, ProjectLayout, ProjectRegistry, ProposalValidationOptions,
-    RunId, RunPhase, RunState, build_digest_runtime_prompt, load_registry, load_run_state,
-    validate_digest_proposal,
+    DigestProposal, DigestRuntimePrompt, EntryFrontmatter, ProjectLayout, ProjectRegistry,
+    ProposalValidationOptions, RunId, RunPhase, RunState, build_digest_runtime_prompt,
+    list_entries, load_entry, load_registry, load_run_state, validate_digest_proposal,
 };
 
 use super::{
@@ -458,6 +458,23 @@ impl<'a> DigestWorker<'a> {
                 });
             }
         };
+        let existing_entries = match self.load_existing_entries_for_validation() {
+            Ok(existing_entries) => existing_entries,
+            Err(error) => {
+                return self.fail(WorkerFailure {
+                    phase: RunPhase::ValidatingProposal,
+                    headline: "Proposal validation setup failed",
+                    error_code: "proposal_validation_setup_failed",
+                    error_message: error.to_string(),
+                    runtime: Some(runtime_execution),
+                    validation: DigestValidationArtifact {
+                        attempted: true,
+                        ..DigestValidationArtifact::default()
+                    },
+                    event_message: "Failed to load existing wiki entries for validation".to_owned(),
+                });
+            }
+        };
         let allowed_domains = build_allowed_domains(registry, state);
         let allowed_evidence_refs = build_allowed_evidence_refs(context);
         let validation = match validate_digest_proposal(
@@ -468,6 +485,7 @@ impl<'a> DigestWorker<'a> {
                 allowed_categories: &registry.categories,
                 allowed_domains: &allowed_domains,
                 allowed_evidence_refs: &allowed_evidence_refs,
+                existing_entries: &existing_entries,
             },
         ) {
             Ok(summary) => DigestValidationArtifact {
@@ -500,6 +518,14 @@ impl<'a> DigestWorker<'a> {
         };
 
         Ok(Some(validation))
+    }
+
+    /// Loads canonical entry frontmatter so proposal validation can reject duplicates.
+    fn load_existing_entries_for_validation(&self) -> Result<Vec<EntryFrontmatter>> {
+        list_entries(&self.layout)?
+            .into_iter()
+            .map(|entry| Ok(load_entry(&entry.path)?.frontmatter))
+            .collect()
     }
 
     /// Writes the terminal success state and result artifact for a validated proposal.
