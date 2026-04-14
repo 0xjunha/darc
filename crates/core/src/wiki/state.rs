@@ -61,6 +61,22 @@ pub(super) fn transition_worker_state(
     Ok(())
 }
 
+/// Refreshes one active worker heartbeat without changing the visible phase or progress fields.
+pub(super) fn refresh_worker_heartbeat(layout: &ProjectLayout, run_id: &RunId) -> Result<()> {
+    update_run_state(layout, run_id, |state| {
+        if is_finished_status(state.status) {
+            return;
+        }
+        let now = current_utc_timestamp();
+        if state.cancel_requested {
+            state.status = RunStatus::CancelRequested;
+        }
+        state.updated_at = now.clone();
+        state.heartbeat_at = Some(now);
+    })?;
+    Ok(())
+}
+
 /// Returns whether one cancel signal is visible for the provided run.
 pub(super) fn cancel_requested(
     layout: &ProjectLayout,

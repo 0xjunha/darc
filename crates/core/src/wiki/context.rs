@@ -69,12 +69,16 @@ pub(super) fn parse_session_ref(session_ref: &str) -> Result<(SourceKind, &str)>
 }
 
 /// Loads one selected session plus its narrative turn details for the digest context bundle.
-pub(super) fn load_selected_session_context(
+pub(super) fn load_selected_session_context<F>(
     root: &Path,
     project_id: &str,
     session_ref: &str,
     session_summaries: &[SessionSummary],
-) -> Result<DigestContextSession> {
+    mut on_turn_progress: F,
+) -> Result<DigestContextSession>
+where
+    F: FnMut() -> Result<()>,
+{
     let (provider, session_id) = parse_session_ref(session_ref)?;
     let session = session_summaries
         .iter()
@@ -83,10 +87,10 @@ pub(super) fn load_selected_session_context(
         .with_context(|| format!("selected session `{session_ref}` was not found in the index"))?;
     let turn_summaries = query_turns(Some(root.to_path_buf()), project_id, provider, session_id)
         .with_context(|| format!("failed to load indexed turns for `{session_ref}`"))?;
-    let turns = turn_summaries
-        .turns
-        .into_iter()
-        .map(|turn| {
+    let mut turns = Vec::with_capacity(turn_summaries.turns.len());
+    for turn in turn_summaries.turns {
+        on_turn_progress()?;
+        turns.push(
             query_turn(
                 Some(root.to_path_buf()),
                 project_id,
@@ -104,9 +108,10 @@ pub(super) fn load_selected_session_context(
                     "failed to load narrative turn {} for `{session_ref}`",
                     turn.turn_ordinal
                 )
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
+            })?,
+        );
+        on_turn_progress()?;
+    }
     Ok(DigestContextSession { session, turns })
 }
 

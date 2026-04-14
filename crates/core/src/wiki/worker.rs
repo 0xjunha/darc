@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::SystemTime,
+};
 
 use anyhow::{Context, Result};
 use darc_agent::{RuntimeCommand, build_runtime_command};
@@ -10,7 +13,7 @@ use darc_wiki::{
 };
 
 use super::{
-    PROPOSAL_SCHEMA_FILE_NAME, RUN_CONTEXT_SCHEMA,
+    PROPOSAL_SCHEMA_FILE_NAME, RUN_CONTEXT_SCHEMA, RUN_HEARTBEAT_INTERVAL,
     artifacts::{
         append_run_event, write_bytes_artifact, write_json_artifact, write_terminal_result,
         write_text_artifact,
@@ -20,7 +23,8 @@ use super::{
     runtime::{build_runtime_request, execute_runtime_command},
     state::{
         cancel_requested, finalize_run_canceled, finalize_run_failed, finalize_run_succeeded,
-        is_finished_status, transition_worker_state, wait_for_worker_registration,
+        is_finished_status, refresh_worker_heartbeat, transition_worker_state,
+        wait_for_worker_registration,
     },
 };
 use crate::{default_root_path, query::query_sessions};
@@ -142,6 +146,7 @@ impl<'a> DigestWorker<'a> {
         let total_sessions = selected_sessions.len().max(1);
         let mut total_turns = 0_usize;
         let mut context_sessions = Vec::with_capacity(selected_sessions.len());
+        let mut last_heartbeat = SystemTime::now();
         for (index, session_ref) in selected_sessions.iter().enumerate() {
             transition_worker_state(
                 &self.layout,
@@ -159,6 +164,13 @@ impl<'a> DigestWorker<'a> {
                 self.project_id,
                 session_ref,
                 &session_summaries,
+                || {
+                    if last_heartbeat.elapsed().unwrap_or_default() >= RUN_HEARTBEAT_INTERVAL {
+                        refresh_worker_heartbeat(&self.layout, self.run_id)?;
+                        last_heartbeat = SystemTime::now();
+                    }
+                    Ok(())
+                },
             ) {
                 Ok(session) => session,
                 Err(error) => {
