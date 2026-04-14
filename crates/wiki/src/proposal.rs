@@ -88,32 +88,30 @@ pub const DIGEST_PROPOSAL_OUTPUT_SCHEMA_JSON: &str = r#"{
 
 /// Stores one structured digest proposal returned by an external runtime.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DigestProposal {
     pub schema: String,
     pub project_id: String,
     pub run_id: String,
-    #[serde(default)]
     pub entries: Vec<DigestProposalEntry>,
     pub run_summary: DigestProposalRunSummary,
 }
 
 /// Stores one structured decision-trace proposal entry within a digest proposal.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DigestProposalEntry {
     pub operation: ProposalEntryOperation,
     pub entry_type: EntryType,
     pub title: String,
     pub category: String,
-    #[serde(default)]
     pub domains: Vec<String>,
     pub decision_date: String,
     pub context: String,
-    #[serde(default)]
     pub options: Vec<DigestProposalOption>,
     pub final_decision: String,
     pub rationale: String,
     pub consequences: String,
-    #[serde(default)]
     pub evidence: Vec<String>,
 }
 
@@ -126,6 +124,7 @@ pub enum ProposalEntryOperation {
 
 /// Stores one proposal option row for a decision trace.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DigestProposalOption {
     pub status: DigestProposalOptionStatus,
     pub description: String,
@@ -141,10 +140,10 @@ pub enum DigestProposalOptionStatus {
 
 /// Stores the required run summary block for one digest proposal.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DigestProposalRunSummary {
     pub title: String,
     pub summary: String,
-    #[serde(default)]
     pub themes: Vec<String>,
     pub extracted_decision_count: usize,
 }
@@ -620,5 +619,65 @@ mod tests {
                 .iter()
                 .any(|error| error.path == "entries[0].evidence[0]")
         );
+    }
+
+    #[test]
+    fn deserialization_rejects_unknown_fields() {
+        let error = serde_json::from_str::<DigestProposal>(
+            r#"{
+                "schema": "darc.wiki.digest.proposal.v1",
+                "project_id": "repo-abc123",
+                "run_id": "cwrun_01proposal",
+                "entries": [],
+                "run_summary": {
+                    "title": "Summary",
+                    "summary": "Summary",
+                    "themes": [],
+                    "extracted_decision_count": 0
+                },
+                "unexpected": true
+            }"#,
+        )
+        .expect_err("unknown fields should fail schema parsing");
+        assert!(error.to_string().contains("unexpected"));
+    }
+
+    #[test]
+    fn deserialization_rejects_missing_required_arrays() {
+        let error = serde_json::from_str::<DigestProposal>(
+            r#"{
+                "schema": "darc.wiki.digest.proposal.v1",
+                "project_id": "repo-abc123",
+                "run_id": "cwrun_01proposal",
+                "entries": [
+                    {
+                        "operation": "create",
+                        "entry_type": "decision_trace",
+                        "title": "Keep query protocol stable",
+                        "category": "product",
+                        "decision_date": "2026-04-13",
+                        "context": "Context",
+                        "options": [
+                            {
+                                "status": "chosen",
+                                "description": "Stay additive"
+                            }
+                        ],
+                        "final_decision": "Stay additive",
+                        "rationale": "Desktop depends on it",
+                        "consequences": "Protocol changes need migration",
+                        "evidence": ["codex:session-1#0"]
+                    }
+                ],
+                "run_summary": {
+                    "title": "Summary",
+                    "summary": "Summary",
+                    "themes": [],
+                    "extracted_decision_count": 1
+                }
+            }"#,
+        )
+        .expect_err("missing required arrays should fail schema parsing");
+        assert!(error.to_string().contains("domains"));
     }
 }
