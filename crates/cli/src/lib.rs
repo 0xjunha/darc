@@ -77,7 +77,7 @@ enum Commands {
     Query(QueryArgs),
     #[command(
         about = "Manage Context Wiki workflows",
-        long_about = "Manage Context Wiki workflows.\n\nThis top-level command will host imperative Context Wiki operations such as digest run lifecycle and entry state changes.\nUse `darc query wiki ... --json` for read-side access today."
+        long_about = "Manage Context Wiki workflows.\n\nThis top-level command hosts imperative Context Wiki operations such as digest run lifecycle and entry state changes.\n`darc wiki digest ...` is implemented today. Entry discard/restore commands are exposed but not implemented yet.\nUse `darc query wiki ... --json` for canonical read-side access."
     )]
     Wiki(WikiArgs),
     #[command(
@@ -633,7 +633,7 @@ struct WikiArgs {
     command: WikiCommands,
 }
 
-/// Represents the planned imperative Context Wiki command groups.
+/// Represents the imperative Context Wiki command groups exposed by the CLI.
 #[derive(Debug, Subcommand)]
 enum WikiCommands {
     /// Hosts digest-run lifecycle commands.
@@ -649,7 +649,7 @@ struct WikiDigestArgs {
     command: WikiDigestCommands,
 }
 
-/// Represents the planned digest-run lifecycle commands.
+/// Represents the supported digest-run lifecycle commands.
 #[derive(Debug, Subcommand)]
 enum WikiDigestCommands {
     /// Starts one new digest run.
@@ -661,7 +661,7 @@ enum WikiDigestCommands {
     Worker(WikiDigestWorkerArgs),
 }
 
-/// Stores the placeholder CLI surface for `darc wiki digest start`.
+/// Stores CLI arguments for `darc wiki digest start`.
 #[derive(Debug, Args)]
 struct WikiDigestStartArgs {
     #[arg(long, default_value_os_t = default_root_path())]
@@ -680,14 +680,10 @@ struct WikiDigestStartArgs {
     )]
     session_ref: Vec<String>,
 
-    #[arg(
-        long = "agent",
-        value_enum,
-        help = "Select the future agent runtime id"
-    )]
+    #[arg(long = "agent", value_enum, help = "Select the agent runtime id")]
     agent: WikiAgentArg,
 
-    #[arg(long = "runtime", value_enum, help = "Select the future runtime kind")]
+    #[arg(long = "runtime", value_enum, help = "Select the runtime kind")]
     runtime: WikiRuntimeArg,
 
     #[arg(long, help = "Record the target model name for this run")]
@@ -712,7 +708,7 @@ struct WikiDigestStartArgs {
     json: bool,
 }
 
-/// Stores the placeholder CLI surface for `darc wiki digest cancel`.
+/// Stores CLI arguments for `darc wiki digest cancel`.
 #[derive(Debug, Args)]
 struct WikiDigestCancelArgs {
     #[arg(long, default_value_os_t = default_root_path())]
@@ -734,7 +730,7 @@ struct WikiDigestCancelArgs {
     json: bool,
 }
 
-/// Stores the placeholder CLI surface for `darc wiki digest worker`.
+/// Stores CLI arguments for `darc wiki digest worker`.
 #[derive(Debug, Args)]
 struct WikiDigestWorkerArgs {
     #[arg(long, default_value_os_t = default_root_path())]
@@ -757,7 +753,7 @@ struct WikiEntryArgs {
     command: WikiEntryCommands,
 }
 
-/// Represents the planned entry mutation commands.
+/// Represents the entry mutation commands exposed by the CLI.
 #[derive(Debug, Subcommand)]
 enum WikiEntryCommands {
     /// Marks one entry as discarded.
@@ -766,11 +762,11 @@ enum WikiEntryCommands {
     Restore(WikiEntryRestoreArgs),
 }
 
-/// Stores the placeholder CLI surface for `darc wiki entry discard`.
+/// Stores CLI arguments for `darc wiki entry discard`.
 #[derive(Debug, Args)]
 struct WikiEntryDiscardArgs {}
 
-/// Stores the placeholder CLI surface for `darc wiki entry restore`.
+/// Stores CLI arguments for `darc wiki entry restore`.
 #[derive(Debug, Args)]
 struct WikiEntryRestoreArgs {}
 
@@ -1119,7 +1115,7 @@ fn run_query_turn_insights(args: QueryTurnInsightsArgs) -> Result<()> {
     print_json_envelope("darc.query.insights.turn.v1", &data)
 }
 
-/// Dispatches the placeholder imperative Context Wiki command surface.
+/// Dispatches the imperative Context Wiki command surface.
 fn run_wiki(args: WikiArgs) -> Result<()> {
     match args.command {
         WikiCommands::Digest(args) => match args.command {

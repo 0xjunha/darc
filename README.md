@@ -16,7 +16,8 @@ The daily happy path is `darc refresh`, which runs `sync` and `index` together.
 - Rebuilds a normalized SQLite index from archived rollouts for insights, reporting, and downstream tooling.
 - Exposes a stable machine-readable `darc query` protocol for workspace, session, turn, search, and insights data.
 - Provides an experimental Context Wiki workflow with read-side wiki queries plus agent-backed digest runs that
-  validate structured proposal artifacts and persist durable run logs under `~/.darc/context-wiki/`.
+  validate structured proposal artifacts, merge canonical wiki artifacts, and persist durable run logs under
+  `~/.darc/context-wiki/`.
 - Derives indexed insights at workspace, project, and turn scope without requiring clients to open `index.sqlite`
   directly.
 - Surfaces best-effort per-turn and per-session stats such as model, token usage, effective agent runtime, and
@@ -40,7 +41,8 @@ Darc is organized as a small workspace of focused crates with `darc-core` kept a
 - `darc-sync`: archive discovery, sync planning, and file copy execution.
 - `darc-test-utils`: shared test fixtures and helpers for Git repositories, temporary directories, and seeded index
   data.
-- `darc-wiki`: canonical Context Wiki storage, proposal validation, and durable run-state models.
+- `darc-wiki`: canonical Context Wiki storage, proposal validation, canonical artifact merge, and durable
+  run-state models.
 
 #### Crate boundaries follow three rules:
 
@@ -135,10 +137,10 @@ Darc includes an experimental backend-owned Context Wiki workflow under `~/.darc
 
 - Use `darc query wiki ... --json` for read-side access to registry, entries, digests, and runs.
 - Use `darc wiki digest start` to assemble selected session context, invoke an external Codex or Claude Code CLI,
-  and validate the returned structured proposal artifact.
+  validate the returned structured proposal artifact, and merge the validated result into canonical wiki artifacts.
 - Use `darc wiki digest cancel` to request cancellation for an in-flight run.
-- Successful digest runs currently mean proposal validation succeeded; canonical merge of entries and digest documents
-  is still deferred in this branch.
+- Successful digest runs persist a digest report plus terminal run metadata and either create or update canonical
+  decision-trace entries, or record a zero-entry digest when no durable decisions were extracted.
 
 Example:
 

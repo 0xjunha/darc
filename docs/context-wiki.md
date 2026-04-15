@@ -12,7 +12,7 @@ Current MVP scope:
 - canonical merge into decision-trace entry markdown plus one digest report per successful run
 - durable run artifacts and logs for each digest run
 
-Current non-goals:
+Current gaps:
 
 - `darc wiki entry discard` and `darc wiki entry restore` are not implemented yet
 - `auth_profile` is recorded as run metadata only and does not constrain runtime credentials
@@ -112,7 +112,7 @@ The current MVP uses external CLIs already installed on the host machine.
 Current auth caveat:
 
 - Darc currently launches these CLIs with inherited host environment and ambient login state.
-- `auth_profile` is metadata only in this branch. It does not enforce profile selection or sandbox credentials.
+- `auth_profile` is metadata only today. It does not enforce profile selection or sandbox credentials.
 
 ## Run Artifacts
 
@@ -148,6 +148,9 @@ Currently, a `succeeded` run means:
 - `created_entry_ids`, `updated_entry_ids`, and `digest_id` were persisted into `run.toml`
 - `result.json` was written after canonical artifact merge completed
 
+A successful run may still produce zero decision-trace entries when the validated proposal finds no durable
+decisions worth preserving. In that case Darc still writes the digest report and terminal run artifacts.
+
 ## Proposal Rules
 
 The worker instructs the runtime to return exactly one JSON object matching Darc's schema.
@@ -168,5 +171,5 @@ Current validation rules include:
 
 - Context Wiki imperative workflows are experimental and may still change.
 - `darc query wiki ...` is the stable read-side contract; imperative `darc wiki ...` behavior is still MVP-stage.
-- Entry discard/restore commands remain placeholders.
+- Entry discard/restore commands are exposed in the CLI but are not implemented yet.
 - Read-side wiki queries do not expose internal artifact paths; use `darc query wiki run ... --json` for run/result detail and inspect the run directory directly only when you need raw logs.
