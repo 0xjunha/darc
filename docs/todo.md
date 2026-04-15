@@ -27,6 +27,16 @@
   - That rebuilds query context and reopens SQLite repeatedly for long sessions or multi-session digests.
   - Add a batch/session-scoped turn-detail query path in `darc-query` so one digest session can be loaded with one connection and one coherent query flow.
   - This is not a correctness blocker for production, but it should be addressed before higher-scale Context Wiki usage.
+- Revisit read access for Context Wiki digest extractor agents when proposing entry candidates.
+  - Consider whether extractors should be allowed to inspect project git history and commit messages while extracting candidate entries.
+  - Consider whether controlled `git` tool calls, `darc` CLI tool calls, or limited repo codebase inspection would improve candidate quality enough to justify the wider read surface.
+  - Prefer a deliberate policy decision here instead of gradually reintroducing ambient repo access through one-off exceptions.
+
+### Context Wiki evidence-gathering follow-ups
+- Revisit how much autonomy Context Wiki digest extractor agents should have when collecting evidence and context.
+  - Consider whether extractors should be free to use a broader set of tools to gather evidence, instead of relying only on the curated evidence bundle assembled by Darc.
+  - Decide when Darc-curated evidence is the right safety boundary and when agent-driven evidence collection would materially improve extraction quality.
+  - If broader tool use is allowed, define clear limits for provenance, reproducibility, and read-surface scope so extracted entries still remain auditable.
 
 ### Add historical checkout detection for deleted worktrees.
 - Persist enough evidence for live Codex/CC or git checkouts to recognize the same project after deletion, including observed path, resolved repo root, remote origin, and last-seen time.

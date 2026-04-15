@@ -146,7 +146,9 @@ fn build_result_artifact(
 /// Returns the durable proposal-source label for one runtime execution.
 fn runtime_proposal_source_name(runtime: &RuntimeExecution) -> String {
     match runtime.proposal_source {
-        ProposalOutputSource::Stdout => "stdout".to_owned(),
+        ProposalOutputSource::Stdout | ProposalOutputSource::StdoutJsonField(_) => {
+            "stdout".to_owned()
+        }
         ProposalOutputSource::File(_) => "file".to_owned(),
     }
 }

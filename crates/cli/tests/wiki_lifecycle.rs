@@ -704,10 +704,10 @@ fn wiki_digest_fails_on_invalid_claude_proposal() -> Result<()> {
             "unexpected=\"\"\n",
             "while [ \"$#\" -gt 0 ]; do\n",
             "  case \"$1\" in\n",
-            "    --model|--input-format|--output-format|--permission-mode|--tools)\n",
+            "    --model|--input-format|--output-format|--json-schema|--permission-mode|--tools)\n",
             "      shift 2\n",
             "      ;;\n",
-            "    --print|--no-session-persistence)\n",
+            "    --print|--bare|--disable-slash-commands|--no-session-persistence)\n",
             "      shift\n",
             "      ;;\n",
             "    *)\n",
@@ -721,30 +721,33 @@ fn wiki_digest_fails_on_invalid_claude_proposal() -> Result<()> {
             "run_id=$(printf '%s' \"$prompt\" | sed -n 's/^.*\"run_id\": \"\\(cwrun_[^\"]*\\)\".*$/\\1/p' | head -n 1)\n",
             "cat <<JSON\n",
             "{\n",
-            "  \"schema\": \"darc.wiki.digest.proposal.v1\",\n",
-            "  \"project_id\": \"repo-abc123\",\n",
-            "  \"run_id\": \"$run_id\",\n",
-            "  \"entries\": [\n",
-            "    {\n",
-            "      \"operation\": \"create\",\n",
-            "      \"entry_type\": \"decision_trace\",\n",
-            "      \"title\": \"Bad domain\",\n",
-            "      \"category\": \"product\",\n",
-            "      \"domains\": [\"not-allowed\"],\n",
-            "      \"decision_date\": \"2026-04-13\",\n",
-            "      \"context\": \"Context\",\n",
-            "      \"options\": [{\"status\": \"chosen\", \"description\": \"Chosen\"}],\n",
-            "      \"final_decision\": \"Decision\",\n",
-            "      \"rationale\": \"Rationale\",\n",
-            "      \"consequences\": \"Consequences\",\n",
-            "      \"evidence\": [\"claude:session-2#0\"]\n",
+            "  \"result\": \"done\",\n",
+            "  \"structured_output\": {\n",
+            "    \"schema\": \"darc.wiki.digest.proposal.v1\",\n",
+            "    \"project_id\": \"repo-abc123\",\n",
+            "    \"run_id\": \"$run_id\",\n",
+            "    \"entries\": [\n",
+            "      {\n",
+            "        \"operation\": \"create\",\n",
+            "        \"entry_type\": \"decision_trace\",\n",
+            "        \"title\": \"Bad domain\",\n",
+            "        \"category\": \"product\",\n",
+            "        \"domains\": [\"not-allowed\"],\n",
+            "        \"decision_date\": \"2026-04-13\",\n",
+            "        \"context\": \"Context\",\n",
+            "        \"options\": [{\"status\": \"chosen\", \"description\": \"Chosen\"}],\n",
+            "        \"final_decision\": \"Decision\",\n",
+            "        \"rationale\": \"Rationale\",\n",
+            "        \"consequences\": \"Consequences\",\n",
+            "        \"evidence\": [\"claude:session-2#0\"]\n",
+            "      }\n",
+            "    ],\n",
+            "    \"run_summary\": {\n",
+            "      \"title\": \"Invalid summary\",\n",
+            "      \"summary\": \"Should fail domain validation.\",\n",
+            "      \"themes\": [\"validation\"],\n",
+            "      \"extracted_decision_count\": 1\n",
             "    }\n",
-            "  ],\n",
-            "  \"run_summary\": {\n",
-            "    \"title\": \"Invalid summary\",\n",
-            "    \"summary\": \"Should fail domain validation.\",\n",
-            "    \"themes\": [\"validation\"],\n",
-            "    \"extracted_decision_count\": 1\n",
             "  }\n",
             "}\n",
             "JSON\n"
@@ -770,7 +773,10 @@ fn wiki_digest_fails_on_invalid_claude_proposal() -> Result<()> {
             "claude-sonnet-4-6",
             "--json",
         ],
-        [("DARC_WIKI_CLAUDE_BIN", claude.as_os_str())],
+        [
+            ("ANTHROPIC_API_KEY", std::ffi::OsStr::new("test-key")),
+            ("DARC_WIKI_CLAUDE_BIN", claude.as_os_str()),
+        ],
     )?;
     assert!(start_output.status.success());
     let start_value = parse_json(&start_output.stdout, "stdout")?;
@@ -793,6 +799,9 @@ fn wiki_digest_fails_on_invalid_claude_proposal() -> Result<()> {
         .join(&run_id);
     let run_toml = fs::read_to_string(run_dir.join("run.toml"))?;
     assert!(run_toml.contains("error_code = \"proposal_validation_failed\""));
+    let proposal = fs::read_to_string(run_dir.join("proposal.json"))?;
+    assert!(!proposal.contains("\"structured_output\""));
+    assert!(proposal.contains("\"domains\":[\"not-allowed\"]"));
     let result = fs::read_to_string(run_dir.join("result.json"))?;
     assert!(result.contains("\"status\": \"failed\""));
     assert!(result.contains("\"valid\": false"));
