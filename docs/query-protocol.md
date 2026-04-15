@@ -101,7 +101,7 @@ Clients should branch on `schema`, not on `darc_version`.
 `darc query wiki ...` reads canonical Context Wiki artifacts stored under `~/.darc/context-wiki/`.
 
 This document covers the read-side query contract only. The experimental imperative digest workflow lives under
-`darc wiki digest ...`; see [Context Wiki](context-wiki.md).
+`darc wiki ...`; see [Context Wiki](context-wiki.md).
 
 Today:
 

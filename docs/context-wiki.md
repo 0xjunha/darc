@@ -7,6 +7,7 @@ Current MVP scope:
 
 - read-side wiki queries via `darc query wiki ... --json`
 - imperative digest lifecycle via `darc wiki digest start` and `darc wiki digest cancel`
+- imperative entry lifecycle via `darc wiki entry discard` and `darc wiki entry restore`
 - external CLI runtimes for `codex` and `claude`
 - structured `decision_trace` proposal validation
 - canonical merge into decision-trace entry markdown plus one digest report per successful run
@@ -14,7 +15,6 @@ Current MVP scope:
 
 Current gaps:
 
-- `darc wiki entry discard` and `darc wiki entry restore` are not implemented yet
 - `auth_profile` is recorded as run metadata only and does not constrain runtime credentials
 
 ## Read Side
@@ -99,6 +99,33 @@ darc wiki digest cancel \
 
 The cancel command returns the `darc.wiki.digest.cancel.v1` envelope when `--json` is set.
 
+## Managing Entry Status
+
+Discard one canonical entry without deleting its Markdown artifact:
+
+```bash
+darc wiki entry discard \
+  --root ~/.darc \
+  --project-id repo-abc123 \
+  --entry-id cw_0123456789abcdef \
+  --json
+```
+
+Restore one discarded entry back to `active`:
+
+```bash
+darc wiki entry restore \
+  --root ~/.darc \
+  --project-id repo-abc123 \
+  --entry-id cw_0123456789abcdef \
+  --json
+```
+
+These commands mutate the canonical entry frontmatter in place, preserve the Markdown body, and update the
+entry `status` plus `updated_at` fields. Restore rejects the request when another active entry already occupies
+the same canonical identity, which prevents duplicate active decision traces after a later digest recreated the
+discarded idea as a new entry.
+
 ## Runtime Requirements
 
 The current MVP uses external CLIs already installed on the host machine.
@@ -171,5 +198,4 @@ Current validation rules include:
 
 - Context Wiki imperative workflows are experimental and may still change.
 - `darc query wiki ...` is the stable read-side contract; imperative `darc wiki ...` behavior is still MVP-stage.
-- Entry discard/restore commands are exposed in the CLI but are not implemented yet.
 - Read-side wiki queries do not expose internal artifact paths; use `darc query wiki run ... --json` for run/result detail and inspect the run directory directly only when you need raw logs.
