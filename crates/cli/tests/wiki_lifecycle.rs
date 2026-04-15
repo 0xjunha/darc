@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -154,16 +155,40 @@ fn wait_for_run_visibility(root: &Path, run_id: &str) -> Result<Value> {
 
 /// Polls the wiki runs query until one run reaches the requested status.
 fn wait_for_run_status(root: &Path, run_id: &str, expected_status: &str) -> Result<Value> {
-    let deadline = Instant::now() + Duration::from_secs(6);
+    wait_for_run_status_with_timeout(root, run_id, expected_status, Duration::from_secs(6))
+}
+
+/// Polls the wiki runs query until one run reaches the requested status within the timeout.
+fn wait_for_run_status_with_timeout(
+    root: &Path,
+    run_id: &str,
+    expected_status: &str,
+    timeout: Duration,
+) -> Result<Value> {
+    let deadline = Instant::now() + timeout;
     loop {
-        let value = wait_for_run_visibility(root, run_id)?;
-        let reached = value["data"]["runs"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|run| run["run_id"] == run_id && run["status"] == expected_status);
-        if reached {
-            return Ok(value);
+        let output = run_darc([
+            "query",
+            "wiki",
+            "runs",
+            "--root",
+            root.to_string_lossy().as_ref(),
+            "--project-id",
+            "repo-abc123",
+            "--json",
+        ])?;
+        if output.status.success() {
+            let value = parse_json(&output.stdout, "stdout")?;
+            let reached = value["data"]["runs"]
+                .as_array()
+                .map(|runs| {
+                    runs.iter()
+                        .any(|run| run["run_id"] == run_id && run["status"] == expected_status)
+                })
+                .unwrap_or(false);
+            if reached {
+                return Ok(value);
+            }
         }
         if Instant::now() >= deadline {
             bail!("timed out waiting for run `{run_id}` to reach status `{expected_status}`");
@@ -986,6 +1011,299 @@ fn wiki_digest_reuses_existing_canonical_entry_on_repeated_runs() -> Result<()> 
             .len(),
         2
     );
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn wiki_digest_serializes_canonical_merge_for_overlapping_runs() -> Result<()> {
+    let root = create_wiki_fixture_root("cli-wiki-runtime-concurrent")?;
+    write_registry_domains(&root, &["query-protocol"])?;
+    let barrier_dir = root.join("fake-codex-overlap-barrier");
+    let codex = write_fake_cli(
+        &root,
+        "fake-codex-overlap",
+        &format!(
+            concat!(
+                "output=\"\"\n",
+                "unexpected=\"\"\n",
+                "while [ \"$#\" -gt 0 ]; do\n",
+                "  case \"$1\" in\n",
+                "    -o|--output-last-message)\n",
+                "      output=\"$2\"\n",
+                "      shift 2\n",
+                "      ;;\n",
+                "    --output-schema|--model|-m|--cd|-C|--sandbox)\n",
+                "      shift 2\n",
+                "      ;;\n",
+                "    --skip-git-repo-check|--ephemeral|exec)\n",
+                "      shift\n",
+                "      ;;\n",
+                "    *)\n",
+                "      unexpected=\"$unexpected $1\"\n",
+                "      shift\n",
+                "      ;;\n",
+                "  esac\n",
+                "done\n",
+                "prompt=$(cat)\n",
+                "[ -z \"$unexpected\" ] || {{ echo \"unexpected args:$unexpected\" >&2; exit 64; }}\n",
+                "run_id=$(basename \"$PWD\")\n",
+                "barrier_dir=\"{barrier_dir}\"\n",
+                "mkdir -p \"$barrier_dir\"\n",
+                "touch \"$barrier_dir/$run_id.ready\"\n",
+                "attempts=0\n",
+                "while true; do\n",
+                "  ready_count=$(find \"$barrier_dir\" -name '*.ready' | wc -l | tr -d '[:space:]')\n",
+                "  [ \"$ready_count\" -ge 2 ] && break\n",
+                "  attempts=$((attempts + 1))\n",
+                "  [ \"$attempts\" -lt 6 ] || {{ echo \"timed out waiting for overlapping runtime\" >&2; exit 70; }}\n",
+                "  sleep 1\n",
+                "done\n",
+                "sleep 1\n",
+                "printf 'codex overlap stdout for %s\\n' \"$run_id\"\n",
+                "printf 'codex overlap stderr for %s\\n' \"$run_id\" >&2\n",
+                "cat > \"$output\" <<JSON\n",
+                "{{\n",
+                "  \"schema\": \"darc.wiki.digest.proposal.v1\",\n",
+                "  \"project_id\": \"repo-abc123\",\n",
+                "  \"run_id\": \"$run_id\",\n",
+                "  \"entries\": [\n",
+                "    {{\n",
+                "      \"operation\": \"create\",\n",
+                "      \"entry_type\": \"decision_trace\",\n",
+                "      \"title\": \"Keep the query protocol additive\",\n",
+                "      \"category\": \"product\",\n",
+                "      \"domains\": [\"query-protocol\"],\n",
+                "      \"decision_date\": \"2026-04-13\",\n",
+                "      \"context\": \"The selected session discussed stable read-side contracts.\",\n",
+                "      \"options\": [\n",
+                "        {{\"status\": \"chosen\", \"description\": \"Keep new query fields additive.\"}},\n",
+                "        {{\"status\": \"rejected\", \"description\": \"Ship breaking protocol changes.\"}}\n",
+                "      ],\n",
+                "      \"final_decision\": \"Keep the query protocol additive.\",\n",
+                "      \"rationale\": \"Desktop already depends on the current v1 query shape.\",\n",
+                "      \"consequences\": \"Future changes need additive migration paths.\",\n",
+                "      \"evidence\": [\"codex:session-1#0\"]\n",
+                "    }}\n",
+                "  ],\n",
+                "  \"run_summary\": {{\n",
+                "    \"title\": \"Validated additive query decision\",\n",
+                "    \"summary\": \"The session contained one durable product decision.\",\n",
+                "    \"themes\": [\"query stability\"],\n",
+                "    \"extracted_decision_count\": 1\n",
+                "  }}\n",
+                "}}\n",
+                "JSON\n"
+            ),
+            barrier_dir = barrier_dir.to_string_lossy(),
+        ),
+    )?;
+
+    let mut run_ids = Vec::new();
+    for _ in 0..2 {
+        let start_output = run_darc_with_env(
+            [
+                "wiki",
+                "digest",
+                "start",
+                "--root",
+                root.to_string_lossy().as_ref(),
+                "--project-id",
+                "repo-abc123",
+                "--session-ref",
+                "codex:session-1",
+                "--agent",
+                "codex",
+                "--runtime",
+                "external-cli",
+                "--model",
+                "gpt-5.4",
+                "--target-domain",
+                "query-protocol",
+                "--json",
+            ],
+            [("DARC_WIKI_CODEX_BIN", codex.as_os_str())],
+        )?;
+        assert!(start_output.status.success());
+        let start_value = parse_json(&start_output.stdout, "stdout")?;
+        let run_id = start_value["data"]["run_id"]
+            .as_str()
+            .context("missing run id")?
+            .to_owned();
+        run_ids.push(run_id);
+    }
+
+    let json_string_array = |value: &Value, field: &str| -> Result<Vec<String>> {
+        value[field]
+            .as_array()
+            .with_context(|| format!("{field} should be an array"))?
+            .iter()
+            .map(|item| {
+                item.as_str()
+                    .map(str::to_owned)
+                    .with_context(|| format!("{field} should contain strings"))
+            })
+            .collect()
+    };
+    let toml_string_array = |value: &toml::Value, field: &str| -> Result<Vec<String>> {
+        value[field]
+            .as_array()
+            .with_context(|| format!("run.toml {field} should be an array"))?
+            .iter()
+            .map(|item| {
+                item.as_str()
+                    .map(str::to_owned)
+                    .with_context(|| format!("run.toml {field} should contain strings"))
+            })
+            .collect()
+    };
+
+    let _ =
+        wait_for_run_status_with_timeout(&root, &run_ids[0], "succeeded", Duration::from_secs(10))?;
+    let _ =
+        wait_for_run_status_with_timeout(&root, &run_ids[1], "succeeded", Duration::from_secs(10))?;
+
+    let entries_output = run_darc([
+        "query",
+        "wiki",
+        "entries",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--json",
+    ])?;
+    assert!(entries_output.status.success());
+    let entries_value = parse_json(&entries_output.stdout, "stdout")?;
+    let entries = entries_value["data"]["entries"]
+        .as_array()
+        .context("entries query should return an array")?;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["display_id"], "DT-1");
+    let entry_id = entries[0]["entry_id"]
+        .as_str()
+        .context("entry id should be present")?
+        .to_owned();
+
+    let digests_output = run_darc([
+        "query",
+        "wiki",
+        "digests",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--json",
+    ])?;
+    assert!(digests_output.status.success());
+    let digests_value = parse_json(&digests_output.stdout, "stdout")?;
+    let digests = digests_value["data"]["digests"]
+        .as_array()
+        .context("digests query should return an array")?;
+    assert_eq!(digests.len(), 2);
+    let digest_ids = digests
+        .iter()
+        .map(|digest| {
+            digest["digest_id"]
+                .as_str()
+                .map(str::to_owned)
+                .context("digest id should be present")
+        })
+        .collect::<Result<BTreeSet<_>>>()?;
+    assert_eq!(digest_ids.len(), 2);
+    let digest_run_ids = digests
+        .iter()
+        .map(|digest| {
+            assert_eq!(digest["extracted_decision_count"], 1);
+            digest["run_id"]
+                .as_str()
+                .map(str::to_owned)
+                .context("digest run id should be present")
+        })
+        .collect::<Result<BTreeSet<_>>>()?;
+    assert_eq!(
+        digest_run_ids,
+        run_ids.iter().cloned().collect::<BTreeSet<_>>()
+    );
+
+    let mut created_runs = 0;
+    let mut updated_runs = 0;
+    let mut run_digest_ids = BTreeSet::new();
+    for run_id in &run_ids {
+        let run_output = run_darc([
+            "query",
+            "wiki",
+            "run",
+            "--root",
+            root.to_string_lossy().as_ref(),
+            "--project-id",
+            "repo-abc123",
+            "--run-id",
+            run_id,
+            "--json",
+        ])?;
+        assert!(run_output.status.success());
+        let run_value = parse_json(&run_output.stdout, "stdout")?;
+        let run = &run_value["data"]["run"];
+        assert_eq!(run["run_id"], run_id.as_str());
+        assert_eq!(run["status"], "succeeded");
+        assert_eq!(
+            run["selected_sessions"],
+            Value::Array(vec![Value::String("codex:session-1".to_owned())])
+        );
+        assert_eq!(
+            run["target_domains"],
+            Value::Array(vec![Value::String("query-protocol".to_owned())])
+        );
+        assert_eq!(run["result"]["status"], "succeeded");
+        assert_eq!(run["result"]["validation"]["valid"], true);
+        assert_eq!(run["result"]["runtime"]["exit_code"], 0);
+        assert_eq!(run["result"]["runtime"]["proposal_captured"], true);
+        let digest_id = run["digest_id"]
+            .as_str()
+            .context("run digest id should be present")?
+            .to_owned();
+        assert!(digest_ids.contains(&digest_id));
+        run_digest_ids.insert(digest_id.clone());
+
+        let created_entry_ids = json_string_array(run, "created_entry_ids")?;
+        let updated_entry_ids = json_string_array(run, "updated_entry_ids")?;
+        match (created_entry_ids.as_slice(), updated_entry_ids.as_slice()) {
+            ([created], []) if created == &entry_id => created_runs += 1,
+            ([], [updated]) if updated == &entry_id => updated_runs += 1,
+            _ => bail!("run `{run_id}` should either create or update the shared canonical entry"),
+        }
+
+        let run_dir = root
+            .join("context-wiki/projects/repo-abc123/runs")
+            .join(run_id);
+        let run_toml: toml::Value = toml::from_str(&fs::read_to_string(run_dir.join("run.toml"))?)
+            .context("failed to parse run.toml")?;
+        assert_eq!(run_toml["status"].as_str(), Some("succeeded"));
+        assert_eq!(run_toml["digest_id"].as_str(), Some(digest_id.as_str()));
+        assert_eq!(run_toml["result_path"].as_str(), Some("result.json"));
+        assert_eq!(
+            toml_string_array(&run_toml, "created_entry_ids")?,
+            created_entry_ids
+        );
+        assert_eq!(
+            toml_string_array(&run_toml, "updated_entry_ids")?,
+            updated_entry_ids
+        );
+
+        let result_value = parse_json(&fs::read(run_dir.join("result.json"))?, "result.json")?;
+        assert_eq!(result_value["project_id"], "repo-abc123");
+        assert_eq!(result_value["run_id"], run_id.as_str());
+        assert_eq!(result_value["status"], "succeeded");
+        assert_eq!(result_value["validation"]["valid"], true);
+        assert_eq!(result_value["runtime"]["exit_code"], 0);
+        assert_eq!(result_value["runtime"]["proposal_captured"], true);
+    }
+
+    assert_eq!(created_runs, 1);
+    assert_eq!(updated_runs, 1);
+    assert_eq!(run_digest_ids.len(), 2);
 
     remove_root(&root)?;
     Ok(())
