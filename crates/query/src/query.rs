@@ -18,7 +18,7 @@ pub use search::query_search_turns;
 use serde::Serialize;
 #[cfg(test)]
 pub(crate) use turns::build_turn_insights;
-pub use turns::{query_turn_detail, query_turn_insights};
+pub use turns::{query_session_turn_details, query_turn_detail, query_turn_insights};
 
 #[cfg(test)]
 /// Prepares every read-side SQL statement against one initialized SQLite schema.
