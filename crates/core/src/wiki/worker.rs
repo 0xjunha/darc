@@ -364,8 +364,6 @@ impl<'a> DigestWorker<'a> {
         proposal_schema_path: &Path,
     ) -> Result<Option<RuntimeCommand>> {
         let runtime_request = match build_runtime_request(
-            &self.root,
-            self.project_id,
             &self.layout,
             self.run_id,
             state,

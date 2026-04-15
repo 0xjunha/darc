@@ -21,12 +21,9 @@ use super::{
     models::{RunEvent, RuntimeExecution},
     state::{cancel_requested, update_run_state},
 };
-use crate::{config::ProjectConfig, project::registered_projects};
 
 /// Builds one runtime request from the persisted run state and prepared prompt.
 pub(super) fn build_runtime_request(
-    root: &Path,
-    project_id: &str,
     layout: &ProjectLayout,
     run_id: &RunId,
     state: &RunState,
@@ -44,7 +41,7 @@ pub(super) fn build_runtime_request(
         auth_profile: state.auth_profile.clone(),
         prompt: prompt.prompt.clone(),
         schema_json: prompt.schema_json.clone(),
-        workdir: resolve_runtime_workdir(root, project_id, layout, run_id)?,
+        workdir: layout.run_dir(run_id),
         schema_path: schema_path.to_path_buf(),
         proposal_path: layout.run_proposal_path(run_id),
     })
@@ -168,30 +165,6 @@ fn capture_stdout_json_field(stdout: &[u8], field_name: &str) -> Option<Vec<u8>>
     let value: Value = serde_json::from_slice(stdout).ok()?;
     let structured_output = value.get(field_name)?;
     serde_json::to_vec(structured_output).ok()
-}
-
-/// Resolves the runtime working directory from project config with a safe run-dir fallback.
-fn resolve_runtime_workdir(
-    root: &Path,
-    project_id: &str,
-    layout: &ProjectLayout,
-    run_id: &RunId,
-) -> Result<PathBuf> {
-    let project = resolve_registered_project(root, project_id)?;
-    let candidate = project.local_path;
-    if candidate.exists() {
-        Ok(candidate)
-    } else {
-        Ok(layout.run_dir(run_id))
-    }
-}
-
-/// Resolves one registered project config from the shared Darc root.
-fn resolve_registered_project(root: &Path, project_id: &str) -> Result<ProjectConfig> {
-    registered_projects(root)?
-        .into_iter()
-        .find(|project| project.id == project_id)
-        .with_context(|| format!("project id `{project_id}` was not found in the shared config"))
 }
 
 /// Writes one runtime prompt payload into the child stdin stream.

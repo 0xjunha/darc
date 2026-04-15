@@ -24,6 +24,7 @@ pub fn build_claude_external_cli_command(request: &RuntimeRequest) -> Result<Run
         "plan".to_owned(),
         "--tools".to_owned(),
         String::new(),
+        "--disable-slash-commands".to_owned(),
         "--no-session-persistence".to_owned(),
     ];
     Ok(RuntimeCommand {

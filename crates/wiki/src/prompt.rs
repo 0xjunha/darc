@@ -29,6 +29,9 @@ pub fn build_digest_runtime_prompt(
                 "- Use only domains from `registry.domains`.\n",
                 "- Treat `target_domains` as prioritization hints, not as new allowed domains.\n",
                 "- Evidence references must use `<provider>:<session-id>#<turn-ordinal>` and only reference selected sessions.\n",
+                "- Treat the supplied context bundle as the only source of truth for this run.\n",
+                "- Do not rely on repository files, local config, previous conversations, or outside knowledge.\n",
+                "- If the bundle does not support a fact, omit it instead of inferring it.\n",
                 "- It is valid to return zero entries when the context does not contain durable decisions.\n",
                 "- Always include `run_summary`, even when `entries` is empty.\n",
                 "- Set `run_summary.extracted_decision_count` to the number of entries you return.\n\n",
@@ -40,5 +43,18 @@ pub fn build_digest_runtime_prompt(
             context_json = context_json,
         ),
         schema_json: DIGEST_PROPOSAL_OUTPUT_SCHEMA_JSON.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_digest_runtime_prompt;
+
+    #[test]
+    fn build_digest_runtime_prompt_requires_bundle_only_reasoning() {
+        let prompt = build_digest_runtime_prompt("{}", "repo-123", "cwrun_123");
+        assert!(prompt.prompt.contains("only source of truth"));
+        assert!(prompt.prompt.contains("outside knowledge"));
+        assert!(prompt.prompt.contains("omit it instead of inferring it"));
     }
 }

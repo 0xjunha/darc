@@ -9,7 +9,10 @@ use std::{
 use anyhow::Result;
 use darc_paths::current_utc_timestamp_at;
 use darc_test_utils::unique_test_dir;
-use darc_wiki::{RunId, RunPhase, RunState, RunStatus, load_run_state, store_run_state};
+use darc_wiki::{
+    RunId, RunPhase, RunState, RunStatus, build_digest_runtime_prompt, load_run_state,
+    store_run_state,
+};
 
 use super::*;
 use crate::{
@@ -269,6 +272,71 @@ fn stale_running_run_with_live_pid_stays_running() -> Result<()> {
 
     child.kill()?;
     let _ = child.wait();
+    fs::remove_dir_all(&root)?;
+    Ok(())
+}
+
+#[test]
+fn runtime_request_uses_run_directory_as_workdir() -> Result<()> {
+    let root = unique_test_dir("core-wiki-runtime-workdir");
+    let project_root = root.join("repo");
+    let project_id = "repo-123";
+    fs::create_dir_all(&project_root)?;
+    write_config(
+        &root,
+        &SharedConfig::new(
+            root.clone(),
+            vec![build_project(&root, project_id, project_root)],
+            SourcesConfig::default(),
+        ),
+    )?;
+
+    let layout = ensure_project_wiki(Some(root.clone()), project_id)?;
+    let run_id = RunId::new("cwrun_01runtime")?;
+    let state = RunState {
+        schema_version: 1,
+        run_id: run_id.clone(),
+        project_id: project_id.to_owned(),
+        status: RunStatus::Queued,
+        phase: RunPhase::WaitingForAgent,
+        created_at: "2026-04-13T10:00:00Z".to_owned(),
+        started_at: None,
+        updated_at: "2026-04-13T10:00:00Z".to_owned(),
+        finished_at: None,
+        heartbeat_at: None,
+        requested_by: Some("desktop".to_owned()),
+        request_source: Some("darc-desktop/0.1.0".to_owned()),
+        attempt: 1,
+        cancel_requested: false,
+        pid: None,
+        agent_id: Some("codex".to_owned()),
+        runtime: Some("external_cli".to_owned()),
+        model: Some("gpt-5.4".to_owned()),
+        auth_profile: None,
+        selected_sessions: vec!["codex:session-1".to_owned()],
+        target_categories: Vec::new(),
+        target_domains: Vec::new(),
+        progress_percent: None,
+        headline: Some("Queued".to_owned()),
+        proposal_path: None,
+        result_path: None,
+        events_path: None,
+        stdout_log_path: None,
+        stderr_log_path: None,
+        created_entry_ids: Vec::new(),
+        updated_entry_ids: Vec::new(),
+        digest_id: None,
+        error_code: None,
+        error_message: None,
+    };
+    let prompt = build_digest_runtime_prompt("{}", project_id, run_id.as_str());
+    let schema_path = layout.run_dir(&run_id).join("proposal.schema.json");
+
+    let request =
+        super::runtime::build_runtime_request(&layout, &run_id, &state, &prompt, &schema_path)?;
+
+    assert_eq!(request.workdir, layout.run_dir(&run_id));
+
     fs::remove_dir_all(&root)?;
     Ok(())
 }
