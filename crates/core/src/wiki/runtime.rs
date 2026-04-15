@@ -13,6 +13,7 @@ use darc_paths::current_utc_timestamp;
 use darc_wiki::{
     DigestRuntimePrompt, ProjectLayout, RunId, RunPhase, RunState, RunStatus, load_run_state,
 };
+use serde_json::Value;
 
 use super::{
     RUN_HEARTBEAT_INTERVAL, RUN_POLL_INTERVAL, RUNTIME_CANCEL_GRACE_PERIOD,
@@ -144,6 +145,9 @@ pub(super) fn execute_runtime_command(
         .map_err(|_| anyhow::anyhow!("runtime stderr capture thread panicked"))??;
     let proposal_bytes = match &command.proposal_output {
         ProposalOutputSource::Stdout => Some(stdout.clone()),
+        ProposalOutputSource::StdoutJsonField(field_name) => {
+            capture_stdout_json_field(&stdout, field_name).or_else(|| Some(stdout.clone()))
+        }
         ProposalOutputSource::File(path) if path.exists() => {
             Some(fs::read(path).with_context(|| format!("failed to read {}", path.display()))?)
         }
@@ -157,6 +161,13 @@ pub(super) fn execute_runtime_command(
         stderr,
         proposal_bytes,
     })
+}
+
+/// Extracts one JSON field from stdout when the runtime wraps structured output with metadata.
+fn capture_stdout_json_field(stdout: &[u8], field_name: &str) -> Option<Vec<u8>> {
+    let value: Value = serde_json::from_slice(stdout).ok()?;
+    let structured_output = value.get(field_name)?;
+    serde_json::to_vec(structured_output).ok()
 }
 
 /// Resolves the runtime working directory from project config with a safe run-dir fallback.
@@ -246,5 +257,27 @@ fn terminate_runtime_process(child: &mut Child, display_name: &str) -> Result<()
             Ok(())
         }
         Err(error) => Err(error).with_context(|| format!("failed to kill {display_name}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::capture_stdout_json_field;
+
+    #[test]
+    fn capture_stdout_json_field_extracts_structured_output() {
+        let stdout = br#"{"result":"done","structured_output":{"schema":"demo","entries":[]}}"#;
+        let proposal = capture_stdout_json_field(stdout, "structured_output")
+            .expect("structured output should be captured");
+        let proposal: serde_json::Value = serde_json::from_slice(&proposal).unwrap();
+        assert_eq!(proposal, json!({"schema": "demo", "entries": []}));
+    }
+
+    #[test]
+    fn capture_stdout_json_field_returns_none_for_missing_field() {
+        let stdout = br#"{"result":"done"}"#;
+        assert!(capture_stdout_json_field(stdout, "structured_output").is_none());
     }
 }

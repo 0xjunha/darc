@@ -2,7 +2,6 @@ mod claude;
 mod codex;
 mod errors;
 mod external_cli;
-mod prompt;
 mod runtime;
 
 pub use errors::{AgentError, Result};

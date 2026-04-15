@@ -349,10 +349,7 @@ impl<'a> DigestWorker<'a> {
             });
         };
 
-        if matches!(
-            runtime_execution.proposal_source,
-            darc_agent::ProposalOutputSource::Stdout
-        ) {
+        if runtime_execution.proposal_source.captures_stdout() {
             write_bytes_artifact(&self.layout.run_proposal_path(self.run_id), proposal_bytes)?;
         }
 

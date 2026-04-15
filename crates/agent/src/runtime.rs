@@ -73,7 +73,15 @@ impl RuntimeKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProposalOutputSource {
     Stdout,
+    StdoutJsonField(String),
     File(PathBuf),
+}
+
+impl ProposalOutputSource {
+    /// Returns whether the runtime proposal artifact is derived from stdout capture.
+    pub fn captures_stdout(&self) -> bool {
+        matches!(self, Self::Stdout | Self::StdoutJsonField(_))
+    }
 }
 
 /// Stores the digest runtime invocation inputs required across adapters.

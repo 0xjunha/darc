@@ -17,7 +17,7 @@ pub fn build_digest_runtime_prompt(
         prompt: format!(
             concat!(
                 "You are generating a Context Wiki digest proposal for Darc.\n\n",
-                "Return exactly one JSON object that matches the provided output schema.\n",
+                "Return exactly one JSON object that matches the runtime-provided output schema.\n",
                 "Do not return Markdown, prose, code fences, or commentary.\n\n",
                 "Rules:\n",
                 "- Set `schema` to `{schema}`.\n",
