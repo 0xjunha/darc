@@ -9,8 +9,7 @@ use darc_paths::current_utc_timestamp;
 use darc_wiki::{
     DigestProposal, DigestRuntimePrompt, MergeDigestArtifacts, ProjectLayout, ProjectRegistry,
     ProposalValidationOptions, RunId, RunPhase, RunState, build_digest_runtime_prompt,
-    load_registry, load_run_state, merge_digest_proposal, store_run_state,
-    validate_digest_proposal,
+    load_registry, load_run_state, merge_digest_proposal, validate_digest_proposal,
 };
 
 use super::{
@@ -28,7 +27,7 @@ use super::{
     state::{
         build_succeeded_run_state, cancel_requested, finalize_run_canceled, finalize_run_failed,
         is_finished_status, refresh_worker_heartbeat, transition_worker_state,
-        wait_for_worker_registration,
+        wait_for_worker_registration, with_locked_run_state,
     },
 };
 use crate::{default_root_path, query::query_sessions};
@@ -544,23 +543,26 @@ impl<'a> DigestWorker<'a> {
             Some(100),
             "Writing final result artifacts",
         )?;
-        let final_state = build_succeeded_run_state(
-            load_run_state(&self.layout, self.run_id)?,
-            RunPhase::WritingArtifacts,
-            "Wrote canonical wiki artifacts",
-            &merge.created_entry_ids,
-            &merge.updated_entry_ids,
-            &merge.digest_id,
-        );
-        write_terminal_result(
-            &self.layout,
-            self.run_id,
-            &final_state,
-            Some(runtime_execution),
-            validated.artifact.clone(),
-            None,
-        )?;
-        store_run_state(&self.layout, &final_state)?;
+        with_locked_run_state(&self.layout, self.run_id, |state| {
+            let final_state = build_succeeded_run_state(
+                state.clone(),
+                RunPhase::WritingArtifacts,
+                "Wrote canonical wiki artifacts",
+                &merge.created_entry_ids,
+                &merge.updated_entry_ids,
+                &merge.digest_id,
+            );
+            write_terminal_result(
+                &self.layout,
+                self.run_id,
+                &final_state,
+                Some(runtime_execution),
+                validated.artifact.clone(),
+                None,
+            )?;
+            *state = final_state.clone();
+            Ok(final_state)
+        })?;
         append_run_event(
             &self.layout,
             self.run_id,
