@@ -9,7 +9,8 @@ use std::{
 use anyhow::{Context, Result, bail};
 use darc_paths::{current_utc_timestamp, parse_utc_timestamp};
 use darc_wiki::{
-    ProjectLayout, RunId, RunPhase, RunState, RunStatus, list_runs, load_run_state, store_run_state,
+    DigestId, EntryId, ProjectLayout, RunId, RunPhase, RunState, RunStatus, list_runs,
+    load_run_state, store_run_state,
 };
 
 use super::{
@@ -172,6 +173,22 @@ where
     Ok(state)
 }
 
+/// Runs one locked read-modify-write cycle that may perform side effects before storing state.
+pub(super) fn with_locked_run_state<F, T>(
+    layout: &ProjectLayout,
+    run_id: &RunId,
+    mut operation: F,
+) -> Result<T>
+where
+    F: FnMut(&mut RunState) -> Result<T>,
+{
+    let _lock = lock_run_state(layout, run_id)?;
+    let mut state = load_run_state(layout, run_id)?;
+    let output = operation(&mut state)?;
+    store_run_state(layout, &state)?;
+    Ok(output)
+}
+
 /// Locks one run-state mutation path so concurrent writers cannot interleave updates.
 fn lock_run_state(layout: &ProjectLayout, run_id: &RunId) -> Result<std::fs::File> {
     let path = layout.run_state_lock_path(run_id);
@@ -230,25 +247,29 @@ pub(super) fn finalize_run_canceled(
     })
 }
 
-/// Finalizes one digest run as succeeded after proposal validation completes.
-pub(super) fn finalize_run_succeeded(
-    layout: &ProjectLayout,
-    run_id: &RunId,
+/// Builds one succeeded digest run state after canonical artifact writing completes.
+pub(super) fn build_succeeded_run_state(
+    mut state: RunState,
     phase: RunPhase,
     headline: &str,
-) -> Result<RunState> {
-    update_run_state(layout, run_id, |state| {
-        let now = current_utc_timestamp();
-        state.status = RunStatus::Succeeded;
-        state.phase = phase;
-        state.updated_at = now.clone();
-        state.finished_at = Some(now.clone());
-        state.heartbeat_at = Some(now.clone());
-        state.progress_percent = Some(100);
-        state.headline = Some(headline.to_owned());
-        state.error_code = None;
-        state.error_message = None;
-    })
+    created_entry_ids: &[EntryId],
+    updated_entry_ids: &[EntryId],
+    digest_id: &DigestId,
+) -> RunState {
+    let now = current_utc_timestamp();
+    state.status = RunStatus::Succeeded;
+    state.phase = phase;
+    state.updated_at = now.clone();
+    state.finished_at = Some(now.clone());
+    state.heartbeat_at = Some(now);
+    state.progress_percent = Some(100);
+    state.headline = Some(headline.to_owned());
+    state.created_entry_ids = created_entry_ids.iter().map(ToString::to_string).collect();
+    state.updated_entry_ids = updated_entry_ids.iter().map(ToString::to_string).collect();
+    state.digest_id = Some(digest_id.to_string());
+    state.error_code = None;
+    state.error_message = None;
+    state
 }
 
 /// Waits until the parent process persists the worker registration fields after spawning the child.
@@ -360,4 +381,102 @@ fn process_exists(pid: u32) -> bool {
 fn process_exists(pid: u32) -> bool {
     let _ = pid;
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, sync::mpsc, thread, time::Duration};
+
+    use darc_test_utils::unique_test_dir;
+    use darc_wiki::ContextWikiLayout;
+
+    use super::*;
+
+    /// Verifies that the locked success path cannot be overwritten by a later no-op updater.
+    #[test]
+    fn locked_run_state_keeps_succeeded_state_visible() -> Result<()> {
+        let root = unique_test_dir("wiki-state-lock");
+        let layout = ContextWikiLayout::new(&root).project_layout("repo-123")?;
+        layout.ensure()?;
+
+        let run_id = RunId::new("cwrun_01locktest")?;
+        store_run_state(
+            &layout,
+            &RunState {
+                schema_version: 1,
+                run_id: run_id.clone(),
+                project_id: "repo-123".to_owned(),
+                status: RunStatus::Running,
+                phase: RunPhase::WritingArtifacts,
+                created_at: "2026-04-13T10:00:00Z".to_owned(),
+                started_at: Some("2026-04-13T10:00:01Z".to_owned()),
+                updated_at: "2026-04-13T10:00:02Z".to_owned(),
+                finished_at: None,
+                heartbeat_at: Some("2026-04-13T10:00:02Z".to_owned()),
+                requested_by: Some("desktop".to_owned()),
+                request_source: Some("darc-desktop/0.1.0".to_owned()),
+                attempt: 1,
+                cancel_requested: false,
+                pid: Some(42),
+                agent_id: Some("codex".to_owned()),
+                runtime: Some("external_cli".to_owned()),
+                model: Some("gpt-5.4".to_owned()),
+                auth_profile: None,
+                selected_sessions: vec!["codex:session-1".to_owned()],
+                target_categories: vec!["product".to_owned()],
+                target_domains: vec!["query-protocol".to_owned()],
+                progress_percent: Some(100),
+                headline: Some("Writing final result artifacts".to_owned()),
+                proposal_path: Some("proposal.json".to_owned()),
+                result_path: Some("result.json".to_owned()),
+                events_path: Some("events.jsonl".to_owned()),
+                stdout_log_path: Some("agent.stdout.log".to_owned()),
+                stderr_log_path: Some("agent.stderr.log".to_owned()),
+                created_entry_ids: Vec::new(),
+                updated_entry_ids: Vec::new(),
+                digest_id: None,
+                error_code: None,
+                error_message: None,
+            },
+        )?;
+
+        let (started_tx, started_rx) = mpsc::channel();
+        let layout_clone = layout.clone();
+        let run_id_clone = run_id.clone();
+        let worker = thread::spawn(move || -> Result<()> {
+            with_locked_run_state(&layout_clone, &run_id_clone, |state| {
+                *state = build_succeeded_run_state(
+                    state.clone(),
+                    RunPhase::WritingArtifacts,
+                    "Wrote canonical wiki artifacts",
+                    &[],
+                    &[],
+                    &DigestId::new("dg_01locktest")?,
+                );
+                started_tx
+                    .send(())
+                    .expect("test should observe the locked success path");
+                thread::sleep(Duration::from_millis(150));
+                Ok(())
+            })
+        });
+
+        started_rx
+            .recv()
+            .expect("test should wait until the success lock is held");
+        let observed = update_run_state(&layout, &run_id, |_| {})?;
+        worker
+            .join()
+            .expect("worker thread should not panic during test")?;
+
+        assert_eq!(observed.status, RunStatus::Succeeded);
+        assert_eq!(observed.digest_id.as_deref(), Some("dg_01locktest"));
+
+        let final_state = load_run_state(&layout, &run_id)?;
+        assert_eq!(final_state.status, RunStatus::Succeeded);
+        assert_eq!(final_state.digest_id.as_deref(), Some("dg_01locktest"));
+
+        fs::remove_dir_all(&root)?;
+        Ok(())
+    }
 }

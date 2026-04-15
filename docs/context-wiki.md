@@ -9,11 +9,11 @@ Current MVP scope:
 - imperative digest lifecycle via `darc wiki digest start` and `darc wiki digest cancel`
 - external CLI runtimes for `codex` and `claude`
 - structured `decision_trace` proposal validation
+- canonical merge into decision-trace entry markdown plus one digest report per successful run
 - durable run artifacts and logs for each digest run
 
-Current non-goals:
+Current gaps:
 
-- canonical merge of validated proposals into entry or digest markdown is still deferred
 - `darc wiki entry discard` and `darc wiki entry restore` are not implemented yet
 - `auth_profile` is recorded as run metadata only and does not constrain runtime credentials
 
@@ -112,7 +112,7 @@ The current MVP uses external CLIs already installed on the host machine.
 Current auth caveat:
 
 - Darc currently launches these CLIs with inherited host environment and ambient login state.
-- `auth_profile` is metadata only in this branch. It does not enforce profile selection or sandbox credentials.
+- `auth_profile` is metadata only today. It does not enforce profile selection or sandbox credentials.
 
 ## Run Artifacts
 
@@ -143,15 +143,13 @@ Currently, a `succeeded` run means:
 - the external runtime exited successfully
 - the returned JSON matched Darc's proposal contract
 - proposal validation passed
+- canonical decision-trace markdown was merged or updated under `entries/`
+- one digest markdown report was written under `digests/`
+- `created_entry_ids`, `updated_entry_ids`, and `digest_id` were persisted into `run.toml`
+- `result.json` was written after canonical artifact merge completed
 
-It does not yet mean:
-
-- canonical entry markdown was written
-- canonical digest markdown was written
-- `created_entry_ids`, `updated_entry_ids`, or `digest_id` were populated with merged artifacts
-
-`result.json` records this explicitly with a note that canonical merge is deferred and the run succeeded after proposal
-validation only.
+A successful run may still produce zero decision-trace entries when the validated proposal finds no durable
+decisions worth preserving. In that case Darc still writes the digest report and terminal run artifacts.
 
 ## Proposal Rules
 
@@ -173,5 +171,5 @@ Current validation rules include:
 
 - Context Wiki imperative workflows are experimental and may still change.
 - `darc query wiki ...` is the stable read-side contract; imperative `darc wiki ...` behavior is still MVP-stage.
-- Entry discard/restore commands remain placeholders.
+- Entry discard/restore commands are exposed in the CLI but are not implemented yet.
 - Read-side wiki queries do not expose internal artifact paths; use `darc query wiki run ... --json` for run/result detail and inspect the run directory directly only when you need raw logs.

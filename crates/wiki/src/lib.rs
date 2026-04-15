@@ -1,3 +1,4 @@
+mod decision_trace;
 mod digests;
 mod entries;
 mod errors;
@@ -5,10 +6,13 @@ mod frontmatter;
 mod fs_utils;
 mod ids;
 mod layout;
+mod merge;
 mod prompt;
 mod proposal;
 mod registry;
+mod render;
 mod runs;
+mod slug;
 
 pub use digests::{
     DigestDetailDocument, DigestDocument, DigestFrontmatter, DigestSummary, list_digests,
@@ -21,6 +25,7 @@ pub use entries::{
 pub use errors::{Result, WikiError};
 pub use ids::{DigestId, EntryId, RunId};
 pub use layout::{CONTEXT_WIKI_DIR_NAME, ContextWikiLayout, ProjectLayout, STORAGE_VERSION};
+pub use merge::{MergeDigestArtifacts, merge_digest_proposal};
 pub use prompt::{DigestRuntimePrompt, build_digest_runtime_prompt};
 pub use proposal::{
     DIGEST_PROPOSAL_OUTPUT_SCHEMA_JSON, DIGEST_PROPOSAL_SCHEMA, DigestProposal,

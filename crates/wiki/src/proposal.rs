@@ -5,7 +5,11 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::{EntryFrontmatter, EntryType};
+use crate::{
+    EntryFrontmatter, EntryType,
+    decision_trace::{existing_content_fingerprint, proposal_content_fingerprint},
+    slug::is_valid_slug_id,
+};
 
 /// Stores the fixed schema identifier for digest proposal artifacts.
 pub const DIGEST_PROPOSAL_SCHEMA: &str = "darc.wiki.digest.proposal.v1";
@@ -159,7 +163,6 @@ pub struct ProposalValidationOptions<'a> {
     pub allowed_categories: &'a [String],
     pub allowed_domains: &'a [String],
     pub allowed_evidence_refs: &'a [String],
-    pub existing_entries: &'a [EntryFrontmatter],
 }
 
 /// Stores one structured proposal validation error for durable reporting.
@@ -209,23 +212,7 @@ impl std::error::Error for ProposalValidationErrors {}
 
 /// Validates one candidate domain id against the current project-scoped slug rules.
 pub fn is_valid_domain_id(value: &str) -> bool {
-    let mut parts = value.split('-');
-    let Some(first) = parts.next() else {
-        return false;
-    };
-    if first.is_empty()
-        || !first
-            .chars()
-            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
-    {
-        return false;
-    }
-    parts.all(|part| {
-        !part.is_empty()
-            && part
-                .chars()
-                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
-    })
+    is_valid_slug_id(value)
 }
 
 /// Validates one parsed digest proposal against the current MVP contract.
@@ -249,13 +236,6 @@ pub fn validate_digest_proposal(
         .iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
-    let existing_entries = options
-        .existing_entries
-        .iter()
-        .filter_map(|entry| {
-            existing_entry_identity(entry).map(|identity| (identity, entry.entry_id.as_str()))
-        })
-        .collect::<BTreeMap<_, _>>();
     let mut proposed_entries = BTreeMap::new();
 
     if proposal.schema != DIGEST_PROPOSAL_SCHEMA {
@@ -320,13 +300,6 @@ pub fn validate_digest_proposal(
     for (entry_index, entry) in proposal.entries.iter().enumerate() {
         let base = format!("entries[{entry_index}]");
         let identity = proposal_entry_identity(entry);
-        if let Some(existing_entry_id) = existing_entries.get(&identity) {
-            push_error(
-                &mut errors,
-                base.clone(),
-                format!("entry duplicates existing canonical entry `{existing_entry_id}`"),
-            );
-        }
         if let Some(first_index) = proposed_entries.insert(identity, entry_index) {
             push_error(
                 &mut errors,
@@ -489,35 +462,41 @@ pub fn validate_digest_proposal(
 
 /// Stores the stable duplicate-detection key for one decision-trace proposal entry.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct ProposalEntryIdentity {
+pub(crate) struct ProposalEntryIdentity {
     title: String,
     category: String,
     domains: Vec<String>,
     decision_date: String,
+    content_fingerprint: String,
 }
 
 /// Builds the duplicate-detection key for one proposal entry.
-fn proposal_entry_identity(entry: &DigestProposalEntry) -> ProposalEntryIdentity {
+pub(crate) fn proposal_entry_identity(entry: &DigestProposalEntry) -> ProposalEntryIdentity {
     ProposalEntryIdentity {
         title: entry.title.trim().to_owned(),
         category: entry.category.trim().to_owned(),
         domains: normalize_identity_domains(&entry.domains),
         decision_date: entry.decision_date.trim().to_owned(),
+        content_fingerprint: proposal_content_fingerprint(entry),
     }
 }
 
 /// Builds the duplicate-detection key for one existing canonical entry when possible.
-fn existing_entry_identity(entry: &EntryFrontmatter) -> Option<ProposalEntryIdentity> {
+pub(crate) fn existing_entry_identity(
+    entry: &EntryFrontmatter,
+    body_markdown: &str,
+) -> Option<ProposalEntryIdentity> {
     Some(ProposalEntryIdentity {
         title: entry.title.trim().to_owned(),
         category: entry.category.trim().to_owned(),
         domains: normalize_identity_domains(&entry.domains),
         decision_date: entry.decision_date.as_ref()?.trim().to_owned(),
+        content_fingerprint: existing_content_fingerprint(entry, body_markdown)?,
     })
 }
 
 /// Normalizes one domain list into a stable duplicate-detection ordering.
-fn normalize_identity_domains(domains: &[String]) -> Vec<String> {
+pub(crate) fn normalize_identity_domains(domains: &[String]) -> Vec<String> {
     let mut domains = domains
         .iter()
         .map(|domain| domain.trim().to_owned())
@@ -609,7 +588,6 @@ mod tests {
             allowed_categories: Box::leak(allowed_categories.into_boxed_slice()),
             allowed_domains,
             allowed_evidence_refs,
-            existing_entries: &[],
         }
     }
 
@@ -736,7 +714,7 @@ mod tests {
     }
 
     #[test]
-    fn validation_rejects_entries_that_duplicate_existing_canonical_state() {
+    fn validation_allows_entries_that_match_existing_canonical_identity() {
         let allowed_evidence_refs = vec!["codex:session-1#0".to_owned()];
         let allowed_domains = vec!["query-protocol".to_owned()];
         let existing_entry = EntryFrontmatter {
@@ -753,6 +731,7 @@ mod tests {
             updated_at: "2026-04-13T10:31:22Z".to_owned(),
             decision_date: Some("2026-04-13".to_owned()),
             evidence: vec!["codex:session-1#0".to_owned()],
+            content_fingerprint: None,
             created_by_run_id: crate::RunId::new("cwrun_existing-1")
                 .expect("run id should be valid"),
             updated_by_run_id: crate::RunId::new("cwrun_existing-1")
@@ -787,20 +766,14 @@ mod tests {
                 extracted_decision_count: 1,
             },
         };
-        let existing_entries = [existing_entry];
-        let validation = ProposalValidationOptions {
-            existing_entries: &existing_entries,
-            ..validation_options(&allowed_evidence_refs, &allowed_domains)
-        };
+        let _existing_entry = existing_entry;
 
-        let errors =
-            validate_digest_proposal(&proposal, &validation).expect_err("duplicates should fail");
-        assert!(errors.errors().iter().any(|error| {
-            error.path == "entries[0]"
-                && error
-                    .message
-                    .contains("duplicates existing canonical entry `cw_existing-1`")
-        }));
+        let summary = validate_digest_proposal(
+            &proposal,
+            &validation_options(&allowed_evidence_refs, &allowed_domains),
+        )
+        .expect("existing canonical identity should be merged later");
+        assert_eq!(summary.entry_count, 1);
     }
 
     #[test]
