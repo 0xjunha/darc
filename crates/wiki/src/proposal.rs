@@ -5,7 +5,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::{EntryFrontmatter, EntryType};
+use crate::{EntryFrontmatter, EntryType, render::render_decision_trace_body};
 
 /// Stores the fixed schema identifier for digest proposal artifacts.
 pub const DIGEST_PROPOSAL_SCHEMA: &str = "darc.wiki.digest.proposal.v1";
@@ -159,7 +159,6 @@ pub struct ProposalValidationOptions<'a> {
     pub allowed_categories: &'a [String],
     pub allowed_domains: &'a [String],
     pub allowed_evidence_refs: &'a [String],
-    pub existing_entries: &'a [EntryFrontmatter],
 }
 
 /// Stores one structured proposal validation error for durable reporting.
@@ -480,6 +479,7 @@ pub(crate) struct ProposalEntryIdentity {
     category: String,
     domains: Vec<String>,
     decision_date: String,
+    body_markdown: String,
 }
 
 /// Builds the duplicate-detection key for one proposal entry.
@@ -489,16 +489,21 @@ pub(crate) fn proposal_entry_identity(entry: &DigestProposalEntry) -> ProposalEn
         category: entry.category.trim().to_owned(),
         domains: normalize_identity_domains(&entry.domains),
         decision_date: entry.decision_date.trim().to_owned(),
+        body_markdown: render_decision_trace_body(entry).trim().to_owned(),
     }
 }
 
 /// Builds the duplicate-detection key for one existing canonical entry when possible.
-pub(crate) fn existing_entry_identity(entry: &EntryFrontmatter) -> Option<ProposalEntryIdentity> {
+pub(crate) fn existing_entry_identity(
+    entry: &EntryFrontmatter,
+    body_markdown: &str,
+) -> Option<ProposalEntryIdentity> {
     Some(ProposalEntryIdentity {
         title: entry.title.trim().to_owned(),
         category: entry.category.trim().to_owned(),
         domains: normalize_identity_domains(&entry.domains),
         decision_date: entry.decision_date.as_ref()?.trim().to_owned(),
+        body_markdown: body_markdown.trim().to_owned(),
     })
 }
 
@@ -595,7 +600,6 @@ mod tests {
             allowed_categories: Box::leak(allowed_categories.into_boxed_slice()),
             allowed_domains,
             allowed_evidence_refs,
-            existing_entries: &[],
         }
     }
 
@@ -773,14 +777,13 @@ mod tests {
                 extracted_decision_count: 1,
             },
         };
-        let existing_entries = [existing_entry];
-        let validation = ProposalValidationOptions {
-            existing_entries: &existing_entries,
-            ..validation_options(&allowed_evidence_refs, &allowed_domains)
-        };
+        let _existing_entry = existing_entry;
 
-        let summary = validate_digest_proposal(&proposal, &validation)
-            .expect("existing canonical identity should be merged later");
+        let summary = validate_digest_proposal(
+            &proposal,
+            &validation_options(&allowed_evidence_refs, &allowed_domains),
+        )
+        .expect("existing canonical identity should be merged later");
         assert_eq!(summary.entry_count, 1);
     }
 

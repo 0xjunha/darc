@@ -25,6 +25,7 @@ const RUN_EVENTS_FILE_NAME: &str = "events.jsonl";
 const RUN_STDOUT_LOG_FILE_NAME: &str = "agent.stdout.log";
 const RUN_STDERR_LOG_FILE_NAME: &str = "agent.stderr.log";
 const RUN_CANCEL_FLAG_FILE_NAME: &str = "cancel.flag";
+const PROJECT_MERGE_LOCK_FILE_NAME: &str = "merge.lock";
 
 /// Resolves the top-level Context Wiki layout rooted under one Darc root.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,6 +156,11 @@ impl ProjectLayout {
     /// Resolves one category directory path under the canonical entries root.
     pub fn entry_category_dir(&self, category: &str) -> PathBuf {
         self.entries_dir.join(category)
+    }
+
+    /// Resolves the project-scoped canonical merge lock path.
+    pub fn project_merge_lock_path(&self) -> PathBuf {
+        self.root.join(PROJECT_MERGE_LOCK_FILE_NAME)
     }
 
     /// Resolves one canonical entry Markdown path under the category-scoped entries layout.

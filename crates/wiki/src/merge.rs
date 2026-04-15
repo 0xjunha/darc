@@ -1,23 +1,28 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fs::{self, OpenOptions},
+    io,
+    path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use darc_paths::current_utc_timestamp;
+use serde::Serialize;
 
 use crate::{
-    DigestFrontmatter, DigestId, DigestProposal, DigestProposalEntry, DigestProposalOption,
-    DigestProposalOptionStatus, EntryFrontmatter, EntryId, EntryStatus, EntryType, ProjectLayout,
-    Result, RunId, list_digests, list_entries, load_entry,
+    DigestFrontmatter, DigestId, DigestProposal, DigestProposalEntry, EntryFrontmatter, EntryId,
+    EntryStatus, EntryType, ProjectLayout, Result, RunId, WikiError, list_digests, list_entries,
+    load_entry_detail,
 };
 use crate::{
-    digests::store_digest,
-    entries::store_entry,
+    frontmatter::render_markdown_document,
+    fs_utils::write_string_atomically,
     proposal::{
         ProposalEntryIdentity, existing_entry_identity, normalize_identity_domains,
         proposal_entry_identity,
     },
+    render::{normalize_trimmed_list, render_decision_trace_body},
 };
 
 static MERGE_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -39,11 +44,30 @@ struct MergedEntryRecord {
     action: MergeEntryAction,
 }
 
-/// Classifies whether one merged decision trace was newly created or reused.
+/// Classifies whether one merged decision trace was newly created or rewritten.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MergeEntryAction {
     Created,
     Updated,
+}
+
+/// Stores the project-scoped entry snapshot needed for one merge pass.
+struct EntryMergeSnapshot {
+    entries_by_identity: BTreeMap<ProposalEntryIdentity, ExistingCanonicalEntry>,
+    occupied_entry_ids: BTreeSet<EntryId>,
+    next_display_number: u64,
+}
+
+/// Stores one active canonical entry eligible for merge-time reuse.
+struct ExistingCanonicalEntry {
+    frontmatter: EntryFrontmatter,
+}
+
+/// Stores one staged Markdown write with rollback information.
+struct PendingWrite {
+    path: PathBuf,
+    content: String,
+    previous_content: Option<String>,
 }
 
 /// Merges one validated digest proposal into canonical entry and digest artifacts.
@@ -53,35 +77,39 @@ pub fn merge_digest_proposal(
     proposal: &DigestProposal,
 ) -> Result<MergeDigestArtifacts> {
     layout.ensure()?;
+    let _lock = lock_project_merge(layout)?;
     let now = current_utc_timestamp();
-    let mut existing_entries = load_existing_entries_by_identity(layout)?;
-    let mut occupied_entry_ids = list_entries(layout)?
-        .into_iter()
-        .map(|entry| entry.entry_id)
-        .collect::<BTreeSet<_>>();
+    let mut snapshot = load_entry_merge_snapshot(layout)?;
     let mut occupied_digest_ids = list_digests(layout)?
         .into_iter()
         .map(|digest| digest.digest_id)
         .collect::<BTreeSet<_>>();
-    let mut next_display_number = next_display_number(layout)?;
 
     let mut created_entry_ids = Vec::new();
     let mut updated_entry_ids = Vec::new();
     let mut merged_entries = Vec::with_capacity(proposal.entries.len());
+    let mut pending_writes = Vec::with_capacity(proposal.entries.len() + 1);
+
     for proposal_entry in &proposal.entries {
         let identity = proposal_entry_identity(proposal_entry);
-        if let Some(mut existing) = existing_entries.remove(&identity) {
-            let display_id =
-                ensure_display_id(existing.display_id.take(), &mut next_display_number);
+        let body_markdown = render_decision_trace_body(proposal_entry);
+        if let Some(existing) = snapshot.entries_by_identity.remove(&identity) {
+            let display_id = ensure_display_id(
+                existing.frontmatter.display_id.clone(),
+                &mut snapshot.next_display_number,
+            );
             let frontmatter = build_updated_entry_frontmatter(
-                existing,
+                existing.frontmatter,
                 proposal_entry,
                 run_id,
                 &now,
                 display_id.clone(),
             );
-            let body_markdown = render_entry_body(proposal_entry);
-            store_entry(layout, &frontmatter, &body_markdown)?;
+            pending_writes.push(build_markdown_write(
+                layout.entry_path(&frontmatter.category, &frontmatter.entry_id),
+                &frontmatter,
+                &body_markdown,
+            )?);
             updated_entry_ids.push(frontmatter.entry_id.clone());
             merged_entries.push(MergedEntryRecord {
                 entry_id: frontmatter.entry_id,
@@ -90,8 +118,8 @@ pub fn merge_digest_proposal(
                 action: MergeEntryAction::Updated,
             });
         } else {
-            let entry_id = next_entry_id(&mut occupied_entry_ids)?;
-            let display_id = ensure_display_id(None, &mut next_display_number);
+            let entry_id = next_entry_id(&mut snapshot.occupied_entry_ids)?;
+            let display_id = ensure_display_id(None, &mut snapshot.next_display_number);
             let frontmatter = build_new_entry_frontmatter(
                 layout,
                 run_id,
@@ -100,8 +128,11 @@ pub fn merge_digest_proposal(
                 &now,
                 display_id.clone(),
             );
-            let body_markdown = render_entry_body(proposal_entry);
-            store_entry(layout, &frontmatter, &body_markdown)?;
+            pending_writes.push(build_markdown_write(
+                layout.entry_path(&frontmatter.category, &frontmatter.entry_id),
+                &frontmatter,
+                &body_markdown,
+            )?);
             created_entry_ids.push(entry_id.clone());
             merged_entries.push(MergedEntryRecord {
                 entry_id,
@@ -123,8 +154,12 @@ pub fn merge_digest_proposal(
         updated_at: now,
         extracted_decision_count: proposal.run_summary.extracted_decision_count,
     };
-    let digest_body = render_digest_body(proposal, &merged_entries);
-    store_digest(layout, &digest_frontmatter, &digest_body)?;
+    pending_writes.push(build_markdown_write(
+        layout.digest_path(&digest_id),
+        &digest_frontmatter,
+        &render_digest_body(proposal, &merged_entries),
+    )?);
+    apply_pending_writes(&pending_writes)?;
 
     Ok(MergeDigestArtifacts {
         digest_id,
@@ -133,21 +168,60 @@ pub fn merge_digest_proposal(
     })
 }
 
-/// Loads existing decision-trace frontmatter keyed by merge identity.
-fn load_existing_entries_by_identity(
-    layout: &ProjectLayout,
-) -> Result<BTreeMap<ProposalEntryIdentity, EntryFrontmatter>> {
-    let mut entries = BTreeMap::new();
-    for frontmatter in list_entries(layout)?
-        .into_iter()
-        .map(|summary| load_entry(&summary.path).map(|document| document.frontmatter))
-        .collect::<Result<Vec<_>>>()?
-    {
-        if let Some(identity) = existing_entry_identity(&frontmatter) {
-            entries.entry(identity).or_insert(frontmatter);
+/// Locks project-scoped canonical merge work so concurrent digest runs cannot interleave writes.
+fn lock_project_merge(layout: &ProjectLayout) -> Result<std::fs::File> {
+    let path = layout.project_merge_lock_path();
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .map_err(|source| WikiError::WriteFile {
+            path: path.clone(),
+            source,
+        })?;
+    file.lock()
+        .map_err(|source| WikiError::WriteFile { path, source })?;
+    Ok(file)
+}
+
+/// Loads one project-scoped snapshot of active canonical entries and display allocation state.
+fn load_entry_merge_snapshot(layout: &ProjectLayout) -> Result<EntryMergeSnapshot> {
+    let mut entries_by_identity = BTreeMap::new();
+    let mut occupied_entry_ids = BTreeSet::new();
+    let mut next_display_number = 1_u64;
+
+    for entry in list_entries(layout)? {
+        let document = load_entry_detail(&entry.path)?;
+        occupied_entry_ids.insert(document.frontmatter.entry_id.clone());
+        if let Some(display_number) = document
+            .frontmatter
+            .display_id
+            .as_deref()
+            .and_then(parse_display_number)
+        {
+            next_display_number = next_display_number.max(display_number + 1);
+        }
+        if document.frontmatter.status != EntryStatus::Active {
+            continue;
+        }
+        if let Some(identity) =
+            existing_entry_identity(&document.frontmatter, &document.body_markdown)
+        {
+            entries_by_identity
+                .entry(identity)
+                .or_insert(ExistingCanonicalEntry {
+                    frontmatter: document.frontmatter,
+                });
         }
     }
-    Ok(entries)
+
+    Ok(EntryMergeSnapshot {
+        entries_by_identity,
+        occupied_entry_ids,
+        next_display_number,
+    })
 }
 
 /// Builds one new canonical entry frontmatter from a validated proposal row.
@@ -179,7 +253,7 @@ fn build_new_entry_frontmatter(
     }
 }
 
-/// Builds one updated canonical entry frontmatter by preserving immutable identity fields.
+/// Builds one updated canonical entry frontmatter without reviving discarded lineage.
 fn build_updated_entry_frontmatter(
     mut existing: EntryFrontmatter,
     proposal_entry: &DigestProposalEntry,
@@ -187,45 +261,100 @@ fn build_updated_entry_frontmatter(
     now: &str,
     display_id: String,
 ) -> EntryFrontmatter {
-    existing.entry_type = EntryType::DecisionTrace;
     existing.display_id = Some(display_id);
     existing.title = proposal_entry.title.trim().to_owned();
     existing.category = proposal_entry.category.trim().to_owned();
     existing.domains = normalize_identity_domains(&proposal_entry.domains);
-    existing.status = EntryStatus::Active;
     existing.updated_at = now.to_owned();
     existing.decision_date = Some(proposal_entry.decision_date.trim().to_owned());
     existing.evidence = normalize_trimmed_list(&proposal_entry.evidence);
     existing.updated_by_run_id = run_id.clone();
-    existing.supersedes.clear();
     existing
 }
 
-/// Renders one canonical decision-trace Markdown body from a validated proposal row.
-fn render_entry_body(proposal_entry: &DigestProposalEntry) -> String {
-    let evidence = normalize_trimmed_list(&proposal_entry.evidence);
-    format!(
-        concat!(
-            "## Context\n\n",
-            "{context}\n\n",
-            "## Options Considered\n\n",
-            "{options}\n\n",
-            "## Final Decision\n\n",
-            "{final_decision}\n\n",
-            "## Rationale\n\n",
-            "{rationale}\n\n",
-            "## Consequences\n\n",
-            "{consequences}\n\n",
-            "## Evidence\n\n",
-            "{evidence}\n"
-        ),
-        context = proposal_entry.context.trim(),
-        options = render_options_markdown(&proposal_entry.options),
-        final_decision = proposal_entry.final_decision.trim(),
-        rationale = proposal_entry.rationale.trim(),
-        consequences = proposal_entry.consequences.trim(),
-        evidence = render_evidence_markdown(&evidence),
-    )
+/// Builds one staged Markdown write and snapshots any previous file content for rollback.
+fn build_markdown_write<T>(
+    path: PathBuf,
+    frontmatter: &T,
+    body_markdown: &str,
+) -> Result<PendingWrite>
+where
+    T: Serialize,
+{
+    let previous_content = if path.exists() {
+        Some(
+            fs::read_to_string(&path).map_err(|source| WikiError::ReadFile {
+                path: path.clone(),
+                source,
+            })?,
+        )
+    } else {
+        None
+    };
+    Ok(PendingWrite {
+        content: render_markdown_document(&path, frontmatter, body_markdown)?,
+        path,
+        previous_content,
+    })
+}
+
+/// Applies staged Markdown writes and restores the previous on-disk state if any write fails.
+fn apply_pending_writes(writes: &[PendingWrite]) -> Result<()> {
+    let mut applied = Vec::with_capacity(writes.len());
+    for write in writes {
+        match write_string_atomically(&write.path, &write.content) {
+            Ok(()) => applied.push(write),
+            Err(error) => {
+                rollback_pending_writes(&applied, &error)?;
+                return Err(error);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Restores the previous file contents for every already-applied staged write.
+fn rollback_pending_writes(applied: &[&PendingWrite], original_error: &WikiError) -> Result<()> {
+    for write in applied.iter().rev() {
+        let rollback = match &write.previous_content {
+            Some(previous_content) => write_string_atomically(&write.path, previous_content),
+            None => remove_new_file(&write.path),
+        };
+        if let Err(rollback_error) = rollback {
+            return Err(merge_rollback_error(
+                &write.path,
+                original_error,
+                rollback_error,
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Removes one newly created file during merge rollback.
+fn remove_new_file(path: &PathBuf) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    fs::remove_file(path).map_err(|source| WikiError::WriteFile {
+        path: path.clone(),
+        source,
+    })
+}
+
+/// Wraps one rollback failure with the original merge write error context.
+fn merge_rollback_error(
+    path: &std::path::Path,
+    original_error: &WikiError,
+    rollback_error: WikiError,
+) -> WikiError {
+    let message = format!(
+        "merge write failed with `{original_error}` and rollback failed with `{rollback_error}`"
+    );
+    WikiError::WriteFile {
+        path: path.to_path_buf(),
+        source: io::Error::other(message),
+    }
 }
 
 /// Renders one canonical digest summary Markdown body from the merged proposal artifacts.
@@ -243,32 +372,6 @@ fn render_digest_body(proposal: &DigestProposal, merged_entries: &[MergedEntryRe
         themes = render_digest_themes(&proposal.run_summary.themes),
         entries = render_digest_entries(merged_entries),
     )
-}
-
-/// Renders the numbered options section for one decision trace.
-fn render_options_markdown(options: &[DigestProposalOption]) -> String {
-    options
-        .iter()
-        .enumerate()
-        .map(|(index, option)| {
-            format!(
-                "{}. {}: {}",
-                index + 1,
-                option_status_label(option.status),
-                option.description.trim()
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Renders the evidence list for one canonical decision trace body.
-fn render_evidence_markdown(evidence: &[String]) -> String {
-    evidence
-        .iter()
-        .map(|item| format!("- `{item}`"))
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 /// Renders the digest theme list or a zero-theme placeholder.
@@ -306,14 +409,6 @@ fn render_digest_entries(entries: &[MergedEntryRecord]) -> String {
     }
 }
 
-/// Returns the human-readable label for one proposal option status.
-fn option_status_label(status: DigestProposalOptionStatus) -> &'static str {
-    match status {
-        DigestProposalOptionStatus::Chosen => "Chosen",
-        DigestProposalOptionStatus::Rejected => "Rejected",
-    }
-}
-
 /// Returns the human-readable label for one merge action.
 fn merge_action_label(action: MergeEntryAction) -> &'static str {
     match action {
@@ -329,17 +424,6 @@ fn ensure_display_id(existing: Option<String>, next_display_number: &mut u64) ->
         *next_display_number += 1;
         display_id
     })
-}
-
-/// Returns the next available `DT-N` number for one project layout.
-fn next_display_number(layout: &ProjectLayout) -> Result<u64> {
-    Ok(list_entries(layout)?
-        .into_iter()
-        .filter_map(|entry| entry.display_id)
-        .filter_map(|display_id| parse_display_number(&display_id))
-        .max()
-        .unwrap_or(0)
-        + 1)
 }
 
 /// Parses one `DT-N` display id into its numeric suffix.
@@ -379,19 +463,6 @@ fn generate_prefixed_id(prefix: &str) -> String {
         now.subsec_nanos(),
         counter as u16
     )
-}
-
-/// Normalizes one trimmed list while preserving first-seen order.
-fn normalize_trimmed_list(values: &[String]) -> Vec<String> {
-    let mut normalized = Vec::new();
-    for value in values {
-        let value = value.trim();
-        if value.is_empty() || normalized.iter().any(|existing| existing == value) {
-            continue;
-        }
-        normalized.push(value.to_owned());
-    }
-    normalized
 }
 
 #[cfg(test)]
@@ -456,11 +527,11 @@ mod tests {
             context: "The session discussed stable contracts.".to_owned(),
             options: vec![
                 DigestProposalOption {
-                    status: DigestProposalOptionStatus::Chosen,
+                    status: crate::DigestProposalOptionStatus::Chosen,
                     description: "Keep the protocol additive.".to_owned(),
                 },
                 DigestProposalOption {
-                    status: DigestProposalOptionStatus::Rejected,
+                    status: crate::DigestProposalOptionStatus::Rejected,
                     description: "Ship breaking protocol changes.".to_owned(),
                 },
             ],
@@ -530,6 +601,77 @@ mod tests {
         let entry = load_entry_detail(&layout.entry_path("product", &second.updated_entry_ids[0]))?;
         assert_eq!(entry.frontmatter.display_id.as_deref(), Some("DT-1"));
         assert_eq!(entry.frontmatter.updated_by_run_id, second_run_id);
+
+        fs::remove_dir_all(&darc_root).expect("temporary test root should be removable");
+        Ok(())
+    }
+
+    #[test]
+    fn merge_creates_new_entry_when_matching_title_has_different_content() -> Result<()> {
+        let (darc_root, layout) = build_layout("distinct-content")?;
+        let first_run_id = RunId::new("cwrun_01mergebodya")?;
+        let second_run_id = RunId::new("cwrun_01mergebodyb")?;
+        let mut revised_entry = build_entry("Keep the query protocol additive");
+        revised_entry.rationale =
+            "The wire contract is already consumed by downstream tools.".to_owned();
+
+        let _first = merge_digest_proposal(
+            &layout,
+            &first_run_id,
+            &build_proposal(
+                &first_run_id,
+                vec![build_entry("Keep the query protocol additive")],
+            ),
+        )?;
+        let second = merge_digest_proposal(
+            &layout,
+            &second_run_id,
+            &build_proposal(&second_run_id, vec![revised_entry]),
+        )?;
+
+        assert_eq!(second.created_entry_ids.len(), 1);
+        assert!(second.updated_entry_ids.is_empty());
+        assert_eq!(list_entries(&layout)?.len(), 2);
+
+        fs::remove_dir_all(&darc_root).expect("temporary test root should be removable");
+        Ok(())
+    }
+
+    #[test]
+    fn merge_does_not_revive_discarded_entries() -> Result<()> {
+        let (darc_root, layout) = build_layout("discarded")?;
+        let first_run_id = RunId::new("cwrun_01mergediscarda")?;
+        let second_run_id = RunId::new("cwrun_01mergediscardb")?;
+        let first = merge_digest_proposal(
+            &layout,
+            &first_run_id,
+            &build_proposal(
+                &first_run_id,
+                vec![build_entry("Keep the query protocol additive")],
+            ),
+        )?;
+        let mut discarded =
+            load_entry_detail(&layout.entry_path("product", &first.created_entry_ids[0]))?;
+        discarded.frontmatter.status = EntryStatus::Discarded;
+        let discarded_write = build_markdown_write(
+            layout.entry_path("product", &discarded.frontmatter.entry_id),
+            &discarded.frontmatter,
+            &discarded.body_markdown,
+        )?;
+        apply_pending_writes(&[discarded_write])?;
+
+        let second = merge_digest_proposal(
+            &layout,
+            &second_run_id,
+            &build_proposal(
+                &second_run_id,
+                vec![build_entry("Keep the query protocol additive")],
+            ),
+        )?;
+
+        assert_eq!(second.created_entry_ids.len(), 1);
+        assert!(second.updated_entry_ids.is_empty());
+        assert_eq!(list_entries(&layout)?.len(), 2);
 
         fs::remove_dir_all(&darc_root).expect("temporary test root should be removable");
         Ok(())

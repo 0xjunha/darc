@@ -9,6 +9,7 @@ mod merge;
 mod prompt;
 mod proposal;
 mod registry;
+mod render;
 mod runs;
 
 pub use digests::{

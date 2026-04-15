@@ -231,31 +231,29 @@ pub(super) fn finalize_run_canceled(
     })
 }
 
-/// Finalizes one digest run as succeeded after canonical artifact writing completes.
-pub(super) fn finalize_run_succeeded(
-    layout: &ProjectLayout,
-    run_id: &RunId,
+/// Builds one succeeded digest run state after canonical artifact writing completes.
+pub(super) fn build_succeeded_run_state(
+    mut state: RunState,
     phase: RunPhase,
     headline: &str,
     created_entry_ids: &[EntryId],
     updated_entry_ids: &[EntryId],
     digest_id: &DigestId,
-) -> Result<RunState> {
-    update_run_state(layout, run_id, |state| {
-        let now = current_utc_timestamp();
-        state.status = RunStatus::Succeeded;
-        state.phase = phase;
-        state.updated_at = now.clone();
-        state.finished_at = Some(now.clone());
-        state.heartbeat_at = Some(now.clone());
-        state.progress_percent = Some(100);
-        state.headline = Some(headline.to_owned());
-        state.created_entry_ids = created_entry_ids.iter().map(ToString::to_string).collect();
-        state.updated_entry_ids = updated_entry_ids.iter().map(ToString::to_string).collect();
-        state.digest_id = Some(digest_id.to_string());
-        state.error_code = None;
-        state.error_message = None;
-    })
+) -> RunState {
+    let now = current_utc_timestamp();
+    state.status = RunStatus::Succeeded;
+    state.phase = phase;
+    state.updated_at = now.clone();
+    state.finished_at = Some(now.clone());
+    state.heartbeat_at = Some(now);
+    state.progress_percent = Some(100);
+    state.headline = Some(headline.to_owned());
+    state.created_entry_ids = created_entry_ids.iter().map(ToString::to_string).collect();
+    state.updated_entry_ids = updated_entry_ids.iter().map(ToString::to_string).collect();
+    state.digest_id = Some(digest_id.to_string());
+    state.error_code = None;
+    state.error_message = None;
+    state
 }
 
 /// Waits until the parent process persists the worker registration fields after spawning the child.
