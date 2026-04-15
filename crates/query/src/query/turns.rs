@@ -53,6 +53,45 @@ const INDEXED_TURN_SQL: &str = "
     WHERE project_id = ?1 AND provider = ?2 AND session_id = ?3 AND turn_ordinal = ?4
 ";
 
+const INDEXED_SESSION_TURNS_SQL: &str = "
+    SELECT
+        project_id,
+        provider,
+        session_id,
+        turn_ordinal,
+        turn_id,
+        started_at,
+        completed_at,
+        status,
+        user_message,
+        final_answer_at,
+        final_answer_text,
+        steps_json,
+        primary_model,
+        COALESCE(duration_ms, 0),
+        effective_agent_runtime_ms,
+        provider_total_token_count,
+        input_uncached_token_count,
+        cache_read_token_count,
+        cache_write_token_count,
+        output_token_count,
+        reasoning_token_count,
+        total_token_count,
+        COALESCE(changed_file_count, 0),
+        COALESCE(added_line_count, 0),
+        COALESCE(removed_line_count, 0),
+        COALESCE(step_count, 0),
+        COALESCE(tool_call_count, 0),
+        COALESCE(tool_output_count, 0),
+        COALESCE(attachment_count, 0),
+        COALESCE(delegation_count, 0),
+        COALESCE(hook_summary_count, 0),
+        has_final_answer
+    FROM turns
+    WHERE project_id = ?1 AND provider = ?2 AND session_id = ?3
+    ORDER BY turn_ordinal ASC
+";
+
 /// Queries one full normalized turn detail payload.
 pub fn query_turn_detail(
     index_db_path: &Path,
@@ -71,6 +110,18 @@ pub fn query_turn_detail(
         turn_ordinal,
         options,
     )
+}
+
+/// Queries every full normalized turn detail payload for one indexed provider session.
+pub fn query_session_turn_details(
+    index_db_path: &Path,
+    project_id: &str,
+    provider: SourceKind,
+    session_id: &str,
+    options: TurnDetailOptions,
+) -> Result<Vec<TurnDetail>> {
+    let connection = open_existing_index_database(index_db_path)?;
+    build_session_turn_details(&connection, project_id, provider, session_id, options)
 }
 
 /// Queries one turn insights payload for one indexed provider session turn.
@@ -100,6 +151,41 @@ fn build_turn_detail(
         .then(|| build_turn_detail_insights(connection, &row))
         .transpose()?;
     row.into_turn_detail(options, insights)
+}
+
+/// Builds every normalized turn detail row for one indexed session.
+fn build_session_turn_details(
+    connection: &Connection,
+    project_id: &str,
+    provider: SourceKind,
+    session_id: &str,
+    options: TurnDetailOptions,
+) -> Result<Vec<TurnDetail>> {
+    let mut statement = connection
+        .prepare(INDEXED_SESSION_TURNS_SQL)
+        .context("failed to prepare indexed session turn detail query")?;
+    let rows = statement
+        .query_map((project_id, provider.directory_name(), session_id), |row| {
+            read_indexed_turn_row(row)
+        })
+        .with_context(|| {
+            format!(
+                "failed to query indexed turn details for session {session_id} and provider {}",
+                provider.directory_name()
+            )
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed to read indexed turn detail rows")?;
+
+    rows.into_iter()
+        .map(|row| {
+            let insights = options
+                .include_insights
+                .then(|| build_turn_detail_insights(connection, &row))
+                .transpose()?;
+            row.into_turn_detail(options, insights)
+        })
+        .collect()
 }
 
 /// Builds one turn insights report from indexed turn, tool, and file rows.
@@ -136,42 +222,7 @@ fn query_indexed_turn_row(
                 session_id,
                 turn_ordinal,
             ),
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, Option<String>>(6)?,
-                    row.get::<_, String>(7)?,
-                    row.get::<_, String>(8)?,
-                    row.get::<_, Option<String>>(9)?,
-                    row.get::<_, Option<String>>(10)?,
-                    row.get::<_, String>(11)?,
-                    row.get::<_, Option<String>>(12)?,
-                    row.get::<_, i64>(13)?,
-                    row.get::<_, Option<i64>>(14)?,
-                    row.get::<_, Option<i64>>(15)?,
-                    row.get::<_, Option<i64>>(16)?,
-                    row.get::<_, Option<i64>>(17)?,
-                    row.get::<_, Option<i64>>(18)?,
-                    row.get::<_, Option<i64>>(19)?,
-                    row.get::<_, Option<i64>>(20)?,
-                    row.get::<_, Option<i64>>(21)?,
-                    row.get::<_, i64>(22)?,
-                    row.get::<_, i64>(23)?,
-                    row.get::<_, i64>(24)?,
-                    row.get::<_, i64>(25)?,
-                    row.get::<_, i64>(26)?,
-                    row.get::<_, i64>(27)?,
-                    row.get::<_, i64>(28)?,
-                    row.get::<_, i64>(29)?,
-                    row.get::<_, i64>(30)?,
-                    row.get::<_, i64>(31)?,
-                ))
-            },
+            read_indexed_turn_row,
         )
         .with_context(|| {
             format!(
@@ -179,35 +230,108 @@ fn query_indexed_turn_row(
                 provider.directory_name()
             )
         })?;
-    Ok(IndexedTurnRow {
-        project_id: row.0,
-        provider: parse_provider(&row.1)?,
-        session_id: row.2,
-        turn_ordinal: sql_count_to_u64(row.3)?,
-        turn_id: row.4,
-        started_at: row.5,
-        completed_at: row.6,
-        status: parse_turn_status(&row.7)?,
-        user_message: row.8,
-        final_answer_at: row.9,
-        final_answer_text: row.10,
-        steps_json: row.11,
-        primary_model: row.12,
-        duration_ms: sql_count_to_u64(row.13)?,
-        effective_agent_runtime_ms: optional_sql_count_to_u64(row.14)?,
-        token_usage: build_token_usage(row.15, row.16, row.17, row.18, row.19, row.20, row.21)?,
-        total_token_count: optional_sql_count_to_u64(row.21)?,
-        changed_file_count: sql_count_to_u64(row.22)?,
-        added_line_count: sql_count_to_u64(row.23)?,
-        removed_line_count: sql_count_to_u64(row.24)?,
-        step_count: sql_count_to_u64(row.25)?,
-        tool_call_count: sql_count_to_u64(row.26)?,
-        tool_output_count: sql_count_to_u64(row.27)?,
-        attachment_count: sql_count_to_u64(row.28)?,
-        delegation_count: sql_count_to_u64(row.29)?,
-        hook_summary_count: sql_count_to_u64(row.30)?,
-        has_final_answer: row.31 != 0,
+    Ok(row)
+}
+
+/// Reads one indexed turn row from one SQLite result row.
+fn read_indexed_turn_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<IndexedTurnRow> {
+    Ok((
+        row.get::<_, String>(0)?,
+        row.get::<_, String>(1)?,
+        row.get::<_, String>(2)?,
+        row.get::<_, i64>(3)?,
+        row.get::<_, Option<String>>(4)?,
+        row.get::<_, String>(5)?,
+        row.get::<_, Option<String>>(6)?,
+        row.get::<_, String>(7)?,
+        row.get::<_, String>(8)?,
+        row.get::<_, Option<String>>(9)?,
+        row.get::<_, Option<String>>(10)?,
+        row.get::<_, String>(11)?,
+        row.get::<_, Option<String>>(12)?,
+        row.get::<_, i64>(13)?,
+        row.get::<_, Option<i64>>(14)?,
+        row.get::<_, Option<i64>>(15)?,
+        row.get::<_, Option<i64>>(16)?,
+        row.get::<_, Option<i64>>(17)?,
+        row.get::<_, Option<i64>>(18)?,
+        row.get::<_, Option<i64>>(19)?,
+        row.get::<_, Option<i64>>(20)?,
+        row.get::<_, Option<i64>>(21)?,
+        row.get::<_, i64>(22)?,
+        row.get::<_, i64>(23)?,
+        row.get::<_, i64>(24)?,
+        row.get::<_, i64>(25)?,
+        row.get::<_, i64>(26)?,
+        row.get::<_, i64>(27)?,
+        row.get::<_, i64>(28)?,
+        row.get::<_, i64>(29)?,
+        row.get::<_, i64>(30)?,
+        row.get::<_, i64>(31)?,
+    ))
+    .and_then(|row| {
+        Ok(IndexedTurnRow {
+            project_id: row.0,
+            provider: parse_provider(&row.1)
+                .map_err(|error| row_conversion_error(1, rusqlite::types::Type::Text, error))?,
+            session_id: row.2,
+            turn_ordinal: sql_count_to_u64(row.3)
+                .map_err(|error| row_conversion_error(3, rusqlite::types::Type::Integer, error))?,
+            turn_id: row.4,
+            started_at: row.5,
+            completed_at: row.6,
+            status: parse_turn_status(&row.7)
+                .map_err(|error| row_conversion_error(7, rusqlite::types::Type::Text, error))?,
+            user_message: row.8,
+            final_answer_at: row.9,
+            final_answer_text: row.10,
+            steps_json: row.11,
+            primary_model: row.12,
+            duration_ms: sql_count_to_u64(row.13)
+                .map_err(|error| row_conversion_error(13, rusqlite::types::Type::Integer, error))?,
+            effective_agent_runtime_ms: optional_sql_count_to_u64(row.14)
+                .map_err(|error| row_conversion_error(14, rusqlite::types::Type::Integer, error))?,
+            token_usage: build_token_usage(row.15, row.16, row.17, row.18, row.19, row.20, row.21)
+                .map_err(|error| row_conversion_error(15, rusqlite::types::Type::Integer, error))?,
+            total_token_count: optional_sql_count_to_u64(row.21)
+                .map_err(|error| row_conversion_error(21, rusqlite::types::Type::Integer, error))?,
+            changed_file_count: sql_count_to_u64(row.22)
+                .map_err(|error| row_conversion_error(22, rusqlite::types::Type::Integer, error))?,
+            added_line_count: sql_count_to_u64(row.23)
+                .map_err(|error| row_conversion_error(23, rusqlite::types::Type::Integer, error))?,
+            removed_line_count: sql_count_to_u64(row.24)
+                .map_err(|error| row_conversion_error(24, rusqlite::types::Type::Integer, error))?,
+            step_count: sql_count_to_u64(row.25)
+                .map_err(|error| row_conversion_error(25, rusqlite::types::Type::Integer, error))?,
+            tool_call_count: sql_count_to_u64(row.26)
+                .map_err(|error| row_conversion_error(26, rusqlite::types::Type::Integer, error))?,
+            tool_output_count: sql_count_to_u64(row.27)
+                .map_err(|error| row_conversion_error(27, rusqlite::types::Type::Integer, error))?,
+            attachment_count: sql_count_to_u64(row.28)
+                .map_err(|error| row_conversion_error(28, rusqlite::types::Type::Integer, error))?,
+            delegation_count: sql_count_to_u64(row.29)
+                .map_err(|error| row_conversion_error(29, rusqlite::types::Type::Integer, error))?,
+            hook_summary_count: sql_count_to_u64(row.30)
+                .map_err(|error| row_conversion_error(30, rusqlite::types::Type::Integer, error))?,
+            has_final_answer: row.31 != 0,
+        })
     })
+}
+
+/// Converts one row-mapping failure into a SQLite row conversion error.
+fn row_conversion_error(
+    column: usize,
+    value_type: rusqlite::types::Type,
+    error: anyhow::Error,
+) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        column,
+        value_type,
+        Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            error.to_string(),
+        )),
+    )
 }
 
 /// Builds one optional token-usage summary from one indexed turn or session row.

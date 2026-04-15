@@ -16,7 +16,8 @@ pub use darc_query::{
 };
 use darc_query::{
     ProjectIndexAggregate, list_project_index_aggregates, query_project_insights,
-    query_project_sessions, query_search_turns as query_project_search_turns, query_session_turns,
+    query_project_sessions, query_search_turns as query_project_search_turns,
+    query_session_turn_details as query_project_session_turn_details, query_session_turns,
     query_turn_detail, query_turn_insights, query_workspace_insights,
 };
 use darc_wiki::{
@@ -161,6 +162,24 @@ pub fn query_turn(
         provider,
         session_id,
         turn_ordinal,
+        options,
+    )
+}
+
+/// Queries every full turn-detail payload for one configured provider session.
+pub fn query_session_turn_details(
+    root: Option<PathBuf>,
+    project_id: &str,
+    provider: SourceKind,
+    session_id: &str,
+    options: TurnDetailOptions,
+) -> Result<Vec<TurnDetail>> {
+    let context = load_project_query_context(root, project_id)?;
+    query_project_session_turn_details(
+        &context.root.database_path,
+        &context.project.id,
+        provider,
+        session_id,
         options,
     )
 }

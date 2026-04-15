@@ -18,7 +18,10 @@ use super::{
         append_run_event, write_bytes_artifact, write_json_artifact, write_terminal_result,
         write_text_artifact,
     },
-    context::{build_allowed_domains, build_allowed_evidence_refs, load_selected_session_context},
+    context::{
+        build_allowed_domains, build_allowed_evidence_refs, build_runtime_context_json,
+        load_selected_session_context,
+    },
     models::{DigestContextArtifact, DigestValidationArtifact, RunEvent, RuntimeExecution},
     runtime::{build_runtime_request, execute_runtime_command},
     state::{
@@ -265,8 +268,7 @@ impl<'a> DigestWorker<'a> {
             .layout
             .run_dir(self.run_id)
             .join(PROPOSAL_SCHEMA_FILE_NAME);
-        let context_json = serde_json::to_string_pretty(context)
-            .context("failed to serialize digest context JSON")?;
+        let context_json = build_runtime_context_json(context)?;
         let prompt =
             build_digest_runtime_prompt(&context_json, &context.project_id, &context.run_id);
         write_text_artifact(&proposal_schema_path, &prompt.schema_json)?;
