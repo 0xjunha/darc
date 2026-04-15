@@ -55,6 +55,34 @@ pub enum WikiError {
         actual_project_id: String,
     },
 
+    /// Reports one missing canonical entry within the requested project layout.
+    #[error("entry `{entry_id}` was not found in project `{project_id}`")]
+    EntryNotFound {
+        entry_id: String,
+        project_id: String,
+    },
+
+    /// Reports one unsupported lifecycle transition for an existing canonical entry.
+    #[error("cannot change entry `{entry_id}` from `{current_status}` to `{target_status}`")]
+    InvalidEntryStatusTransition {
+        entry_id: String,
+        current_status: String,
+        target_status: String,
+    },
+
+    /// Reports one discarded entry that cannot be restored safely.
+    #[error(
+        "cannot restore entry `{entry_id}` because active entry `{conflicting_entry_id}` already has the same canonical identity"
+    )]
+    EntryRestoreConflict {
+        entry_id: String,
+        conflicting_entry_id: String,
+    },
+
+    /// Reports one entry whose canonical identity cannot be reconstructed for restore validation.
+    #[error("cannot compute canonical identity for entry `{entry_id}`")]
+    EntryIdentityUnavailable { entry_id: String },
+
     /// Reports one project mismatch between one stored digest and its enclosing project layout.
     #[error(
         "digest `{digest_id}` belongs to project `{actual_project_id}`, expected `{expected_project_id}`"

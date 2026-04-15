@@ -20,10 +20,11 @@ use darc_core::query::{
 use darc_core::{
     DigestId, DigestStartOptions, EntryId, EntryStatus, IndexOptions, InitDraft, RefreshOptions,
     RefreshReport, RunId, RunStatus, SkippedRollout, SourceKind, SyncOptions,
-    cancel_project_wiki_digest, default_root_path, execute_sync, fail_project_wiki_digest_start,
-    index_project_sessions, link_project, mark_project_wiki_digest_started, prepare_init,
-    prepare_project_wiki_digest_start, prepare_sync, refresh_all_projects, refresh_project,
-    remove_project, rename_project, run_project_wiki_digest_worker, write_init,
+    cancel_project_wiki_digest, default_root_path, discard_project_wiki_entry, execute_sync,
+    fail_project_wiki_digest_start, index_project_sessions, link_project,
+    mark_project_wiki_digest_started, prepare_init, prepare_project_wiki_digest_start,
+    prepare_sync, refresh_all_projects, refresh_project, remove_project, rename_project,
+    restore_project_wiki_entry, run_project_wiki_digest_worker, write_init,
 };
 use darc_paths::{current_utc_timestamp, current_utc_timestamp_at};
 use darc_rollout_audit::claude::{
@@ -77,7 +78,7 @@ enum Commands {
     Query(QueryArgs),
     #[command(
         about = "Manage Context Wiki workflows",
-        long_about = "Manage Context Wiki workflows.\n\nThis top-level command hosts imperative Context Wiki operations such as digest run lifecycle and entry state changes.\n`darc wiki digest ...` is implemented today. Entry discard/restore commands are exposed but not implemented yet.\nUse `darc query wiki ... --json` for canonical read-side access."
+        long_about = "Manage Context Wiki workflows.\n\nThis top-level command hosts imperative Context Wiki operations such as digest run lifecycle and entry state changes.\n`darc wiki digest ...` manages agent-backed digest runs, and `darc wiki entry ...` mutates canonical entry lifecycle state.\nUse `darc query wiki ... --json` for canonical read-side access."
     )]
     Wiki(WikiArgs),
     #[command(
@@ -764,11 +765,39 @@ enum WikiEntryCommands {
 
 /// Stores CLI arguments for `darc wiki entry discard`.
 #[derive(Debug, Args)]
-struct WikiEntryDiscardArgs {}
+struct WikiEntryDiscardArgs {
+    #[command(flatten)]
+    args: WikiEntryMutationArgs,
+}
 
 /// Stores CLI arguments for `darc wiki entry restore`.
 #[derive(Debug, Args)]
-struct WikiEntryRestoreArgs {}
+struct WikiEntryRestoreArgs {
+    #[command(flatten)]
+    args: WikiEntryMutationArgs,
+}
+
+/// Stores the shared CLI arguments for `darc wiki entry` lifecycle mutations.
+#[derive(Debug, Args, Clone)]
+struct WikiEntryMutationArgs {
+    #[arg(long, default_value_os_t = default_root_path())]
+    root: PathBuf,
+
+    #[arg(
+        long = "project-id",
+        help = "Mutate one entry under this configured project id"
+    )]
+    project_id: String,
+
+    #[arg(long = "entry-id", help = "Mutate this wiki entry id")]
+    entry_id: String,
+
+    #[arg(
+        long,
+        help = "Emit the stable machine-readable JSON envelope on stdout"
+    )]
+    json: bool,
+}
 
 /// Audit Codex rollout schema compatibility against stable release tags.
 #[derive(Debug, Args)]
@@ -1124,12 +1153,8 @@ fn run_wiki(args: WikiArgs) -> Result<()> {
             WikiDigestCommands::Worker(args) => run_wiki_digest_worker(args),
         },
         WikiCommands::Entry(args) => match args.command {
-            WikiEntryCommands::Discard(_) => bail!(
-                "darc wiki entry discard is not implemented yet\nuse `darc query wiki ... --json` for read-side access today"
-            ),
-            WikiEntryCommands::Restore(_) => bail!(
-                "darc wiki entry restore is not implemented yet\nuse `darc query wiki ... --json` for read-side access today"
-            ),
+            WikiEntryCommands::Discard(args) => run_wiki_entry_discard(args),
+            WikiEntryCommands::Restore(args) => run_wiki_entry_restore(args),
         },
     }
 }
@@ -1229,6 +1254,48 @@ fn run_wiki_digest_cancel(args: WikiDigestCancelArgs) -> Result<()> {
 fn run_wiki_digest_worker(args: WikiDigestWorkerArgs) -> Result<()> {
     let run_id = RunId::new(args.run_id)?;
     run_project_wiki_digest_worker(Some(args.root), &args.project_id, &run_id)
+}
+
+/// Discards one existing canonical Context Wiki entry.
+fn run_wiki_entry_discard(args: WikiEntryDiscardArgs) -> Result<()> {
+    run_wiki_entry_mutation(
+        args.args,
+        "darc.wiki.entry.discard.v1",
+        discard_project_wiki_entry,
+    )
+}
+
+/// Restores one discarded canonical Context Wiki entry.
+fn run_wiki_entry_restore(args: WikiEntryRestoreArgs) -> Result<()> {
+    run_wiki_entry_mutation(
+        args.args,
+        "darc.wiki.entry.restore.v1",
+        restore_project_wiki_entry,
+    )
+}
+
+/// Runs one canonical wiki entry lifecycle mutation and emits the requested output shape.
+fn run_wiki_entry_mutation<F>(
+    args: WikiEntryMutationArgs,
+    schema: &'static str,
+    mutate: F,
+) -> Result<()>
+where
+    F: FnOnce(Option<PathBuf>, &str, &EntryId) -> Result<darc_core::EntryMutationReport>,
+{
+    let entry_id = EntryId::new(args.entry_id)?;
+    let report = mutate(Some(args.root), &args.project_id, &entry_id)?;
+    if args.json {
+        return print_json_envelope(schema, &report);
+    }
+
+    println!("Project ID: {}", report.project_id);
+    println!("Entry ID: {}", report.entry_id);
+    println!("Previous Status: {:?}", report.previous_status);
+    println!("Status: {:?}", report.status);
+    println!("Updated At: {}", report.updated_at);
+    println!("Changed: {}", report.changed);
+    Ok(())
 }
 
 /// Writes one machine-readable JSON envelope to stdout.

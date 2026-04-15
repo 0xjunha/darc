@@ -11,6 +11,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use darc_core::{EntryFrontmatter, EntryId, EntryStatus, EntryType, RunId, ensure_project_wiki};
 use darc_index::{INDEX_DB_FILE_NAME, open_index_database};
 use darc_test_utils::{unique_test_dir, write_file};
 use rusqlite::params;
@@ -119,6 +120,65 @@ fn write_registry_domains(root: &Path, domains: &[&str]) -> Result<()> {
     write_file(
         &registry_dir.join("domains.toml"),
         &format!("schema_version = 1\ndomains = [{domains}]\n"),
+    )
+}
+
+/// Writes one canonical wiki entry fixture for entry lifecycle command tests.
+fn write_entry_fixture(
+    root: &Path,
+    entry_id: &str,
+    display_id: &str,
+    status: EntryStatus,
+) -> Result<()> {
+    let layout = ensure_project_wiki(Some(root.to_path_buf()), "repo-abc123")?;
+    let entry_id = EntryId::new(entry_id)?;
+    let frontmatter = EntryFrontmatter {
+        schema_version: 1,
+        entry_id: entry_id.clone(),
+        entry_type: EntryType::DecisionTrace,
+        display_id: Some(display_id.to_owned()),
+        project_id: "repo-abc123".to_owned(),
+        title: "Keep the query protocol additive".to_owned(),
+        category: "product".to_owned(),
+        domains: vec!["query-protocol".to_owned()],
+        status,
+        created_at: "2026-04-13T10:00:00Z".to_owned(),
+        updated_at: "2026-04-13T10:00:00Z".to_owned(),
+        decision_date: Some("2026-04-13".to_owned()),
+        evidence: vec!["codex:session-1#0".to_owned()],
+        content_fingerprint: None,
+        created_by_run_id: RunId::new("cwrun_01entryfixture")?,
+        updated_by_run_id: RunId::new("cwrun_01entryfixture")?,
+        supersedes: Vec::new(),
+    };
+    let mut content =
+        toml::to_string_pretty(&frontmatter).context("failed to serialize entry fixture")?;
+    if !content.ends_with('\n') {
+        content.push('\n');
+    }
+    write_file(
+        &layout.entry_path("product", &entry_id),
+        &format!(
+            concat!(
+                "+++\n",
+                "{content}",
+                "+++\n\n",
+                "## Context\n\n",
+                "Desktop already depends on the current query protocol.\n\n",
+                "## Options Considered\n\n",
+                "1. Chosen: Keep the protocol additive.\n",
+                "2. Rejected: Ship breaking changes.\n\n",
+                "## Final Decision\n\n",
+                "Keep the protocol additive.\n\n",
+                "## Rationale\n\n",
+                "Downstream tools already consume the stable shape.\n\n",
+                "## Consequences\n\n",
+                "Future changes must stay additive.\n\n",
+                "## Evidence\n\n",
+                "- `codex:session-1#0`\n"
+            ),
+            content = content
+        ),
     )
 }
 
@@ -409,6 +469,121 @@ fn wiki_digest_start_query_and_cancel_round_trip() -> Result<()> {
     wait_for_path(&result_path)?;
     let result = fs::read_to_string(result_path)?;
     assert!(result.contains("\"status\": \"canceled\""));
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn wiki_entry_discard_and_restore_round_trip() -> Result<()> {
+    let root = create_wiki_fixture_root("cli-wiki-entry-roundtrip")?;
+    write_entry_fixture(&root, "cw_01entryroundtrip", "DT-1", EntryStatus::Active)?;
+
+    let discard_output = run_darc([
+        "wiki",
+        "entry",
+        "discard",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--entry-id",
+        "cw_01entryroundtrip",
+        "--json",
+    ])?;
+
+    assert!(discard_output.status.success());
+    let discard_value = parse_json(&discard_output.stdout, "stdout")?;
+    assert_eq!(discard_value["schema"], "darc.wiki.entry.discard.v1");
+    assert_eq!(discard_value["data"]["entry_id"], "cw_01entryroundtrip");
+    assert_eq!(discard_value["data"]["previous_status"], "active");
+    assert_eq!(discard_value["data"]["status"], "discarded");
+    assert_eq!(discard_value["data"]["changed"], true);
+
+    let query_discarded = run_darc([
+        "query",
+        "wiki",
+        "entry",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--entry-id",
+        "cw_01entryroundtrip",
+        "--json",
+    ])?;
+    assert!(query_discarded.status.success());
+    let discarded_entry = parse_json(&query_discarded.stdout, "stdout")?;
+    assert_eq!(discarded_entry["data"]["entry"]["status"], "discarded");
+    let entry_path =
+        root.join("context-wiki/projects/repo-abc123/entries/product/cw_01entryroundtrip.md");
+    assert!(fs::read_to_string(&entry_path)?.contains("status = \"discarded\""));
+
+    let restore_output = run_darc([
+        "wiki",
+        "entry",
+        "restore",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--entry-id",
+        "cw_01entryroundtrip",
+        "--json",
+    ])?;
+
+    assert!(restore_output.status.success());
+    let restore_value = parse_json(&restore_output.stdout, "stdout")?;
+    assert_eq!(restore_value["schema"], "darc.wiki.entry.restore.v1");
+    assert_eq!(restore_value["data"]["previous_status"], "discarded");
+    assert_eq!(restore_value["data"]["status"], "active");
+    assert_eq!(restore_value["data"]["changed"], true);
+
+    let query_restored = run_darc([
+        "query",
+        "wiki",
+        "entry",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--entry-id",
+        "cw_01entryroundtrip",
+        "--json",
+    ])?;
+    assert!(query_restored.status.success());
+    let restored_entry = parse_json(&query_restored.stdout, "stdout")?;
+    assert_eq!(restored_entry["data"]["entry"]["status"], "active");
+    assert!(fs::read_to_string(&entry_path)?.contains("status = \"active\""));
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn wiki_entry_restore_rejects_duplicate_active_identity() -> Result<()> {
+    let root = create_wiki_fixture_root("cli-wiki-entry-restore-conflict")?;
+    write_entry_fixture(&root, "cw_01entryactive", "DT-1", EntryStatus::Active)?;
+    write_entry_fixture(&root, "cw_01entrydiscarded", "DT-2", EntryStatus::Discarded)?;
+
+    let output = run_darc([
+        "wiki",
+        "entry",
+        "restore",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--entry-id",
+        "cw_01entrydiscarded",
+        "--json",
+    ])?;
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("active entry `cw_01entryactive` already has the same canonical identity")
+    );
 
     remove_root(&root)?;
     Ok(())

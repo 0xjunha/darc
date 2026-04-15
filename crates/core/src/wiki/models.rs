@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use darc_agent::ProposalOutputSource;
 use darc_paths::current_utc_timestamp;
 use darc_wiki::{
-    ProjectLayout, ProjectRegistry, ProposalValidationError, RunId, RunPhase, RunStatus,
+    EntryId, EntryStatus, ProjectLayout, ProjectRegistry, ProposalValidationError, RunId, RunPhase,
+    RunStatus,
 };
 use serde::{Deserialize, Serialize};
 
@@ -65,6 +66,17 @@ pub struct DigestCancelReport {
     pub phase: RunPhase,
     pub cancel_requested: bool,
     pub pid: Option<u32>,
+}
+
+/// Reports one canonical wiki entry lifecycle mutation back to the CLI.
+#[derive(Debug, Clone, Serialize)]
+pub struct EntryMutationReport {
+    pub project_id: String,
+    pub entry_id: EntryId,
+    pub previous_status: EntryStatus,
+    pub status: EntryStatus,
+    pub updated_at: String,
+    pub changed: bool,
 }
 
 /// Stores one persisted digest start request artifact.
