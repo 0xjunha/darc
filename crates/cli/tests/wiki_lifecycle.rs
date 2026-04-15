@@ -103,6 +103,24 @@ fn remove_root(root: &Path) -> Result<()> {
         .with_context(|| format!("failed to remove temporary test root {}", root.display()))
 }
 
+/// Writes one project registry domains fixture for wiki lifecycle tests.
+fn write_registry_domains(root: &Path, domains: &[&str]) -> Result<()> {
+    let wiki_root = root.join("context-wiki");
+    let registry_dir = root.join("context-wiki/projects/repo-abc123/registry");
+    fs::create_dir_all(wiki_root.join("projects"))?;
+    fs::create_dir_all(&registry_dir)?;
+    write_file(&wiki_root.join("VERSION"), "1\n")?;
+    let domains = domains
+        .iter()
+        .map(|domain| format!("\"{domain}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    write_file(
+        &registry_dir.join("domains.toml"),
+        &format!("schema_version = 1\ndomains = [{domains}]\n"),
+    )
+}
+
 /// Polls the wiki runs query until one run id is visible or the timeout expires.
 fn wait_for_run_visibility(root: &Path, run_id: &str) -> Result<Value> {
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -519,8 +537,44 @@ fn wiki_digest_start_repairs_stale_running_runs() -> Result<()> {
 }
 
 #[test]
+fn wiki_digest_start_rejects_unregistered_target_domain() -> Result<()> {
+    let root = create_wiki_fixture_root("cli-wiki-target-domain-validation")?;
+
+    let output = run_darc([
+        "wiki",
+        "digest",
+        "start",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--session-ref",
+        "codex:session-1",
+        "--agent",
+        "codex",
+        "--runtime",
+        "external-cli",
+        "--model",
+        "gpt-5.4",
+        "--target-domain",
+        "query-protocol",
+        "--json",
+    ])?;
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("target domain `query-protocol` is not defined in the project registry")
+    );
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
 fn wiki_digest_succeeds_after_valid_codex_proposal() -> Result<()> {
     let root = create_wiki_fixture_root("cli-wiki-runtime-success")?;
+    write_registry_domains(&root, &["query-protocol"])?;
     let codex = write_fake_cli(
         &root,
         "fake-codex-success",

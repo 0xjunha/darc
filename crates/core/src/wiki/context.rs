@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use darc_agent::{AgentId, RuntimeKind};
 use darc_paths::SourceKind;
-use darc_wiki::{ProjectLayout, ProjectRegistry, RunState, is_valid_domain_id, load_registry};
+use darc_wiki::{ProjectLayout, ProjectRegistry, is_valid_domain_id, load_registry};
 
 use super::{
     DigestStartOptions,
@@ -50,6 +50,9 @@ pub(super) fn validate_digest_targets(
     for domain in &options.target_domains {
         if !is_valid_domain_id(domain) {
             bail!("target domain `{domain}` must use lowercase slug format");
+        }
+        if !registry.domains.contains(domain) {
+            bail!("target domain `{domain}` is not defined in the project registry");
         }
     }
     Ok(())
@@ -115,15 +118,9 @@ where
     Ok(DigestContextSession { session, turns })
 }
 
-/// Builds the allowed proposal domain list from persisted registry and run-target hints.
-pub(super) fn build_allowed_domains(registry: &ProjectRegistry, state: &RunState) -> Vec<String> {
-    let mut domains = registry.domains.clone();
-    for domain in &state.target_domains {
-        if !domains.contains(domain) {
-            domains.push(domain.clone());
-        }
-    }
-    domains
+/// Builds the allowed proposal domain list from the persisted project registry.
+pub(super) fn build_allowed_domains(registry: &ProjectRegistry) -> Vec<String> {
+    registry.domains.clone()
 }
 
 /// Builds the exact evidence-reference allowlist from the loaded digest context.

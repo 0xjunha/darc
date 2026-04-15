@@ -1,8 +1,11 @@
-use std::{collections::BTreeSet, fmt};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+};
 
 use serde::{Deserialize, Serialize};
 
-use crate::EntryType;
+use crate::{EntryFrontmatter, EntryType};
 
 /// Stores the fixed schema identifier for digest proposal artifacts.
 pub const DIGEST_PROPOSAL_SCHEMA: &str = "darc.wiki.digest.proposal.v1";
@@ -88,32 +91,30 @@ pub const DIGEST_PROPOSAL_OUTPUT_SCHEMA_JSON: &str = r#"{
 
 /// Stores one structured digest proposal returned by an external runtime.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DigestProposal {
     pub schema: String,
     pub project_id: String,
     pub run_id: String,
-    #[serde(default)]
     pub entries: Vec<DigestProposalEntry>,
     pub run_summary: DigestProposalRunSummary,
 }
 
 /// Stores one structured decision-trace proposal entry within a digest proposal.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DigestProposalEntry {
     pub operation: ProposalEntryOperation,
     pub entry_type: EntryType,
     pub title: String,
     pub category: String,
-    #[serde(default)]
     pub domains: Vec<String>,
     pub decision_date: String,
     pub context: String,
-    #[serde(default)]
     pub options: Vec<DigestProposalOption>,
     pub final_decision: String,
     pub rationale: String,
     pub consequences: String,
-    #[serde(default)]
     pub evidence: Vec<String>,
 }
 
@@ -126,6 +127,7 @@ pub enum ProposalEntryOperation {
 
 /// Stores one proposal option row for a decision trace.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DigestProposalOption {
     pub status: DigestProposalOptionStatus,
     pub description: String,
@@ -141,10 +143,10 @@ pub enum DigestProposalOptionStatus {
 
 /// Stores the required run summary block for one digest proposal.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DigestProposalRunSummary {
     pub title: String,
     pub summary: String,
-    #[serde(default)]
     pub themes: Vec<String>,
     pub extracted_decision_count: usize,
 }
@@ -157,6 +159,7 @@ pub struct ProposalValidationOptions<'a> {
     pub allowed_categories: &'a [String],
     pub allowed_domains: &'a [String],
     pub allowed_evidence_refs: &'a [String],
+    pub existing_entries: &'a [EntryFrontmatter],
 }
 
 /// Stores one structured proposal validation error for durable reporting.
@@ -246,6 +249,14 @@ pub fn validate_digest_proposal(
         .iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
+    let existing_entries = options
+        .existing_entries
+        .iter()
+        .filter_map(|entry| {
+            existing_entry_identity(entry).map(|identity| (identity, entry.entry_id.as_str()))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut proposed_entries = BTreeMap::new();
 
     if proposal.schema != DIGEST_PROPOSAL_SCHEMA {
         push_error(
@@ -308,6 +319,21 @@ pub fn validate_digest_proposal(
 
     for (entry_index, entry) in proposal.entries.iter().enumerate() {
         let base = format!("entries[{entry_index}]");
+        let identity = proposal_entry_identity(entry);
+        if let Some(existing_entry_id) = existing_entries.get(&identity) {
+            push_error(
+                &mut errors,
+                base.clone(),
+                format!("entry duplicates existing canonical entry `{existing_entry_id}`"),
+            );
+        }
+        if let Some(first_index) = proposed_entries.insert(identity, entry_index) {
+            push_error(
+                &mut errors,
+                base.clone(),
+                format!("entry duplicates entries[{first_index}]"),
+            );
+        }
         validate_non_empty_string(
             &mut errors,
             format!("{base}.title"),
@@ -461,6 +487,46 @@ pub fn validate_digest_proposal(
     }
 }
 
+/// Stores the stable duplicate-detection key for one decision-trace proposal entry.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ProposalEntryIdentity {
+    title: String,
+    category: String,
+    domains: Vec<String>,
+    decision_date: String,
+}
+
+/// Builds the duplicate-detection key for one proposal entry.
+fn proposal_entry_identity(entry: &DigestProposalEntry) -> ProposalEntryIdentity {
+    ProposalEntryIdentity {
+        title: entry.title.trim().to_owned(),
+        category: entry.category.trim().to_owned(),
+        domains: normalize_identity_domains(&entry.domains),
+        decision_date: entry.decision_date.trim().to_owned(),
+    }
+}
+
+/// Builds the duplicate-detection key for one existing canonical entry when possible.
+fn existing_entry_identity(entry: &EntryFrontmatter) -> Option<ProposalEntryIdentity> {
+    Some(ProposalEntryIdentity {
+        title: entry.title.trim().to_owned(),
+        category: entry.category.trim().to_owned(),
+        domains: normalize_identity_domains(&entry.domains),
+        decision_date: entry.decision_date.as_ref()?.trim().to_owned(),
+    })
+}
+
+/// Normalizes one domain list into a stable duplicate-detection ordering.
+fn normalize_identity_domains(domains: &[String]) -> Vec<String> {
+    let mut domains = domains
+        .iter()
+        .map(|domain| domain.trim().to_owned())
+        .collect::<Vec<_>>();
+    domains.sort();
+    domains.dedup();
+    domains
+}
+
 /// Stores one parsed evidence reference used for proposal validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct EvidenceReference {
@@ -543,6 +609,7 @@ mod tests {
             allowed_categories: Box::leak(allowed_categories.into_boxed_slice()),
             allowed_domains,
             allowed_evidence_refs,
+            existing_entries: &[],
         }
     }
 
@@ -620,5 +687,179 @@ mod tests {
                 .iter()
                 .any(|error| error.path == "entries[0].evidence[0]")
         );
+    }
+
+    #[test]
+    fn validation_rejects_duplicate_entries_within_one_proposal() {
+        let allowed_evidence_refs = vec!["codex:session-1#0".to_owned()];
+        let allowed_domains = vec!["query-protocol".to_owned()];
+        let duplicate_entry = DigestProposalEntry {
+            operation: ProposalEntryOperation::Create,
+            entry_type: EntryType::DecisionTrace,
+            title: "Keep query protocol stable".to_owned(),
+            category: "product".to_owned(),
+            domains: vec!["query-protocol".to_owned()],
+            decision_date: "2026-04-13".to_owned(),
+            context: "Context".to_owned(),
+            options: vec![DigestProposalOption {
+                status: DigestProposalOptionStatus::Chosen,
+                description: "Stay additive".to_owned(),
+            }],
+            final_decision: "Stay additive".to_owned(),
+            rationale: "Desktop depends on it".to_owned(),
+            consequences: "Protocol changes need migration".to_owned(),
+            evidence: vec!["codex:session-1#0".to_owned()],
+        };
+        let proposal = DigestProposal {
+            schema: DIGEST_PROPOSAL_SCHEMA.to_owned(),
+            project_id: "repo-abc123".to_owned(),
+            run_id: "cwrun_01proposal".to_owned(),
+            entries: vec![duplicate_entry.clone(), duplicate_entry],
+            run_summary: DigestProposalRunSummary {
+                title: "Summary".to_owned(),
+                summary: "Summary".to_owned(),
+                themes: Vec::new(),
+                extracted_decision_count: 2,
+            },
+        };
+
+        let errors = validate_digest_proposal(
+            &proposal,
+            &validation_options(&allowed_evidence_refs, &allowed_domains),
+        )
+        .expect_err("duplicate entries should fail validation");
+        assert!(errors.errors().iter().any(|error| {
+            error.path == "entries[1]"
+                && error.message.contains("duplicates")
+                && error.message.contains("entries[0]")
+        }));
+    }
+
+    #[test]
+    fn validation_rejects_entries_that_duplicate_existing_canonical_state() {
+        let allowed_evidence_refs = vec!["codex:session-1#0".to_owned()];
+        let allowed_domains = vec!["query-protocol".to_owned()];
+        let existing_entry = EntryFrontmatter {
+            schema_version: 1,
+            entry_id: crate::EntryId::new("cw_existing-1").expect("entry id should be valid"),
+            entry_type: EntryType::DecisionTrace,
+            display_id: Some("DT-1".to_owned()),
+            project_id: "repo-abc123".to_owned(),
+            title: "Keep query protocol stable".to_owned(),
+            category: "product".to_owned(),
+            domains: vec!["query-protocol".to_owned()],
+            status: crate::EntryStatus::Active,
+            created_at: "2026-04-13T10:31:22Z".to_owned(),
+            updated_at: "2026-04-13T10:31:22Z".to_owned(),
+            decision_date: Some("2026-04-13".to_owned()),
+            evidence: vec!["codex:session-1#0".to_owned()],
+            created_by_run_id: crate::RunId::new("cwrun_existing-1")
+                .expect("run id should be valid"),
+            updated_by_run_id: crate::RunId::new("cwrun_existing-1")
+                .expect("run id should be valid"),
+            supersedes: Vec::new(),
+        };
+        let proposal = DigestProposal {
+            schema: DIGEST_PROPOSAL_SCHEMA.to_owned(),
+            project_id: "repo-abc123".to_owned(),
+            run_id: "cwrun_01proposal".to_owned(),
+            entries: vec![DigestProposalEntry {
+                operation: ProposalEntryOperation::Create,
+                entry_type: EntryType::DecisionTrace,
+                title: "Keep query protocol stable".to_owned(),
+                category: "product".to_owned(),
+                domains: vec!["query-protocol".to_owned()],
+                decision_date: "2026-04-13".to_owned(),
+                context: "Context".to_owned(),
+                options: vec![DigestProposalOption {
+                    status: DigestProposalOptionStatus::Chosen,
+                    description: "Stay additive".to_owned(),
+                }],
+                final_decision: "Stay additive".to_owned(),
+                rationale: "Desktop depends on it".to_owned(),
+                consequences: "Protocol changes need migration".to_owned(),
+                evidence: vec!["codex:session-1#0".to_owned()],
+            }],
+            run_summary: DigestProposalRunSummary {
+                title: "Summary".to_owned(),
+                summary: "Summary".to_owned(),
+                themes: Vec::new(),
+                extracted_decision_count: 1,
+            },
+        };
+        let existing_entries = [existing_entry];
+        let validation = ProposalValidationOptions {
+            existing_entries: &existing_entries,
+            ..validation_options(&allowed_evidence_refs, &allowed_domains)
+        };
+
+        let errors =
+            validate_digest_proposal(&proposal, &validation).expect_err("duplicates should fail");
+        assert!(errors.errors().iter().any(|error| {
+            error.path == "entries[0]"
+                && error
+                    .message
+                    .contains("duplicates existing canonical entry `cw_existing-1`")
+        }));
+    }
+
+    #[test]
+    fn deserialization_rejects_unknown_fields() {
+        let error = serde_json::from_str::<DigestProposal>(
+            r#"{
+                "schema": "darc.wiki.digest.proposal.v1",
+                "project_id": "repo-abc123",
+                "run_id": "cwrun_01proposal",
+                "entries": [],
+                "run_summary": {
+                    "title": "Summary",
+                    "summary": "Summary",
+                    "themes": [],
+                    "extracted_decision_count": 0
+                },
+                "unexpected": true
+            }"#,
+        )
+        .expect_err("unknown fields should fail schema parsing");
+        assert!(error.to_string().contains("unexpected"));
+    }
+
+    #[test]
+    fn deserialization_rejects_missing_required_arrays() {
+        let error = serde_json::from_str::<DigestProposal>(
+            r#"{
+                "schema": "darc.wiki.digest.proposal.v1",
+                "project_id": "repo-abc123",
+                "run_id": "cwrun_01proposal",
+                "entries": [
+                    {
+                        "operation": "create",
+                        "entry_type": "decision_trace",
+                        "title": "Keep query protocol stable",
+                        "category": "product",
+                        "decision_date": "2026-04-13",
+                        "context": "Context",
+                        "options": [
+                            {
+                                "status": "chosen",
+                                "description": "Stay additive"
+                            }
+                        ],
+                        "final_decision": "Stay additive",
+                        "rationale": "Desktop depends on it",
+                        "consequences": "Protocol changes need migration",
+                        "evidence": ["codex:session-1#0"]
+                    }
+                ],
+                "run_summary": {
+                    "title": "Summary",
+                    "summary": "Summary",
+                    "themes": [],
+                    "extracted_decision_count": 1
+                }
+            }"#,
+        )
+        .expect_err("missing required arrays should fail schema parsing");
+        assert!(error.to_string().contains("domains"));
     }
 }

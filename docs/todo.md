@@ -11,6 +11,13 @@
   - Ensure runtime execution does not accidentally expose unrelated host secrets to digest runs.
 
 ### Context Wiki follow-ups
+- Split Context Wiki extraction from registry curation.
+  - Let the digest extractor agent propose new category/domain candidates when an extracted decision trace does not fit the current registry cleanly.
+  - Extend the digest proposal contract with optional proposed registry additions instead of allowing extractors to mutate the canonical registry directly.
+  - Add a separate registry-curator agent or backend-owned curation step that validates, accepts, rejects, or defers proposed category/domain additions.
+  - Keep hard backend validation for slug shape, dedupe, similarity to existing labels, and per-run proposal limits so registry quality stays stable.
+  - Prefer stricter promotion rules for categories than domains because category changes reshape the taxonomy more deeply.
+  - Consider a pending/promoted lifecycle so repeated accepted proposals can graduate into the canonical registry without immediate manual edits.
 - Add Windows support for stale-run pid liveness checks.
   - Stale run repair currently uses a Unix-only `kill(pid, 0)` existence check before rewriting a run to `interrupted`.
   - On non-Unix targets the fallback treats worker pids as not live, which is not the intended long-term behavior for Windows support.
