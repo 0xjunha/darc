@@ -1,4 +1,4 @@
-use std::fs;
+use std::{fs, path::Path};
 
 use serde::{Deserialize, Serialize};
 
@@ -32,10 +32,12 @@ impl Default for ProjectRegistry {
 
 impl ProjectRegistry {
     /// Normalizes registry ids into a deterministic read-side order.
-    fn normalize(mut self) -> Self {
+    fn normalize(mut self, categories_path: &Path, domains_path: &Path) -> Result<Self> {
         self.categories = dedupe_preserving_order(self.categories);
         self.domains = dedupe_preserving_order(self.domains);
-        self
+        validate_category_ids(categories_path, &self.categories)?;
+        validate_domain_ids(domains_path, &self.domains)?;
+        Ok(self)
     }
 }
 
@@ -94,12 +96,17 @@ pub fn load_registry(layout: &ProjectLayout) -> Result<ProjectRegistry> {
     } else {
         Vec::new()
     };
-    Ok(ProjectRegistry {
+    ProjectRegistry {
         schema_version: REGISTRY_SCHEMA_VERSION,
         categories,
         domains,
     }
-    .normalize())
+    .normalize(&layout.categories_path, &layout.domains_path)
+}
+
+/// Returns whether one category id is safe to use as a canonical path component.
+pub fn is_valid_category_id(value: &str) -> bool {
+    is_valid_registry_id(value)
 }
 
 /// Stores the schema for the default categories registry file.
@@ -151,6 +158,32 @@ fn default_categories() -> Vec<String> {
         .collect()
 }
 
+/// Validates every loaded registry category id against the canonical slug rules.
+fn validate_category_ids(path: &Path, categories: &[String]) -> Result<()> {
+    for category in categories {
+        if !is_valid_category_id(category) {
+            return Err(WikiError::InvalidRegistryCategory {
+                path: path.to_path_buf(),
+                value: category.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Validates every loaded registry domain id against the canonical slug rules.
+fn validate_domain_ids(path: &Path, domains: &[String]) -> Result<()> {
+    for domain in domains {
+        if !is_valid_registry_id(domain) {
+            return Err(WikiError::InvalidRegistryDomain {
+                path: path.to_path_buf(),
+                value: domain.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Validates one persisted registry schema version against the current implementation.
 fn validate_schema_version(path: &std::path::Path, schema_version: u32) -> Result<()> {
     if schema_version == REGISTRY_SCHEMA_VERSION {
@@ -188,4 +221,70 @@ fn dedupe_preserving_order(values: Vec<String>) -> Vec<String> {
         }
     }
     unique
+}
+
+/// Validates one registry identifier against the lowercase slug format.
+fn is_valid_registry_id(value: &str) -> bool {
+    let mut parts = value.split('-');
+    let Some(first) = parts.next() else {
+        return false;
+    };
+    if first.is_empty()
+        || !first
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
+    {
+        return false;
+    }
+    parts.all(|part| {
+        !part.is_empty()
+            && part
+                .chars()
+                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        sync::atomic::{AtomicU64, Ordering},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use super::*;
+    use crate::ContextWikiLayout;
+
+    static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn unique_test_dir(label: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after the Unix epoch")
+            .as_nanos();
+        let counter = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "darc-wiki-registry-{label}-{}-{nanos}-{counter}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn load_registry_rejects_unsafe_category_ids() {
+        let darc_root = unique_test_dir("invalid-category");
+        let layout = ContextWikiLayout::new(&darc_root)
+            .project_layout("repo-123")
+            .expect("project id should be valid");
+        layout.ensure().expect("layout should be created");
+        fs::write(
+            &layout.categories_path,
+            "schema_version = 1\ncategories = [\"../../outside\"]\n",
+        )
+        .expect("categories file should be written");
+
+        let error = load_registry(&layout).expect_err("unsafe category should be rejected");
+        assert!(matches!(error, WikiError::InvalidRegistryCategory { .. }));
+
+        fs::remove_dir_all(&darc_root).expect("temporary test root should be removable");
+    }
 }

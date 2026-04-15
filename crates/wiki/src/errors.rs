@@ -13,6 +13,14 @@ pub enum WikiError {
     #[error("invalid project id `{value}`")]
     InvalidProjectId { value: String },
 
+    /// Reports one invalid project-scoped registry category identifier.
+    #[error("invalid registry category id `{value}` in {path}")]
+    InvalidRegistryCategory { path: PathBuf, value: String },
+
+    /// Reports one invalid project-scoped registry domain identifier.
+    #[error("invalid registry domain id `{value}` in {path}")]
+    InvalidRegistryDomain { path: PathBuf, value: String },
+
     /// Reports one missing Markdown frontmatter block.
     #[error("missing TOML frontmatter in {path}")]
     MissingFrontmatter { path: PathBuf },
