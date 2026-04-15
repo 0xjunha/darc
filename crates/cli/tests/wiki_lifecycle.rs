@@ -707,7 +707,7 @@ fn wiki_digest_fails_on_invalid_claude_proposal() -> Result<()> {
             "    --model|--input-format|--output-format|--json-schema|--permission-mode|--tools)\n",
             "      shift 2\n",
             "      ;;\n",
-            "    --print|--disable-slash-commands|--no-session-persistence)\n",
+            "    --print|--bare|--disable-slash-commands|--no-session-persistence)\n",
             "      shift\n",
             "      ;;\n",
             "    *)\n",
@@ -773,7 +773,10 @@ fn wiki_digest_fails_on_invalid_claude_proposal() -> Result<()> {
             "claude-sonnet-4-6",
             "--json",
         ],
-        [("DARC_WIKI_CLAUDE_BIN", claude.as_os_str())],
+        [
+            ("ANTHROPIC_API_KEY", std::ffi::OsStr::new("test-key")),
+            ("DARC_WIKI_CLAUDE_BIN", claude.as_os_str()),
+        ],
     )?;
     assert!(start_output.status.success());
     let start_value = parse_json(&start_output.stdout, "stdout")?;
