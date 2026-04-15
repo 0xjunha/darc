@@ -19,8 +19,9 @@ pub use digests::{
     load_digest, load_digest_detail,
 };
 pub use entries::{
-    EntryDetailDocument, EntryDocument, EntryFrontmatter, EntryStatus, EntrySummary, EntryType,
-    list_entries, load_entry, load_entry_detail,
+    EntryDetailDocument, EntryDocument, EntryFrontmatter, EntryStatus, EntryStatusChange,
+    EntrySummary, EntryType, discard_entry, list_entries, load_entry, load_entry_detail,
+    restore_entry,
 };
 pub use errors::{Result, WikiError};
 pub use ids::{DigestId, EntryId, RunId};

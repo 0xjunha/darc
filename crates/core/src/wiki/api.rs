@@ -3,13 +3,15 @@ use std::{fs, path::PathBuf};
 use anyhow::{Context, Result};
 use darc_paths::current_utc_timestamp;
 use darc_wiki::{
-    ContextWikiLayout, ProjectLayout, RunId, RunPhase, RunState, RunStatus, ensure_registry,
-    list_digests, list_entries, load_registry, load_run_state, store_run_state,
+    ContextWikiLayout, EntryId, EntryStatusChange, ProjectLayout, RunId, RunPhase, RunState,
+    RunStatus, discard_entry, ensure_registry, list_digests, list_entries, load_registry,
+    load_run_state, restore_entry, store_run_state,
 };
 
 use super::{
     DEFAULT_REQUESTED_BY, DigestCancelReport, DigestStartOptions, DigestStartReport,
-    PreparedDigestRun, ProjectWikiData, RUN_CONTEXT_SCHEMA, RUN_REQUEST_SCHEMA,
+    EntryMutationReport, PreparedDigestRun, ProjectWikiData, RUN_CONTEXT_SCHEMA,
+    RUN_REQUEST_SCHEMA,
     artifacts::{
         append_run_event, relative_artifact_name, touch_file, write_json_artifact,
         write_terminal_result,
@@ -283,6 +285,28 @@ pub fn cancel_project_wiki_digest(
     Ok(report_from_run_state(&state))
 }
 
+/// Discards one canonical wiki entry for the requested configured project.
+pub fn discard_project_wiki_entry(
+    root: Option<PathBuf>,
+    project_id: &str,
+    entry_id: &EntryId,
+) -> Result<EntryMutationReport> {
+    let layout = ensure_project_wiki(root, project_id)?;
+    let change = discard_entry(&layout, entry_id).context("failed to discard wiki entry")?;
+    Ok(entry_mutation_report(project_id, change))
+}
+
+/// Restores one discarded canonical wiki entry for the requested configured project.
+pub fn restore_project_wiki_entry(
+    root: Option<PathBuf>,
+    project_id: &str,
+    entry_id: &EntryId,
+) -> Result<EntryMutationReport> {
+    let layout = ensure_project_wiki(root, project_id)?;
+    let change = restore_entry(&layout, entry_id).context("failed to restore wiki entry")?;
+    Ok(entry_mutation_report(project_id, change))
+}
+
 /// Runs the hidden digest worker loop for one existing run.
 pub fn run_project_wiki_digest_worker(
     root: Option<PathBuf>,
@@ -314,4 +338,16 @@ pub(super) fn resolve_project_layout(
     ContextWikiLayout::new(root)
         .project_layout(project.id)
         .context("failed to resolve project wiki layout")
+}
+
+/// Converts one leaf wiki entry status change into the external CLI response shape.
+fn entry_mutation_report(project_id: &str, change: EntryStatusChange) -> EntryMutationReport {
+    EntryMutationReport {
+        project_id: project_id.to_owned(),
+        entry_id: change.entry_id,
+        previous_status: change.previous_status,
+        status: change.status,
+        updated_at: change.updated_at,
+        changed: change.changed,
+    }
 }

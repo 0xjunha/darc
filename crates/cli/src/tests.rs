@@ -598,6 +598,68 @@ fn parses_wiki_digest_cancel_command() {
 }
 
 #[test]
+fn parses_wiki_entry_discard_command() {
+    let cli = Cli::try_parse_from([
+        "darc",
+        "wiki",
+        "entry",
+        "discard",
+        "--project-id",
+        "repo-abc123",
+        "--entry-id",
+        "cw_01abcd",
+        "--json",
+    ])
+    .unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Wiki(super::WikiArgs {
+            command: WikiCommands::Entry(super::WikiEntryArgs {
+                command: super::WikiEntryCommands::Discard(super::WikiEntryDiscardArgs {
+                    args: super::WikiEntryMutationArgs {
+                        project_id,
+                        entry_id,
+                        json,
+                        ..
+                    },
+                }),
+            }),
+        }) if project_id == "repo-abc123" && entry_id == "cw_01abcd" && json
+    ));
+}
+
+#[test]
+fn parses_wiki_entry_restore_command() {
+    let cli = Cli::try_parse_from([
+        "darc",
+        "wiki",
+        "entry",
+        "restore",
+        "--project-id",
+        "repo-abc123",
+        "--entry-id",
+        "cw_01abcd",
+        "--json",
+    ])
+    .unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Wiki(super::WikiArgs {
+            command: WikiCommands::Entry(super::WikiEntryArgs {
+                command: super::WikiEntryCommands::Restore(super::WikiEntryRestoreArgs {
+                    args: super::WikiEntryMutationArgs {
+                        project_id,
+                        entry_id,
+                        json,
+                        ..
+                    },
+                }),
+            }),
+        }) if project_id == "repo-abc123" && entry_id == "cw_01abcd" && json
+    ));
+}
+
+#[test]
 fn parses_window_days() {
     assert_eq!(parse_window_days("7d").unwrap(), 7);
     assert!(parse_window_days("0d").is_err());

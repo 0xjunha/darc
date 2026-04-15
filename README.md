@@ -89,8 +89,8 @@ darc refresh --all
 - `darc query` exposes the machine-readable read protocol for workspace, session, turn, search, and insights data.
   This includes the read-side `darc query wiki ...` commands. Query commands currently require `--json`; see
   [Query protocol](docs/query-protocol.md).
-- `darc wiki` hosts the experimental imperative Context Wiki workflow, including digest start/cancel commands that
-  invoke external Codex or Claude Code CLIs.
+- `darc wiki` hosts the experimental imperative Context Wiki workflow, including digest start/cancel commands plus
+  entry discard/restore lifecycle commands.
 - `darc link`, `darc remove`, and `darc rename-from` manage renamed or merged projects.
 
 ## Session And Turn Stats
@@ -139,6 +139,8 @@ Darc includes an experimental backend-owned Context Wiki workflow under `~/.darc
 - Use `darc wiki digest start` to assemble selected session context, invoke an external Codex or Claude Code CLI,
   validate the returned structured proposal artifact, and merge the validated result into canonical wiki artifacts.
 - Use `darc wiki digest cancel` to request cancellation for an in-flight run.
+- Use `darc wiki entry discard` and `darc wiki entry restore` to change entry lifecycle state without deleting the
+  canonical Markdown artifact.
 - Successful digest runs persist a digest report plus terminal run metadata and either create or update canonical
   decision-trace entries, or record a zero-entry digest when no durable decisions were extracted.
 
