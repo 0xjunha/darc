@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     EntryFrontmatter, EntryType,
     decision_trace::{existing_content_fingerprint, proposal_content_fingerprint},
+    slug::is_valid_slug_id,
 };
 
 /// Stores the fixed schema identifier for digest proposal artifacts.
@@ -211,23 +212,7 @@ impl std::error::Error for ProposalValidationErrors {}
 
 /// Validates one candidate domain id against the current project-scoped slug rules.
 pub fn is_valid_domain_id(value: &str) -> bool {
-    let mut parts = value.split('-');
-    let Some(first) = parts.next() else {
-        return false;
-    };
-    if first.is_empty()
-        || !first
-            .chars()
-            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
-    {
-        return false;
-    }
-    parts.all(|part| {
-        !part.is_empty()
-            && part
-                .chars()
-                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
-    })
+    is_valid_slug_id(value)
 }
 
 /// Validates one parsed digest proposal against the current MVP contract.

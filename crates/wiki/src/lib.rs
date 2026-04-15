@@ -12,6 +12,7 @@ mod proposal;
 mod registry;
 mod render;
 mod runs;
+mod slug;
 
 pub use digests::{
     DigestDetailDocument, DigestDocument, DigestFrontmatter, DigestSummary, list_digests,

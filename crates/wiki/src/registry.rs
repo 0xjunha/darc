@@ -2,7 +2,7 @@ use std::{fs, path::Path};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ProjectLayout, Result, WikiError};
+use crate::{ProjectLayout, Result, WikiError, slug::is_valid_slug_id};
 
 const REGISTRY_SCHEMA_VERSION: u32 = 1;
 
@@ -225,23 +225,7 @@ fn dedupe_preserving_order(values: Vec<String>) -> Vec<String> {
 
 /// Validates one registry identifier against the lowercase slug format.
 fn is_valid_registry_id(value: &str) -> bool {
-    let mut parts = value.split('-');
-    let Some(first) = parts.next() else {
-        return false;
-    };
-    if first.is_empty()
-        || !first
-            .chars()
-            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
-    {
-        return false;
-    }
-    parts.all(|part| {
-        !part.is_empty()
-            && part
-                .chars()
-                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
-    })
+    is_valid_slug_id(value)
 }
 
 #[cfg(test)]
