@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    DigestId, ProjectLayout, Result, RunId, frontmatter::load_markdown_frontmatter,
+    DigestId, ProjectLayout, Result, RunId,
+    frontmatter::{load_markdown_frontmatter, load_markdown_frontmatter_and_body},
     fs_utils::collect_markdown_files,
 };
 
@@ -29,6 +30,14 @@ pub struct DigestFrontmatter {
 pub struct DigestDocument {
     pub path: PathBuf,
     pub frontmatter: DigestFrontmatter,
+}
+
+/// Represents one canonical digest document with its Markdown body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DigestDetailDocument {
+    pub path: PathBuf,
+    pub frontmatter: DigestFrontmatter,
+    pub body_markdown: String,
 }
 
 /// Stores the read-side summary for one canonical digest report.
@@ -64,6 +73,16 @@ pub fn load_digest(path: &Path) -> Result<DigestDocument> {
     Ok(DigestDocument {
         path: path.to_path_buf(),
         frontmatter: load_markdown_frontmatter(path)?,
+    })
+}
+
+/// Loads one canonical digest report plus its Markdown body from disk.
+pub fn load_digest_detail(path: &Path) -> Result<DigestDetailDocument> {
+    let (frontmatter, body_markdown) = load_markdown_frontmatter_and_body(path)?;
+    Ok(DigestDetailDocument {
+        path: path.to_path_buf(),
+        frontmatter,
+        body_markdown,
     })
 }
 

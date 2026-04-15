@@ -23,9 +23,13 @@ Use `darc query wiki ... --json` to inspect Context Wiki state without invoking 
 
 - `darc query wiki registry --root <path> --project-id <id> --json`
 - `darc query wiki entries --root <path> --project-id <id> --json`
+- `darc query wiki entries --root <path> --project-id <id> --category <id> --domain <id> --status active --json`
+- `darc query wiki entry --root <path> --project-id <id> --entry-id <id> --json`
 - `darc query wiki digests --root <path> --project-id <id> --json`
+- `darc query wiki digests --root <path> --project-id <id> --limit 50 --json`
+- `darc query wiki digest --root <path> --project-id <id> --digest-id <id> --json`
 - `darc query wiki run --root <path> --project-id <id> --run-id <id> --json`
-- `darc query wiki runs --root <path> --project-id <id> --json`
+- `darc query wiki runs --root <path> --project-id <id> --status running --limit 50 --json`
 
 The query protocol remains the machine-readable contract for desktop and other clients. See
 [Query protocol](query-protocol.md).

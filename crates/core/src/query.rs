@@ -22,7 +22,8 @@ use darc_query::{
 };
 use darc_wiki::{
     ContextWikiLayout, DigestId, DigestSummary, EntryId, EntryStatus, EntrySummary, EntryType,
-    RunId, RunPhase, RunState, RunStatus, RunSummary, list_digests, list_entries, load_registry,
+    RunId, RunPhase, RunState, RunStatus, RunSummary, list_digests, list_entries,
+    load_digest_detail, load_entry_detail, load_registry,
 };
 use serde::Serialize;
 
@@ -246,6 +247,14 @@ pub struct WikiRegistryQueryData {
     pub domains: Vec<String>,
 }
 
+/// Stores the supported filters for one project-scoped wiki entry list query.
+#[derive(Debug, Clone, Default)]
+pub struct WikiEntriesQueryOptions {
+    pub category: Option<String>,
+    pub domain: Option<String>,
+    pub status: Option<EntryStatus>,
+}
+
 /// Stores the entry-list payload for one project-scoped wiki query.
 #[derive(Debug, Clone, Serialize)]
 pub struct WikiEntriesQueryData {
@@ -253,11 +262,38 @@ pub struct WikiEntriesQueryData {
     pub entries: Vec<WikiEntryListItem>,
 }
 
+/// Stores one project-scoped wiki entry detail payload for the read protocol.
+#[derive(Debug, Clone, Serialize)]
+pub struct WikiEntryQueryData {
+    pub project_id: String,
+    pub entry: WikiEntryDetailItem,
+}
+
+/// Stores the supported limits for one project-scoped wiki digest list query.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WikiDigestsQueryOptions {
+    pub limit: Option<usize>,
+}
+
 /// Stores the digest-list payload for one project-scoped wiki query.
 #[derive(Debug, Clone, Serialize)]
 pub struct WikiDigestsQueryData {
     pub project_id: String,
     pub digests: Vec<WikiDigestListItem>,
+}
+
+/// Stores one project-scoped wiki digest detail payload for the read protocol.
+#[derive(Debug, Clone, Serialize)]
+pub struct WikiDigestQueryData {
+    pub project_id: String,
+    pub digest: WikiDigestDetailItem,
+}
+
+/// Stores the supported filters for one project-scoped wiki run list query.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WikiRunsQueryOptions {
+    pub status: Option<RunStatus>,
+    pub limit: Option<usize>,
 }
 
 /// Stores the run-list payload for one project-scoped wiki query.
@@ -304,6 +340,49 @@ impl From<EntrySummary> for WikiEntryListItem {
     }
 }
 
+impl WikiEntryDetailItem {
+    /// Builds one entry-detail payload from one canonical entry document detail.
+    fn from_document(document: darc_wiki::EntryDetailDocument) -> Self {
+        Self {
+            entry_id: document.frontmatter.entry_id,
+            display_id: document.frontmatter.display_id,
+            entry_type: document.frontmatter.entry_type,
+            title: document.frontmatter.title,
+            category: document.frontmatter.category,
+            domains: document.frontmatter.domains,
+            status: document.frontmatter.status,
+            created_at: document.frontmatter.created_at,
+            updated_at: document.frontmatter.updated_at,
+            decision_date: document.frontmatter.decision_date,
+            evidence: document.frontmatter.evidence,
+            created_by_run_id: document.frontmatter.created_by_run_id,
+            updated_by_run_id: document.frontmatter.updated_by_run_id,
+            supersedes: document.frontmatter.supersedes,
+            body_markdown: document.body_markdown,
+        }
+    }
+}
+
+/// Stores one API-shaped wiki entry detail payload for the read protocol.
+#[derive(Debug, Clone, Serialize)]
+pub struct WikiEntryDetailItem {
+    pub entry_id: EntryId,
+    pub display_id: Option<String>,
+    pub entry_type: EntryType,
+    pub title: String,
+    pub category: String,
+    pub domains: Vec<String>,
+    pub status: EntryStatus,
+    pub created_at: String,
+    pub updated_at: String,
+    pub decision_date: Option<String>,
+    pub evidence: Vec<String>,
+    pub created_by_run_id: RunId,
+    pub updated_by_run_id: RunId,
+    pub supersedes: Vec<EntryId>,
+    pub body_markdown: String,
+}
+
 /// Stores one API-shaped wiki digest row for the read protocol.
 #[derive(Debug, Clone, Serialize)]
 pub struct WikiDigestListItem {
@@ -326,6 +405,33 @@ impl From<DigestSummary> for WikiDigestListItem {
             extracted_decision_count: summary.extracted_decision_count,
         }
     }
+}
+
+impl WikiDigestDetailItem {
+    /// Builds one digest-detail payload from one canonical digest document detail.
+    fn from_document(document: darc_wiki::DigestDetailDocument) -> Self {
+        Self {
+            digest_id: document.frontmatter.digest_id,
+            run_id: document.frontmatter.run_id,
+            title: document.frontmatter.title,
+            created_at: document.frontmatter.created_at,
+            updated_at: document.frontmatter.updated_at,
+            extracted_decision_count: document.frontmatter.extracted_decision_count,
+            body_markdown: document.body_markdown,
+        }
+    }
+}
+
+/// Stores one API-shaped wiki digest detail payload for the read protocol.
+#[derive(Debug, Clone, Serialize)]
+pub struct WikiDigestDetailItem {
+    pub digest_id: DigestId,
+    pub run_id: RunId,
+    pub title: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub extracted_decision_count: usize,
+    pub body_markdown: String,
 }
 
 /// Stores one API-shaped wiki run row for the read protocol.
@@ -522,41 +628,116 @@ pub fn query_wiki_registry(
 }
 
 /// Queries the wiki entry-list payload for one configured project.
-pub fn query_wiki_entries(root: Option<PathBuf>, project_id: &str) -> Result<WikiEntriesQueryData> {
+pub fn query_wiki_entries(
+    root: Option<PathBuf>,
+    project_id: &str,
+    options: &WikiEntriesQueryOptions,
+) -> Result<WikiEntriesQueryData> {
     let context = load_project_config_context(root, project_id)?;
     let layout = load_project_wiki_layout(&context)?;
+    let entries = list_entries(&layout)?
+        .into_iter()
+        .filter(|entry| {
+            options
+                .category
+                .as_ref()
+                .is_none_or(|category| entry.category == *category)
+        })
+        .filter(|entry| {
+            options.domain.as_ref().is_none_or(|domain| {
+                entry
+                    .domains
+                    .iter()
+                    .any(|entry_domain| entry_domain == domain)
+            })
+        })
+        .filter(|entry| options.status.is_none_or(|status| entry.status == status))
+        .map(WikiEntryListItem::from)
+        .collect();
     Ok(WikiEntriesQueryData {
         project_id: context.project.id,
-        entries: list_entries(&layout)?
-            .into_iter()
-            .map(WikiEntryListItem::from)
-            .collect(),
+        entries,
+    })
+}
+
+/// Queries the wiki entry-detail payload for one configured project and entry id.
+pub fn query_wiki_entry(
+    root: Option<PathBuf>,
+    project_id: &str,
+    entry_id: &EntryId,
+) -> Result<WikiEntryQueryData> {
+    let context = load_project_config_context(root, project_id)?;
+    let layout = load_project_wiki_layout(&context)?;
+    let entry = list_entries(&layout)?
+        .into_iter()
+        .find(|entry| &entry.entry_id == entry_id)
+        .with_context(|| format!("wiki entry `{entry_id}` was not found"))?;
+    let document = load_entry_detail(&entry.path)?;
+    Ok(WikiEntryQueryData {
+        project_id: context.project.id,
+        entry: WikiEntryDetailItem::from_document(document),
     })
 }
 
 /// Queries the wiki digest-list payload for one configured project.
-pub fn query_wiki_digests(root: Option<PathBuf>, project_id: &str) -> Result<WikiDigestsQueryData> {
+pub fn query_wiki_digests(
+    root: Option<PathBuf>,
+    project_id: &str,
+    options: &WikiDigestsQueryOptions,
+) -> Result<WikiDigestsQueryData> {
     let context = load_project_config_context(root, project_id)?;
     let layout = load_project_wiki_layout(&context)?;
-    Ok(WikiDigestsQueryData {
-        project_id: context.project.id,
-        digests: list_digests(&layout)?
+    let digests = apply_limit(
+        list_digests(&layout)?
             .into_iter()
             .map(WikiDigestListItem::from)
             .collect(),
+        options.limit,
+    );
+    Ok(WikiDigestsQueryData {
+        project_id: context.project.id,
+        digests,
+    })
+}
+
+/// Queries the wiki digest-detail payload for one configured project and digest id.
+pub fn query_wiki_digest(
+    root: Option<PathBuf>,
+    project_id: &str,
+    digest_id: &DigestId,
+) -> Result<WikiDigestQueryData> {
+    let context = load_project_config_context(root, project_id)?;
+    let layout = load_project_wiki_layout(&context)?;
+    let digest = list_digests(&layout)?
+        .into_iter()
+        .find(|digest| &digest.digest_id == digest_id)
+        .with_context(|| format!("wiki digest `{digest_id}` was not found"))?;
+    let document = load_digest_detail(&digest.path)?;
+    Ok(WikiDigestQueryData {
+        project_id: context.project.id,
+        digest: WikiDigestDetailItem::from_document(document),
     })
 }
 
 /// Queries the wiki run-list payload for one configured project.
-pub fn query_wiki_runs(root: Option<PathBuf>, project_id: &str) -> Result<WikiRunsQueryData> {
+pub fn query_wiki_runs(
+    root: Option<PathBuf>,
+    project_id: &str,
+    options: &WikiRunsQueryOptions,
+) -> Result<WikiRunsQueryData> {
     let context = load_project_config_context(root, project_id)?;
     let layout = load_project_wiki_layout(&context)?;
-    Ok(WikiRunsQueryData {
-        project_id: context.project.id,
-        runs: load_visible_run_summaries(&layout)?
+    let runs = apply_limit(
+        load_visible_run_summaries(&layout)?
             .into_iter()
+            .filter(|run| options.status.is_none_or(|status| run.status == status))
             .map(WikiRunListItem::from)
             .collect(),
+        options.limit,
+    );
+    Ok(WikiRunsQueryData {
+        project_id: context.project.id,
+        runs,
     })
 }
 
@@ -574,6 +755,14 @@ pub fn query_wiki_run(
         project_id: context.project.id,
         run: WikiRunDetailItem::from_state(run, result),
     })
+}
+
+/// Applies one optional list limit while preserving deterministic ordering.
+fn apply_limit<T>(items: Vec<T>, limit: Option<usize>) -> Vec<T> {
+    match limit {
+        Some(limit) => items.into_iter().take(limit).collect(),
+        None => items,
+    }
 }
 
 /// Inspects one darc root without requiring the workspace to be initialized.
@@ -743,4 +932,283 @@ fn load_run_result_artifact(path: &Path) -> Result<Option<DigestResultArtifact>>
 struct ProjectQueryContext {
     root: RootInfo,
     project: ProjectConfig,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, path::Path};
+
+    use anyhow::Result;
+    use darc_test_utils::unique_test_dir;
+
+    use super::{
+        WikiDigestsQueryOptions, WikiEntriesQueryOptions, WikiRunsQueryOptions, query_wiki_digest,
+        query_wiki_digests, query_wiki_entries, query_wiki_entry, query_wiki_runs,
+    };
+    use crate::{
+        DigestId, EntryId, EntryStatus, RunId, RunPhase, RunState, RunStatus,
+        config::{ProjectConfig, SharedConfig, SourcesConfig},
+        constants::CONFIG_FILE_NAME,
+        wiki::{ensure_project_wiki, store_project_wiki_run},
+    };
+
+    /// Writes one minimal shared config fixture for one query test root.
+    fn write_config(root: &Path, project_id: &str) -> Result<()> {
+        let project_root = root.join("repo");
+        fs::create_dir_all(&project_root)?;
+        fs::write(
+            root.join(CONFIG_FILE_NAME),
+            toml::to_string_pretty(&SharedConfig::new(
+                root.to_path_buf(),
+                vec![ProjectConfig {
+                    id: project_id.to_owned(),
+                    name: "repo".to_owned(),
+                    local_path: project_root,
+                    git_upstream: None,
+                    sessions_root: root.join(format!("projects/{project_id}/sessions")),
+                    known_paths: Vec::new(),
+                }],
+                SourcesConfig::default(),
+            ))?,
+        )?;
+        Ok(())
+    }
+
+    /// Writes one canonical entry fixture under the provided project layout.
+    fn write_entry(
+        layout: &darc_wiki::ProjectLayout,
+        entry_id: &EntryId,
+        category: &str,
+        domains: &[&str],
+        status: &str,
+        body_markdown: &str,
+    ) -> Result<()> {
+        let path = layout.entry_path(category, entry_id);
+        let domains = format!(
+            "[{}]",
+            domains
+                .iter()
+                .map(|domain| format!("\"{domain}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        fs::create_dir_all(path.parent().expect("entry path should have a parent"))?;
+        fs::write(
+            path,
+            format!(
+                concat!(
+                    "+++\n",
+                    "schema_version = 1\n",
+                    "entry_id = \"{entry_id}\"\n",
+                    "entry_type = \"decision_trace\"\n",
+                    "display_id = \"DT-1\"\n",
+                    "project_id = \"{project_id}\"\n",
+                    "title = \"{title}\"\n",
+                    "category = \"{category}\"\n",
+                    "domains = {domains}\n",
+                    "status = \"{status}\"\n",
+                    "created_at = \"2026-04-13T10:31:22Z\"\n",
+                    "updated_at = \"2026-04-13T10:31:22Z\"\n",
+                    "decision_date = \"2026-04-13\"\n",
+                    "evidence = [\"codex:session-1#2\"]\n",
+                    "created_by_run_id = \"cwrun_01write\"\n",
+                    "updated_by_run_id = \"cwrun_01write\"\n",
+                    "supersedes = []\n",
+                    "+++\n\n",
+                    "{body_markdown}\n"
+                ),
+                entry_id = entry_id,
+                project_id = layout.project_id,
+                title = format!("Entry {entry_id}"),
+                category = category,
+                domains = domains,
+                status = status,
+                body_markdown = body_markdown,
+            ),
+        )?;
+        Ok(())
+    }
+
+    /// Writes one canonical digest fixture under the provided project layout.
+    fn write_digest(
+        layout: &darc_wiki::ProjectLayout,
+        digest_id: &DigestId,
+        run_id: &RunId,
+        title: &str,
+        body_markdown: &str,
+    ) -> Result<()> {
+        fs::write(
+            layout.digest_path(digest_id),
+            format!(
+                concat!(
+                    "+++\n",
+                    "schema_version = 1\n",
+                    "digest_id = \"{digest_id}\"\n",
+                    "project_id = \"{project_id}\"\n",
+                    "run_id = \"{run_id}\"\n",
+                    "title = \"{title}\"\n",
+                    "created_at = \"2026-04-13T11:00:00Z\"\n",
+                    "updated_at = \"2026-04-13T11:00:00Z\"\n",
+                    "extracted_decision_count = 1\n",
+                    "+++\n\n",
+                    "{body_markdown}\n"
+                ),
+                digest_id = digest_id,
+                project_id = layout.project_id,
+                run_id = run_id,
+                title = title,
+                body_markdown = body_markdown,
+            ),
+        )?;
+        Ok(())
+    }
+
+    /// Builds one minimal persisted run-state fixture for wiki run-list queries.
+    fn build_run_state(project_id: &str, run_id: &RunId, status: RunStatus) -> RunState {
+        RunState {
+            schema_version: 1,
+            run_id: run_id.clone(),
+            project_id: project_id.to_owned(),
+            status,
+            phase: RunPhase::WritingArtifacts,
+            created_at: "2026-04-13T12:00:00Z".to_owned(),
+            started_at: Some("2026-04-13T12:00:01Z".to_owned()),
+            updated_at: "2026-04-13T12:00:02Z".to_owned(),
+            finished_at: Some("2026-04-13T12:00:03Z".to_owned()),
+            heartbeat_at: Some("2026-04-13T12:00:02Z".to_owned()),
+            requested_by: Some("desktop".to_owned()),
+            request_source: Some("darc-desktop/0.1.0".to_owned()),
+            attempt: 1,
+            cancel_requested: false,
+            pid: None,
+            agent_id: Some("codex".to_owned()),
+            runtime: Some("external_cli".to_owned()),
+            model: Some("gpt-5.4".to_owned()),
+            auth_profile: None,
+            selected_sessions: vec!["codex:session-1".to_owned()],
+            target_categories: vec!["product".to_owned()],
+            target_domains: vec!["query".to_owned()],
+            progress_percent: Some(100),
+            headline: Some(format!("Run {run_id}")),
+            proposal_path: Some("proposal.json".to_owned()),
+            result_path: Some("result.json".to_owned()),
+            events_path: Some("events.jsonl".to_owned()),
+            stdout_log_path: Some("agent.stdout.log".to_owned()),
+            stderr_log_path: Some("agent.stderr.log".to_owned()),
+            created_entry_ids: Vec::new(),
+            updated_entry_ids: Vec::new(),
+            digest_id: None,
+            error_code: None,
+            error_message: None,
+        }
+    }
+
+    #[test]
+    fn wiki_entry_queries_support_filters_and_detail_payloads() -> Result<()> {
+        let root = unique_test_dir("query-wiki-entry");
+        let project_id = "repo-123";
+        write_config(&root, project_id)?;
+        let layout = ensure_project_wiki(Some(root.clone()), project_id)?;
+        let active_entry_id = EntryId::new("cw_01active")?;
+        let discarded_entry_id = EntryId::new("cw_01discarded")?;
+        write_entry(
+            &layout,
+            &active_entry_id,
+            "product",
+            &["query", "desktop"],
+            "active",
+            "## Final Decision\n\nKeep the backend contract stable.",
+        )?;
+        write_entry(
+            &layout,
+            &discarded_entry_id,
+            "architecture",
+            &["storage"],
+            "discarded",
+            "## Final Decision\n\nDiscard the old idea.",
+        )?;
+
+        let entries = query_wiki_entries(
+            Some(root.clone()),
+            project_id,
+            &WikiEntriesQueryOptions {
+                category: Some("product".to_owned()),
+                domain: Some("query".to_owned()),
+                status: Some(EntryStatus::Active),
+            },
+        )?;
+        assert_eq!(entries.entries.len(), 1);
+        assert_eq!(entries.entries[0].entry_id, active_entry_id);
+
+        let detail = query_wiki_entry(Some(root.clone()), project_id, &active_entry_id)?;
+        assert_eq!(detail.entry.entry_id, active_entry_id);
+        assert_eq!(detail.entry.evidence, vec!["codex:session-1#2".to_owned()]);
+        assert!(detail.entry.body_markdown.contains("## Final Decision"));
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn wiki_digest_and_run_queries_support_limits_and_detail_payloads() -> Result<()> {
+        let root = unique_test_dir("query-wiki-digest");
+        let project_id = "repo-123";
+        write_config(&root, project_id)?;
+        let layout = ensure_project_wiki(Some(root.clone()), project_id)?;
+        let first_run_id = RunId::new("cwrun_01digesta")?;
+        let second_run_id = RunId::new("cwrun_01digestb")?;
+        let first_digest_id = DigestId::new("dg_01digesta")?;
+        let second_digest_id = DigestId::new("dg_01digestb")?;
+        write_digest(
+            &layout,
+            &first_digest_id,
+            &first_run_id,
+            "First digest",
+            "## Summary\n\nFirst body.",
+        )?;
+        write_digest(
+            &layout,
+            &second_digest_id,
+            &second_run_id,
+            "Second digest",
+            "## Summary\n\nSecond body.",
+        )?;
+        store_project_wiki_run(
+            Some(root.clone()),
+            project_id,
+            &build_run_state(project_id, &first_run_id, RunStatus::Running),
+        )?;
+        store_project_wiki_run(
+            Some(root.clone()),
+            project_id,
+            &build_run_state(project_id, &second_run_id, RunStatus::Succeeded),
+        )?;
+
+        let digests = query_wiki_digests(
+            Some(root.clone()),
+            project_id,
+            &WikiDigestsQueryOptions { limit: Some(1) },
+        )?;
+        assert_eq!(digests.digests.len(), 1);
+        assert_eq!(digests.digests[0].digest_id, first_digest_id);
+
+        let digest = query_wiki_digest(Some(root.clone()), project_id, &second_digest_id)?;
+        assert_eq!(digest.digest.digest_id, second_digest_id);
+        assert!(digest.digest.body_markdown.contains("Second body."));
+
+        let runs = query_wiki_runs(
+            Some(root.clone()),
+            project_id,
+            &WikiRunsQueryOptions {
+                status: Some(RunStatus::Succeeded),
+                limit: Some(1),
+            },
+        )?;
+        assert_eq!(runs.runs.len(), 1);
+        assert_eq!(runs.runs[0].run_id, second_run_id);
+        assert_eq!(runs.runs[0].status, RunStatus::Succeeded);
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
 }

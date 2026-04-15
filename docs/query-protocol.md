@@ -15,9 +15,13 @@ All query commands currently require `--json`.
 - `darc query workspace --root <path> --json`
 - `darc query wiki registry --root <path> --project-id <id> --json`
 - `darc query wiki entries --root <path> --project-id <id> --json`
+- `darc query wiki entries --root <path> --project-id <id> --category <id> --domain <id> --status active --json`
+- `darc query wiki entry --root <path> --project-id <id> --entry-id <id> --json`
 - `darc query wiki digests --root <path> --project-id <id> --json`
+- `darc query wiki digests --root <path> --project-id <id> --limit <n> --json`
+- `darc query wiki digest --root <path> --project-id <id> --digest-id <id> --json`
 - `darc query wiki run --root <path> --project-id <id> --run-id <id> --json`
-- `darc query wiki runs --root <path> --project-id <id> --json`
+- `darc query wiki runs --root <path> --project-id <id> --status <status> --limit <n> --json`
 - `darc query sessions --root <path> --project-id <id> --json`
 - `darc query sessions --root <path> --project-id <id> --since <iso-8601|<days>d> --until <iso-8601|<days>d> --json`
 - `darc query turns --root <path> --project-id <id> --provider <provider> --session-id <id> --json`
@@ -106,10 +110,12 @@ Today:
 - wiki queries are read-only and do not create the on-disk wiki layout
 - when no on-disk registry exists yet, `darc.query.wiki.registry.v1` returns the default category set and an empty domain list
 - `darc.query.wiki.registry.v1` returns `project_id`, `schema_version`, `categories`, and `domains`
-- `darc.query.wiki.entries.v1` returns `project_id` plus deterministic `entries`
-- `darc.query.wiki.digests.v1` returns `project_id` plus deterministic `digests`
+- `darc.query.wiki.entries.v1` returns `project_id` plus deterministic `entries`, with optional `category`, `domain`, and `status` filters
+- `darc.query.wiki.entry.v1` returns one canonical entry detail including metadata, evidence, and Markdown body
+- `darc.query.wiki.digests.v1` returns `project_id` plus deterministic `digests`, with an optional `limit`
+- `darc.query.wiki.digest.v1` returns one canonical digest detail including frontmatter fields and Markdown body
 - `darc.query.wiki.run.v1` returns one run state plus parsed terminal result detail when `result.json` exists
-- `darc.query.wiki.runs.v1` returns `project_id` plus deterministic `runs`
+- `darc.query.wiki.runs.v1` returns `project_id` plus deterministic `runs`, with optional `status` and `limit`
 - empty lists are returned when no canonical entries, digests, or runs exist yet
 - wiki payloads do not expose internal storage paths
 

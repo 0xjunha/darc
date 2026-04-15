@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    EntryId, ProjectLayout, Result, RunId, frontmatter::load_markdown_frontmatter,
+    EntryId, ProjectLayout, Result, RunId,
+    frontmatter::{load_markdown_frontmatter, load_markdown_frontmatter_and_body},
     fs_utils::collect_markdown_files,
 };
 
@@ -59,6 +60,14 @@ pub struct EntryDocument {
     pub frontmatter: EntryFrontmatter,
 }
 
+/// Represents one canonical entry document with its Markdown body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryDetailDocument {
+    pub path: PathBuf,
+    pub frontmatter: EntryFrontmatter,
+    pub body_markdown: String,
+}
+
 /// Stores the read-side summary for one canonical entry document.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EntrySummary {
@@ -100,6 +109,16 @@ pub fn load_entry(path: &Path) -> Result<EntryDocument> {
     Ok(EntryDocument {
         path: path.to_path_buf(),
         frontmatter: load_markdown_frontmatter(path)?,
+    })
+}
+
+/// Loads one canonical entry document plus its Markdown body from disk.
+pub fn load_entry_detail(path: &Path) -> Result<EntryDetailDocument> {
+    let (frontmatter, body_markdown) = load_markdown_frontmatter_and_body(path)?;
+    Ok(EntryDetailDocument {
+        path: path.to_path_buf(),
+        frontmatter,
+        body_markdown,
     })
 }
 
