@@ -4,9 +4,9 @@ use std::{
     path::Path,
 };
 
-use serde::de::DeserializeOwned;
+use serde::{Serialize, de::DeserializeOwned};
 
-use crate::{Result, WikiError};
+use crate::{Result, WikiError, fs_utils::write_string_atomically};
 
 /// Loads and deserializes the TOML frontmatter at the top of one Markdown file.
 pub(crate) fn load_markdown_frontmatter<T>(path: &Path) -> Result<T>
@@ -31,6 +31,34 @@ where
         source,
     })?;
     Ok((frontmatter, body))
+}
+
+/// Serializes one TOML frontmatter block plus Markdown body into the canonical file format.
+pub(crate) fn write_markdown_document<T>(
+    path: &Path,
+    frontmatter: &T,
+    body_markdown: &str,
+) -> Result<()>
+where
+    T: Serialize,
+{
+    let mut content =
+        toml::to_string_pretty(frontmatter).map_err(|source| WikiError::SerializeToml {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    if !content.ends_with('\n') {
+        content.push('\n');
+    }
+
+    let body_markdown = body_markdown.trim();
+    let mut document = format!("+++\n{content}+++\n");
+    if !body_markdown.is_empty() {
+        document.push('\n');
+        document.push_str(body_markdown);
+        document.push('\n');
+    }
+    write_string_atomically(path, &document)
 }
 
 /// Reads the TOML frontmatter block plus the remaining Markdown body from one document.

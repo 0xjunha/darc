@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     DigestId, ProjectLayout, Result, RunId,
-    frontmatter::{load_markdown_frontmatter, load_markdown_frontmatter_and_body},
+    frontmatter::{
+        load_markdown_frontmatter, load_markdown_frontmatter_and_body, write_markdown_document,
+    },
     fs_utils::collect_markdown_files,
 };
 
@@ -83,6 +85,26 @@ pub fn load_digest_detail(path: &Path) -> Result<DigestDetailDocument> {
         path: path.to_path_buf(),
         frontmatter,
         body_markdown,
+    })
+}
+
+/// Stores one canonical digest report document under the project digests layout.
+pub fn store_digest(
+    layout: &ProjectLayout,
+    frontmatter: &DigestFrontmatter,
+    body_markdown: &str,
+) -> Result<DigestDocument> {
+    layout.ensure()?;
+    validate_digest_schema_version(
+        &layout.digest_path(&frontmatter.digest_id),
+        frontmatter.schema_version,
+    )?;
+    validate_digest_project(layout, frontmatter)?;
+    let path = layout.digest_path(&frontmatter.digest_id);
+    write_markdown_document(&path, frontmatter, body_markdown)?;
+    Ok(DigestDocument {
+        path,
+        frontmatter: frontmatter.clone(),
     })
 }
 

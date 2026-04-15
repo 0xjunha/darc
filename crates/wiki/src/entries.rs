@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     EntryId, ProjectLayout, Result, RunId,
-    frontmatter::{load_markdown_frontmatter, load_markdown_frontmatter_and_body},
+    frontmatter::{
+        load_markdown_frontmatter, load_markdown_frontmatter_and_body, write_markdown_document,
+    },
     fs_utils::collect_markdown_files,
 };
 
@@ -119,6 +121,26 @@ pub fn load_entry_detail(path: &Path) -> Result<EntryDetailDocument> {
         path: path.to_path_buf(),
         frontmatter,
         body_markdown,
+    })
+}
+
+/// Stores one canonical entry document under the project entries layout.
+pub fn store_entry(
+    layout: &ProjectLayout,
+    frontmatter: &EntryFrontmatter,
+    body_markdown: &str,
+) -> Result<EntryDocument> {
+    layout.ensure()?;
+    validate_entry_schema_version(
+        &layout.entry_path(&frontmatter.category, &frontmatter.entry_id),
+        frontmatter.schema_version,
+    )?;
+    validate_entry_project(layout, frontmatter)?;
+    let path = layout.entry_path(&frontmatter.category, &frontmatter.entry_id);
+    write_markdown_document(&path, frontmatter, body_markdown)?;
+    Ok(EntryDocument {
+        path,
+        frontmatter: frontmatter.clone(),
     })
 }
 

@@ -9,7 +9,8 @@ use std::{
 use anyhow::{Context, Result, bail};
 use darc_paths::{current_utc_timestamp, parse_utc_timestamp};
 use darc_wiki::{
-    ProjectLayout, RunId, RunPhase, RunState, RunStatus, list_runs, load_run_state, store_run_state,
+    DigestId, EntryId, ProjectLayout, RunId, RunPhase, RunState, RunStatus, list_runs,
+    load_run_state, store_run_state,
 };
 
 use super::{
@@ -230,12 +231,15 @@ pub(super) fn finalize_run_canceled(
     })
 }
 
-/// Finalizes one digest run as succeeded after proposal validation completes.
+/// Finalizes one digest run as succeeded after canonical artifact writing completes.
 pub(super) fn finalize_run_succeeded(
     layout: &ProjectLayout,
     run_id: &RunId,
     phase: RunPhase,
     headline: &str,
+    created_entry_ids: &[EntryId],
+    updated_entry_ids: &[EntryId],
+    digest_id: &DigestId,
 ) -> Result<RunState> {
     update_run_state(layout, run_id, |state| {
         let now = current_utc_timestamp();
@@ -246,6 +250,9 @@ pub(super) fn finalize_run_succeeded(
         state.heartbeat_at = Some(now.clone());
         state.progress_percent = Some(100);
         state.headline = Some(headline.to_owned());
+        state.created_entry_ids = created_entry_ids.iter().map(ToString::to_string).collect();
+        state.updated_entry_ids = updated_entry_ids.iter().map(ToString::to_string).collect();
+        state.digest_id = Some(digest_id.to_string());
         state.error_code = None;
         state.error_message = None;
     })

@@ -689,6 +689,455 @@ fn wiki_digest_succeeds_after_valid_codex_proposal() -> Result<()> {
     assert!(result.contains("\"status\": \"succeeded\""));
     assert!(result.contains("\"valid\": true"));
     assert!(fs::read_to_string(run_dir.join("agent.stdout.log"))?.contains("codex runtime stdout"));
+    assert!(run_toml.contains("digest_id = \"dg_"));
+
+    let entries_output = run_darc([
+        "query",
+        "wiki",
+        "entries",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--json",
+    ])?;
+    assert!(entries_output.status.success());
+    let entries_value = parse_json(&entries_output.stdout, "stdout")?;
+    let entries = entries_value["data"]["entries"]
+        .as_array()
+        .context("entries query should return an array")?;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["display_id"], "DT-1");
+    let entry_id = entries[0]["entry_id"]
+        .as_str()
+        .context("entry id should be present")?
+        .to_owned();
+
+    let entry_output = run_darc([
+        "query",
+        "wiki",
+        "entry",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--entry-id",
+        &entry_id,
+        "--json",
+    ])?;
+    assert!(entry_output.status.success());
+    let entry_value = parse_json(&entry_output.stdout, "stdout")?;
+    assert!(
+        entry_value["data"]["entry"]["body_markdown"]
+            .as_str()
+            .unwrap()
+            .contains("## Final Decision")
+    );
+
+    let digests_output = run_darc([
+        "query",
+        "wiki",
+        "digests",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--json",
+    ])?;
+    assert!(digests_output.status.success());
+    let digests_value = parse_json(&digests_output.stdout, "stdout")?;
+    let digests = digests_value["data"]["digests"]
+        .as_array()
+        .context("digests query should return an array")?;
+    assert_eq!(digests.len(), 1);
+    let digest_id = digests[0]["digest_id"]
+        .as_str()
+        .context("digest id should be present")?
+        .to_owned();
+
+    let digest_output = run_darc([
+        "query",
+        "wiki",
+        "digest",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--digest-id",
+        &digest_id,
+        "--json",
+    ])?;
+    assert!(digest_output.status.success());
+    let digest_value = parse_json(&digest_output.stdout, "stdout")?;
+    assert!(
+        digest_value["data"]["digest"]["body_markdown"]
+            .as_str()
+            .unwrap()
+            .contains("## Summary")
+    );
+
+    let run_output = run_darc([
+        "query",
+        "wiki",
+        "run",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--run-id",
+        &run_id,
+        "--json",
+    ])?;
+    assert!(run_output.status.success());
+    let run_value = parse_json(&run_output.stdout, "stdout")?;
+    let run = &run_value["data"]["run"];
+    assert_eq!(run["created_entry_ids"][0], entry_id);
+    assert_eq!(run["updated_entry_ids"], Value::Array(vec![]));
+    assert_eq!(run["digest_id"], digest_id);
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn wiki_digest_reuses_existing_canonical_entry_on_repeated_runs() -> Result<()> {
+    let root = create_wiki_fixture_root("cli-wiki-runtime-dedupe")?;
+    write_registry_domains(&root, &["query-protocol"])?;
+    let codex = write_fake_cli(
+        &root,
+        "fake-codex-dedupe",
+        concat!(
+            "output=\"\"\n",
+            "unexpected=\"\"\n",
+            "while [ \"$#\" -gt 0 ]; do\n",
+            "  case \"$1\" in\n",
+            "    -o|--output-last-message)\n",
+            "      output=\"$2\"\n",
+            "      shift 2\n",
+            "      ;;\n",
+            "    --output-schema|--model|-m|--cd|-C|--sandbox)\n",
+            "      shift 2\n",
+            "      ;;\n",
+            "    --skip-git-repo-check|--ephemeral|exec)\n",
+            "      shift\n",
+            "      ;;\n",
+            "    *)\n",
+            "      unexpected=\"$unexpected $1\"\n",
+            "      shift\n",
+            "      ;;\n",
+            "  esac\n",
+            "done\n",
+            "prompt=$(cat)\n",
+            "[ -z \"$unexpected\" ] || { echo \"unexpected args:$unexpected\" >&2; exit 64; }\n",
+            "run_id=$(basename \"$PWD\")\n",
+            "cat > \"$output\" <<JSON\n",
+            "{\n",
+            "  \"schema\": \"darc.wiki.digest.proposal.v1\",\n",
+            "  \"project_id\": \"repo-abc123\",\n",
+            "  \"run_id\": \"$run_id\",\n",
+            "  \"entries\": [\n",
+            "    {\n",
+            "      \"operation\": \"create\",\n",
+            "      \"entry_type\": \"decision_trace\",\n",
+            "      \"title\": \"Keep the query protocol additive\",\n",
+            "      \"category\": \"product\",\n",
+            "      \"domains\": [\"query-protocol\"],\n",
+            "      \"decision_date\": \"2026-04-13\",\n",
+            "      \"context\": \"The selected session discussed stable read-side contracts.\",\n",
+            "      \"options\": [\n",
+            "        {\"status\": \"chosen\", \"description\": \"Keep new query fields additive.\"},\n",
+            "        {\"status\": \"rejected\", \"description\": \"Ship breaking protocol changes.\"}\n",
+            "      ],\n",
+            "      \"final_decision\": \"Keep the query protocol additive.\",\n",
+            "      \"rationale\": \"Desktop already depends on the current v1 query shape.\",\n",
+            "      \"consequences\": \"Future changes need additive migration paths.\",\n",
+            "      \"evidence\": [\"codex:session-1#0\"]\n",
+            "    }\n",
+            "  ],\n",
+            "  \"run_summary\": {\n",
+            "    \"title\": \"Validated additive query decision\",\n",
+            "    \"summary\": \"The session contained one durable product decision.\",\n",
+            "    \"themes\": [\"query stability\"],\n",
+            "    \"extracted_decision_count\": 1\n",
+            "  }\n",
+            "}\n",
+            "JSON\n"
+        ),
+    )?;
+
+    let mut run_ids = Vec::new();
+    for _ in 0..2 {
+        let start_output = run_darc_with_env(
+            [
+                "wiki",
+                "digest",
+                "start",
+                "--root",
+                root.to_string_lossy().as_ref(),
+                "--project-id",
+                "repo-abc123",
+                "--session-ref",
+                "codex:session-1",
+                "--agent",
+                "codex",
+                "--runtime",
+                "external-cli",
+                "--model",
+                "gpt-5.4",
+                "--target-domain",
+                "query-protocol",
+                "--json",
+            ],
+            [("DARC_WIKI_CODEX_BIN", codex.as_os_str())],
+        )?;
+        assert!(start_output.status.success());
+        let start_value = parse_json(&start_output.stdout, "stdout")?;
+        let run_id = start_value["data"]["run_id"]
+            .as_str()
+            .context("missing run id")?
+            .to_owned();
+        let _ = wait_for_run_status(&root, &run_id, "succeeded")?;
+        run_ids.push(run_id);
+    }
+
+    let entries_output = run_darc([
+        "query",
+        "wiki",
+        "entries",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--json",
+    ])?;
+    assert!(entries_output.status.success());
+    let entries_value = parse_json(&entries_output.stdout, "stdout")?;
+    let entries = entries_value["data"]["entries"]
+        .as_array()
+        .context("entries query should return an array")?;
+    assert_eq!(entries.len(), 1);
+    let entry_id = entries[0]["entry_id"]
+        .as_str()
+        .context("entry id should be present")?
+        .to_owned();
+
+    let first_run_output = run_darc([
+        "query",
+        "wiki",
+        "run",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--run-id",
+        &run_ids[0],
+        "--json",
+    ])?;
+    assert!(first_run_output.status.success());
+    let first_run_value = parse_json(&first_run_output.stdout, "stdout")?;
+    assert_eq!(
+        first_run_value["data"]["run"]["created_entry_ids"][0],
+        entry_id
+    );
+    assert_eq!(
+        first_run_value["data"]["run"]["updated_entry_ids"],
+        Value::Array(vec![])
+    );
+
+    let second_run_output = run_darc([
+        "query",
+        "wiki",
+        "run",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--run-id",
+        &run_ids[1],
+        "--json",
+    ])?;
+    assert!(second_run_output.status.success());
+    let second_run_value = parse_json(&second_run_output.stdout, "stdout")?;
+    assert_eq!(
+        second_run_value["data"]["run"]["created_entry_ids"],
+        Value::Array(vec![])
+    );
+    assert_eq!(
+        second_run_value["data"]["run"]["updated_entry_ids"][0],
+        entry_id
+    );
+
+    let digests_output = run_darc([
+        "query",
+        "wiki",
+        "digests",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--json",
+    ])?;
+    assert!(digests_output.status.success());
+    let digests_value = parse_json(&digests_output.stdout, "stdout")?;
+    assert_eq!(
+        digests_value["data"]["digests"]
+            .as_array()
+            .context("digests query should return an array")?
+            .len(),
+        2
+    );
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn wiki_digest_can_succeed_without_creating_decision_traces() -> Result<()> {
+    let root = create_wiki_fixture_root("cli-wiki-runtime-zero")?;
+    write_registry_domains(&root, &["query-protocol"])?;
+    let codex = write_fake_cli(
+        &root,
+        "fake-codex-zero",
+        concat!(
+            "output=\"\"\n",
+            "unexpected=\"\"\n",
+            "while [ \"$#\" -gt 0 ]; do\n",
+            "  case \"$1\" in\n",
+            "    -o|--output-last-message)\n",
+            "      output=\"$2\"\n",
+            "      shift 2\n",
+            "      ;;\n",
+            "    --output-schema|--model|-m|--cd|-C|--sandbox)\n",
+            "      shift 2\n",
+            "      ;;\n",
+            "    --skip-git-repo-check|--ephemeral|exec)\n",
+            "      shift\n",
+            "      ;;\n",
+            "    *)\n",
+            "      unexpected=\"$unexpected $1\"\n",
+            "      shift\n",
+            "      ;;\n",
+            "  esac\n",
+            "done\n",
+            "prompt=$(cat)\n",
+            "[ -z \"$unexpected\" ] || { echo \"unexpected args:$unexpected\" >&2; exit 64; }\n",
+            "run_id=$(basename \"$PWD\")\n",
+            "cat > \"$output\" <<JSON\n",
+            "{\n",
+            "  \"schema\": \"darc.wiki.digest.proposal.v1\",\n",
+            "  \"project_id\": \"repo-abc123\",\n",
+            "  \"run_id\": \"$run_id\",\n",
+            "  \"entries\": [],\n",
+            "  \"run_summary\": {\n",
+            "    \"title\": \"No durable decisions\",\n",
+            "    \"summary\": \"The selected sessions did not contain any durable decisions worth preserving.\",\n",
+            "    \"themes\": [\"routine execution\"],\n",
+            "    \"extracted_decision_count\": 0\n",
+            "  }\n",
+            "}\n",
+            "JSON\n"
+        ),
+    )?;
+
+    let start_output = run_darc_with_env(
+        [
+            "wiki",
+            "digest",
+            "start",
+            "--root",
+            root.to_string_lossy().as_ref(),
+            "--project-id",
+            "repo-abc123",
+            "--session-ref",
+            "codex:session-1",
+            "--agent",
+            "codex",
+            "--runtime",
+            "external-cli",
+            "--model",
+            "gpt-5.4",
+            "--json",
+        ],
+        [("DARC_WIKI_CODEX_BIN", codex.as_os_str())],
+    )?;
+    assert!(start_output.status.success());
+    let start_value = parse_json(&start_output.stdout, "stdout")?;
+    let run_id = start_value["data"]["run_id"]
+        .as_str()
+        .context("missing run id")?
+        .to_owned();
+    let _ = wait_for_run_status(&root, &run_id, "succeeded")?;
+
+    let entries_output = run_darc([
+        "query",
+        "wiki",
+        "entries",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--json",
+    ])?;
+    assert!(entries_output.status.success());
+    let entries_value = parse_json(&entries_output.stdout, "stdout")?;
+    assert_eq!(entries_value["data"]["entries"], Value::Array(vec![]));
+
+    let digests_output = run_darc([
+        "query",
+        "wiki",
+        "digests",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--json",
+    ])?;
+    assert!(digests_output.status.success());
+    let digests_value = parse_json(&digests_output.stdout, "stdout")?;
+    let digest_id = digests_value["data"]["digests"][0]["digest_id"]
+        .as_str()
+        .context("digest id should be present")?
+        .to_owned();
+
+    let digest_output = run_darc([
+        "query",
+        "wiki",
+        "digest",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--digest-id",
+        &digest_id,
+        "--json",
+    ])?;
+    assert!(digest_output.status.success());
+    let digest_value = parse_json(&digest_output.stdout, "stdout")?;
+    assert!(
+        digest_value["data"]["digest"]["body_markdown"]
+            .as_str()
+            .unwrap()
+            .contains("No durable decision-trace entries")
+    );
+
+    let run_output = run_darc([
+        "query",
+        "wiki",
+        "run",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--run-id",
+        &run_id,
+        "--json",
+    ])?;
+    assert!(run_output.status.success());
+    let run_value = parse_json(&run_output.stdout, "stdout")?;
+    let run = &run_value["data"]["run"];
+    assert_eq!(run["created_entry_ids"], Value::Array(vec![]));
+    assert_eq!(run["updated_entry_ids"], Value::Array(vec![]));
+    assert_eq!(run["digest_id"], digest_id);
 
     remove_root(&root)?;
     Ok(())

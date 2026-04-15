@@ -7,9 +7,9 @@ use anyhow::{Context, Result};
 use darc_agent::{RuntimeCommand, build_runtime_command};
 use darc_paths::current_utc_timestamp;
 use darc_wiki::{
-    DigestProposal, DigestRuntimePrompt, EntryFrontmatter, ProjectLayout, ProjectRegistry,
+    DigestProposal, DigestRuntimePrompt, MergeDigestArtifacts, ProjectLayout, ProjectRegistry,
     ProposalValidationOptions, RunId, RunPhase, RunState, build_digest_runtime_prompt,
-    list_entries, load_entry, load_registry, load_run_state, validate_digest_proposal,
+    load_registry, load_run_state, merge_digest_proposal, validate_digest_proposal,
 };
 
 use super::{
@@ -60,6 +60,12 @@ struct WorkerFailure<'a> {
     event_message: String,
 }
 
+/// Stores the parsed proposal plus validation summary carried into merge/write.
+struct ValidatedProposal {
+    proposal: DigestProposal,
+    artifact: DigestValidationArtifact,
+}
+
 impl<'a> DigestWorker<'a> {
     /// Builds one digest worker wrapper from the configured Darc root and run id.
     fn new(root: Option<PathBuf>, project_id: &'a str, run_id: &'a RunId) -> Result<Self> {
@@ -104,12 +110,12 @@ impl<'a> DigestWorker<'a> {
             None => return Ok(()),
         };
 
-        let validation = match self.validate_proposal(&registry, &context, &runtime_execution)? {
-            Some(validation) => validation,
+        let validated = match self.validate_proposal(&registry, &context, &runtime_execution)? {
+            Some(validated) => validated,
             None => return Ok(()),
         };
 
-        self.complete(&validation, &runtime_execution)
+        self.complete(&validated, &runtime_execution)
     }
 
     /// Builds and persists the digest context artifact before runtime invocation.
@@ -408,7 +414,7 @@ impl<'a> DigestWorker<'a> {
         registry: &ProjectRegistry,
         context: &DigestContextArtifact,
         runtime_execution: &RuntimeExecution,
-    ) -> Result<Option<DigestValidationArtifact>> {
+    ) -> Result<Option<ValidatedProposal>> {
         transition_worker_state(
             &self.layout,
             self.run_id,
@@ -452,26 +458,9 @@ impl<'a> DigestWorker<'a> {
                 });
             }
         };
-        let existing_entries = match self.load_existing_entries_for_validation() {
-            Ok(existing_entries) => existing_entries,
-            Err(error) => {
-                return self.fail(WorkerFailure {
-                    phase: RunPhase::ValidatingProposal,
-                    headline: "Proposal validation setup failed",
-                    error_code: "proposal_validation_setup_failed",
-                    error_message: error.to_string(),
-                    runtime: Some(runtime_execution),
-                    validation: DigestValidationArtifact {
-                        attempted: true,
-                        ..DigestValidationArtifact::default()
-                    },
-                    event_message: "Failed to load existing wiki entries for validation".to_owned(),
-                });
-            }
-        };
         let allowed_domains = build_allowed_domains(registry);
         let allowed_evidence_refs = build_allowed_evidence_refs(context);
-        let validation = match validate_digest_proposal(
+        let artifact = match validate_digest_proposal(
             &proposal,
             &ProposalValidationOptions {
                 project_id: self.project_id,
@@ -479,7 +468,7 @@ impl<'a> DigestWorker<'a> {
                 allowed_categories: &registry.categories,
                 allowed_domains: &allowed_domains,
                 allowed_evidence_refs: &allowed_evidence_refs,
-                existing_entries: &existing_entries,
+                existing_entries: &[],
             },
         ) {
             Ok(summary) => DigestValidationArtifact {
@@ -511,46 +500,66 @@ impl<'a> DigestWorker<'a> {
             }
         };
 
-        Ok(Some(validation))
+        Ok(Some(ValidatedProposal { proposal, artifact }))
     }
 
-    /// Loads canonical entry frontmatter so proposal validation can reject duplicates.
-    fn load_existing_entries_for_validation(&self) -> Result<Vec<EntryFrontmatter>> {
-        list_entries(&self.layout)?
-            .into_iter()
-            .map(|entry| Ok(load_entry(&entry.path)?.frontmatter))
-            .collect()
-    }
-
-    /// Writes the terminal success state and result artifact for a validated proposal.
+    /// Merges canonical artifacts, then writes the terminal success state and result artifact.
     fn complete(
         &self,
-        validation: &DigestValidationArtifact,
+        validated: &ValidatedProposal,
         runtime_execution: &RuntimeExecution,
     ) -> Result<()> {
         transition_worker_state(
             &self.layout,
             self.run_id,
+            RunPhase::MergingEntries,
+            Some(90),
+            "Merging canonical wiki artifacts",
+        )?;
+        let merge = match merge_digest_proposal(&self.layout, self.run_id, &validated.proposal) {
+            Ok(merge) => merge,
+            Err(error) => {
+                self.fail::<()>(WorkerFailure {
+                    phase: RunPhase::MergingEntries,
+                    headline: "Canonical artifact merge failed",
+                    error_code: "artifact_merge_failed",
+                    error_message: error.to_string(),
+                    runtime: Some(runtime_execution),
+                    validation: validated.artifact.clone(),
+                    event_message: "Failed to merge canonical wiki artifacts".to_owned(),
+                })?;
+                return Ok(());
+            }
+        };
+        append_run_event(
+            &self.layout,
+            self.run_id,
+            RunEvent::info(RunPhase::MergingEntries, merge_event_message(&merge)),
+        )?;
+
+        transition_worker_state(
+            &self.layout,
+            self.run_id,
             RunPhase::WritingArtifacts,
             Some(100),
-            "Writing validation result",
+            "Writing final result artifacts",
         )?;
         let final_state = finalize_run_succeeded(
             &self.layout,
             self.run_id,
             RunPhase::WritingArtifacts,
-            "Validated proposal artifacts",
+            "Wrote canonical wiki artifacts",
+            &merge.created_entry_ids,
+            &merge.updated_entry_ids,
+            &merge.digest_id,
         )?;
         write_terminal_result(
             &self.layout,
             self.run_id,
             &final_state,
             Some(runtime_execution),
-            validation.clone(),
-            Some(
-                "Canonical merge is deferred; this run succeeded after proposal validation only"
-                    .to_owned(),
-            ),
+            validated.artifact.clone(),
+            None,
         )?;
         append_run_event(
             &self.layout,
@@ -558,8 +567,10 @@ impl<'a> DigestWorker<'a> {
             RunEvent::info(
                 RunPhase::WritingArtifacts,
                 format!(
-                    "Validated proposal with {} decision trace(s)",
-                    validation.extracted_decision_count.unwrap_or_default()
+                    "Persisted digest `{}` with {} created and {} updated decision trace(s)",
+                    merge.digest_id,
+                    merge.created_entry_ids.len(),
+                    merge.updated_entry_ids.len()
                 ),
             ),
         )?;
@@ -651,4 +662,14 @@ impl<'a> DigestWorker<'a> {
         )?;
         Ok(())
     }
+}
+
+/// Renders one concise merge summary for the run events log.
+fn merge_event_message(merge: &MergeDigestArtifacts) -> String {
+    format!(
+        "Merged canonical artifacts into digest `{}` ({} created, {} updated)",
+        merge.digest_id,
+        merge.created_entry_ids.len(),
+        merge.updated_entry_ids.len()
+    )
 }
