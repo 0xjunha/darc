@@ -16,6 +16,7 @@ use crate::{
     load_entry_detail,
 };
 use crate::{
+    decision_trace::proposal_content_fingerprint,
     frontmatter::render_markdown_document,
     fs_utils::write_string_atomically,
     proposal::{
@@ -247,6 +248,7 @@ fn build_new_entry_frontmatter(
         updated_at: now.to_owned(),
         decision_date: Some(proposal_entry.decision_date.trim().to_owned()),
         evidence: normalize_trimmed_list(&proposal_entry.evidence),
+        content_fingerprint: Some(proposal_content_fingerprint(proposal_entry)),
         created_by_run_id: run_id.clone(),
         updated_by_run_id: run_id.clone(),
         supersedes: Vec::new(),
@@ -268,6 +270,7 @@ fn build_updated_entry_frontmatter(
     existing.updated_at = now.to_owned();
     existing.decision_date = Some(proposal_entry.decision_date.trim().to_owned());
     existing.evidence = normalize_trimmed_list(&proposal_entry.evidence);
+    existing.content_fingerprint = Some(proposal_content_fingerprint(proposal_entry));
     existing.updated_by_run_id = run_id.clone();
     existing
 }
@@ -601,6 +604,90 @@ mod tests {
         let entry = load_entry_detail(&layout.entry_path("product", &second.updated_entry_ids[0]))?;
         assert_eq!(entry.frontmatter.display_id.as_deref(), Some("DT-1"));
         assert_eq!(entry.frontmatter.updated_by_run_id, second_run_id);
+
+        fs::remove_dir_all(&darc_root).expect("temporary test root should be removable");
+        Ok(())
+    }
+
+    #[test]
+    fn merge_reuses_existing_identity_when_body_formatting_drifts() -> Result<()> {
+        let (darc_root, layout) = build_layout("formatting-drift")?;
+        let first_run_id = RunId::new("cwrun_01mergefmta")?;
+        let second_run_id = RunId::new("cwrun_01mergefmtb")?;
+        let first = merge_digest_proposal(
+            &layout,
+            &first_run_id,
+            &build_proposal(
+                &first_run_id,
+                vec![build_entry("Keep the query protocol additive")],
+            ),
+        )?;
+
+        let mut existing =
+            load_entry_detail(&layout.entry_path("product", &first.created_entry_ids[0]))?;
+        existing.body_markdown = existing
+            .body_markdown
+            .replace("## Final Decision\n\n", "## Final Decision\n\n\n");
+        let rewrite = build_markdown_write(
+            layout.entry_path("product", &existing.frontmatter.entry_id),
+            &existing.frontmatter,
+            &existing.body_markdown,
+        )?;
+        apply_pending_writes(&[rewrite])?;
+
+        let second = merge_digest_proposal(
+            &layout,
+            &second_run_id,
+            &build_proposal(
+                &second_run_id,
+                vec![build_entry("Keep the query protocol additive")],
+            ),
+        )?;
+
+        assert!(second.created_entry_ids.is_empty());
+        assert_eq!(second.updated_entry_ids, first.created_entry_ids);
+        assert_eq!(list_entries(&layout)?.len(), 1);
+
+        fs::remove_dir_all(&darc_root).expect("temporary test root should be removable");
+        Ok(())
+    }
+
+    #[test]
+    fn merge_reuses_legacy_entry_without_content_fingerprint() -> Result<()> {
+        let (darc_root, layout) = build_layout("legacy-fingerprint")?;
+        let first_run_id = RunId::new("cwrun_01mergelega")?;
+        let second_run_id = RunId::new("cwrun_01mergelegb")?;
+        let first = merge_digest_proposal(
+            &layout,
+            &first_run_id,
+            &build_proposal(
+                &first_run_id,
+                vec![build_entry("Keep the query protocol additive")],
+            ),
+        )?;
+
+        let mut legacy =
+            load_entry_detail(&layout.entry_path("product", &first.created_entry_ids[0]))?;
+        legacy.frontmatter.content_fingerprint = None;
+        let rewrite = build_markdown_write(
+            layout.entry_path("product", &legacy.frontmatter.entry_id),
+            &legacy.frontmatter,
+            &legacy.body_markdown,
+        )?;
+        apply_pending_writes(&[rewrite])?;
+
+        let second = merge_digest_proposal(
+            &layout,
+            &second_run_id,
+            &build_proposal(
+                &second_run_id,
+                vec![build_entry("Keep the query protocol additive")],
+            ),
+        )?;
+
+        assert!(second.created_entry_ids.is_empty());
+        assert_eq!(second.updated_entry_ids, first.created_entry_ids);
+        assert_eq!(list_entries(&layout)?.len(), 1);
 
         fs::remove_dir_all(&darc_root).expect("temporary test root should be removable");
         Ok(())

@@ -47,6 +47,8 @@ pub struct EntryFrontmatter {
     pub decision_date: Option<String>,
     #[serde(default)]
     pub evidence: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_fingerprint: Option<String>,
     pub created_by_run_id: RunId,
     pub updated_by_run_id: RunId,
     #[serde(default)]

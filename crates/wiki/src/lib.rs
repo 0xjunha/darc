@@ -1,3 +1,4 @@
+mod decision_trace;
 mod digests;
 mod entries;
 mod errors;

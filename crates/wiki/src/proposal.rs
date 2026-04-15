@@ -5,7 +5,10 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::{EntryFrontmatter, EntryType, render::render_decision_trace_body};
+use crate::{
+    EntryFrontmatter, EntryType,
+    decision_trace::{existing_content_fingerprint, proposal_content_fingerprint},
+};
 
 /// Stores the fixed schema identifier for digest proposal artifacts.
 pub const DIGEST_PROPOSAL_SCHEMA: &str = "darc.wiki.digest.proposal.v1";
@@ -479,7 +482,7 @@ pub(crate) struct ProposalEntryIdentity {
     category: String,
     domains: Vec<String>,
     decision_date: String,
-    body_markdown: String,
+    content_fingerprint: String,
 }
 
 /// Builds the duplicate-detection key for one proposal entry.
@@ -489,7 +492,7 @@ pub(crate) fn proposal_entry_identity(entry: &DigestProposalEntry) -> ProposalEn
         category: entry.category.trim().to_owned(),
         domains: normalize_identity_domains(&entry.domains),
         decision_date: entry.decision_date.trim().to_owned(),
-        body_markdown: render_decision_trace_body(entry).trim().to_owned(),
+        content_fingerprint: proposal_content_fingerprint(entry),
     }
 }
 
@@ -503,7 +506,7 @@ pub(crate) fn existing_entry_identity(
         category: entry.category.trim().to_owned(),
         domains: normalize_identity_domains(&entry.domains),
         decision_date: entry.decision_date.as_ref()?.trim().to_owned(),
-        body_markdown: body_markdown.trim().to_owned(),
+        content_fingerprint: existing_content_fingerprint(entry, body_markdown)?,
     })
 }
 
@@ -743,6 +746,7 @@ mod tests {
             updated_at: "2026-04-13T10:31:22Z".to_owned(),
             decision_date: Some("2026-04-13".to_owned()),
             evidence: vec!["codex:session-1#0".to_owned()],
+            content_fingerprint: None,
             created_by_run_id: crate::RunId::new("cwrun_existing-1")
                 .expect("run id should be valid"),
             updated_by_run_id: crate::RunId::new("cwrun_existing-1")
