@@ -10,9 +10,13 @@ mod proposal;
 mod registry;
 mod runs;
 
-pub use digests::{DigestDocument, DigestFrontmatter, DigestSummary, list_digests, load_digest};
+pub use digests::{
+    DigestDetailDocument, DigestDocument, DigestFrontmatter, DigestSummary, list_digests,
+    load_digest, load_digest_detail,
+};
 pub use entries::{
-    EntryDocument, EntryFrontmatter, EntryStatus, EntrySummary, EntryType, list_entries, load_entry,
+    EntryDetailDocument, EntryDocument, EntryFrontmatter, EntryStatus, EntrySummary, EntryType,
+    list_entries, load_entry, load_entry_detail,
 };
 pub use errors::{Result, WikiError};
 pub use ids::{DigestId, EntryId, RunId};

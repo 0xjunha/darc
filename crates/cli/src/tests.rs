@@ -204,6 +204,138 @@ fn query_wiki_registry_requires_json_flag() {
 }
 
 #[test]
+fn parses_query_wiki_entries_with_filters() {
+    let cli = Cli::try_parse_from([
+        "darc",
+        "query",
+        "wiki",
+        "entries",
+        "--project-id",
+        "repo-abc123",
+        "--category",
+        "product",
+        "--domain",
+        "query",
+        "--status",
+        "active",
+        "--json",
+    ])
+    .unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Query(super::QueryArgs {
+            command: QueryCommands::Wiki(super::QueryWikiArgs {
+                command: QueryWikiCommands::Entries(super::QueryWikiEntriesArgs {
+                    project_id,
+                    category,
+                    domain,
+                    status,
+                    json,
+                    ..
+                }),
+            }),
+        }) if project_id == "repo-abc123"
+            && category.as_deref() == Some("product")
+            && domain.as_deref() == Some("query")
+            && matches!(status, Some(super::WikiEntryStatusArg::Active))
+            && json
+    ));
+}
+
+#[test]
+fn parses_query_wiki_entry_command() {
+    let cli = Cli::try_parse_from([
+        "darc",
+        "query",
+        "wiki",
+        "entry",
+        "--project-id",
+        "repo-abc123",
+        "--entry-id",
+        "cw_01entry",
+        "--json",
+    ])
+    .unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Query(super::QueryArgs {
+            command: QueryCommands::Wiki(super::QueryWikiArgs {
+                command: QueryWikiCommands::Entry(super::QueryWikiEntryArgs {
+                    project_id,
+                    entry_id,
+                    json,
+                    ..
+                }),
+            }),
+        }) if project_id == "repo-abc123" && entry_id == "cw_01entry" && json
+    ));
+}
+
+#[test]
+fn parses_query_wiki_digest_command() {
+    let cli = Cli::try_parse_from([
+        "darc",
+        "query",
+        "wiki",
+        "digest",
+        "--project-id",
+        "repo-abc123",
+        "--digest-id",
+        "dg_01digest",
+        "--json",
+    ])
+    .unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Query(super::QueryArgs {
+            command: QueryCommands::Wiki(super::QueryWikiArgs {
+                command: QueryWikiCommands::Digest(super::QueryWikiDigestArgs {
+                    project_id,
+                    digest_id,
+                    json,
+                    ..
+                }),
+            }),
+        }) if project_id == "repo-abc123" && digest_id == "dg_01digest" && json
+    ));
+}
+
+#[test]
+fn parses_query_wiki_runs_with_status_and_limit() {
+    let cli = Cli::try_parse_from([
+        "darc",
+        "query",
+        "wiki",
+        "runs",
+        "--project-id",
+        "repo-abc123",
+        "--status",
+        "running",
+        "--limit",
+        "5",
+        "--json",
+    ])
+    .unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Query(super::QueryArgs {
+            command: QueryCommands::Wiki(super::QueryWikiArgs {
+                command: QueryWikiCommands::Runs(super::QueryWikiRunsArgs {
+                    project_id,
+                    status,
+                    limit,
+                    json,
+                    ..
+                }),
+            }),
+        }) if project_id == "repo-abc123"
+            && matches!(status, Some(super::WikiRunStatusArg::Running))
+            && limit == Some(5)
+            && json
+    ));
+}
+
+#[test]
 fn parses_query_turn_command() {
     let cli = Cli::try_parse_from([
         "darc",
@@ -319,7 +451,10 @@ fn query_wiki_help_mentions_registry_subcommand() {
         .to_string();
 
     assert!(help.contains("registry"));
+    assert!(help.contains("entry"));
     assert!(help.contains("entries"));
+    assert!(help.contains("digest"));
+    assert!(help.contains("digests"));
     assert!(help.contains("runs"));
 }
 

@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Read},
     path::Path,
 };
 
@@ -13,15 +13,28 @@ pub(crate) fn load_markdown_frontmatter<T>(path: &Path) -> Result<T>
 where
     T: DeserializeOwned,
 {
-    let frontmatter = read_frontmatter(path)?;
+    let (frontmatter, _) = read_frontmatter_and_body(path)?;
     toml::from_str(&frontmatter).map_err(|source| WikiError::ParseToml {
         path: path.to_path_buf(),
         source,
     })
 }
 
-/// Reads only the TOML frontmatter block from the start of one Markdown document.
-fn read_frontmatter(path: &Path) -> Result<String> {
+/// Loads and deserializes one Markdown frontmatter block plus the remaining body text.
+pub(crate) fn load_markdown_frontmatter_and_body<T>(path: &Path) -> Result<(T, String)>
+where
+    T: DeserializeOwned,
+{
+    let (frontmatter, body) = read_frontmatter_and_body(path)?;
+    let frontmatter = toml::from_str(&frontmatter).map_err(|source| WikiError::ParseToml {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok((frontmatter, body))
+}
+
+/// Reads the TOML frontmatter block plus the remaining Markdown body from one document.
+fn read_frontmatter_and_body(path: &Path) -> Result<(String, String)> {
     let file = File::open(path).map_err(|source| WikiError::ReadFile {
         path: path.to_path_buf(),
         source,
@@ -59,7 +72,14 @@ fn read_frontmatter(path: &Path) -> Result<String> {
         }
         frontmatter.push_str(&line);
     }
-    Ok(frontmatter)
+    let mut body = String::new();
+    reader
+        .read_to_string(&mut body)
+        .map_err(|source| WikiError::ReadFile {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    Ok((frontmatter, body))
 }
 
 /// Removes trailing line endings from one buffered Markdown line.
