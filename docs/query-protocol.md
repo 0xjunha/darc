@@ -38,6 +38,44 @@ All query commands currently require `--json`.
 - `darc query insights project --root <path> --project-id <id> --limit <n> --json`
 - `darc query insights turn --root <path> --project-id <id> --provider <provider> --session-id <id> --turn-ordinal <n> --json`
 
+## Common Workflows
+
+The protocol is intentionally composable. A few common read patterns are now first-class:
+
+- find decision-shaped turns by content:
+
+  ```bash
+  darc query turns \
+    --root ~/.darc \
+    --project-id repo-abc123 \
+    --grep "staged init" \
+    --role user \
+    --context 1 \
+    --since 14d \
+    --json
+  ```
+
+- pivot from a file path to the sessions that touched it:
+
+  ```bash
+  darc query files \
+    --root ~/.darc \
+    --project-id repo-abc123 \
+    --path "crates/wiki/src/proposal.rs" \
+    --json
+  ```
+
+- inspect all in-project files touched by one session:
+
+  ```bash
+  darc query session-files \
+    --root ~/.darc \
+    --project-id repo-abc123 \
+    --provider codex \
+    --session-id session-1 \
+    --json
+  ```
+
 ## Success envelope
 
 Query success responses are written to `stdout` only.
@@ -287,6 +325,7 @@ Today:
 - `session_files` rows report canonical `path`, best-effort `repo_relative_path`, `read_count`, `write_count`, `first_turn_ordinal`, and `last_turn_ordinal`
 - `session_files` rows collapse equivalent absolute, repo-relative, and `./`-prefixed accesses for the same in-repo file onto one canonical display path before counting
 - `session_files` rows omit out-of-project accesses and exclude derived `list` accesses
+- `query sessions --touched-path <glob>` reuses the same project-scoped glob semantics as the file-pivot and grep surfaces
 
 ### Narrative turn detail
 
