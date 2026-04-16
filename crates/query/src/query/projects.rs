@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
     fmt::Write,
     path::Path,
+    sync::OnceLock,
 };
 
 use anyhow::{Context, Result, bail};
@@ -208,36 +209,6 @@ const PROJECT_SESSIONS_SQL: &str = "
         filtered_sessions.session_id DESC
 ";
 
-const SESSION_TURNS_SQL: &str = "
-    SELECT
-        project_id,
-        provider,
-        session_id,
-        turn_ordinal,
-        turn_id,
-        started_at,
-        completed_at,
-        status,
-        user_message,
-        has_final_answer,
-        step_count,
-        primary_model,
-        total_token_count,
-        provider_total_token_count,
-        input_uncached_token_count,
-        cache_read_token_count,
-        cache_write_token_count,
-        output_token_count,
-        reasoning_token_count,
-        effective_agent_runtime_ms,
-        changed_file_count,
-        added_line_count,
-        removed_line_count
-    FROM turns
-    WHERE project_id = ?1 AND provider = ?2 AND session_id = ?3
-    ORDER BY turn_ordinal ASC
-";
-
 const TURN_MATCHES_SQL: &str = "
     SELECT
         turn_search.provider,
@@ -270,6 +241,31 @@ const MATCH_SNIPPET_START: &str = "[[";
 const MATCH_SNIPPET_END: &str = "]]";
 const MAX_TURN_KEYS_PER_QUERY: usize = 250;
 const MAX_TURN_MATCH_CONTEXT: usize = 50;
+const TURN_SUMMARY_COLUMNS: &[&str] = &[
+    "project_id",
+    "provider",
+    "session_id",
+    "turn_ordinal",
+    "turn_id",
+    "started_at",
+    "completed_at",
+    "status",
+    "user_message",
+    "has_final_answer",
+    "step_count",
+    "primary_model",
+    "total_token_count",
+    "provider_total_token_count",
+    "input_uncached_token_count",
+    "cache_read_token_count",
+    "cache_write_token_count",
+    "output_token_count",
+    "reasoning_token_count",
+    "effective_agent_runtime_ms",
+    "changed_file_count",
+    "added_line_count",
+    "removed_line_count",
+];
 
 /// Stores one stable turn identity used while building match and context windows.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -311,6 +307,12 @@ type RawTurnSummaryRow = (
     i64,
     i64,
 );
+
+/// Returns the shared session-turn summary SQL used by every session-scoped list query.
+fn session_turns_sql() -> &'static str {
+    static SQL: OnceLock<String> = OnceLock::new();
+    SQL.get_or_init(build_session_turns_sql).as_str()
+}
 
 /// Queries the indexed project aggregates for one workspace database.
 pub fn list_project_index_aggregates(index_db_path: &Path) -> Result<Vec<ProjectIndexAggregate>> {
@@ -552,7 +554,7 @@ fn query_session_turn_summaries(
     session_id: &str,
 ) -> Result<Vec<TurnSummary>> {
     let mut statement = connection
-        .prepare(SESSION_TURNS_SQL)
+        .prepare(session_turns_sql())
         .context("failed to prepare indexed turn query")?;
     let rows = statement
         .query_map(
@@ -790,45 +792,7 @@ fn query_turn_summaries_for_keys(
 ) -> Result<Vec<TurnSummary>> {
     let mut turns = Vec::new();
     for key_chunk in turn_keys.chunks(MAX_TURN_KEYS_PER_QUERY) {
-        let sql = build_turn_key_values_query_sql(
-            key_chunk.len(),
-            "
-            SELECT
-                turns.project_id,
-                turns.provider,
-                turns.session_id,
-                turns.turn_ordinal,
-                turns.turn_id,
-                turns.started_at,
-                turns.completed_at,
-                turns.status,
-                turns.user_message,
-                turns.has_final_answer,
-                turns.step_count,
-                turns.primary_model,
-                turns.total_token_count,
-                turns.provider_total_token_count,
-                turns.input_uncached_token_count,
-                turns.cache_read_token_count,
-                turns.cache_write_token_count,
-                turns.output_token_count,
-                turns.reasoning_token_count,
-                turns.effective_agent_runtime_ms,
-                turns.changed_file_count,
-                turns.added_line_count,
-                turns.removed_line_count
-            FROM requested
-            INNER JOIN turns
-                ON turns.project_id = ?1
-                AND turns.provider = requested.provider
-                AND turns.session_id = requested.session_id
-                AND turns.turn_ordinal = requested.turn_ordinal
-            ORDER BY
-                turns.provider ASC,
-                turns.session_id ASC,
-                turns.turn_ordinal ASC
-            ",
-        );
+        let sql = build_requested_turn_summaries_sql(key_chunk.len());
         let mut statement = connection
             .prepare(&sql)
             .context("failed to prepare exact turn-summary query")?;
@@ -958,6 +922,62 @@ fn path_matches_glob(
         .any(|candidate| pattern.matches_with(candidate, *options))
 }
 
+/// Builds the shared turn-summary select list for one optional table alias.
+fn build_turn_summary_select_list(table_alias: &str) -> String {
+    let mut sql = String::new();
+    for (index, column) in TURN_SUMMARY_COLUMNS.iter().enumerate() {
+        if index > 0 {
+            sql.push_str(",\n");
+        }
+        sql.push_str("        ");
+        if table_alias.is_empty() {
+            sql.push_str(column);
+        } else {
+            write!(&mut sql, "{table_alias}.{column}")
+                .expect("formatting turn-summary column should not fail");
+        }
+    }
+    sql
+}
+
+/// Builds the shared session-scoped turn-summary query SQL.
+fn build_session_turns_sql() -> String {
+    format!(
+        "
+    SELECT
+{select_list}
+    FROM turns
+    WHERE project_id = ?1 AND provider = ?2 AND session_id = ?3
+    ORDER BY turn_ordinal ASC
+",
+        select_list = build_turn_summary_select_list(""),
+    )
+}
+
+/// Builds one requested-turn summary SQL query that reuses the shared select list.
+fn build_requested_turn_summaries_sql(row_count: usize) -> String {
+    build_turn_key_values_query_sql(
+        row_count,
+        &format!(
+            "
+            SELECT
+{select_list}
+            FROM requested
+            INNER JOIN turns
+                ON turns.project_id = ?1
+                AND turns.provider = requested.provider
+                AND turns.session_id = requested.session_id
+                AND turns.turn_ordinal = requested.turn_ordinal
+            ORDER BY
+                turns.provider ASC,
+                turns.session_id ASC,
+                turns.turn_ordinal ASC
+            ",
+            select_list = build_turn_summary_select_list("turns"),
+        ),
+    )
+}
+
 /// Builds one dynamic `WITH requested AS (VALUES ...)` SQL query for turn-key joins.
 fn build_turn_key_values_query_sql(row_count: usize, select_sql: &str) -> String {
     let mut sql = String::from("WITH requested(provider, session_id, turn_ordinal) AS (VALUES ");
@@ -1059,7 +1079,7 @@ pub(super) fn smoke_test_sql(connection: &Connection) -> Result<()> {
             PROJECT_INDEX_AGGREGATES_SQL,
         ),
         ("project sessions query", PROJECT_SESSIONS_SQL),
-        ("session turns query", SESSION_TURNS_SQL),
+        ("session turns query", session_turns_sql()),
         ("grep turns query", TURN_MATCHES_SQL),
     ] {
         connection
@@ -1069,41 +1089,7 @@ pub(super) fn smoke_test_sql(connection: &Connection) -> Result<()> {
     for (label, sql) in [
         (
             "requested turn summaries query",
-            build_turn_key_values_query_sql(
-                1,
-                "
-                SELECT
-                    turns.project_id,
-                    turns.provider,
-                    turns.session_id,
-                    turns.turn_ordinal,
-                    turns.turn_id,
-                    turns.started_at,
-                    turns.completed_at,
-                    turns.status,
-                    turns.user_message,
-                    turns.has_final_answer,
-                    turns.step_count,
-                    turns.primary_model,
-                    turns.total_token_count,
-                    turns.provider_total_token_count,
-                    turns.input_uncached_token_count,
-                    turns.cache_read_token_count,
-                    turns.cache_write_token_count,
-                    turns.output_token_count,
-                    turns.reasoning_token_count,
-                    turns.effective_agent_runtime_ms,
-                    turns.changed_file_count,
-                    turns.added_line_count,
-                    turns.removed_line_count
-                FROM requested
-                INNER JOIN turns
-                    ON turns.project_id = ?1
-                    AND turns.provider = requested.provider
-                    AND turns.session_id = requested.session_id
-                    AND turns.turn_ordinal = requested.turn_ordinal
-                ",
-            ),
+            build_requested_turn_summaries_sql(1),
         ),
         (
             "requested file accesses query",
