@@ -401,12 +401,148 @@ fn parses_query_sessions_with_time_bounds() {
                 project_id,
                 since,
                 until,
+                touched_path,
                 json,
                 ..
             }),
         }) if project_id == "repo-abc123"
             && since.as_deref() == Some("5d")
             && until.as_deref() == Some("2026-04-07T00:00:00Z")
+            && touched_path.is_none()
+            && json
+    ));
+}
+
+#[test]
+fn parses_query_sessions_touched_path_filter() {
+    let cli = Cli::try_parse_from([
+        "darc",
+        "query",
+        "sessions",
+        "--project-id",
+        "repo-abc123",
+        "--touched-path",
+        "crates/wiki/**",
+        "--json",
+    ])
+    .unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Query(super::QueryArgs {
+            command: QueryCommands::Sessions(super::QuerySessionsArgs {
+                project_id,
+                touched_path,
+                json,
+                ..
+            }),
+        }) if project_id == "repo-abc123"
+            && touched_path.as_deref() == Some("crates/wiki/**")
+            && json
+    ));
+}
+
+#[test]
+fn parses_query_files_path_command() {
+    let cli = Cli::try_parse_from([
+        "darc",
+        "query",
+        "files",
+        "--project-id",
+        "repo-abc123",
+        "--path",
+        "crates/wiki/**/*.rs",
+        "--since",
+        "30d",
+        "--until",
+        "2026-04-07T00:00:00Z",
+        "--json",
+    ])
+    .unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Query(super::QueryArgs {
+            command: QueryCommands::Files(super::QueryFilesArgs {
+                project_id,
+                path,
+                co_touched_with,
+                since,
+                until,
+                limit,
+                json,
+                ..
+            }),
+        }) if project_id == "repo-abc123"
+            && path.as_deref() == Some("crates/wiki/**/*.rs")
+            && co_touched_with.is_none()
+            && since.as_deref() == Some("30d")
+            && until.as_deref() == Some("2026-04-07T00:00:00Z")
+            && limit.is_none()
+            && json
+    ));
+}
+
+#[test]
+fn parses_query_files_co_touched_command() {
+    let cli = Cli::try_parse_from([
+        "darc",
+        "query",
+        "files",
+        "--project-id",
+        "repo-abc123",
+        "--co-touched-with",
+        "crates/wiki/src/proposal.rs",
+        "--limit",
+        "10",
+        "--json",
+    ])
+    .unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Query(super::QueryArgs {
+            command: QueryCommands::Files(super::QueryFilesArgs {
+                project_id,
+                path,
+                co_touched_with,
+                limit,
+                json,
+                ..
+            }),
+        }) if project_id == "repo-abc123"
+            && path.is_none()
+            && co_touched_with.as_deref() == Some("crates/wiki/src/proposal.rs")
+            && limit == Some(10)
+            && json
+    ));
+}
+
+#[test]
+fn parses_query_session_files_command() {
+    let cli = Cli::try_parse_from([
+        "darc",
+        "query",
+        "session-files",
+        "--project-id",
+        "repo-abc123",
+        "--provider",
+        "codex",
+        "--session-id",
+        "session-1",
+        "--json",
+    ])
+    .unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Query(super::QueryArgs {
+            command: QueryCommands::SessionFiles(super::QuerySessionFilesArgs {
+                project_id,
+                provider,
+                session_id,
+                json,
+                ..
+            }),
+        }) if project_id == "repo-abc123"
+            && matches!(provider, super::ProviderArg::Codex)
+            && session_id == "session-1"
             && json
     ));
 }
@@ -558,6 +694,7 @@ fn query_sessions_help_mentions_examples_for_time_bounds() {
 
     assert!(help.contains("--since"));
     assert!(help.contains("--until"));
+    assert!(help.contains("--touched-path"));
     assert!(help.contains("5d"));
     assert!(help.contains("2026-04-07T00:00:00Z"));
 }
@@ -595,6 +732,23 @@ fn query_turns_help_mentions_grep_context_and_touched_path() {
     assert!(help.contains("--role"));
     assert!(help.contains("--context"));
     assert!(help.contains("--touched-path"));
+}
+
+#[test]
+fn query_files_help_mentions_path_and_co_touch_modes() {
+    let mut command = Cli::command();
+    let query = command
+        .find_subcommand_mut("query")
+        .expect("query subcommand should be present");
+    let help = query
+        .find_subcommand_mut("files")
+        .expect("files query subcommand should be present")
+        .render_long_help()
+        .to_string();
+
+    assert!(help.contains("--path"));
+    assert!(help.contains("--co-touched-with"));
+    assert!(help.contains("--limit"));
 }
 
 #[test]

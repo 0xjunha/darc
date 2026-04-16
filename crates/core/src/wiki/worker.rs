@@ -132,7 +132,7 @@ impl<'a> DigestWorker<'a> {
             "Preparing context bundle",
         )?;
         let session_summaries =
-            match query_sessions(Some(self.root.clone()), self.project_id, None, None)
+            match query_sessions(Some(self.root.clone()), self.project_id, None, None, None)
                 .context("failed to load indexed session summaries for digest context")
             {
                 Ok(data) => data.sessions,

@@ -7,17 +7,19 @@ use anyhow::{Context, Result, bail};
 use darc_index::INDEX_DB_FILE_NAME;
 use darc_paths::SourceKind;
 pub use darc_query::{
-    DailyTimeStat, FileUsageStat, HardDebuggingTurn, ProjectInsights, ProjectSummary,
+    CoTouchedFileSummary, DailyTimeStat, FileSessionSummary, FileUsageStat, FilesQueryData,
+    FilesQueryMode, FilesQueryRequest, HardDebuggingTurn, ProjectInsights, ProjectSummary,
     ProjectTimeStat, RootAvailability, RootInfo, SearchMode, SearchTurnHit, SearchTurnsQueryData,
-    SearchTurnsRequest, SessionKind, SessionRuntimeStat, SessionSummary, SessionsQueryData,
-    ShellCommandSummary, ToolUsageStat, TurnDetail, TurnDetailInsights, TurnDetailOptions,
-    TurnInsights, TurnMatchKind, TurnMatchesQueryData, TurnMatchesQueryRequest, TurnSearchRole,
-    TurnSummary, TurnsQueryData, TurnsQueryRequest, WorkspaceDailyTimeStat, WorkspaceInsights,
-    WorkspaceQueryData,
+    SearchTurnsRequest, SessionFileSummary, SessionFilesQueryData, SessionKind, SessionRuntimeStat,
+    SessionSummary, SessionsQueryData, ShellCommandSummary, ToolUsageStat, TurnDetail,
+    TurnDetailInsights, TurnDetailOptions, TurnInsights, TurnMatchKind, TurnMatchesQueryData,
+    TurnMatchesQueryRequest, TurnSearchRole, TurnSummary, TurnsQueryData, TurnsQueryRequest,
+    WorkspaceDailyTimeStat, WorkspaceInsights, WorkspaceQueryData,
 };
 use darc_query::{
-    ProjectIndexAggregate, list_project_index_aggregates, query_project_insights,
-    query_project_sessions, query_project_turn_matches as query_index_turn_matches,
+    ProjectIndexAggregate, list_project_index_aggregates, query_project_files,
+    query_project_insights, query_project_session_files, query_project_sessions,
+    query_project_turn_matches as query_index_turn_matches,
     query_project_turns as query_index_turns, query_search_turns as query_project_search_turns,
     query_session_turn_details as query_project_session_turn_details, query_turn_detail,
     query_turn_insights, query_workspace_insights,
@@ -123,13 +125,49 @@ pub fn query_sessions(
     project_id: &str,
     since: Option<&str>,
     until: Option<&str>,
+    touched_path: Option<&str>,
 ) -> Result<SessionsQueryData> {
     let context = load_project_query_context(root, project_id)?;
     query_project_sessions(
         &context.root.database_path,
         &context.project.id,
+        Some(context.project.local_path.as_path()),
         since,
         until,
+        touched_path,
+    )
+}
+
+/// Queries one file-pivot payload for one configured project.
+pub fn query_files(
+    root: Option<PathBuf>,
+    request: FilesQueryRequest<'_>,
+) -> Result<FilesQueryData> {
+    let context = load_project_query_context(root, request.project_id)?;
+    query_project_files(
+        &context.root.database_path,
+        FilesQueryRequest {
+            project_id: &context.project.id,
+            project_root: Some(context.project.local_path.as_path()),
+            ..request
+        },
+    )
+}
+
+/// Queries one session-scoped per-file access summary payload.
+pub fn query_session_files(
+    root: Option<PathBuf>,
+    project_id: &str,
+    provider: SourceKind,
+    session_id: &str,
+) -> Result<SessionFilesQueryData> {
+    let context = load_project_query_context(root, project_id)?;
+    query_project_session_files(
+        &context.root.database_path,
+        &context.project.id,
+        provider,
+        session_id,
+        Some(context.project.local_path.as_path()),
     )
 }
 

@@ -10,12 +10,13 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use darc_core::query::{
-    SearchMode, SearchTurnsRequest, TurnDetailOptions, TurnMatchesQueryRequest, TurnSearchRole,
-    TurnsQueryRequest, WikiDigestsQueryOptions, WikiEntriesQueryOptions, WikiRunsQueryOptions,
-    query_project_insight_report, query_search_turns, query_sessions, query_turn,
-    query_turn_insight_report, query_turn_matches, query_turns, query_wiki_digest,
-    query_wiki_digests, query_wiki_entries, query_wiki_entry, query_wiki_registry, query_wiki_run,
-    query_wiki_runs, query_workspace, query_workspace_insight_report,
+    FilesQueryRequest, SearchMode, SearchTurnsRequest, TurnDetailOptions, TurnMatchesQueryRequest,
+    TurnSearchRole, TurnsQueryRequest, WikiDigestsQueryOptions, WikiEntriesQueryOptions,
+    WikiRunsQueryOptions, query_files, query_project_insight_report, query_search_turns,
+    query_session_files, query_sessions, query_turn, query_turn_insight_report, query_turn_matches,
+    query_turns, query_wiki_digest, query_wiki_digests, query_wiki_entries, query_wiki_entry,
+    query_wiki_registry, query_wiki_run, query_wiki_runs, query_workspace,
+    query_workspace_insight_report,
 };
 use darc_core::{
     DigestId, DigestStartOptions, EntryId, EntryStatus, IndexOptions, InitDraft, RefreshOptions,
@@ -194,6 +195,10 @@ enum QueryCommands {
     Wiki(QueryWikiArgs),
     /// Queries the session list for one configured project.
     Sessions(QuerySessionsArgs),
+    /// Queries file pivots for one configured project.
+    Files(QueryFilesArgs),
+    /// Queries per-file access summaries for one provider session.
+    SessionFiles(QuerySessionFilesArgs),
     /// Queries the turn list for one provider session or grep request.
     Turns(QueryTurnsArgs),
     /// Queries one full turn detail payload.
@@ -412,6 +417,12 @@ struct QuerySessionsArgs {
     until: Option<String>,
 
     #[arg(
+        long = "touched-path",
+        help = "Only keep sessions that touched a file path matching this glob"
+    )]
+    touched_path: Option<String>,
+
+    #[arg(
         long,
         required = true,
         help = "Required. Emit the stable machine-readable JSON envelope on stdout"
@@ -469,6 +480,76 @@ struct QueryTurnsArgs {
         help = "Only keep grep matches from turns that touched a file path matching this glob"
     )]
     touched_path: Option<String>,
+
+    #[arg(
+        long,
+        required = true,
+        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
+    )]
+    json: bool,
+}
+
+/// Queries file pivots for one configured project.
+#[derive(Debug, Args)]
+struct QueryFilesArgs {
+    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    root: PathBuf,
+
+    #[arg(long = "project-id", help = "Query this configured project id")]
+    project_id: String,
+
+    #[arg(
+        long,
+        help = "Return sessions that touched file paths matching this glob"
+    )]
+    path: Option<String>,
+
+    #[arg(
+        long = "co-touched-with",
+        help = "Return files that were touched in the same sessions as this seed path"
+    )]
+    co_touched_with: Option<String>,
+
+    #[arg(
+        long,
+        help = "Inclusive started_at lower bound for --path mode. Example: `5d` or `2026-04-07T00:00:00Z`"
+    )]
+    since: Option<String>,
+
+    #[arg(
+        long,
+        help = "Exclusive started_at upper bound for --path mode. Example: `1d` or `2026-04-08T00:00:00Z`"
+    )]
+    until: Option<String>,
+
+    #[arg(
+        long,
+        help = "Maximum co-touched files to return for --co-touched-with mode"
+    )]
+    limit: Option<usize>,
+
+    #[arg(
+        long,
+        required = true,
+        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
+    )]
+    json: bool,
+}
+
+/// Queries one session-scoped per-file access summary payload.
+#[derive(Debug, Args)]
+struct QuerySessionFilesArgs {
+    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    root: PathBuf,
+
+    #[arg(long = "project-id", help = "Query this configured project id")]
+    project_id: String,
+
+    #[arg(long, value_enum, help = "Query this provider session")]
+    provider: ProviderArg,
+
+    #[arg(long = "session-id", help = "Query this session id")]
+    session_id: String,
 
     #[arg(
         long,
@@ -978,6 +1059,8 @@ fn run_query(args: QueryArgs) -> Result<()> {
         QueryCommands::Workspace(args) => run_query_workspace(args),
         QueryCommands::Wiki(args) => run_query_wiki(args),
         QueryCommands::Sessions(args) => run_query_sessions(args),
+        QueryCommands::Files(args) => run_query_files(args),
+        QueryCommands::SessionFiles(args) => run_query_session_files(args),
         QueryCommands::Turns(args) => run_query_turns(args),
         QueryCommands::Turn(args) => run_query_turn(args),
         QueryCommands::Search(args) => run_query_search(args),
@@ -1093,8 +1176,49 @@ fn run_query_sessions(args: QuerySessionsArgs) -> Result<()> {
         &args.project_id,
         since.as_deref(),
         until.as_deref(),
+        args.touched_path.as_deref(),
     )?;
     print_json_envelope("darc.query.sessions.v1", &data)
+}
+
+/// Queries file pivots for one configured project.
+fn run_query_files(args: QueryFilesArgs) -> Result<()> {
+    ensure_json_requested(args.json)?;
+    let since = args
+        .since
+        .as_deref()
+        .map(resolve_query_time_bound)
+        .transpose()?;
+    let until = args
+        .until
+        .as_deref()
+        .map(resolve_query_time_bound)
+        .transpose()?;
+    let data = query_files(
+        Some(args.root),
+        FilesQueryRequest {
+            project_id: &args.project_id,
+            project_root: None,
+            path: args.path.as_deref(),
+            co_touched_with: args.co_touched_with.as_deref(),
+            since: since.as_deref(),
+            until: until.as_deref(),
+            limit: args.limit,
+        },
+    )?;
+    print_json_envelope("darc.query.files.v1", &data)
+}
+
+/// Queries one session-scoped per-file access summary payload.
+fn run_query_session_files(args: QuerySessionFilesArgs) -> Result<()> {
+    ensure_json_requested(args.json)?;
+    let data = query_session_files(
+        Some(args.root),
+        &args.project_id,
+        provider_arg_to_source_kind(args.provider),
+        &args.session_id,
+    )?;
+    print_json_envelope("darc.query.session_files.v1", &data)
 }
 
 /// Queries the turn list for one provider session or grep request.

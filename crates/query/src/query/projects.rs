@@ -10,6 +10,7 @@ use darc_paths::SourceKind;
 use glob::{MatchOptions, Pattern};
 use rusqlite::{Connection, params, params_from_iter, types::Value};
 
+use super::files::{filter_session_summaries_by_touched_path, path_matches_glob};
 use super::search::build_fts_phrase_query;
 use super::turns::build_token_usage;
 use super::{
@@ -324,13 +325,30 @@ pub fn list_project_index_aggregates(index_db_path: &Path) -> Result<Vec<Project
 pub fn query_project_sessions(
     index_db_path: &Path,
     project_id: &str,
+    project_root: Option<&Path>,
     since: Option<&str>,
     until: Option<&str>,
+    touched_path: Option<&str>,
 ) -> Result<SessionsQueryData> {
     let connection = open_existing_index_database(index_db_path)?;
+    let sessions = query_sessions(&connection, project_id, since, until)?;
+    let sessions = if let Some(touched_path) = touched_path {
+        filter_session_summaries_by_touched_path(
+            &connection,
+            project_id,
+            project_root,
+            sessions,
+            touched_path,
+        )?
+    } else {
+        sessions
+    };
     Ok(SessionsQueryData {
         project_id: project_id.to_owned(),
-        sessions: query_sessions(&connection, project_id, since, until)?,
+        since: since.map(str::to_owned),
+        until: until.map(str::to_owned),
+        touched_path: touched_path.map(str::to_owned),
+        sessions,
     })
 }
 
@@ -838,88 +856,6 @@ fn validate_turn_match_context(context: usize) -> Result<u64> {
         bail!("--context must be at most {MAX_TURN_MATCH_CONTEXT} turns for grep mode");
     }
     u64::try_from(context).context("turn context exceeds u64 range")
-}
-
-/// Returns the candidate display paths that one touched-path glob should match against.
-fn candidate_glob_paths(
-    project_root: Option<&Path>,
-    repo_relative_path: Option<&str>,
-    path: &str,
-) -> Vec<String> {
-    let mut candidates = BTreeSet::new();
-    if let Some(repo_relative_path) = repo_relative_path
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        candidates.insert(repo_relative_path.to_owned());
-    }
-    if let Some(project_relative_path) = project_root
-        .and_then(|project_root| strip_project_root(path, project_root))
-        .filter(|value| !value.is_empty())
-    {
-        candidates.insert(project_relative_path);
-    }
-    let path = path.trim();
-    if !path.is_empty() {
-        candidates.insert(path.to_owned());
-    }
-    candidates.into_iter().collect()
-}
-
-/// Strips one configured project root from one absolute access path when possible.
-fn strip_project_root(path: &str, project_root: &Path) -> Option<String> {
-    let path = normalize_path_string(Path::new(path));
-    let project_root = normalize_path_string(project_root);
-    strip_root_prefix_from_path(&path, &project_root)
-        .or_else(|| {
-            macos_private_variants(&project_root)
-                .find_map(|variant| strip_root_prefix_from_path(&path, &variant))
-        })
-        .or_else(|| {
-            macos_private_variants(&path)
-                .find_map(|path_variant| strip_root_prefix_from_path(&path_variant, &project_root))
-        })
-}
-
-/// Normalizes one filesystem path into the stable slash-separated protocol form.
-fn normalize_path_string(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
-}
-
-/// Removes one normalized root prefix from one normalized absolute path when it is boundary-aligned.
-fn strip_root_prefix_from_path(path: &str, root: &str) -> Option<String> {
-    if root.is_empty() || !Path::new(path).is_absolute() {
-        return None;
-    }
-    if path == root {
-        return Some(String::new());
-    }
-    path.strip_prefix(root)
-        .and_then(|suffix| suffix.strip_prefix('/'))
-        .map(str::to_owned)
-}
-
-/// Yields the macOS `/private` toggled variants for one normalized absolute path.
-fn macos_private_variants<'a>(path: &'a str) -> impl Iterator<Item = String> + 'a {
-    [
-        path.strip_prefix("/private").map(str::to_owned),
-        Some(format!("/private{path}")).filter(|_| !path.starts_with("/private/")),
-    ]
-    .into_iter()
-    .flatten()
-}
-
-/// Returns whether one touched-path glob matches any available display path for one access row.
-fn path_matches_glob(
-    pattern: &Pattern,
-    options: &MatchOptions,
-    project_root: Option<&Path>,
-    repo_relative_path: Option<&str>,
-    path: &str,
-) -> bool {
-    candidate_glob_paths(project_root, repo_relative_path, path)
-        .iter()
-        .any(|candidate| pattern.matches_with(candidate, *options))
 }
 
 /// Builds the shared turn-summary select list for one optional table alias.

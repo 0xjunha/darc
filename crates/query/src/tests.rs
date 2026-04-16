@@ -20,10 +20,11 @@ use darc_test_utils::{
 };
 
 use crate::query::{
-    HardDebuggingTurn, LocalDate, ProjectInsights, SearchMode, SearchTurnsRequest, SessionKind,
-    TurnDetailOptions, TurnInsights, TurnMatchKind, TurnMatchesQueryRequest, TurnSearchRole,
-    build_project_insights, build_turn_insights, build_workspace_insights,
-    open_existing_index_database, parse_session_kind, query_project_sessions,
+    FilesQueryRequest, HardDebuggingTurn, LocalDate, ProjectInsights, SearchMode,
+    SearchTurnsRequest, SessionKind, TurnDetailOptions, TurnInsights, TurnMatchKind,
+    TurnMatchesQueryRequest, TurnSearchRole, build_project_insights, build_turn_insights,
+    build_workspace_insights, open_existing_index_database, parse_session_kind,
+    query_project_files, query_project_session_files, query_project_sessions,
     query_project_turn_matches, query_search_turns, query_session_turn_details, query_turn_detail,
     smoke_test_sql,
 };
@@ -514,7 +515,7 @@ fn session_summaries_leave_partial_token_and_runtime_totals_null() -> Result<()>
         },
     )?;
 
-    let sessions = query_project_sessions(&index_path, "repo-a", None, None)?;
+    let sessions = query_project_sessions(&index_path, "repo-a", None, None, None, None)?;
 
     assert_eq!(sessions.sessions.len(), 1);
     assert_eq!(sessions.sessions[0].total_token_count, None);
@@ -566,16 +567,30 @@ fn session_summaries_filter_by_latest_turn_bounds() -> Result<()> {
         ),
     )?;
 
-    let all_sessions = query_project_sessions(&index_path, "repo-a", None, None)?;
-    let since_sessions =
-        query_project_sessions(&index_path, "repo-a", Some("2026-04-06T00:00:00Z"), None)?;
-    let until_sessions =
-        query_project_sessions(&index_path, "repo-a", None, Some("2026-04-06T00:00:00Z"))?;
+    let all_sessions = query_project_sessions(&index_path, "repo-a", None, None, None, None)?;
+    let since_sessions = query_project_sessions(
+        &index_path,
+        "repo-a",
+        None,
+        Some("2026-04-06T00:00:00Z"),
+        None,
+        None,
+    )?;
+    let until_sessions = query_project_sessions(
+        &index_path,
+        "repo-a",
+        None,
+        None,
+        Some("2026-04-06T00:00:00Z"),
+        None,
+    )?;
     let bounded_sessions = query_project_sessions(
         &index_path,
         "repo-a",
+        None,
         Some("2026-04-05T12:00:00Z"),
         Some("2026-04-06T12:00:00Z"),
+        None,
     )?;
 
     assert_eq!(all_sessions.sessions.len(), 2);
@@ -602,6 +617,412 @@ fn session_summaries_filter_by_latest_turn_bounds() -> Result<()> {
             .map(|session| session.session_id.as_str())
             .collect::<Vec<_>>(),
         vec!["session-late"]
+    );
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn session_summaries_filter_by_touched_path_glob() -> Result<()> {
+    let index_path = test_index_path("session-touched-path");
+    let connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-wiki", "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            step_count: 1,
+            tool_call_count: 1,
+            duration_ms: 3_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-wiki",
+                0,
+                "2026-04-06T10:00:00Z",
+                "completed",
+                r##"[{"type":"tool_call","timestamp":"2026-04-06T10:00:01Z","call_id":"call-1","name":"Read","arguments":"{\"path\":\"/tmp/repo-a/crates/wiki/src/proposal.rs\"}"}]"##,
+            )
+        },
+    )?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-docs", "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            step_count: 1,
+            tool_call_count: 1,
+            duration_ms: 3_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-docs",
+                0,
+                "2026-04-06T11:00:00Z",
+                "completed",
+                r##"[{"type":"tool_call","timestamp":"2026-04-06T11:00:01Z","call_id":"call-2","name":"Read","arguments":"{\"file_path\":\"docs/query-protocol.md\"}"}]"##,
+            )
+        },
+    )?;
+
+    let sessions = query_project_sessions(
+        &index_path,
+        "repo-a",
+        Some(Path::new("/tmp/repo-a")),
+        None,
+        None,
+        Some("crates/wiki/**"),
+    )?;
+
+    assert_eq!(
+        sessions
+            .sessions
+            .iter()
+            .map(|session| session.session_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["session-wiki"]
+    );
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn query_files_path_mode_ranks_sessions_and_respects_time_bounds() -> Result<()> {
+    let index_path = test_index_path("query-files-path");
+    let connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            step_count: 1,
+            tool_call_count: 1,
+            duration_ms: 3_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                0,
+                "2026-04-06T10:00:00Z",
+                "completed",
+                r##"[{"type":"tool_call","timestamp":"2026-04-06T10:00:01Z","call_id":"call-1","name":"Read","arguments":"{\"file_path\":\"crates/wiki/src/proposal.rs\"}"}]"##,
+            )
+        },
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            step_count: 1,
+            tool_call_count: 1,
+            duration_ms: 3_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                1,
+                "2026-04-06T10:05:00Z",
+                "completed",
+                r##"[{"type":"tool_call","timestamp":"2026-04-06T10:05:01Z","call_id":"call-2","name":"Edit","arguments":"{\"path\":\"/tmp/repo-a/crates/wiki/src/context.rs\"}"}]"##,
+            )
+        },
+    )?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Claude, "session-2", "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            step_count: 1,
+            tool_call_count: 1,
+            duration_ms: 3_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Claude,
+                "session-2",
+                0,
+                "2026-04-06T09:00:00Z",
+                "completed",
+                r##"[{"type":"tool_call","timestamp":"2026-04-06T09:00:01Z","call_id":"call-3","name":"Read","arguments":"{\"file_path\":\"crates/wiki/src/proposal.rs\"}"}]"##,
+            )
+        },
+    )?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-old", "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            step_count: 1,
+            tool_call_count: 1,
+            duration_ms: 3_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-old",
+                0,
+                "2026-04-04T10:00:00Z",
+                "completed",
+                r##"[{"type":"tool_call","timestamp":"2026-04-04T10:00:01Z","call_id":"call-4","name":"Read","arguments":"{\"file_path\":\"crates/wiki/src/proposal.rs\"}"}]"##,
+            )
+        },
+    )?;
+
+    let exact = query_project_files(
+        &index_path,
+        FilesQueryRequest {
+            project_id: "repo-a",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            path: Some("crates/wiki/src/proposal.rs"),
+            co_touched_with: None,
+            since: None,
+            until: None,
+            limit: None,
+        },
+    )?;
+    let glob = query_project_files(
+        &index_path,
+        FilesQueryRequest {
+            project_id: "repo-a",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            path: Some("crates/wiki/**/*.rs"),
+            co_touched_with: None,
+            since: Some("2026-04-05T00:00:00Z"),
+            until: Some("2026-04-07T00:00:00Z"),
+            limit: None,
+        },
+    )?;
+
+    assert_eq!(
+        exact
+            .sessions
+            .iter()
+            .map(|session| (
+                session.provider,
+                session.session_id.as_str(),
+                session.touch_count
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (SourceKind::Codex, "session-1", 1),
+            (SourceKind::Claude, "session-2", 1),
+            (SourceKind::Codex, "session-old", 1),
+        ]
+    );
+    assert_eq!(
+        glob.sessions
+            .iter()
+            .map(|session| (
+                session.provider,
+                session.session_id.as_str(),
+                session.touch_count
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (SourceKind::Codex, "session-1", 2),
+            (SourceKind::Claude, "session-2", 1),
+        ]
+    );
+    assert_eq!(
+        glob.sessions[0].matched_paths,
+        vec![
+            "crates/wiki/src/context.rs".to_owned(),
+            "crates/wiki/src/proposal.rs".to_owned()
+        ]
+    );
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn query_files_co_touched_mode_counts_sessions_and_sorts_ties() -> Result<()> {
+    let index_path = test_index_path("query-files-co-touch");
+    let connection = open_index_database(&index_path)?;
+    for (provider, session_id, started_at, steps_json) in [
+        (
+            SourceKind::Codex,
+            "session-1",
+            "2026-04-06T10:00:00Z",
+            r##"[{"type":"tool_call","timestamp":"2026-04-06T10:00:01Z","call_id":"call-1","name":"Read","arguments":"{\"file\":[\"crates/wiki/src/proposal.rs\",\"crates/wiki/src/context.rs\",\"crates/wiki/src/api.rs\"]}"}]"##,
+        ),
+        (
+            SourceKind::Claude,
+            "session-2",
+            "2026-04-06T11:00:00Z",
+            r##"[{"type":"tool_call","timestamp":"2026-04-06T11:00:01Z","call_id":"call-2","name":"Read","arguments":"{\"file\":[\"crates/wiki/src/proposal.rs\",\"crates/wiki/src/context.rs\"]}"}]"##,
+        ),
+        (
+            SourceKind::Codex,
+            "session-3",
+            "2026-04-06T12:00:00Z",
+            r##"[{"type":"tool_call","timestamp":"2026-04-06T12:00:01Z","call_id":"call-3","name":"Read","arguments":"{\"file\":[\"crates/wiki/src/proposal.rs\",\"crates/wiki/src/alpha.rs\"]}"}]"##,
+        ),
+    ] {
+        insert_indexed_session(
+            &connection,
+            IndexedSessionFixture::new("repo-a", provider, session_id, "/tmp/repo-a"),
+        )?;
+        insert_indexed_turn(
+            &connection,
+            IndexedTurnFixture {
+                step_count: 1,
+                tool_call_count: 1,
+                duration_ms: 3_000,
+                ..IndexedTurnFixture::new(
+                    "repo-a",
+                    provider,
+                    session_id,
+                    0,
+                    started_at,
+                    "completed",
+                    steps_json,
+                )
+            },
+        )?;
+    }
+
+    let result = query_project_files(
+        &index_path,
+        FilesQueryRequest {
+            project_id: "repo-a",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            path: None,
+            co_touched_with: Some("/tmp/repo-a/crates/wiki/src/proposal.rs"),
+            since: None,
+            until: None,
+            limit: Some(10),
+        },
+    )?;
+
+    assert_eq!(
+        result
+            .files
+            .iter()
+            .map(|file| (file.path.as_str(), file.co_touch_count))
+            .collect::<Vec<_>>(),
+        vec![
+            ("crates/wiki/src/context.rs", 2),
+            ("crates/wiki/src/alpha.rs", 1),
+            ("crates/wiki/src/api.rs", 1),
+        ]
+    );
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn query_session_files_collapses_absolute_and_relative_paths() -> Result<()> {
+    let index_path = test_index_path("query-session-files");
+    let connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            step_count: 1,
+            tool_call_count: 1,
+            duration_ms: 3_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                0,
+                "2026-04-06T10:00:00Z",
+                "completed",
+                r##"[{"type":"tool_call","timestamp":"2026-04-06T10:00:01Z","call_id":"call-1","name":"Read","arguments":"{\"file_path\":\"crates/wiki/src/proposal.rs\"}"}]"##,
+            )
+        },
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            step_count: 1,
+            tool_call_count: 1,
+            duration_ms: 3_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                2,
+                "2026-04-06T10:05:00Z",
+                "completed",
+                r##"[{"type":"tool_call","timestamp":"2026-04-06T10:05:01Z","call_id":"call-2","name":"Edit","arguments":"{\"path\":\"/tmp/repo-a/crates/wiki/src/proposal.rs\"}"}]"##,
+            )
+        },
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            step_count: 1,
+            tool_call_count: 1,
+            duration_ms: 3_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                3,
+                "2026-04-06T10:06:00Z",
+                "completed",
+                r##"[{"type":"tool_call","timestamp":"2026-04-06T10:06:01Z","call_id":"call-3","name":"Read","arguments":"{\"file_path\":\"crates/wiki/src/context.rs\"}"}]"##,
+            )
+        },
+    )?;
+
+    let result = query_project_session_files(
+        &index_path,
+        "repo-a",
+        SourceKind::Codex,
+        "session-1",
+        Some(Path::new("/tmp/repo-a")),
+    )?;
+
+    assert_eq!(
+        result
+            .files
+            .iter()
+            .map(|file| {
+                (
+                    file.path.as_str(),
+                    file.read_count,
+                    file.write_count,
+                    file.first_turn_ordinal,
+                    file.last_turn_ordinal,
+                )
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            ("crates/wiki/src/proposal.rs", 1, 1, 0, 2),
+            ("crates/wiki/src/context.rs", 1, 0, 3, 3),
+        ]
     );
 
     fs::remove_dir_all(

@@ -301,7 +301,7 @@ mod tests {
             ),
         )?;
 
-        let session_summaries = query_sessions(Some(root.clone()), project_id, None, None)?;
+        let session_summaries = query_sessions(Some(root.clone()), project_id, None, None, None)?;
         let session = load_selected_session_context(
             &root,
             project_id,
