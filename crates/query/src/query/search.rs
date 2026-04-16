@@ -545,16 +545,29 @@ fn file_search_predicate_sql(kind: FileSearchKind, stage: FileSearchStage) -> &'
 }
 
 /// Converts one free-form keyword query into a conservative FTS `MATCH` expression.
-fn build_fts_query(query: &str) -> Result<String> {
+pub(crate) fn build_fts_query(query: &str) -> Result<String> {
+    Ok(tokenize_fts_query(query)?
+        .into_iter()
+        .map(|token| format!("\"{token}\""))
+        .collect::<Vec<_>>()
+        .join(" "))
+}
+
+/// Converts one free-form grep query into one ordered FTS phrase expression.
+pub(crate) fn build_fts_phrase_query(query: &str) -> Result<String> {
+    Ok(format!("\"{}\"", tokenize_fts_query(query)?.join(" ")))
+}
+
+/// Tokenizes one free-form text query into the normalized FTS terms Darc indexes.
+fn tokenize_fts_query(query: &str) -> Result<Vec<String>> {
     let tokens = query
         .split(|ch: char| !(ch.is_alphanumeric() || matches!(ch, '_' | '-' | '.')))
         .filter(|token| !token.is_empty())
-        .map(|token| format!("\"{token}\""))
         .collect::<Vec<_>>();
     if tokens.is_empty() {
         bail!("search query must contain at least one keyword");
     }
-    Ok(tokens.join(" "))
+    Ok(tokens.into_iter().map(str::to_owned).collect())
 }
 
 /// Builds one SQL `LIKE` prefix pattern with literal wildcard escaping.

@@ -892,6 +892,160 @@ fn turns_query_emits_success_envelope() -> Result<()> {
 }
 
 #[test]
+fn turns_query_grep_emits_match_and_context_rows() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-turns-grep")?;
+    let connection = open_index_database(&root.join("index.sqlite"))?;
+    let matched_path = root.join("repo/crates/index/src/index_db/schema.rs");
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            turn_id: Some("turn-2"),
+            completed_at: Some("2026-04-06T10:05:05Z"),
+            user_message: "Please switch to staged init for the index bootstrap",
+            step_count: 1,
+            tool_call_count: 1,
+            duration_ms: 5_000,
+            ..IndexedTurnFixture::new(
+                "repo-abc123",
+                SourceKind::Codex,
+                "session-1",
+                1,
+                "2026-04-06T10:05:00Z",
+                "completed",
+                &format!(
+                    r#"[{{"type":"tool_call","timestamp":"2026-04-06T10:05:01Z","call_id":"call-2","name":"Read","arguments":"{{\"path\":\"{}\"}}"}}]"#,
+                    matched_path.display()
+                ),
+            )
+        },
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            turn_id: Some("turn-3"),
+            completed_at: Some("2026-04-06T10:10:05Z"),
+            user_message: "Apply the follow-up update after that",
+            step_count: 1,
+            tool_call_count: 1,
+            duration_ms: 5_000,
+            ..IndexedTurnFixture::new(
+                "repo-abc123",
+                SourceKind::Codex,
+                "session-1",
+                2,
+                "2026-04-06T10:10:00Z",
+                "completed",
+                r##"[{"type":"tool_call","timestamp":"2026-04-06T10:10:01Z","call_id":"call-3","name":"Read","arguments":"{\"file_path\":\"Cargo.toml\"}"}]"##,
+            )
+        },
+    )?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-abc123", SourceKind::Codex, "session-2", "/tmp/repo"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            user_message: "Please switch to staged init for the docs too",
+            step_count: 1,
+            tool_call_count: 1,
+            duration_ms: 5_000,
+            ..IndexedTurnFixture::new(
+                "repo-abc123",
+                SourceKind::Codex,
+                "session-2",
+                0,
+                "2026-04-06T11:00:00Z",
+                "completed",
+                r##"[{"type":"tool_call","timestamp":"2026-04-06T11:00:01Z","call_id":"call-4","name":"Read","arguments":"{\"file_path\":\"docs/query-protocol.md\"}"}]"##,
+            )
+        },
+    )?;
+
+    let output = run_darc([
+        "query",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--grep",
+        "staged init",
+        "--role",
+        "user",
+        "--context",
+        "1",
+        "--since",
+        "2026-04-06T00:00:00Z",
+        "--until",
+        "2026-04-07T00:00:00Z",
+        "--touched-path",
+        "crates/index/**",
+        "--json",
+    ])?;
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.turn_matches.v1");
+    assert_eq!(value["data"]["provider"], Value::Null);
+    assert_eq!(value["data"]["session_id"], Value::Null);
+    assert_eq!(value["data"]["role"], "user");
+    assert_eq!(value["data"]["context"], 1);
+    assert_eq!(
+        value["data"]["turns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|turn| turn["turn_ordinal"].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![0, 1, 2]
+    );
+    assert_eq!(value["data"]["turns"][0]["match_kind"], "context");
+    assert_eq!(value["data"]["turns"][1]["match_kind"], "match");
+    assert_eq!(value["data"]["turns"][2]["match_kind"], "context");
+    assert_eq!(value["data"]["turns"][0]["match_snippet"], Value::Null);
+    assert!(
+        value["data"]["turns"][1]["match_snippet"]
+            .as_str()
+            .is_some_and(|snippet| snippet.contains("staged init"))
+    );
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn turns_query_grep_rejects_context_over_limit() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-turns-grep-limit")?;
+    let output = run_darc([
+        "query",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--grep",
+        "staged init",
+        "--context",
+        "51",
+        "--json",
+    ])?;
+
+    assert!(!output.status.success());
+    let value = parse_json(&output.stderr, "stderr")?;
+    assert_eq!(value["schema"], "darc.error.v1");
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("--context must be at most 50 turns"))
+    );
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
 fn turn_query_emits_success_envelope_and_raw_field() -> Result<()> {
     let root = create_query_fixture_root("cli-query-turn")?;
     let output = run_darc([

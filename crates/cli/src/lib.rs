@@ -10,12 +10,12 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use darc_core::query::{
-    SearchMode, SearchTurnsRequest, TurnDetailOptions, WikiDigestsQueryOptions,
-    WikiEntriesQueryOptions, WikiRunsQueryOptions, query_project_insight_report,
-    query_search_turns, query_sessions, query_turn, query_turn_insight_report, query_turns,
-    query_wiki_digest, query_wiki_digests, query_wiki_entries, query_wiki_entry,
-    query_wiki_registry, query_wiki_run, query_wiki_runs, query_workspace,
-    query_workspace_insight_report,
+    SearchMode, SearchTurnsRequest, TurnDetailOptions, TurnMatchesQueryRequest, TurnSearchRole,
+    TurnsQueryRequest, WikiDigestsQueryOptions, WikiEntriesQueryOptions, WikiRunsQueryOptions,
+    query_project_insight_report, query_search_turns, query_sessions, query_turn,
+    query_turn_insight_report, query_turn_matches, query_turns, query_wiki_digest,
+    query_wiki_digests, query_wiki_entries, query_wiki_entry, query_wiki_registry, query_wiki_run,
+    query_wiki_runs, query_workspace, query_workspace_insight_report,
 };
 use darc_core::{
     DigestId, DigestStartOptions, EntryId, EntryStatus, IndexOptions, InitDraft, RefreshOptions,
@@ -194,7 +194,7 @@ enum QueryCommands {
     Wiki(QueryWikiArgs),
     /// Queries the session list for one configured project.
     Sessions(QuerySessionsArgs),
-    /// Queries the turn list for one provider session.
+    /// Queries the turn list for one provider session or grep request.
     Turns(QueryTurnsArgs),
     /// Queries one full turn detail payload.
     Turn(QueryTurnArgs),
@@ -419,7 +419,7 @@ struct QuerySessionsArgs {
     json: bool,
 }
 
-/// Queries the turn list for one provider session.
+/// Queries the turn list for one provider session or grep request.
 #[derive(Debug, Args)]
 struct QueryTurnsArgs {
     #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
@@ -428,11 +428,47 @@ struct QueryTurnsArgs {
     #[arg(long = "project-id", help = "Query this configured project id")]
     project_id: String,
 
-    #[arg(long, value_enum, help = "Query this provider")]
-    provider: ProviderArg,
+    #[arg(long, value_enum, help = "Restrict turns to this provider")]
+    provider: Option<ProviderArg>,
 
-    #[arg(long = "session-id", help = "Query this session id")]
-    session_id: String,
+    #[arg(long = "session-id", help = "Restrict turns to this session id")]
+    session_id: Option<String>,
+
+    #[arg(long, help = "Search turn text for this free-form query")]
+    grep: Option<String>,
+
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = TurnSearchRoleArg::Both,
+        help = "Restrict grep matches to user prompts, assistant text, or both"
+    )]
+    role: TurnSearchRoleArg,
+
+    #[arg(
+        long,
+        default_value_t = 0,
+        help = "Include this many surrounding turns before and after each grep match"
+    )]
+    context: usize,
+
+    #[arg(
+        long,
+        help = "Inclusive started_at lower bound for grep mode. Example: `5d` or `2026-04-07T00:00:00Z`"
+    )]
+    since: Option<String>,
+
+    #[arg(
+        long,
+        help = "Exclusive started_at upper bound for grep mode. Example: `1d` or `2026-04-08T00:00:00Z`"
+    )]
+    until: Option<String>,
+
+    #[arg(
+        long = "touched-path",
+        help = "Only keep grep matches from turns that touched a file path matching this glob"
+    )]
+    touched_path: Option<String>,
 
     #[arg(
         long,
@@ -873,6 +909,14 @@ enum SearchModeArg {
     FilePath,
 }
 
+/// Represents the supported role filters for grep-style turn queries.
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum TurnSearchRoleArg {
+    User,
+    Assistant,
+    Both,
+}
+
 /// Represents the supported turn-detail projection modes.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ViewArg {
@@ -1053,14 +1097,68 @@ fn run_query_sessions(args: QuerySessionsArgs) -> Result<()> {
     print_json_envelope("darc.query.sessions.v1", &data)
 }
 
-/// Queries the turn list for one provider session.
+/// Queries the turn list for one provider session or grep request.
 fn run_query_turns(args: QueryTurnsArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
+    let since = args
+        .since
+        .as_deref()
+        .map(resolve_query_time_bound)
+        .transpose()?;
+    let until = args
+        .until
+        .as_deref()
+        .map(resolve_query_time_bound)
+        .transpose()?;
+    if let Some(grep) = args.grep.as_deref() {
+        let data = query_turn_matches(
+            Some(args.root),
+            TurnMatchesQueryRequest {
+                project_id: &args.project_id,
+                project_root: None,
+                provider: args.provider.map(provider_arg_to_source_kind),
+                session_id: args.session_id.as_deref(),
+                grep,
+                role: turn_search_role_arg_to_role(args.role),
+                context: args.context,
+                since: since.as_deref(),
+                until: until.as_deref(),
+                touched_path: args.touched_path.as_deref(),
+            },
+        )?;
+        return print_json_envelope("darc.query.turn_matches.v1", &data);
+    }
+
+    if args.role != TurnSearchRoleArg::Both {
+        bail!("--role requires --grep");
+    }
+    if args.context != 0 {
+        bail!("--context requires --grep");
+    }
+    if since.is_some() {
+        bail!("--since currently requires --grep");
+    }
+    if until.is_some() {
+        bail!("--until currently requires --grep");
+    }
+    if args.touched_path.is_some() {
+        bail!("--touched-path requires --grep");
+    }
+
+    let provider = args
+        .provider
+        .context("query turns without --grep requires --provider")?;
+    let session_id = args
+        .session_id
+        .as_deref()
+        .context("query turns without --grep requires --session-id")?;
     let data = query_turns(
         Some(args.root),
-        &args.project_id,
-        provider_arg_to_source_kind(args.provider),
-        &args.session_id,
+        TurnsQueryRequest {
+            project_id: &args.project_id,
+            provider: provider_arg_to_source_kind(provider),
+            session_id,
+        },
     )?;
     print_json_envelope("darc.query.turns.v1", &data)
 }
@@ -1451,6 +1549,15 @@ fn search_mode_arg_to_search_mode(mode: SearchModeArg) -> SearchMode {
         SearchModeArg::Keyword => SearchMode::Keyword,
         SearchModeArg::FileName => SearchMode::FileName,
         SearchModeArg::FilePath => SearchMode::FilePath,
+    }
+}
+
+/// Converts one parsed grep-role argument into the shared turn-search role.
+fn turn_search_role_arg_to_role(role: TurnSearchRoleArg) -> TurnSearchRole {
+    match role {
+        TurnSearchRoleArg::User => TurnSearchRole::User,
+        TurnSearchRoleArg::Assistant => TurnSearchRole::Assistant,
+        TurnSearchRoleArg::Both => TurnSearchRole::Both,
     }
 }
 
