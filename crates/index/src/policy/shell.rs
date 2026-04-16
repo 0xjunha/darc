@@ -151,10 +151,7 @@ fn split_shell_fragments(command_text: &str) -> Vec<String> {
     let mut in_double_quote = false;
     let mut escaped = false;
 
-    loop {
-        let Some(ch) = chars.next() else {
-            break;
-        };
+    while let Some(ch) = chars.next() {
         if escaped {
             current.push(ch);
             escaped = false;
@@ -245,15 +242,12 @@ fn apply_patch_heredoc_terminator(line: &str) -> Option<String> {
 fn tokenize_shell_words(fragment: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
-    let mut chars = fragment.chars().peekable();
+    let chars = fragment.chars();
     let mut in_single_quote = false;
     let mut in_double_quote = false;
     let mut escaped = false;
 
-    loop {
-        let Some(ch) = chars.next() else {
-            break;
-        };
+    for ch in chars {
         if escaped {
             current.push(ch);
             escaped = false;

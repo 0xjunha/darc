@@ -610,6 +610,9 @@ fn sessions_query_emits_success_envelope() -> Result<()> {
     let value = parse_json(&output.stdout, "stdout")?;
     assert_eq!(value["schema"], "darc.query.sessions.v1");
     assert_eq!(value["data"]["project_id"], "repo-abc123");
+    assert_eq!(value["data"]["since"], Value::Null);
+    assert_eq!(value["data"]["until"], Value::Null);
+    assert_eq!(value["data"]["touched_path"], Value::Null);
     assert_eq!(value["data"]["sessions"][0]["session_id"], "session-1");
     assert_eq!(value["data"]["sessions"][0]["latest_status"], "completed");
     assert_eq!(value["data"]["sessions"][0]["primary_model"], "gpt-5.4");
@@ -662,6 +665,114 @@ fn sessions_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["sessions"][0]["changed_file_count"], 1);
     assert_eq!(value["data"]["sessions"][0]["added_line_count"], 2);
     assert_eq!(value["data"]["sessions"][0]["removed_line_count"], 1);
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn sessions_query_applies_touched_path_filter() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-sessions-touched-path")?;
+    insert_query_fixture_session(&root, "session-2", "2026-04-07T10:00:00Z")?;
+    let touched_path = root.join("repo").join("README.md");
+    let touched_path = touched_path.to_string_lossy().into_owned();
+
+    let output = run_darc([
+        "query",
+        "sessions",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--touched-path",
+        &touched_path,
+        "--json",
+    ])?;
+
+    assert!(output.status.success());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.sessions.v1");
+    assert_eq!(value["data"]["touched_path"], touched_path);
+    assert_eq!(
+        value["data"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|session| session["session_id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["session-1"]
+    );
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn files_query_path_mode_emits_success_envelope() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-files-path")?;
+    let path = root.join("repo").join("README.md");
+    let path = path.to_string_lossy().into_owned();
+
+    let output = run_darc([
+        "query",
+        "files",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--path",
+        &path,
+        "--json",
+    ])?;
+
+    assert!(output.status.success());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.files.v1");
+    assert_eq!(value["data"]["project_id"], "repo-abc123");
+    assert_eq!(value["data"]["mode"], "path");
+    assert_eq!(value["data"]["path"], path);
+    assert_eq!(value["data"]["co_touched_with"], Value::Null);
+    assert_eq!(value["data"]["sessions"][0]["session_id"], "session-1");
+    assert_eq!(value["data"]["sessions"][0]["touch_count"], 1);
+    assert_eq!(
+        value["data"]["sessions"][0]["matched_paths"],
+        serde_json::json!(["README.md"])
+    );
+    assert_eq!(value["data"]["files"], Value::Array(vec![]));
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn session_files_query_emits_success_envelope() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-session-files")?;
+
+    let output = run_darc([
+        "query",
+        "session-files",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--provider",
+        "codex",
+        "--session-id",
+        "session-1",
+        "--json",
+    ])?;
+
+    assert!(output.status.success());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.session_files.v1");
+    assert_eq!(value["data"]["project_id"], "repo-abc123");
+    assert_eq!(value["data"]["provider"], "codex");
+    assert_eq!(value["data"]["session_id"], "session-1");
+    assert_eq!(value["data"]["files"][0]["path"], "README.md");
+    assert_eq!(value["data"]["files"][0]["read_count"], 1);
+    assert_eq!(value["data"]["files"][0]["write_count"], 0);
+    assert_eq!(value["data"]["files"][0]["first_turn_ordinal"], 0);
+    assert_eq!(value["data"]["files"][0]["last_turn_ordinal"], 0);
 
     remove_root(&root)?;
     Ok(())

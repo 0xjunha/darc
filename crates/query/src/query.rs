@@ -1,3 +1,4 @@
+mod files;
 mod insights;
 mod projects;
 mod search;
@@ -9,6 +10,7 @@ use anyhow::{Context, Result, bail};
 use darc_index::{open_index_database, policy::HardDebuggingCandidate};
 use darc_paths::SourceKind;
 use darc_rollout::model::{NormalizedTokenUsage, NormalizedTurnStatus, NormalizedTurnStep};
+pub use files::{query_project_files, query_project_session_files};
 #[cfg(test)]
 pub(crate) use insights::{build_project_insights, build_workspace_insights};
 pub use insights::{query_project_insights, query_workspace_insights};
@@ -27,6 +29,7 @@ pub use turns::{query_session_turn_details, query_turn_detail, query_turn_insigh
 /// Prepares every read-side SQL statement against one initialized SQLite schema.
 pub(crate) fn smoke_test_sql(connection: &Connection) -> Result<()> {
     projects::smoke_test_sql(connection)?;
+    files::smoke_test_sql(connection)?;
     turns::smoke_test_sql(connection)?;
     insights::smoke_test_sql(connection)?;
     search::smoke_test_sql(connection)?;
@@ -121,7 +124,86 @@ pub struct SessionSummary {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SessionsQueryData {
     pub project_id: String,
+    pub since: Option<String>,
+    pub until: Option<String>,
+    pub touched_path: Option<String>,
     pub sessions: Vec<SessionSummary>,
+}
+
+/// Identifies which file-pivot query variant populated one files payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FilesQueryMode {
+    Path,
+    CoTouchedWith,
+}
+
+/// Stores one session ranked by how often it touched one matched file set.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FileSessionSummary {
+    pub provider: SourceKind,
+    pub session_id: String,
+    pub touch_count: u64,
+    pub read_count: u64,
+    pub write_count: u64,
+    pub first_turn_ordinal: u64,
+    pub last_turn_ordinal: u64,
+    pub first_touched_at: String,
+    pub last_touched_at: String,
+    pub matched_paths: Vec<String>,
+}
+
+/// Stores one co-touched file ranked by how many seed sessions also touched it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CoTouchedFileSummary {
+    pub path: String,
+    pub co_touch_count: u64,
+}
+
+/// Stores one file-level query payload for path pivots and co-touch ranking.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FilesQueryData {
+    pub project_id: String,
+    pub mode: FilesQueryMode,
+    pub path: Option<String>,
+    pub co_touched_with: Option<String>,
+    pub since: Option<String>,
+    pub until: Option<String>,
+    pub limit: Option<u64>,
+    pub sessions: Vec<FileSessionSummary>,
+    pub files: Vec<CoTouchedFileSummary>,
+}
+
+/// Collects the supported inputs for one file-pivot query request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FilesQueryRequest<'a> {
+    pub project_id: &'a str,
+    pub project_root: Option<&'a Path>,
+    pub path: Option<&'a str>,
+    pub co_touched_with: Option<&'a str>,
+    pub since: Option<&'a str>,
+    pub until: Option<&'a str>,
+    pub limit: Option<usize>,
+}
+
+/// Stores one session-scoped per-file access summary row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SessionFileSummary {
+    pub path: String,
+    pub repo_relative_path: Option<String>,
+    pub read_count: u64,
+    pub write_count: u64,
+    pub first_turn_ordinal: u64,
+    pub last_turn_ordinal: u64,
+}
+
+/// Stores the per-file access summary payload for one indexed session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SessionFilesQueryData {
+    pub project_id: String,
+    pub provider: SourceKind,
+    pub session_id: String,
+    pub files: Vec<SessionFileSummary>,
 }
 
 /// Stores one indexed turn summary for one session.

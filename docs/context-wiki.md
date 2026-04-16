@@ -34,6 +34,14 @@ Use `darc query wiki ... --json` to inspect Context Wiki state without invoking 
 The query protocol remains the machine-readable contract for desktop and other clients. See
 [Query protocol](query-protocol.md).
 
+For history investigation and proposal preparation, prefer the project-scoped read surface over ad hoc SQLite reads:
+
+- `darc query turns --grep ...` to find load-bearing turns by content with optional role and context filters
+- `darc query files --path ...` to pivot from one file path to the sessions that touched it
+- `darc query files --co-touched-with ...` to discover nearby files often touched in the same sessions
+- `darc query session-files ...` to inspect one session's in-project file activity
+- `darc query sessions --touched-path ...` to narrow the session list to work that touched a path of interest
+
 ## Starting A Digest
 
 `darc wiki digest start` creates a new run, snapshots the request and context artifacts, spawns a background worker,

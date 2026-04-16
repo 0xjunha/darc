@@ -112,20 +112,49 @@ See [Query protocol](docs/query-protocol.md) for the exact payload contract and 
 
 ## Search
 
-Darc now supports project-scoped turn search through the query protocol.
+Darc now supports project-scoped turn search and file/session pivots through the query protocol.
 
 - keyword search uses SQLite FTS5 over derived turn text
+- turn grep uses SQLite FTS5 over turn text at turn granularity, with role, context, time, and touched-path filters
 - file-name search uses derived basenames from indexed `file_accesses`
 - file-path search uses derived repo-relative or raw paths from indexed `file_accesses`
+- file pivots let you move from one file path to the sessions that touched it, from one session to the files it touched,
+  and from one seed file to commonly co-touched files
 - file-name and file-path search currently rank exact matches first, then prefix matches, then substring matches
 
-Example:
+Examples:
 
 ```bash
 darc query search turns \
   --project-id repo-abc123 \
   --mode keyword \
   --query "panic unwrap" \
+  --json
+```
+
+```bash
+darc query turns \
+  --project-id repo-abc123 \
+  --grep "staged init" \
+  --role user \
+  --context 1 \
+  --since 14d \
+  --json
+```
+
+```bash
+darc query files \
+  --project-id repo-abc123 \
+  --path "crates/wiki/**/*.rs" \
+  --since 30d \
+  --json
+```
+
+```bash
+darc query session-files \
+  --project-id repo-abc123 \
+  --provider codex \
+  --session-id session-1 \
   --json
 ```
 
@@ -136,6 +165,9 @@ See [Query protocol](docs/query-protocol.md) for the full search payload contrac
 Darc includes an experimental backend-owned Context Wiki workflow under `~/.darc/context-wiki/`.
 
 - Use `darc query wiki ... --json` for read-side access to registry, entries, digests, and runs.
+- Use the read-side `darc query` surface to investigate history before or alongside digest work. In particular,
+  `darc query turns --grep ...`, `darc query files ...`, `darc query session-files ...`, and
+  `darc query sessions --touched-path ...` are the intended project-scoped primitives for narrowing evidence.
 - Use `darc wiki digest start` to assemble selected session context, invoke an external Codex or Claude Code CLI,
   validate the returned structured proposal artifact, and merge the validated result into canonical wiki artifacts.
 - Use `darc wiki digest cancel` to request cancellation for an in-flight run.

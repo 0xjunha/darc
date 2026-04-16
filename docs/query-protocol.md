@@ -23,7 +23,10 @@ All query commands currently require `--json`.
 - `darc query wiki run --root <path> --project-id <id> --run-id <id> --json`
 - `darc query wiki runs --root <path> --project-id <id> --status <status> --limit <n> --json`
 - `darc query sessions --root <path> --project-id <id> --json`
-- `darc query sessions --root <path> --project-id <id> --since <iso-8601|<days>d> --until <iso-8601|<days>d> --json`
+- `darc query sessions --root <path> --project-id <id> --since <iso-8601|<days>d> --until <iso-8601|<days>d> --touched-path <glob> --json`
+- `darc query files --root <path> --project-id <id> --path <glob> --since <iso-8601|<days>d> --until <iso-8601|<days>d> --json`
+- `darc query files --root <path> --project-id <id> --co-touched-with <path> --limit <n> --json`
+- `darc query session-files --root <path> --project-id <id> --provider <provider> --session-id <id> --json`
 - `darc query turns --root <path> --project-id <id> --provider <provider> --session-id <id> --json`
 - `darc query turns --root <path> --project-id <id> --grep <text> --role <user|assistant|both> --context <n> --since <iso-8601|<days>d> --until <iso-8601|<days>d> --touched-path <glob> --json`
 - `darc query turn --root <path> --project-id <id> --provider <provider> --session-id <id> --turn-ordinal <n> --json`
@@ -34,6 +37,44 @@ All query commands currently require `--json`.
 - `darc query insights workspace --root <path> --window <days>d --json`
 - `darc query insights project --root <path> --project-id <id> --limit <n> --json`
 - `darc query insights turn --root <path> --project-id <id> --provider <provider> --session-id <id> --turn-ordinal <n> --json`
+
+## Common Workflows
+
+The protocol is intentionally composable. A few common read patterns are now first-class:
+
+- find decision-shaped turns by content:
+
+  ```bash
+  darc query turns \
+    --root ~/.darc \
+    --project-id repo-abc123 \
+    --grep "staged init" \
+    --role user \
+    --context 1 \
+    --since 14d \
+    --json
+  ```
+
+- pivot from a file path to the sessions that touched it:
+
+  ```bash
+  darc query files \
+    --root ~/.darc \
+    --project-id repo-abc123 \
+    --path "crates/wiki/src/proposal.rs" \
+    --json
+  ```
+
+- inspect all in-project files touched by one session:
+
+  ```bash
+  darc query session-files \
+    --root ~/.darc \
+    --project-id repo-abc123 \
+    --provider codex \
+    --session-id session-1 \
+    --json
+  ```
 
 ## Success envelope
 
@@ -87,6 +128,8 @@ Current schema ids:
 - `darc.query.wiki.run.v1`
 - `darc.query.wiki.runs.v1`
 - `darc.query.sessions.v1`
+- `darc.query.files.v1`
+- `darc.query.session_files.v1`
 - `darc.query.turns.v1`
 - `darc.query.turn_matches.v1`
 - `darc.query.turn.v1`
@@ -237,7 +280,9 @@ Today:
 
 - session rows include `primary_model`, `total_token_count`, `token_usage`, `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, `removed_line_count`, `first_turn_at`, `first_user_prompt`, `aborted_turn_count`, and `edited_files`
 - session totals are rollups across the indexed turns in that session
+- top-level session-list payloads additionally echo the resolved `since`, `until`, and `touched_path` request filters as nullable fields
 - optional `--since` and `--until` filters apply to `latest_turn_at`, using inclusive lower-bound and exclusive upper-bound semantics
+- optional `--touched-path` filters session rows after the `latest_turn_at` bounds by requiring at least one session-scoped, project-scoped file access whose canonical display path matches the provided glob
 - `--since` and `--until` accept absolute ISO-8601 text or relative `<days>d` shorthand such as `5d`
 - each `token_usage.*` session field is `null` unless every indexed turn in that session carried a value for that exact field
 - `total_token_count` and `effective_agent_runtime_ms` are currently `null` on a session row unless every indexed turn in that session carried a value for that field
@@ -252,10 +297,35 @@ Today:
 - grep mode applies `--since` and `--until` to matched turns using `turns.started_at`, with inclusive lower-bound and exclusive upper-bound semantics
 - `--context <n>` expands each grep hit to include up to `n` earlier and `n` later turns from the same session, ordered by session group then `turn_ordinal`
 - `--context` currently has a hard maximum of `50`
-- `--touched-path <glob>` keeps only grep hits whose exact turn touched at least one file whose `repo_relative_path` or project-relative absolute `path` matches the provided glob
-- `--touched-path` currently uses the Rust `glob` crate syntax, matched case-insensitively
+- `query files --path <glob>` and `--touched-path <glob>` on `query sessions` / `query turns --grep` currently use the Rust `glob` crate syntax, matched case-insensitively against one canonical project-scoped display path per access
+- absolute query paths under the configured project root are normalized down to project-relative form before matching, so `/repo/README.md` and `README.md` hit the same indexed access
+- out-of-project paths are not exposed and do not participate in these path-matching filters
 - turn rows include `primary_model`, `total_token_count`, `token_usage`, `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, `removed_line_count`, plus additive `match_kind` and `match_snippet` fields
 - `primary_model`, `total_token_count`, `token_usage`, and `effective_agent_runtime_ms` may be `null` when the archived provider transcript did not report stable values, or until older projects are re-indexed after additive schema upgrades
+
+### File pivots
+
+`darc.query.files.v1` and `darc.query.session_files.v1` report read-only file-to-session pivots derived from `file_accesses`.
+
+Today:
+
+- `darc.query.files.v1` includes `project_id`, `mode`, nullable `path`, nullable `co_touched_with`, nullable `since`, nullable `until`, nullable `limit`, plus `sessions` and `files` arrays
+- `mode=path` populates `sessions` and leaves `files` empty
+- `mode=co_touched_with` populates `files` and leaves `sessions` empty
+- `mode=path` applies `--since` and `--until` to touched turns using `turns.started_at`, with inclusive lower-bound and exclusive upper-bound semantics
+- `mode=path` ranks session rows by higher `touch_count`, then newer `last_touched_at`, then `provider`, then `session_id`
+- `mode=path` session rows report `provider`, `session_id`, `touch_count`, `read_count`, `write_count`, `first_turn_ordinal`, `last_turn_ordinal`, `first_touched_at`, `last_touched_at`, and deterministic `matched_paths`
+- `matched_paths` is the canonical matched file list for that session, ordered by display path ascending
+- `query files --path` currently excludes derived `list` accesses so directory listings and glob roots do not count as file touches
+- `mode=co_touched_with` treats the seed path as one exact canonical display path, normalizing project-root absolute paths down to project-relative form when possible
+- `mode=co_touched_with` only considers project-scoped in-repo file identities and does not expose or rank external absolute paths
+- `mode=co_touched_with` ranks file rows by higher `co_touch_count`, then `path` ascending
+- `mode=co_touched_with` file rows report `path` plus the number of distinct sessions that touched both that file and the seed file
+- `darc.query.session_files.v1` reports `project_id`, `provider`, `session_id`, and deterministic `files`
+- `session_files` rows report canonical `path`, best-effort `repo_relative_path`, `read_count`, `write_count`, `first_turn_ordinal`, and `last_turn_ordinal`
+- `session_files` rows collapse equivalent absolute, repo-relative, and `./`-prefixed accesses for the same in-repo file onto one canonical display path before counting
+- `session_files` rows omit out-of-project accesses and exclude derived `list` accesses
+- `query sessions --touched-path <glob>` reuses the same project-scoped glob semantics as the file-pivot and grep surfaces
 
 ### Narrative turn detail
 

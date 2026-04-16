@@ -7,8 +7,8 @@ Darc keeps the root README focused on overview and quickstart. Use these docs fo
   limitations.
 - [Query protocol](query-protocol.md)
   Includes workspace, session, turn, search, and insights query commands plus machine-readable payload contracts,
-  including best-effort model, token, runtime, observed patch-count fields on session and turn payloads, and the
-  read-side Context Wiki queries.
+  including turn-level grep, file/session pivots, best-effort model/token/runtime/patch-count fields on session and
+  turn payloads, and the read-side Context Wiki queries.
 - [Project rename and linking](project-rename.md)
 - [Schema audits](schema-audits.md)
 - [Claude support](claude-support.md)
