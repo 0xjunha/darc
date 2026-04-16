@@ -1,4 +1,7 @@
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result};
 use darc_index::{
@@ -18,9 +21,10 @@ use darc_test_utils::{
 
 use crate::query::{
     HardDebuggingTurn, LocalDate, ProjectInsights, SearchMode, SearchTurnsRequest, SessionKind,
-    TurnDetailOptions, TurnInsights, build_project_insights, build_turn_insights,
-    build_workspace_insights, open_existing_index_database, parse_session_kind,
-    query_project_sessions, query_search_turns, query_session_turn_details, query_turn_detail,
+    TurnDetailOptions, TurnInsights, TurnMatchKind, TurnMatchesQueryRequest, TurnSearchRole,
+    build_project_insights, build_turn_insights, build_workspace_insights,
+    open_existing_index_database, parse_session_kind, query_project_sessions,
+    query_project_turn_matches, query_search_turns, query_session_turn_details, query_turn_detail,
     smoke_test_sql,
 };
 
@@ -1354,4 +1358,416 @@ fn search_turns_file_modes_match_derived_paths() -> Result<()> {
             .expect("index path should have a parent"),
     )?;
     Ok(())
+}
+
+#[test]
+fn query_turn_matches_user_role_scopes_phrase_to_user_text_only() -> Result<()> {
+    let index_path = test_index_path("turn-matches-role-user");
+    let connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            user_message: "staged only",
+            final_answer_text: Some("init only"),
+            step_count: 1,
+            has_final_answer: true,
+            duration_ms: 3_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                0,
+                "2026-04-06T10:00:00Z",
+                "completed",
+                "[]",
+            )
+        },
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            user_message: "please use staged init here",
+            step_count: 1,
+            duration_ms: 3_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                1,
+                "2026-04-06T10:01:00Z",
+                "completed",
+                "[]",
+            )
+        },
+    )?;
+
+    let result = query_project_turn_matches(
+        &index_path,
+        TurnMatchesQueryRequest {
+            project_id: "repo-a",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            provider: None,
+            session_id: None,
+            grep: "staged init",
+            role: TurnSearchRole::User,
+            context: 0,
+            since: None,
+            until: None,
+            touched_path: None,
+        },
+    )?;
+
+    assert_eq!(result.turns.len(), 1);
+    assert_eq!(result.turns[0].turn_ordinal, 1);
+    assert_eq!(result.turns[0].match_kind, Some(TurnMatchKind::Match));
+    assert!(
+        result.turns[0]
+            .match_snippet
+            .as_deref()
+            .is_some_and(|snippet| snippet.contains("staged init"))
+    );
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn query_turn_matches_require_contiguous_phrase_order() -> Result<()> {
+    let index_path = test_index_path("turn-matches-phrase");
+    let connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
+    )?;
+    for (turn_ordinal, user_message) in [
+        (0, "staged init"),
+        (1, "staged later init"),
+        (2, "init staged"),
+    ] {
+        insert_indexed_turn(
+            &connection,
+            IndexedTurnFixture {
+                user_message,
+                step_count: 1,
+                duration_ms: 3_000,
+                ..IndexedTurnFixture::new(
+                    "repo-a",
+                    SourceKind::Codex,
+                    "session-1",
+                    turn_ordinal,
+                    "2026-04-06T10:00:00Z",
+                    "completed",
+                    "[]",
+                )
+            },
+        )?;
+    }
+
+    let result = query_project_turn_matches(
+        &index_path,
+        TurnMatchesQueryRequest {
+            project_id: "repo-a",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            provider: None,
+            session_id: None,
+            grep: "staged init",
+            role: TurnSearchRole::User,
+            context: 0,
+            since: None,
+            until: None,
+            touched_path: None,
+        },
+    )?;
+
+    assert_eq!(
+        result
+            .turns
+            .iter()
+            .map(|turn| turn.turn_ordinal)
+            .collect::<Vec<_>>(),
+        vec![0]
+    );
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn query_turn_matches_support_context_and_absolute_touched_paths() -> Result<()> {
+    let index_path = test_index_path("turn-matches-context-path");
+    let connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            user_message: "Review the surrounding context",
+            step_count: 1,
+            tool_call_count: 1,
+            duration_ms: 3_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                0,
+                "2026-04-06T09:59:00Z",
+                "completed",
+                r##"[{"type":"tool_call","timestamp":"2026-04-06T09:59:01Z","call_id":"call-0","name":"Read","arguments":"{\"file_path\":\"README.md\"}"}]"##,
+            )
+        },
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            user_message: "Please switch to staged init for the index setup",
+            step_count: 1,
+            tool_call_count: 1,
+            duration_ms: 3_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                1,
+                "2026-04-06T10:00:00Z",
+                "completed",
+                r##"[{"type":"tool_call","timestamp":"2026-04-06T10:00:01Z","call_id":"call-1","name":"Read","arguments":"{\"path\":\"/tmp/repo-a/crates/index/src/index_db/schema.rs\"}"}]"##,
+            )
+        },
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            user_message: "Apply the follow-up change after that",
+            step_count: 1,
+            tool_call_count: 1,
+            duration_ms: 3_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                2,
+                "2026-04-06T10:01:00Z",
+                "completed",
+                r##"[{"type":"tool_call","timestamp":"2026-04-06T10:01:01Z","call_id":"call-2","name":"Read","arguments":"{\"file_path\":\"Cargo.toml\"}"}]"##,
+            )
+        },
+    )?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-2", "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            user_message: "Please switch to staged init for the docs too",
+            step_count: 1,
+            tool_call_count: 1,
+            duration_ms: 3_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-2",
+                0,
+                "2026-04-06T11:00:00Z",
+                "completed",
+                r##"[{"type":"tool_call","timestamp":"2026-04-06T11:00:01Z","call_id":"call-3","name":"Read","arguments":"{\"file_path\":\"docs/query-protocol.md\"}"}]"##,
+            )
+        },
+    )?;
+
+    let result = query_project_turn_matches(
+        &index_path,
+        TurnMatchesQueryRequest {
+            project_id: "repo-a",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            provider: None,
+            session_id: None,
+            grep: "staged init",
+            role: TurnSearchRole::User,
+            context: 1,
+            since: Some("2026-04-06T00:00:00Z"),
+            until: Some("2026-04-07T00:00:00Z"),
+            touched_path: Some("crates/index/**"),
+        },
+    )?;
+
+    assert_eq!(result.turns.len(), 3);
+    assert_eq!(
+        result
+            .turns
+            .iter()
+            .map(|turn| turn.turn_ordinal)
+            .collect::<Vec<_>>(),
+        vec![0, 1, 2]
+    );
+    assert_eq!(
+        result
+            .turns
+            .iter()
+            .map(|turn| turn.match_kind)
+            .collect::<Vec<_>>(),
+        vec![
+            Some(TurnMatchKind::Context),
+            Some(TurnMatchKind::Match),
+            Some(TurnMatchKind::Context),
+        ]
+    );
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn query_turn_matches_assistant_role_only_matches_assistant_text() -> Result<()> {
+    let index_path = test_index_path("turn-matches-assistant");
+    let connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            user_message: "Review the migration options",
+            final_answer_text: Some("Use staged init for the database bootstrap."),
+            step_count: 1,
+            has_final_answer: true,
+            duration_ms: 3_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                0,
+                "2026-04-06T10:00:00Z",
+                "completed",
+                "[]",
+            )
+        },
+    )?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-2", "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            user_message: "Look at the migration helper",
+            step_count: 1,
+            duration_ms: 3_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-2",
+                0,
+                "2026-04-06T11:00:00Z",
+                "completed",
+                r##"[{"type":"commentary","timestamp":"2026-04-06T11:00:01Z","text":"Switching to staged init before the write step."}]"##,
+            )
+        },
+    )?;
+
+    let assistant_result = query_project_turn_matches(
+        &index_path,
+        TurnMatchesQueryRequest {
+            project_id: "repo-a",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            provider: None,
+            session_id: None,
+            grep: "staged init",
+            role: TurnSearchRole::Assistant,
+            context: 0,
+            since: None,
+            until: None,
+            touched_path: None,
+        },
+    )?;
+    let user_result = query_project_turn_matches(
+        &index_path,
+        TurnMatchesQueryRequest {
+            project_id: "repo-a",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            provider: None,
+            session_id: None,
+            grep: "staged init",
+            role: TurnSearchRole::User,
+            context: 0,
+            since: None,
+            until: None,
+            touched_path: None,
+        },
+    )?;
+
+    assert_eq!(assistant_result.turns.len(), 2);
+    assert!(
+        assistant_result
+            .turns
+            .iter()
+            .all(|turn| turn.match_kind == Some(TurnMatchKind::Match))
+    );
+    assert!(assistant_result.turns.iter().all(|turn| {
+        turn.match_snippet
+            .as_deref()
+            .is_some_and(|snippet| snippet.contains("staged init"))
+    }));
+    assert!(user_result.turns.is_empty());
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn query_turn_matches_reject_context_over_limit() {
+    let index_path = test_index_path("turn-matches-context-limit");
+    let _connection = open_index_database(&index_path).expect("index database should open");
+    let error = query_project_turn_matches(
+        &index_path,
+        TurnMatchesQueryRequest {
+            project_id: "repo-a",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            provider: None,
+            session_id: None,
+            grep: "staged init",
+            role: TurnSearchRole::Both,
+            context: 51,
+            since: None,
+            until: None,
+            touched_path: None,
+        },
+    )
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("--context must be at most 50 turns for grep mode")
+    );
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )
+    .expect("temporary index directory should be removed");
 }

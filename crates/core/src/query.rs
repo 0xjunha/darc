@@ -11,14 +11,16 @@ pub use darc_query::{
     ProjectTimeStat, RootAvailability, RootInfo, SearchMode, SearchTurnHit, SearchTurnsQueryData,
     SearchTurnsRequest, SessionKind, SessionRuntimeStat, SessionSummary, SessionsQueryData,
     ShellCommandSummary, ToolUsageStat, TurnDetail, TurnDetailInsights, TurnDetailOptions,
-    TurnInsights, TurnSummary, TurnsQueryData, WorkspaceDailyTimeStat, WorkspaceInsights,
+    TurnInsights, TurnMatchKind, TurnMatchesQueryData, TurnMatchesQueryRequest, TurnSearchRole,
+    TurnSummary, TurnsQueryData, TurnsQueryRequest, WorkspaceDailyTimeStat, WorkspaceInsights,
     WorkspaceQueryData,
 };
 use darc_query::{
     ProjectIndexAggregate, list_project_index_aggregates, query_project_insights,
-    query_project_sessions, query_search_turns as query_project_search_turns,
-    query_session_turn_details as query_project_session_turn_details, query_session_turns,
-    query_turn_detail, query_turn_insights, query_workspace_insights,
+    query_project_sessions, query_project_turn_matches as query_index_turn_matches,
+    query_project_turns as query_index_turns, query_search_turns as query_project_search_turns,
+    query_session_turn_details as query_project_session_turn_details, query_turn_detail,
+    query_turn_insights, query_workspace_insights,
 };
 use darc_wiki::{
     ContextWikiLayout, DigestId, DigestSummary, EntryId, EntryStatus, EntrySummary, EntryType,
@@ -134,16 +136,31 @@ pub fn query_sessions(
 /// Queries the turn-list payload for one configured provider session.
 pub fn query_turns(
     root: Option<PathBuf>,
-    project_id: &str,
-    provider: SourceKind,
-    session_id: &str,
+    request: TurnsQueryRequest<'_>,
 ) -> Result<TurnsQueryData> {
-    let context = load_project_query_context(root, project_id)?;
-    query_session_turns(
+    let context = load_project_query_context(root, request.project_id)?;
+    query_index_turns(
         &context.root.database_path,
-        &context.project.id,
-        provider,
-        session_id,
+        TurnsQueryRequest {
+            project_id: &context.project.id,
+            ..request
+        },
+    )
+}
+
+/// Queries the grep-scoped turn-match payload for one configured project.
+pub fn query_turn_matches(
+    root: Option<PathBuf>,
+    request: TurnMatchesQueryRequest<'_>,
+) -> Result<TurnMatchesQueryData> {
+    let context = load_project_query_context(root, request.project_id)?;
+    query_index_turn_matches(
+        &context.root.database_path,
+        TurnMatchesQueryRequest {
+            project_id: &context.project.id,
+            project_root: Some(context.project.local_path.as_path()),
+            ..request
+        },
     )
 }
 

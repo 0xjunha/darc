@@ -25,6 +25,7 @@ All query commands currently require `--json`.
 - `darc query sessions --root <path> --project-id <id> --json`
 - `darc query sessions --root <path> --project-id <id> --since <iso-8601|<days>d> --until <iso-8601|<days>d> --json`
 - `darc query turns --root <path> --project-id <id> --provider <provider> --session-id <id> --json`
+- `darc query turns --root <path> --project-id <id> --grep <text> --role <user|assistant|both> --context <n> --since <iso-8601|<days>d> --until <iso-8601|<days>d> --touched-path <glob> --json`
 - `darc query turn --root <path> --project-id <id> --provider <provider> --session-id <id> --turn-ordinal <n> --json`
 - `darc query turn --root <path> --project-id <id> --provider <provider> --session-id <id> --turn-ordinal <n> --view <full|narrative> --json`
 - `darc query turn --root <path> --project-id <id> --provider <provider> --session-id <id> --turn-ordinal <n> --include-raw --json`
@@ -87,6 +88,7 @@ Current schema ids:
 - `darc.query.wiki.runs.v1`
 - `darc.query.sessions.v1`
 - `darc.query.turns.v1`
+- `darc.query.turn_matches.v1`
 - `darc.query.turn.v1`
 - `darc.query.search.turns.v1`
 - `darc.query.insights.workspace.v1`
@@ -229,7 +231,7 @@ Today:
 
 ### Session and turn lists
 
-`darc.query.sessions.v1` and `darc.query.turns.v1` now surface the same best-effort model, token, runtime, and observed patch-count fields needed for lightweight desktop list views.
+`darc.query.sessions.v1`, `darc.query.turns.v1`, and `darc.query.turn_matches.v1` now surface the best-effort model, token, runtime, and observed patch-count fields needed for lightweight desktop list views.
 
 Today:
 
@@ -242,7 +244,17 @@ Today:
 - `first_turn_at` and `first_user_prompt` come from the indexed turn with the minimum `turn_ordinal` in that session and are `null` only when the indexed session has no stored turns
 - `aborted_turn_count` counts indexed turns in that session where `status` is `aborted`
 - `edited_files` is the distinct `COALESCE(repo_relative_path, path)` list from session-scoped `file_accesses` rows with `access_type` of `edit` or `write`, excluding null or whitespace-only paths and ordered by display path ascending
-- turn rows include `primary_model`, `total_token_count`, `token_usage`, `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, and `removed_line_count`
+- `darc.query.turns.v1` remains the session-scoped `--provider --session-id` list mode and keeps non-null top-level `provider` and `session_id`
+- `darc.query.turn_matches.v1` is emitted by `darc query turns --grep ...`
+- `darc.query.turn_matches.v1` additionally surfaces top-level `provider`, `session_id`, `grep`, `role`, `context`, `since`, `until`, and `touched_path`, where `provider` and `session_id` are optional request filters
+- `darc.query.turn_matches.v1` uses SQLite FTS5 over `turn_search_fts`, with `role=user` scoped to `user_message_text`, `role=assistant` scoped to `final_answer_text` and `tool_text`, and `role=both` matching any indexed turn-search column
+- grep matching currently uses ordered FTS phrase search over the normalized indexed text, not unordered keyword-AND matching
+- grep mode applies `--since` and `--until` to matched turns using `turns.started_at`, with inclusive lower-bound and exclusive upper-bound semantics
+- `--context <n>` expands each grep hit to include up to `n` earlier and `n` later turns from the same session, ordered by session group then `turn_ordinal`
+- `--context` currently has a hard maximum of `50`
+- `--touched-path <glob>` keeps only grep hits whose exact turn touched at least one file whose `repo_relative_path` or project-relative absolute `path` matches the provided glob
+- `--touched-path` currently uses the Rust `glob` crate syntax, matched case-insensitively
+- turn rows include `primary_model`, `total_token_count`, `token_usage`, `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, `removed_line_count`, plus additive `match_kind` and `match_snippet` fields
 - `primary_model`, `total_token_count`, `token_usage`, and `effective_agent_runtime_ms` may be `null` when the archived provider transcript did not report stable values, or until older projects are re-indexed after additive schema upgrades
 
 ### Narrative turn detail
