@@ -244,7 +244,7 @@ Today:
 - session totals are rollups across the indexed turns in that session
 - top-level session-list payloads additionally echo the resolved `since`, `until`, and `touched_path` request filters as nullable fields
 - optional `--since` and `--until` filters apply to `latest_turn_at`, using inclusive lower-bound and exclusive upper-bound semantics
-- optional `--touched-path` filters session rows after the `latest_turn_at` bounds by requiring at least one session-scoped `file_accesses` row whose `repo_relative_path` or project-relative absolute `path` matches the provided glob
+- optional `--touched-path` filters session rows after the `latest_turn_at` bounds by requiring at least one session-scoped, project-scoped file access whose canonical display path matches the provided glob
 - `--since` and `--until` accept absolute ISO-8601 text or relative `<days>d` shorthand such as `5d`
 - each `token_usage.*` session field is `null` unless every indexed turn in that session carried a value for that exact field
 - `total_token_count` and `effective_agent_runtime_ms` are currently `null` on a session row unless every indexed turn in that session carried a value for that field
@@ -259,7 +259,9 @@ Today:
 - grep mode applies `--since` and `--until` to matched turns using `turns.started_at`, with inclusive lower-bound and exclusive upper-bound semantics
 - `--context <n>` expands each grep hit to include up to `n` earlier and `n` later turns from the same session, ordered by session group then `turn_ordinal`
 - `--context` currently has a hard maximum of `50`
-- `query files --path <glob>` and `--touched-path <glob>` on `query sessions` / `query turns --grep` currently use the Rust `glob` crate syntax, matched case-insensitively against `repo_relative_path`, or a project-relative form derived from an absolute `path` when the indexed path lives under the configured project root
+- `query files --path <glob>` and `--touched-path <glob>` on `query sessions` / `query turns --grep` currently use the Rust `glob` crate syntax, matched case-insensitively against one canonical project-scoped display path per access
+- absolute query paths under the configured project root are normalized down to project-relative form before matching, so `/repo/README.md` and `README.md` hit the same indexed access
+- out-of-project paths are not exposed and do not participate in these path-matching filters
 - turn rows include `primary_model`, `total_token_count`, `token_usage`, `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, `removed_line_count`, plus additive `match_kind` and `match_snippet` fields
 - `primary_model`, `total_token_count`, `token_usage`, and `effective_agent_runtime_ms` may be `null` when the archived provider transcript did not report stable values, or until older projects are re-indexed after additive schema upgrades
 
@@ -276,12 +278,15 @@ Today:
 - `mode=path` ranks session rows by higher `touch_count`, then newer `last_touched_at`, then `provider`, then `session_id`
 - `mode=path` session rows report `provider`, `session_id`, `touch_count`, `read_count`, `write_count`, `first_turn_ordinal`, `last_turn_ordinal`, `first_touched_at`, `last_touched_at`, and deterministic `matched_paths`
 - `matched_paths` is the canonical matched file list for that session, ordered by display path ascending
+- `query files --path` currently excludes derived `list` accesses so directory listings and glob roots do not count as file touches
 - `mode=co_touched_with` treats the seed path as one exact canonical display path, normalizing project-root absolute paths down to project-relative form when possible
+- `mode=co_touched_with` only considers project-scoped in-repo file identities and does not expose or rank external absolute paths
 - `mode=co_touched_with` ranks file rows by higher `co_touch_count`, then `path` ascending
 - `mode=co_touched_with` file rows report `path` plus the number of distinct sessions that touched both that file and the seed file
 - `darc.query.session_files.v1` reports `project_id`, `provider`, `session_id`, and deterministic `files`
 - `session_files` rows report canonical `path`, best-effort `repo_relative_path`, `read_count`, `write_count`, `first_turn_ordinal`, and `last_turn_ordinal`
-- `session_files` rows collapse equivalent absolute and repo-relative accesses for the same in-repo file onto one canonical display path before counting
+- `session_files` rows collapse equivalent absolute, repo-relative, and `./`-prefixed accesses for the same in-repo file onto one canonical display path before counting
+- `session_files` rows omit out-of-project accesses and exclude derived `list` accesses
 
 ### Narrative turn detail
 

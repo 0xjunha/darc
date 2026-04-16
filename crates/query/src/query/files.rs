@@ -7,49 +7,13 @@ use std::{
 use anyhow::{Context, Result, bail};
 use darc_paths::SourceKind;
 use glob::{MatchOptions, Pattern};
-use rusqlite::{Connection, params, params_from_iter, types::Value};
+use rusqlite::{Connection, params_from_iter, types::Value};
 
 use super::{
     CoTouchedFileSummary, FileSessionSummary, FilesQueryData, FilesQueryMode, FilesQueryRequest,
     SessionFileSummary, SessionFilesQueryData, SessionSummary, open_existing_index_database,
     parse_provider, sql_count_to_u64,
 };
-
-const SESSION_FILE_ROWS_SQL: &str = "
-    SELECT
-        file_accesses.provider,
-        file_accesses.session_id,
-        file_accesses.repo_relative_path,
-        file_accesses.path,
-        SUM(CASE WHEN file_accesses.access_type IN ('read', 'list') THEN 1 ELSE 0 END) AS read_count,
-        SUM(CASE WHEN file_accesses.access_type IN ('write', 'edit') THEN 1 ELSE 0 END) AS write_count,
-        MIN(file_accesses.turn_ordinal) AS first_turn_ordinal,
-        MAX(file_accesses.turn_ordinal) AS last_turn_ordinal,
-        MIN(turns.started_at) AS first_touched_at,
-        MAX(turns.started_at) AS last_touched_at
-    FROM file_accesses
-    INNER JOIN turns
-        ON turns.project_id = file_accesses.project_id
-        AND turns.provider = file_accesses.provider
-        AND turns.session_id = file_accesses.session_id
-        AND turns.turn_ordinal = file_accesses.turn_ordinal
-    WHERE file_accesses.project_id = ?1
-        AND (?2 IS NULL OR file_accesses.provider = ?2)
-        AND (?3 IS NULL OR file_accesses.session_id = ?3)
-        AND (?4 IS NULL OR julianday(turns.started_at) >= julianday(?4))
-        AND (?5 IS NULL OR julianday(turns.started_at) < julianday(?5))
-        AND NULLIF(TRIM(file_accesses.path), '') IS NOT NULL
-    GROUP BY
-        file_accesses.provider,
-        file_accesses.session_id,
-        file_accesses.repo_relative_path,
-        file_accesses.path
-    ORDER BY
-        last_touched_at DESC,
-        file_accesses.provider ASC,
-        file_accesses.session_id ASC,
-        COALESCE(file_accesses.repo_relative_path, file_accesses.path) COLLATE NOCASE ASC
-";
 
 const MAX_SESSION_KEYS_PER_QUERY: usize = 250;
 
@@ -60,7 +24,7 @@ struct SessionKey {
     session_id: String,
 }
 
-/// Stores one grouped raw file-touch row before path canonicalization.
+/// Stores one grouped raw file-touch row before canonicalization.
 #[derive(Debug, Clone)]
 struct RawSessionFileRow {
     provider: SourceKind,
@@ -103,6 +67,96 @@ struct FileSessionAccumulator {
     matched_paths: BTreeSet<String>,
 }
 
+/// Stores the supported path-selector plans used to narrow file-access queries in SQL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PathQuerySelector {
+    Exact {
+        relative: String,
+        absolute: Option<String>,
+    },
+    Prefix {
+        relative_like: String,
+        absolute_like: Option<String>,
+    },
+    Unbounded,
+    Impossible,
+}
+
+/// Stores the supported filters for one grouped file-access query.
+#[derive(Debug, Clone, Copy)]
+struct SessionFileQueryFilters<'a> {
+    provider: Option<SourceKind>,
+    session_id: Option<&'a str>,
+    since: Option<&'a str>,
+    until: Option<&'a str>,
+    path_selector: Option<&'a PathQuerySelector>,
+}
+
+/// Stores one raw SQLite tuple returned by grouped file-access queries before normalization.
+type RawSessionFileSqlRow = (
+    String,
+    String,
+    Option<String>,
+    String,
+    i64,
+    i64,
+    i64,
+    i64,
+    String,
+    String,
+);
+
+impl PathQuerySelector {
+    /// Returns the vetted SQL predicate for one path-selector plan.
+    fn sql_predicate(&self) -> &'static str {
+        match self {
+            Self::Exact { .. } => {
+                "(
+                    file_accesses.repo_relative_path = ?6 COLLATE NOCASE
+                    OR file_accesses.path = ?6 COLLATE NOCASE
+                    OR (?7 IS NOT NULL AND file_accesses.path = ?7 COLLATE NOCASE)
+                )"
+            }
+            Self::Prefix { .. } => {
+                "(
+                    file_accesses.repo_relative_path LIKE ?6 ESCAPE '!' COLLATE NOCASE
+                    OR file_accesses.path LIKE ?6 ESCAPE '!' COLLATE NOCASE
+                    OR (?7 IS NOT NULL AND file_accesses.path LIKE ?7 ESCAPE '!' COLLATE NOCASE)
+                )"
+            }
+            Self::Unbounded | Self::Impossible => {
+                unreachable!("only bounded path selectors emit SQL predicates")
+            }
+        }
+    }
+
+    /// Returns the SQLite parameter tail for one path-selector plan.
+    fn params(&self) -> Vec<Value> {
+        match self {
+            Self::Exact { relative, absolute } => {
+                vec![
+                    Value::Text(relative.clone()),
+                    absolute
+                        .as_ref()
+                        .map_or(Value::Null, |value| Value::Text(value.clone())),
+                ]
+            }
+            Self::Prefix {
+                relative_like,
+                absolute_like,
+            } => {
+                vec![
+                    Value::Text(relative_like.clone()),
+                    absolute_like
+                        .as_ref()
+                        .map_or(Value::Null, |value| Value::Text(value.clone())),
+                ]
+            }
+            Self::Unbounded | Self::Impossible => Vec::new(),
+        }
+    }
+}
+
 /// Queries one file-pivot payload from the indexed file-access tables.
 pub fn query_project_files(
     index_db_path: &Path,
@@ -136,7 +190,8 @@ pub(crate) fn filter_session_summaries_by_touched_path(
         return Ok(sessions);
     }
 
-    let pattern = Pattern::new(touched_path)
+    let touched_path = normalize_query_path_pattern(project_root, touched_path);
+    let pattern = Pattern::new(&touched_path)
         .with_context(|| format!("invalid touched-path glob `{touched_path}`"))?;
     let match_options = glob_match_options();
     let session_keys = sessions
@@ -210,6 +265,37 @@ pub(crate) fn filter_session_summaries_by_touched_path(
             })
         })
         .collect())
+}
+
+/// Normalizes one path query so absolute project-root inputs match stored repo-relative paths.
+pub(crate) fn normalize_query_path_pattern(project_root: Option<&Path>, path: &str) -> String {
+    let normalized = normalize_path_literal(path);
+    project_root
+        .and_then(|project_root| strip_project_root(&normalized, project_root))
+        .filter(|value| !value.is_empty())
+        .unwrap_or(normalized)
+}
+
+/// Returns the stable glob-match options shared by every touched-path filter.
+pub(crate) fn glob_match_options() -> MatchOptions {
+    MatchOptions {
+        case_sensitive: false,
+        require_literal_separator: true,
+        require_literal_leading_dot: false,
+    }
+}
+
+/// Returns whether one indexed file access matches one project-scoped query glob.
+pub(crate) fn path_matches_glob(
+    pattern: &Pattern,
+    options: &MatchOptions,
+    project_root: Option<&Path>,
+    repo_relative_path: Option<&str>,
+    path: &str,
+) -> bool {
+    candidate_query_paths(project_root, repo_relative_path, path)
+        .iter()
+        .any(|candidate| pattern.matches_with(candidate, *options))
 }
 
 /// Builds one validated file-pivot payload from the indexed file-access tables.
@@ -297,10 +383,13 @@ fn build_session_files_query(
     let rows = query_raw_session_file_rows(
         connection,
         project_id,
-        Some(provider),
-        Some(session_id),
-        None,
-        None,
+        SessionFileQueryFilters {
+            provider: Some(provider),
+            session_id: Some(session_id),
+            since: None,
+            until: None,
+            path_selector: None,
+        },
     )?;
     let mut files = aggregate_session_file_rows(rows, project_root)
         .into_iter()
@@ -331,9 +420,21 @@ fn query_file_session_matches(
     since: Option<&str>,
     until: Option<&str>,
 ) -> Result<Vec<FileSessionSummary>> {
-    let pattern = Pattern::new(path).with_context(|| format!("invalid path glob `{path}`"))?;
+    let path = normalize_query_path_pattern(project_root, path);
+    let pattern = Pattern::new(&path).with_context(|| format!("invalid path glob `{path}`"))?;
+    let path_selector = build_path_query_selector(project_root, &path);
     let match_options = glob_match_options();
-    let rows = query_raw_session_file_rows(connection, project_id, None, None, since, until)?;
+    let rows = query_raw_session_file_rows(
+        connection,
+        project_id,
+        SessionFileQueryFilters {
+            provider: None,
+            session_id: None,
+            since,
+            until,
+            path_selector: Some(&path_selector),
+        },
+    )?;
     let aggregates = aggregate_session_file_rows(
         rows.into_iter()
             .filter(|row| {
@@ -418,10 +519,35 @@ fn query_co_touched_files(
     seed_path: &str,
     limit: Option<usize>,
 ) -> Result<Vec<CoTouchedFileSummary>> {
-    let seed_path = normalize_query_display_path(project_root, seed_path)
-        .context("co-touched path must not be empty")?;
-    let rows = query_raw_session_file_rows(connection, project_id, None, None, None, None)?;
-    let aggregates = aggregate_session_file_rows(rows, project_root);
+    let seed_path = normalize_project_scoped_query_path(project_root, seed_path);
+    let Some(seed_path) = seed_path else {
+        return Ok(Vec::new());
+    };
+    let seed_selector = build_path_query_selector(project_root, &seed_path);
+    let seed_rows = query_raw_session_file_rows(
+        connection,
+        project_id,
+        SessionFileQueryFilters {
+            provider: None,
+            session_id: None,
+            since: None,
+            until: None,
+            path_selector: Some(&seed_selector),
+        },
+    )?;
+    let seed_session_keys = aggregate_session_file_rows(seed_rows, project_root)
+        .into_iter()
+        .filter(|row| row.path.eq_ignore_ascii_case(&seed_path))
+        .map(|row| SessionKey {
+            provider: row.provider,
+            session_id: row.session_id,
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let aggregates =
+        query_raw_session_file_rows_for_session_keys(connection, project_id, &seed_session_keys)?;
+    let aggregates = aggregate_session_file_rows(aggregates, project_root);
 
     let mut files_by_session = BTreeMap::<SessionKey, Vec<AggregatedSessionFileRow>>::new();
     for row in aggregates {
@@ -469,70 +595,96 @@ fn query_co_touched_files(
     Ok(files)
 }
 
-/// Queries grouped raw per-session file rows before canonical path normalization.
+/// Queries grouped raw file rows for one provider/session/time selector set.
 fn query_raw_session_file_rows(
     connection: &Connection,
     project_id: &str,
-    provider: Option<SourceKind>,
-    session_id: Option<&str>,
-    since: Option<&str>,
-    until: Option<&str>,
+    filters: SessionFileQueryFilters<'_>,
 ) -> Result<Vec<RawSessionFileRow>> {
-    let provider = provider.map(SourceKind::directory_name);
+    if filters
+        .path_selector
+        .is_some_and(|selector| matches!(selector, PathQuerySelector::Impossible))
+    {
+        return Ok(Vec::new());
+    }
+
+    let sql = build_session_file_rows_sql(filters.path_selector);
     let mut statement = connection
-        .prepare(SESSION_FILE_ROWS_SQL)
+        .prepare(&sql)
         .context("failed to prepare session file rows query")?;
+    let params = build_session_file_rows_params(project_id, filters)?;
     let rows = statement
-        .query_map(
-            params![project_id, provider, session_id, since, until],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, i64>(5)?,
-                    row.get::<_, i64>(6)?,
-                    row.get::<_, i64>(7)?,
-                    row.get::<_, String>(8)?,
-                    row.get::<_, String>(9)?,
-                ))
-            },
-        )
+        .query_map(params_from_iter(params), read_raw_session_file_row)
         .context("failed to query session file rows")?
         .collect::<rusqlite::Result<Vec<_>>>()
         .context("failed to read session file rows")?;
-
     rows.into_iter()
-        .map(
-            |(
-                provider,
-                session_id,
-                repo_relative_path,
-                path,
-                read_count,
-                write_count,
-                first_turn_ordinal,
-                last_turn_ordinal,
-                first_touched_at,
-                last_touched_at,
-            )| {
-                Ok(RawSessionFileRow {
-                    provider: parse_provider(&provider)?,
-                    session_id,
-                    repo_relative_path,
-                    path,
-                    read_count: sql_count_to_u64(read_count)?,
-                    write_count: sql_count_to_u64(write_count)?,
-                    first_turn_ordinal: sql_count_to_u64(first_turn_ordinal)?,
-                    last_turn_ordinal: sql_count_to_u64(last_turn_ordinal)?,
-                    first_touched_at,
-                    last_touched_at,
-                })
-            },
-        )
-        .collect()
+        .map(build_raw_session_file_row)
+        .collect::<Result<Vec<_>>>()
+}
+
+/// Queries grouped raw file rows for one requested session set.
+fn query_raw_session_file_rows_for_session_keys(
+    connection: &Connection,
+    project_id: &str,
+    session_keys: &[SessionKey],
+) -> Result<Vec<RawSessionFileRow>> {
+    if session_keys.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut rows = Vec::new();
+    for session_chunk in session_keys.chunks(MAX_SESSION_KEYS_PER_QUERY) {
+        let sql = build_requested_session_file_rows_sql(session_chunk.len());
+        let mut statement = connection
+            .prepare(&sql)
+            .context("failed to prepare requested session file rows query")?;
+        let params = build_session_key_values_params(project_id, session_chunk.iter())?;
+        let chunk_rows = statement
+            .query_map(params_from_iter(params), read_raw_session_file_row)
+            .context("failed to query requested session file rows")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to read requested session file rows")?;
+        rows.extend(
+            chunk_rows
+                .into_iter()
+                .map(build_raw_session_file_row)
+                .collect::<Result<Vec<_>>>()?,
+        );
+    }
+    Ok(rows)
+}
+
+/// Reads one raw grouped file row from SQLite before type normalization.
+fn read_raw_session_file_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawSessionFileSqlRow> {
+    Ok((
+        row.get::<_, String>(0)?,
+        row.get::<_, String>(1)?,
+        row.get::<_, Option<String>>(2)?,
+        row.get::<_, String>(3)?,
+        row.get::<_, i64>(4)?,
+        row.get::<_, i64>(5)?,
+        row.get::<_, i64>(6)?,
+        row.get::<_, i64>(7)?,
+        row.get::<_, String>(8)?,
+        row.get::<_, String>(9)?,
+    ))
+}
+
+/// Converts one raw SQLite grouped file row into the public raw file-row shape.
+fn build_raw_session_file_row(row: RawSessionFileSqlRow) -> Result<RawSessionFileRow> {
+    Ok(RawSessionFileRow {
+        provider: parse_provider(&row.0)?,
+        session_id: row.1,
+        repo_relative_path: row.2,
+        path: row.3,
+        read_count: sql_count_to_u64(row.4)?,
+        write_count: sql_count_to_u64(row.5)?,
+        first_turn_ordinal: sql_count_to_u64(row.6)?,
+        last_turn_ordinal: sql_count_to_u64(row.7)?,
+        first_touched_at: row.8,
+        last_touched_at: row.9,
+    })
 }
 
 /// Collapses raw file rows onto one canonical display path per session.
@@ -564,14 +716,20 @@ fn aggregate_session_file_rows(
                     aggregate.last_touched_at = row.last_touched_at.clone();
                 }
                 if aggregate.repo_relative_path.is_none() && row.repo_relative_path.is_some() {
-                    aggregate.repo_relative_path = row.repo_relative_path.clone();
+                    aggregate.repo_relative_path = row
+                        .repo_relative_path
+                        .as_deref()
+                        .and_then(normalize_project_scoped_relative_path);
                 }
             })
             .or_insert_with(|| AggregatedSessionFileRow {
                 provider: row.provider,
                 session_id: row.session_id,
                 path: display_path,
-                repo_relative_path: row.repo_relative_path,
+                repo_relative_path: row
+                    .repo_relative_path
+                    .as_deref()
+                    .and_then(normalize_project_scoped_relative_path),
                 read_count: row.read_count,
                 write_count: row.write_count,
                 first_turn_ordinal: row.first_turn_ordinal,
@@ -596,132 +754,247 @@ fn sort_session_file_summaries(files: &mut [SessionFileSummary]) {
     });
 }
 
-/// Returns the candidate display paths that one query glob should match against.
+/// Returns the canonical candidate paths that one query glob should match against.
 fn candidate_query_paths(
     project_root: Option<&Path>,
     repo_relative_path: Option<&str>,
     path: &str,
 ) -> Vec<String> {
-    let mut candidates = BTreeSet::new();
-    if let Some(repo_relative_path) = repo_relative_path
-        .map(normalize_path_literal)
-        .filter(|value| !value.is_empty())
-    {
-        candidates.insert(repo_relative_path);
-    }
-    if let Some(project_relative_path) = project_root
-        .and_then(|project_root| strip_project_root(path, project_root))
-        .filter(|value| !value.is_empty())
-    {
-        candidates.insert(project_relative_path);
-    }
-    let path = normalize_path_literal(path);
-    if !path.is_empty() {
-        candidates.insert(path);
-    }
-    candidates.into_iter().collect()
+    display_path_for_access(project_root, repo_relative_path, path)
+        .into_iter()
+        .collect()
 }
 
-/// Returns one canonical display path for one indexed file access.
+/// Returns one canonical in-project display path for one indexed file access.
 fn display_path_for_access(
     project_root: Option<&Path>,
     repo_relative_path: Option<&str>,
     path: &str,
 ) -> Option<String> {
     repo_relative_path
-        .map(normalize_path_literal)
-        .filter(|value| !value.is_empty())
+        .and_then(normalize_project_scoped_relative_path)
         .or_else(|| {
             project_root
                 .and_then(|project_root| strip_project_root(path, project_root))
-                .filter(|value| !value.is_empty())
-        })
-        .or_else(|| {
-            let path = normalize_path_literal(path);
-            (!path.is_empty()).then_some(path)
+                .and_then(|value| normalize_project_scoped_relative_path(&value))
         })
 }
 
-/// Returns one normalized query path after stripping the project root when possible.
-fn normalize_query_display_path(project_root: Option<&Path>, path: &str) -> Option<String> {
-    let path = normalize_path_literal(path);
-    if path.is_empty() {
-        return None;
+/// Normalizes one exact query path into a project-scoped relative identity when possible.
+fn normalize_project_scoped_query_path(project_root: Option<&Path>, path: &str) -> Option<String> {
+    let path = normalize_query_path_pattern(project_root, path);
+    normalize_project_scoped_relative_path(&path)
+}
+
+/// Normalizes one stored relative path while rejecting values that escape the project root.
+fn normalize_project_scoped_relative_path(path: &str) -> Option<String> {
+    let normalized = normalize_path_literal(path);
+    (!normalized.is_empty()
+        && !is_absolute_path_literal(&normalized)
+        && normalized
+            .split('/')
+            .next()
+            .is_none_or(|component| component != ".."))
+    .then_some(normalized)
+}
+
+/// Builds the narrowest SQL selector Darc can derive from one normalized query pattern.
+fn build_path_query_selector(project_root: Option<&Path>, pattern: &str) -> PathQuerySelector {
+    if pattern.is_empty() {
+        return PathQuerySelector::Impossible;
     }
-    project_root
-        .and_then(|project_root| strip_project_root(&path, project_root))
-        .filter(|value| !value.is_empty())
-        .or(Some(path))
-}
-
-/// Returns the stable glob-match options shared by every touched-path filter.
-fn glob_match_options() -> MatchOptions {
-    MatchOptions {
-        case_sensitive: false,
-        require_literal_separator: true,
-        require_literal_leading_dot: false,
+    if is_absolute_path_literal(pattern) {
+        return PathQuerySelector::Impossible;
+    }
+    if !path_has_glob_meta(pattern) {
+        let relative = pattern.to_owned();
+        let absolute = absolute_project_path(project_root, pattern);
+        return PathQuerySelector::Exact { relative, absolute };
+    }
+    let Some(prefix) = extract_glob_literal_prefix(pattern).filter(|prefix| !prefix.is_empty())
+    else {
+        return PathQuerySelector::Unbounded;
+    };
+    PathQuerySelector::Prefix {
+        relative_like: prefix_like_pattern(prefix),
+        absolute_like: absolute_project_path(project_root, prefix)
+            .map(|value| prefix_like_pattern(&value)),
     }
 }
 
-/// Returns whether one indexed file access matches one query glob.
-pub(crate) fn path_matches_glob(
-    pattern: &Pattern,
-    options: &MatchOptions,
-    project_root: Option<&Path>,
-    repo_relative_path: Option<&str>,
-    path: &str,
-) -> bool {
-    candidate_query_paths(project_root, repo_relative_path, path)
-        .iter()
-        .any(|candidate| pattern.matches_with(candidate, *options))
+/// Returns whether one query pattern includes glob metacharacters.
+fn path_has_glob_meta(pattern: &str) -> bool {
+    pattern.chars().any(|ch| matches!(ch, '*' | '?' | '['))
 }
 
-/// Strips one configured project root from one absolute access path when possible.
-fn strip_project_root(path: &str, project_root: &Path) -> Option<String> {
-    let path = normalize_path_literal(path);
-    let project_root = normalize_path_string(project_root);
-    strip_root_prefix_from_path(&path, &project_root)
-        .or_else(|| {
-            macos_private_variants(&project_root)
-                .find_map(|variant| strip_root_prefix_from_path(&path, &variant))
-        })
-        .or_else(|| {
-            macos_private_variants(&path)
-                .find_map(|path_variant| strip_root_prefix_from_path(&path_variant, &project_root))
-        })
+/// Returns the literal prefix before the first glob metacharacter.
+fn extract_glob_literal_prefix(pattern: &str) -> Option<&str> {
+    let index = pattern
+        .char_indices()
+        .find_map(|(index, ch)| matches!(ch, '*' | '?' | '[').then_some(index))
+        .unwrap_or(pattern.len());
+    Some(&pattern[..index])
 }
 
-/// Normalizes one filesystem path into Darc's stable slash-separated display form.
-fn normalize_path_string(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
+/// Returns the absolute project path for one canonical relative query path.
+fn absolute_project_path(project_root: Option<&Path>, relative_path: &str) -> Option<String> {
+    let project_root = project_root.map(normalize_path_string)?;
+    Some(join_normalized_paths(&project_root, relative_path))
 }
 
-/// Normalizes one raw path string into Darc's stable slash-separated display form.
-fn normalize_path_literal(path: &str) -> String {
-    path.trim().replace('\\', "/")
-}
-
-/// Removes one normalized root prefix from one normalized absolute path when it is boundary-aligned.
-fn strip_root_prefix_from_path(path: &str, root: &str) -> Option<String> {
-    if root.is_empty() || !Path::new(path).is_absolute() {
-        return None;
+/// Joins one normalized root path with one normalized relative suffix.
+fn join_normalized_paths(root: &str, suffix: &str) -> String {
+    if suffix.is_empty() || suffix == "." {
+        return root.to_owned();
     }
-    if path == root {
-        return Some(String::new());
+    if root == "/" {
+        format!("/{suffix}")
+    } else {
+        format!("{root}/{suffix}")
     }
-    path.strip_prefix(root)
-        .and_then(|suffix| suffix.strip_prefix('/'))
-        .map(str::to_owned)
 }
 
-/// Yields the macOS `/private` toggled variants for one normalized absolute path.
-fn macos_private_variants<'a>(path: &'a str) -> impl Iterator<Item = String> + 'a {
-    [
-        path.strip_prefix("/private").map(str::to_owned),
-        Some(format!("/private{path}")).filter(|_| !path.starts_with("/private/")),
-    ]
-    .into_iter()
-    .flatten()
+/// Builds one SQL `LIKE` prefix pattern with literal wildcard escaping.
+fn prefix_like_pattern(query: &str) -> String {
+    format!("{}%", escape_like_pattern(query))
+}
+
+/// Escapes literal `LIKE` wildcard characters for one user-provided query fragment.
+fn escape_like_pattern(query: &str) -> String {
+    let mut escaped = String::with_capacity(query.len());
+    for ch in query.chars() {
+        match ch {
+            '!' | '%' | '_' => {
+                escaped.push('!');
+                escaped.push(ch);
+            }
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
+/// Builds the grouped file-row query SQL for one optional path selector.
+fn build_session_file_rows_sql(path_selector: Option<&PathQuerySelector>) -> String {
+    let path_filter = match path_selector {
+        Some(PathQuerySelector::Exact { .. }) | Some(PathQuerySelector::Prefix { .. }) => {
+            format!(
+                "\n        AND {}",
+                path_selector
+                    .expect("selector should exist")
+                    .sql_predicate()
+            )
+        }
+        Some(PathQuerySelector::Unbounded) | Some(PathQuerySelector::Impossible) | None => {
+            String::new()
+        }
+    };
+    format!(
+        "
+    SELECT
+        file_accesses.provider,
+        file_accesses.session_id,
+        file_accesses.repo_relative_path,
+        file_accesses.path,
+        SUM(CASE WHEN file_accesses.access_type = 'read' THEN 1 ELSE 0 END) AS read_count,
+        SUM(CASE WHEN file_accesses.access_type IN ('write', 'edit') THEN 1 ELSE 0 END) AS write_count,
+        MIN(file_accesses.turn_ordinal) AS first_turn_ordinal,
+        MAX(file_accesses.turn_ordinal) AS last_turn_ordinal,
+        MIN(turns.started_at) AS first_touched_at,
+        MAX(turns.started_at) AS last_touched_at
+    FROM file_accesses
+    INNER JOIN turns
+        ON turns.project_id = file_accesses.project_id
+        AND turns.provider = file_accesses.provider
+        AND turns.session_id = file_accesses.session_id
+        AND turns.turn_ordinal = file_accesses.turn_ordinal
+    WHERE file_accesses.project_id = ?1
+        AND (?2 IS NULL OR file_accesses.provider = ?2)
+        AND (?3 IS NULL OR file_accesses.session_id = ?3)
+        AND (?4 IS NULL OR turns.started_at >= ?4)
+        AND (?5 IS NULL OR turns.started_at < ?5)
+        AND file_accesses.access_type IN ('read', 'write', 'edit')
+        AND NULLIF(TRIM(file_accesses.path), '') IS NOT NULL{path_filter}
+    GROUP BY
+        file_accesses.provider,
+        file_accesses.session_id,
+        file_accesses.repo_relative_path,
+        file_accesses.path
+    ORDER BY
+        last_touched_at DESC,
+        file_accesses.provider ASC,
+        file_accesses.session_id ASC,
+        COALESCE(file_accesses.repo_relative_path, file_accesses.path) COLLATE NOCASE ASC
+"
+    )
+}
+
+/// Builds one requested-session grouped file-row query SQL.
+fn build_requested_session_file_rows_sql(row_count: usize) -> String {
+    build_session_key_values_query_sql(
+        row_count,
+        "
+        SELECT
+            file_accesses.provider,
+            file_accesses.session_id,
+            file_accesses.repo_relative_path,
+            file_accesses.path,
+            SUM(CASE WHEN file_accesses.access_type = 'read' THEN 1 ELSE 0 END) AS read_count,
+            SUM(CASE WHEN file_accesses.access_type IN ('write', 'edit') THEN 1 ELSE 0 END) AS write_count,
+            MIN(file_accesses.turn_ordinal) AS first_turn_ordinal,
+            MAX(file_accesses.turn_ordinal) AS last_turn_ordinal,
+            MIN(turns.started_at) AS first_touched_at,
+            MAX(turns.started_at) AS last_touched_at
+        FROM requested
+        INNER JOIN file_accesses
+            ON file_accesses.project_id = ?1
+            AND file_accesses.provider = requested.provider
+            AND file_accesses.session_id = requested.session_id
+        INNER JOIN turns
+            ON turns.project_id = file_accesses.project_id
+            AND turns.provider = file_accesses.provider
+            AND turns.session_id = file_accesses.session_id
+            AND turns.turn_ordinal = file_accesses.turn_ordinal
+        WHERE file_accesses.access_type IN ('read', 'write', 'edit')
+            AND NULLIF(TRIM(file_accesses.path), '') IS NOT NULL
+        GROUP BY
+            file_accesses.provider,
+            file_accesses.session_id,
+            file_accesses.repo_relative_path,
+            file_accesses.path
+        ORDER BY
+            last_touched_at DESC,
+            file_accesses.provider ASC,
+            file_accesses.session_id ASC,
+            COALESCE(file_accesses.repo_relative_path, file_accesses.path) COLLATE NOCASE ASC
+        ",
+    )
+}
+
+/// Builds one SQLite parameter list for one grouped file-row query.
+fn build_session_file_rows_params(
+    project_id: &str,
+    filters: SessionFileQueryFilters<'_>,
+) -> Result<Vec<Value>> {
+    let mut params = vec![
+        Value::Text(project_id.to_owned()),
+        filters.provider.map_or(Value::Null, |provider| {
+            Value::Text(provider.directory_name().to_owned())
+        }),
+        filters
+            .session_id
+            .map_or(Value::Null, |session_id| Value::Text(session_id.to_owned())),
+        filters
+            .since
+            .map_or(Value::Null, |value| Value::Text(value.to_owned())),
+        filters
+            .until
+            .map_or(Value::Null, |value| Value::Text(value.to_owned())),
+    ];
+    if let Some(path_selector) = filters.path_selector {
+        params.extend(path_selector.params());
+    }
+    Ok(params)
 }
 
 /// Builds one dynamic `WITH requested AS (VALUES ...)` SQL query for session-key joins.
@@ -759,29 +1032,146 @@ fn build_session_key_values_params<'a>(
     Ok(params)
 }
 
+/// Strips one configured project root from one absolute access path when possible.
+fn strip_project_root(path: &str, project_root: &Path) -> Option<String> {
+    let path = normalize_path_literal(path);
+    let project_root = normalize_path_string(project_root);
+    strip_root_prefix_from_path(&path, &project_root)
+        .or_else(|| {
+            macos_private_variants(&project_root)
+                .find_map(|variant| strip_root_prefix_from_path(&path, &variant))
+        })
+        .or_else(|| {
+            macos_private_variants(&path)
+                .find_map(|path_variant| strip_root_prefix_from_path(&path_variant, &project_root))
+        })
+}
+
+/// Normalizes one filesystem path into Darc's stable slash-separated display form.
+fn normalize_path_string(path: &Path) -> String {
+    normalize_path_literal(&path.to_string_lossy())
+}
+
+/// Normalizes one raw path string into Darc's stable slash-separated display form.
+fn normalize_path_literal(path: &str) -> String {
+    let path = path.trim().replace('\\', "/");
+    if path.is_empty() {
+        return String::new();
+    }
+
+    let (prefix, remainder, absolute) = if let Some(remainder) = path.strip_prefix('/') {
+        (Some("/".to_owned()), remainder, true)
+    } else if let Some(remainder) = strip_windows_drive_root(&path) {
+        (Some(path[..2].to_owned()), remainder, true)
+    } else {
+        (None, path.as_str(), false)
+    };
+
+    let mut components = Vec::<String>::new();
+    for component in remainder.split('/') {
+        if component.is_empty() || component == "." {
+            continue;
+        }
+        if component == ".." {
+            if components
+                .last()
+                .is_some_and(|last| !last.is_empty() && last != "..")
+            {
+                components.pop();
+            } else if !absolute {
+                components.push(component.to_owned());
+            }
+            continue;
+        }
+        components.push(component.to_owned());
+    }
+
+    let suffix = components.join("/");
+    match prefix.as_deref() {
+        Some("/") if suffix.is_empty() => "/".to_owned(),
+        Some("/") => format!("/{suffix}"),
+        Some(prefix) if suffix.is_empty() => format!("{prefix}/"),
+        Some(prefix) => format!("{prefix}/{suffix}"),
+        None => suffix,
+    }
+}
+
+/// Removes one normalized root prefix from one normalized absolute path when it is boundary-aligned.
+fn strip_root_prefix_from_path(path: &str, root: &str) -> Option<String> {
+    if root.is_empty() || !is_absolute_path_literal(path) {
+        return None;
+    }
+    if path == root {
+        return Some(String::new());
+    }
+    path.strip_prefix(root)
+        .and_then(|suffix| suffix.strip_prefix('/'))
+        .map(str::to_owned)
+}
+
+/// Returns whether one normalized path literal is absolute on common host platforms.
+fn is_absolute_path_literal(path: &str) -> bool {
+    path.starts_with('/') || strip_windows_drive_root(path).is_some()
+}
+
+/// Removes one `C:/`-style drive prefix when present.
+fn strip_windows_drive_root(path: &str) -> Option<&str> {
+    let bytes = path.as_bytes();
+    if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/' {
+        Some(&path[3..])
+    } else {
+        None
+    }
+}
+
+/// Yields the macOS `/private` toggled variants for one normalized absolute path.
+fn macos_private_variants<'a>(path: &'a str) -> impl Iterator<Item = String> + 'a {
+    [
+        path.strip_prefix("/private").map(str::to_owned),
+        Some(format!("/private{path}")).filter(|_| !path.starts_with("/private/")),
+    ]
+    .into_iter()
+    .flatten()
+}
+
 #[cfg(test)]
 /// Prepares every file-query SQL statement against one live schema.
 pub(super) fn smoke_test_sql(connection: &Connection) -> Result<()> {
-    connection
-        .prepare(SESSION_FILE_ROWS_SQL)
-        .context("failed to prepare session file rows query")?;
-    let requested_session_sql = build_session_key_values_query_sql(
-        1,
-        "
-        SELECT
-            file_accesses.provider,
-            file_accesses.session_id,
-            file_accesses.repo_relative_path,
-            file_accesses.path
-        FROM requested
-        INNER JOIN file_accesses
-            ON file_accesses.project_id = ?1
-            AND file_accesses.provider = requested.provider
-            AND file_accesses.session_id = requested.session_id
-        ",
-    );
-    connection
-        .prepare(&requested_session_sql)
-        .context("failed to prepare requested session file query")?;
+    for (label, sql) in [
+        ("session file rows query", build_session_file_rows_sql(None)),
+        (
+            "session file rows query with exact selector",
+            build_session_file_rows_sql(Some(&PathQuerySelector::Exact {
+                relative: "README.md".to_owned(),
+                absolute: Some("/tmp/repo/README.md".to_owned()),
+            })),
+        ),
+        (
+            "requested session file rows query",
+            build_requested_session_file_rows_sql(1),
+        ),
+        (
+            "requested session paths query",
+            build_session_key_values_query_sql(
+                1,
+                "
+                SELECT
+                    file_accesses.provider,
+                    file_accesses.session_id,
+                    file_accesses.repo_relative_path,
+                    file_accesses.path
+                FROM requested
+                INNER JOIN file_accesses
+                    ON file_accesses.project_id = ?1
+                    AND file_accesses.provider = requested.provider
+                    AND file_accesses.session_id = requested.session_id
+                ",
+            ),
+        ),
+    ] {
+        connection
+            .prepare(&sql)
+            .with_context(|| format!("failed to prepare {label}"))?;
+    }
     Ok(())
 }

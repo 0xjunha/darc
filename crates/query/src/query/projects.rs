@@ -7,10 +7,13 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use darc_paths::SourceKind;
-use glob::{MatchOptions, Pattern};
+use glob::Pattern;
 use rusqlite::{Connection, params, params_from_iter, types::Value};
 
-use super::files::{filter_session_summaries_by_touched_path, path_matches_glob};
+use super::files::{
+    filter_session_summaries_by_touched_path, glob_match_options, normalize_query_path_pattern,
+    path_matches_glob,
+};
 use super::search::build_fts_phrase_query;
 use super::turns::build_token_usage;
 use super::{
@@ -728,14 +731,11 @@ fn filter_turn_match_anchors_by_path(
     matches: Vec<TurnMatchAnchor>,
     touched_path: &str,
 ) -> Result<Vec<TurnMatchAnchor>> {
-    let pattern = Pattern::new(touched_path)
+    let touched_path = normalize_query_path_pattern(project_root, touched_path);
+    let pattern = Pattern::new(&touched_path)
         .with_context(|| format!("invalid touched-path glob `{touched_path}`"))?;
     let mut matching_turns = HashSet::<TurnKey>::new();
-    let match_options = MatchOptions {
-        case_sensitive: false,
-        require_literal_separator: true,
-        require_literal_leading_dot: false,
-    };
+    let match_options = glob_match_options();
 
     for match_chunk in matches.chunks(MAX_TURN_KEYS_PER_QUERY) {
         let sql = build_turn_key_values_query_sql(

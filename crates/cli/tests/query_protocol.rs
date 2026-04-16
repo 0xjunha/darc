@@ -674,6 +674,8 @@ fn sessions_query_emits_success_envelope() -> Result<()> {
 fn sessions_query_applies_touched_path_filter() -> Result<()> {
     let root = create_query_fixture_root("cli-query-sessions-touched-path")?;
     insert_query_fixture_session(&root, "session-2", "2026-04-07T10:00:00Z")?;
+    let touched_path = root.join("repo").join("README.md");
+    let touched_path = touched_path.to_string_lossy().into_owned();
 
     let output = run_darc([
         "query",
@@ -683,14 +685,14 @@ fn sessions_query_applies_touched_path_filter() -> Result<()> {
         "--project-id",
         "repo-abc123",
         "--touched-path",
-        "README.md",
+        &touched_path,
         "--json",
     ])?;
 
     assert!(output.status.success());
     let value = parse_json(&output.stdout, "stdout")?;
     assert_eq!(value["schema"], "darc.query.sessions.v1");
-    assert_eq!(value["data"]["touched_path"], "README.md");
+    assert_eq!(value["data"]["touched_path"], touched_path);
     assert_eq!(
         value["data"]["sessions"]
             .as_array()
@@ -708,6 +710,8 @@ fn sessions_query_applies_touched_path_filter() -> Result<()> {
 #[test]
 fn files_query_path_mode_emits_success_envelope() -> Result<()> {
     let root = create_query_fixture_root("cli-query-files-path")?;
+    let path = root.join("repo").join("README.md");
+    let path = path.to_string_lossy().into_owned();
 
     let output = run_darc([
         "query",
@@ -717,7 +721,7 @@ fn files_query_path_mode_emits_success_envelope() -> Result<()> {
         "--project-id",
         "repo-abc123",
         "--path",
-        "README.md",
+        &path,
         "--json",
     ])?;
 
@@ -726,7 +730,7 @@ fn files_query_path_mode_emits_success_envelope() -> Result<()> {
     assert_eq!(value["schema"], "darc.query.files.v1");
     assert_eq!(value["data"]["project_id"], "repo-abc123");
     assert_eq!(value["data"]["mode"], "path");
-    assert_eq!(value["data"]["path"], "README.md");
+    assert_eq!(value["data"]["path"], path);
     assert_eq!(value["data"]["co_touched_with"], Value::Null);
     assert_eq!(value["data"]["sessions"][0]["session_id"], "session-1");
     assert_eq!(value["data"]["sessions"][0]["touch_count"], 1);
