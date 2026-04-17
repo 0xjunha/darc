@@ -92,6 +92,8 @@ pub struct EntrySummary {
     pub status: EntryStatus,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub evidence: Vec<String>,
     pub path: PathBuf,
 }
 
@@ -118,6 +120,7 @@ impl From<EntryDocument> for EntrySummary {
             status: document.frontmatter.status,
             created_at: document.frontmatter.created_at,
             updated_at: document.frontmatter.updated_at,
+            evidence: document.frontmatter.evidence,
             path: document.path,
         }
     }
@@ -154,22 +157,6 @@ pub fn list_entries(layout: &ProjectLayout) -> Result<Vec<EntrySummary>> {
         })
         .collect::<Result<Vec<_>>>()?;
     entries.sort_by(|left, right| left.entry_id.cmp(&right.entry_id));
-    Ok(entries)
-}
-
-/// Lists every canonical entry document plus body content in deterministic order.
-pub fn list_entry_details(layout: &ProjectLayout) -> Result<Vec<EntryDetailDocument>> {
-    layout.validate_storage()?;
-    let mut entries = collect_markdown_files(&layout.entries_dir)?
-        .into_iter()
-        .map(|path| {
-            let document = load_entry_detail(&path)?;
-            validate_entry_schema_version(&path, document.frontmatter.schema_version)?;
-            validate_entry_project(layout, &document.frontmatter)?;
-            Ok(document)
-        })
-        .collect::<Result<Vec<_>>>()?;
-    entries.sort_by(|left, right| left.frontmatter.entry_id.cmp(&right.frontmatter.entry_id));
     Ok(entries)
 }
 

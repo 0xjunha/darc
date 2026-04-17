@@ -21,8 +21,8 @@ pub use digests::{
 };
 pub use entries::{
     EntryDetailDocument, EntryDocument, EntryFrontmatter, EntryStatus, EntryStatusChange,
-    EntrySummary, EntryType, discard_entry, list_entries, list_entry_details, load_entry,
-    load_entry_detail, restore_entry,
+    EntrySummary, EntryType, discard_entry, list_entries, load_entry, load_entry_detail,
+    restore_entry,
 };
 pub use errors::{Result, WikiError};
 pub use ids::{DigestId, EntryId, RunId};

@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     env, fs,
     path::{Path, PathBuf},
 };
@@ -29,8 +30,8 @@ use darc_query::{
 use darc_wiki::{
     ContextWikiLayout, DigestId, DigestSummary, EntryId, EntryStatus, EntrySummary, EntryType,
     RunId, RunPhase, RunState, RunStatus, RunSummary, list_digests, list_entries,
-    list_entry_details, load_digest_detail, load_entry_detail, load_registry,
-    parse_evidence_reference, parse_session_reference,
+    load_digest_detail, load_entry_detail, load_registry, parse_evidence_reference,
+    parse_session_reference,
 };
 use serde::Serialize;
 
@@ -422,27 +423,6 @@ impl WikiEntryListItem {
             match_reason,
         }
     }
-
-    /// Builds one entry-list row from one canonical entry detail plus optional match metadata.
-    fn from_document(
-        document: darc_wiki::EntryDetailDocument,
-        matched_evidence: Vec<String>,
-        match_reason: Option<WikiEntryMatchReason>,
-    ) -> Self {
-        Self {
-            entry_id: document.frontmatter.entry_id,
-            display_id: document.frontmatter.display_id,
-            entry_type: document.frontmatter.entry_type,
-            title: document.frontmatter.title,
-            category: document.frontmatter.category,
-            domains: document.frontmatter.domains,
-            status: document.frontmatter.status,
-            created_at: document.frontmatter.created_at,
-            updated_at: document.frontmatter.updated_at,
-            matched_evidence,
-            match_reason,
-        }
-    }
 }
 
 /// Stores the primary reason one wiki entry matched an additive Q4 filter.
@@ -763,29 +743,24 @@ pub fn query_wiki_entries(
     };
     let requested_evidence_refs = parse_requested_evidence_refs(&options.evidence_refs)?;
     let requested_cover_sessions = parse_requested_cover_sessions(&options.covers_sessions)?;
-    let entries = list_entry_details(&layout)?
+    let entries = list_entries(&layout)?
         .into_iter()
         .filter(|entry| {
             options
                 .category
                 .as_ref()
-                .is_none_or(|category| entry.frontmatter.category == *category)
+                .is_none_or(|category| entry.category == *category)
         })
         .filter(|entry| {
             options.domain.as_ref().is_none_or(|domain| {
                 entry
-                    .frontmatter
                     .domains
                     .iter()
                     .any(|entry_domain| entry_domain == domain)
             })
         })
-        .filter(|entry| {
-            options
-                .status
-                .is_none_or(|status| entry.frontmatter.status == status)
-        })
-        .filter_map(|entry| {
+        .filter(|entry| options.status.is_none_or(|status| entry.status == status))
+        .map(|entry| {
             build_wiki_entry_match_metadata(
                 &entry,
                 grep.as_deref(),
@@ -793,13 +768,18 @@ pub fn query_wiki_entries(
                 &requested_cover_sessions,
             )
             .map(|metadata| {
-                WikiEntryListItem::from_document(
-                    entry,
-                    metadata.matched_evidence,
-                    metadata.match_reason,
-                )
+                metadata.map(|metadata| {
+                    WikiEntryListItem::from_summary(
+                        entry,
+                        metadata.matched_evidence,
+                        metadata.match_reason,
+                    )
+                })
             })
         })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
         .collect();
     Ok(WikiEntriesQueryData {
         project_id: context.project.id,
@@ -1182,24 +1162,28 @@ struct WikiEntryMatchMetadata {
 
 /// Builds one wiki entry match result for the supplied Q4 grep and coverage filters.
 fn build_wiki_entry_match_metadata(
-    document: &darc_wiki::EntryDetailDocument,
+    entry: &EntrySummary,
     grep: Option<&str>,
-    requested_evidence_refs: &[String],
-    requested_cover_sessions: &[String],
-) -> Option<WikiEntryMatchMetadata> {
+    requested_evidence_refs: &BTreeSet<String>,
+    requested_cover_sessions: &BTreeSet<String>,
+) -> Result<Option<WikiEntryMatchMetadata>> {
     let grep_reason = match grep {
-        Some(value) => Some(match_wiki_entry_grep(document, value)?),
+        Some(value) => match_wiki_entry_grep(entry, value)?,
         None => None,
     };
-    let exact_evidence_matches =
-        collect_exact_evidence_matches(&document.frontmatter.evidence, requested_evidence_refs);
-    if !requested_evidence_refs.is_empty() && exact_evidence_matches.is_empty() {
-        return None;
+    if grep.is_some() && grep_reason.is_none() {
+        return Ok(None);
     }
+    let exact_evidence_matches =
+        collect_exact_evidence_matches(&entry.evidence, requested_evidence_refs);
     let session_evidence_matches =
-        collect_cover_session_matches(&document.frontmatter.evidence, requested_cover_sessions);
-    if !requested_cover_sessions.is_empty() && session_evidence_matches.is_empty() {
-        return None;
+        collect_cover_session_matches(&entry.evidence, requested_cover_sessions);
+    let overlap_requested =
+        !requested_evidence_refs.is_empty() || !requested_cover_sessions.is_empty();
+    let overlap_matched =
+        !exact_evidence_matches.is_empty() || !session_evidence_matches.is_empty();
+    if overlap_requested && !overlap_matched {
+        return Ok(None);
     }
 
     let mut matched_evidence = Vec::new();
@@ -1212,7 +1196,7 @@ fn build_wiki_entry_match_metadata(
         }
     }
 
-    Some(WikiEntryMatchMetadata {
+    Ok(Some(WikiEntryMatchMetadata {
         matched_evidence,
         match_reason: if !exact_evidence_matches.is_empty() {
             Some(WikiEntryMatchReason::EvidenceRef)
@@ -1221,7 +1205,7 @@ fn build_wiki_entry_match_metadata(
         } else {
             grep_reason
         },
-    })
+    }))
 }
 
 /// Normalizes one case-insensitive match string using Rust's standard lowercase rules.
@@ -1230,7 +1214,7 @@ fn normalize_casefold(value: &str) -> String {
 }
 
 /// Validates and canonicalizes requested wiki evidence-reference filters.
-fn parse_requested_evidence_refs(values: &[String]) -> Result<Vec<String>> {
+fn parse_requested_evidence_refs(values: &[String]) -> Result<BTreeSet<String>> {
     let mut parsed = values
         .iter()
         .map(|value| {
@@ -1246,11 +1230,11 @@ fn parse_requested_evidence_refs(values: &[String]) -> Result<Vec<String>> {
         .collect::<Result<Vec<_>>>()?;
     parsed.sort();
     parsed.dedup();
-    Ok(parsed)
+    Ok(parsed.into_iter().collect())
 }
 
 /// Validates and canonicalizes requested wiki session-coverage filters.
-fn parse_requested_cover_sessions(values: &[String]) -> Result<Vec<String>> {
+fn parse_requested_cover_sessions(values: &[String]) -> Result<BTreeSet<String>> {
     let mut parsed = values
         .iter()
         .map(|value| {
@@ -1266,32 +1250,31 @@ fn parse_requested_cover_sessions(values: &[String]) -> Result<Vec<String>> {
         .collect::<Result<Vec<_>>>()?;
     parsed.sort();
     parsed.dedup();
-    Ok(parsed)
+    Ok(parsed.into_iter().collect())
 }
 
 /// Resolves which grep field matched one wiki entry, if any.
-fn match_wiki_entry_grep(
-    document: &darc_wiki::EntryDetailDocument,
-    grep: &str,
-) -> Option<WikiEntryMatchReason> {
-    if normalize_casefold(&document.frontmatter.title).contains(grep) {
-        Some(WikiEntryMatchReason::GrepTitle)
-    } else if normalize_casefold(&document.body_markdown).contains(grep) {
-        Some(WikiEntryMatchReason::GrepBody)
-    } else {
-        document
-            .frontmatter
-            .domains
-            .iter()
-            .any(|domain| normalize_casefold(domain).contains(grep))
-            .then_some(WikiEntryMatchReason::GrepDomain)
+fn match_wiki_entry_grep(entry: &EntrySummary, grep: &str) -> Result<Option<WikiEntryMatchReason>> {
+    if normalize_casefold(&entry.title).contains(grep) {
+        return Ok(Some(WikiEntryMatchReason::GrepTitle));
     }
+    if entry
+        .domains
+        .iter()
+        .any(|domain| normalize_casefold(domain).contains(grep))
+    {
+        return Ok(Some(WikiEntryMatchReason::GrepDomain));
+    }
+    let document = load_entry_detail(&entry.path)?;
+    Ok(normalize_casefold(&document.body_markdown)
+        .contains(grep)
+        .then_some(WikiEntryMatchReason::GrepBody))
 }
 
 /// Collects exact evidence references from one entry that match the requested filter set.
 fn collect_exact_evidence_matches(
     entry_evidence: &[String],
-    requested_evidence_refs: &[String],
+    requested_evidence_refs: &BTreeSet<String>,
 ) -> Vec<String> {
     entry_evidence
         .iter()
@@ -1303,7 +1286,7 @@ fn collect_exact_evidence_matches(
 /// Collects entry evidence references that cite any session from the requested filter set.
 fn collect_cover_session_matches(
     entry_evidence: &[String],
-    requested_cover_sessions: &[String],
+    requested_cover_sessions: &BTreeSet<String>,
 ) -> Vec<String> {
     entry_evidence
         .iter()
@@ -1701,6 +1684,23 @@ mod tests {
                 "codex:session-1#2".to_owned(),
                 "codex:session-1#4".to_owned()
             ]
+        );
+
+        let overlap_entries = query_wiki_entries(
+            Some(root.clone()),
+            project_id,
+            &WikiEntriesQueryOptions {
+                evidence_refs: vec!["codex:session-1#4".to_owned()],
+                covers_sessions: vec!["claude:session-2".to_owned()],
+                ..WikiEntriesQueryOptions::default()
+            },
+        )?;
+        assert_eq!(overlap_entries.entries.len(), 2);
+        assert_eq!(overlap_entries.entries[0].entry_id, coverage_entry_id);
+        assert_eq!(overlap_entries.entries[1].entry_id, grep_entry_id);
+        assert_eq!(
+            overlap_entries.entries[1].match_reason,
+            Some(WikiEntryMatchReason::EvidenceRef)
         );
 
         fs::remove_dir_all(root)?;

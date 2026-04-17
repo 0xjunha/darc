@@ -100,6 +100,9 @@ The protocol is intentionally composable. A few common read patterns are now fir
     --json
   ```
 
+  When both overlap flags are present, entries matching either the cited turn or any cited turn
+  from the requested session are returned.
+
 ## Success envelope
 
 Query success responses are written to `stdout` only.

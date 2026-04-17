@@ -544,6 +544,32 @@ fn wiki_entries_query_supports_q4_filters_and_match_metadata() -> Result<()> {
         Value::String("covers_session".to_owned())
     );
 
+    let overlap_output = run_darc([
+        "query",
+        "wiki",
+        "entries",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--covers-session",
+        "claude:session-2",
+        "--evidence-ref",
+        "codex:session-1#4",
+        "--json",
+    ])?;
+    assert!(overlap_output.status.success());
+    let overlap_value = parse_json(&overlap_output.stdout, "stdout")?;
+    assert_eq!(
+        overlap_value["data"]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["entry_id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["cw_01entry", "cw_02entry"]
+    );
+
     remove_root(&root)?;
     Ok(())
 }
