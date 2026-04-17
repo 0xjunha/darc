@@ -6,7 +6,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    EntryFrontmatter, EntryType,
+    EntryFrontmatter, EntryType, EvidenceReference,
     decision_trace::{existing_content_fingerprint, proposal_content_fingerprint},
     parse_evidence_reference,
     slug::is_valid_slug_id,
@@ -163,7 +163,26 @@ pub struct ProposalValidationOptions<'a> {
     pub run_id: &'a str,
     pub allowed_categories: &'a [String],
     pub allowed_domains: &'a [String],
-    pub allowed_evidence_refs: &'a [String],
+}
+
+/// Resolves whether one parsed evidence reference exists in the current project index.
+pub trait ProposalEvidenceResolver {
+    fn turn_exists(
+        &mut self,
+        reference: &EvidenceReference<'_>,
+    ) -> std::result::Result<bool, String>;
+}
+
+impl<F> ProposalEvidenceResolver for F
+where
+    F: for<'a> FnMut(&EvidenceReference<'a>) -> std::result::Result<bool, String>,
+{
+    fn turn_exists(
+        &mut self,
+        reference: &EvidenceReference<'_>,
+    ) -> std::result::Result<bool, String> {
+        self(reference)
+    }
 }
 
 /// Stores one structured proposal validation error for durable reporting.
@@ -217,9 +236,10 @@ pub fn is_valid_domain_id(value: &str) -> bool {
 }
 
 /// Validates one parsed digest proposal against the current digest proposal contract.
-pub fn validate_digest_proposal(
+pub fn validate_digest_proposal<R: ProposalEvidenceResolver>(
     proposal: &DigestProposal,
     options: &ProposalValidationOptions<'_>,
+    evidence_resolver: &mut R,
 ) -> std::result::Result<ProposalValidationSummary, ProposalValidationErrors> {
     let mut errors = Vec::new();
     let allowed_categories = options
@@ -229,11 +249,6 @@ pub fn validate_digest_proposal(
         .collect::<BTreeSet<_>>();
     let allowed_domains = options
         .allowed_domains
-        .iter()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>();
-    let allowed_evidence_refs = options
-        .allowed_evidence_refs
         .iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
@@ -428,17 +443,25 @@ pub fn validate_digest_proposal(
         for (evidence_index, evidence) in entry.evidence.iter().enumerate() {
             let path = format!("{base}.evidence[{evidence_index}]");
             match parse_evidence_reference(evidence) {
-                Some(_) => {
-                    if !allowed_evidence_refs.contains(evidence.as_str()) {
+                Some(reference) => match evidence_resolver.turn_exists(&reference) {
+                    Ok(true) => {}
+                    Ok(false) => {
                         push_error(
                             &mut errors,
                             path,
                             format!(
-                                "evidence `{evidence}` must reference one of the selected session turns"
+                                "evidence `{evidence}` must reference an indexed turn in the current project"
                             ),
                         );
                     }
-                }
+                    Err(error) => push_error(
+                        &mut errors,
+                        path,
+                        format!(
+                            "evidence `{evidence}` could not be resolved against the project index: {error}"
+                        ),
+                    ),
+                },
                 None => push_error(
                     &mut errors,
                     path,
@@ -550,12 +573,11 @@ fn validate_non_empty_string(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
 
-    fn validation_options<'a>(
-        allowed_evidence_refs: &'a [String],
-        allowed_domains: &'a [String],
-    ) -> ProposalValidationOptions<'a> {
+    fn validation_options<'a>(allowed_domains: &'a [String]) -> ProposalValidationOptions<'a> {
         const CATEGORIES: &[&str] = &["architecture", "data", "product", "process"];
         let allowed_categories = CATEGORIES
             .iter()
@@ -566,13 +588,34 @@ mod tests {
             run_id: "cwrun_01proposal",
             allowed_categories: Box::leak(allowed_categories.into_boxed_slice()),
             allowed_domains,
-            allowed_evidence_refs,
         }
+    }
+
+    fn validate_with_existing_evidence_refs(
+        proposal: &DigestProposal,
+        allowed_domains: &[String],
+        existing_evidence_refs: &[String],
+    ) -> std::result::Result<ProposalValidationSummary, ProposalValidationErrors> {
+        let existing_evidence_refs = existing_evidence_refs
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        validate_digest_proposal(
+            proposal,
+            &validation_options(allowed_domains),
+            &mut |reference: &EvidenceReference<'_>| {
+                Ok(existing_evidence_refs.contains(&format!(
+                    "{}:{}#{}",
+                    reference.session.provider.directory_name(),
+                    reference.session.session_id,
+                    reference.turn_ordinal
+                )))
+            },
+        )
     }
 
     #[test]
     fn validation_allows_zero_entries_with_required_run_summary() {
-        let allowed_evidence_refs = vec!["codex:session-1#0".to_owned()];
         let proposal = DigestProposal {
             schema: DIGEST_PROPOSAL_SCHEMA.to_owned(),
             project_id: "repo-abc123".to_owned(),
@@ -587,16 +630,14 @@ mod tests {
             },
         };
 
-        let summary =
-            validate_digest_proposal(&proposal, &validation_options(&allowed_evidence_refs, &[]))
-                .expect("proposal should be valid");
+        let summary = validate_with_existing_evidence_refs(&proposal, &[], &[])
+            .expect("proposal should be valid");
         assert_eq!(summary.entry_count, 0);
         assert_eq!(summary.extracted_decision_count, 0);
     }
 
     #[test]
     fn validation_rejects_invalid_domain_and_nonexistent_turn_reference() {
-        let allowed_evidence_refs = vec!["codex:session-1#0".to_owned()];
         let allowed_domains = vec!["query-protocol".to_owned()];
         let proposal = DigestProposal {
             schema: DIGEST_PROPOSAL_SCHEMA.to_owned(),
@@ -627,28 +668,106 @@ mod tests {
             },
         };
 
-        let errors = validate_digest_proposal(
-            &proposal,
-            &validation_options(&allowed_evidence_refs, &allowed_domains),
-        )
-        .expect_err("proposal should be invalid");
+        let errors = validate_with_existing_evidence_refs(&proposal, &allowed_domains, &[])
+            .expect_err("proposal should be invalid");
         assert!(
             errors
                 .errors()
                 .iter()
                 .any(|error| error.path == "entries[0].domains[0]")
         );
-        assert!(
-            errors
-                .errors()
-                .iter()
-                .any(|error| error.path == "entries[0].evidence[0]")
-        );
+        assert!(errors.errors().iter().any(|error| {
+            error.path == "entries[0].evidence[0]"
+                && error
+                    .message
+                    .contains("must reference an indexed turn in the current project")
+        }));
+    }
+
+    #[test]
+    fn validation_allows_existing_indexed_turn_reference() {
+        let allowed_domains = vec!["query-protocol".to_owned()];
+        let proposal = DigestProposal {
+            schema: DIGEST_PROPOSAL_SCHEMA.to_owned(),
+            project_id: "repo-abc123".to_owned(),
+            run_id: "cwrun_01proposal".to_owned(),
+            entries: vec![DigestProposalEntry {
+                operation: ProposalEntryOperation::Create,
+                entry_type: EntryType::DecisionTrace,
+                title: "Keep query protocol stable".to_owned(),
+                category: "product".to_owned(),
+                domains: vec!["query-protocol".to_owned()],
+                decision_date: "2026-04-13".to_owned(),
+                context: "Context".to_owned(),
+                options: vec![DigestProposalOption {
+                    status: DigestProposalOptionStatus::Chosen,
+                    description: "Stay additive".to_owned(),
+                }],
+                final_decision: "Stay additive".to_owned(),
+                rationale: "Desktop depends on it".to_owned(),
+                consequences: "Protocol changes need migration".to_owned(),
+                evidence: vec!["codex:session-1#0".to_owned()],
+            }],
+            run_summary: DigestProposalRunSummary {
+                title: "Summary".to_owned(),
+                summary: "Summary".to_owned(),
+                themes: Vec::new(),
+                extracted_decision_count: 1,
+            },
+        };
+
+        let summary = validate_with_existing_evidence_refs(
+            &proposal,
+            &allowed_domains,
+            &["codex:session-1#0".to_owned()],
+        )
+        .expect("existing indexed turn should pass validation");
+        assert_eq!(summary.entry_count, 1);
+    }
+
+    #[test]
+    fn validation_allows_existing_non_seed_turn_reference() {
+        let allowed_domains = vec!["query-protocol".to_owned()];
+        let proposal = DigestProposal {
+            schema: DIGEST_PROPOSAL_SCHEMA.to_owned(),
+            project_id: "repo-abc123".to_owned(),
+            run_id: "cwrun_01proposal".to_owned(),
+            entries: vec![DigestProposalEntry {
+                operation: ProposalEntryOperation::Create,
+                entry_type: EntryType::DecisionTrace,
+                title: "Keep query protocol stable".to_owned(),
+                category: "product".to_owned(),
+                domains: vec!["query-protocol".to_owned()],
+                decision_date: "2026-04-13".to_owned(),
+                context: "Context".to_owned(),
+                options: vec![DigestProposalOption {
+                    status: DigestProposalOptionStatus::Chosen,
+                    description: "Stay additive".to_owned(),
+                }],
+                final_decision: "Stay additive".to_owned(),
+                rationale: "Desktop depends on it".to_owned(),
+                consequences: "Protocol changes need migration".to_owned(),
+                evidence: vec!["claude:session-99#7".to_owned()],
+            }],
+            run_summary: DigestProposalRunSummary {
+                title: "Summary".to_owned(),
+                summary: "Summary".to_owned(),
+                themes: Vec::new(),
+                extracted_decision_count: 1,
+            },
+        };
+
+        let summary = validate_with_existing_evidence_refs(
+            &proposal,
+            &allowed_domains,
+            &["claude:session-99#7".to_owned()],
+        )
+        .expect("non-seed indexed turn should pass validation");
+        assert_eq!(summary.entry_count, 1);
     }
 
     #[test]
     fn validation_rejects_duplicate_entries_within_one_proposal() {
-        let allowed_evidence_refs = vec!["codex:session-1#0".to_owned()];
         let allowed_domains = vec!["query-protocol".to_owned()];
         let duplicate_entry = DigestProposalEntry {
             operation: ProposalEntryOperation::Create,
@@ -680,9 +799,10 @@ mod tests {
             },
         };
 
-        let errors = validate_digest_proposal(
+        let errors = validate_with_existing_evidence_refs(
             &proposal,
-            &validation_options(&allowed_evidence_refs, &allowed_domains),
+            &allowed_domains,
+            &["codex:session-1#0".to_owned()],
         )
         .expect_err("duplicate entries should fail validation");
         assert!(errors.errors().iter().any(|error| {
@@ -694,7 +814,6 @@ mod tests {
 
     #[test]
     fn validation_allows_entries_that_match_existing_canonical_identity() {
-        let allowed_evidence_refs = vec!["codex:session-1#0".to_owned()];
         let allowed_domains = vec!["query-protocol".to_owned()];
         let existing_entry = EntryFrontmatter {
             schema_version: 1,
@@ -747,9 +866,10 @@ mod tests {
         };
         let _existing_entry = existing_entry;
 
-        let summary = validate_digest_proposal(
+        let summary = validate_with_existing_evidence_refs(
             &proposal,
-            &validation_options(&allowed_evidence_refs, &allowed_domains),
+            &allowed_domains,
+            &["codex:session-1#0".to_owned()],
         )
         .expect("existing canonical identity should be merged later");
         assert_eq!(summary.entry_count, 1);

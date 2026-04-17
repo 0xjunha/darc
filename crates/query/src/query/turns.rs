@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use darc_paths::SourceKind;
 use darc_rollout::model::NormalizedTokenUsage;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 use super::{
     FileUsageScope, IndexedTurnRow, ToolUsageScope, TurnDetail, TurnDetailInsights,
@@ -92,6 +92,13 @@ const INDEXED_SESSION_TURNS_SQL: &str = "
     ORDER BY turn_ordinal ASC
 ";
 
+const INDEXED_TURN_EXISTS_SQL: &str = "
+    SELECT 1
+    FROM turns
+    WHERE project_id = ?1 AND provider = ?2 AND session_id = ?3 AND turn_ordinal = ?4
+    LIMIT 1
+";
+
 /// Queries one full normalized turn detail payload.
 pub fn query_turn_detail(
     index_db_path: &Path,
@@ -134,6 +141,18 @@ pub fn query_turn_insights(
 ) -> Result<TurnInsights> {
     let connection = open_existing_index_database(index_db_path)?;
     build_turn_insights(&connection, project_id, provider, session_id, turn_ordinal)
+}
+
+/// Queries whether one indexed provider session turn exists for the current project.
+pub fn query_turn_exists(
+    index_db_path: &Path,
+    project_id: &str,
+    provider: SourceKind,
+    session_id: &str,
+    turn_ordinal: u64,
+) -> Result<bool> {
+    let connection = open_existing_index_database(index_db_path)?;
+    build_turn_exists(&connection, project_id, provider, session_id, turn_ordinal)
 }
 
 /// Builds one normalized turn detail row from the index.
@@ -186,6 +205,37 @@ pub(crate) fn build_session_turn_details(
             row.into_turn_detail(options, insights)
         })
         .collect()
+}
+
+/// Checks whether one indexed provider session turn exists in SQLite.
+pub(crate) fn build_turn_exists(
+    connection: &Connection,
+    project_id: &str,
+    provider: SourceKind,
+    session_id: &str,
+    turn_ordinal: u64,
+) -> Result<bool> {
+    let turn_ordinal =
+        i64::try_from(turn_ordinal).context("turn ordinal exceeds SQLite INTEGER range")?;
+    let exists = connection
+        .query_row(
+            INDEXED_TURN_EXISTS_SQL,
+            (
+                project_id,
+                provider.directory_name(),
+                session_id,
+                turn_ordinal,
+            ),
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .with_context(|| {
+            format!(
+                "failed to query indexed turn existence for session {session_id} and provider {}",
+                provider.directory_name()
+            )
+        })?;
+    Ok(exists.is_some())
 }
 
 /// Builds one turn insights report from indexed turn, tool, and file rows.
@@ -409,5 +459,8 @@ pub(super) fn smoke_test_sql(connection: &Connection) -> Result<()> {
     connection
         .prepare(INDEXED_TURN_SQL)
         .context("failed to prepare indexed turn query")?;
+    connection
+        .prepare(INDEXED_TURN_EXISTS_SQL)
+        .context("failed to prepare indexed turn existence query")?;
     Ok(())
 }

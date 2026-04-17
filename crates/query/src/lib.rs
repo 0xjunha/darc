@@ -17,5 +17,5 @@ pub use query::{
     query_project_insights, query_project_session_bundle, query_project_session_files,
     query_project_sessions, query_project_turn_matches, query_project_turns,
     query_resolve_sessions, query_search_turns, query_session_turn_details, query_turn_detail,
-    query_turn_insights, query_workspace_insights,
+    query_turn_exists, query_turn_insights, query_workspace_insights,
 };
