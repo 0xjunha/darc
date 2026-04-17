@@ -42,6 +42,7 @@ pub(super) fn build_runtime_request(
         auth_profile: state.auth_profile.clone(),
         prompt: prompt.prompt.clone(),
         schema_json: prompt.schema_json.clone(),
+        darc_root: layout.context().darc_root.clone(),
         workdir: project_root.to_path_buf(),
         schema_path: schema_path.to_path_buf(),
         proposal_path: layout.run_proposal_path(run_id),

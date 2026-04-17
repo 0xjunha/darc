@@ -89,6 +89,7 @@ where
 {
     Command::new(darc_binary())
         .args(args)
+        .env("DARC_WIKI_UNSAFE_ENABLE_CODEX", "1")
         .envs(envs)
         .output()
         .context("failed to run compiled darc binary")
@@ -417,7 +418,7 @@ fn wiki_digest_start_query_and_cancel_round_trip() -> Result<()> {
         .join("context-wiki/projects/repo-abc123/runs")
         .join(&run_id);
     assert!(run_dir.join("request.json").exists());
-    assert!(run_dir.join("context.json").exists());
+    assert!(!run_dir.join("context.json").exists());
     assert!(run_dir.join("run.toml").exists());
     assert!(run_dir.join("events.jsonl").exists());
     assert!(run_dir.join("agent.stdout.log").exists());
@@ -766,6 +767,39 @@ fn wiki_digest_start_rejects_unregistered_target_domain() -> Result<()> {
         String::from_utf8_lossy(&output.stderr)
             .contains("target domain `query-protocol` is not defined in the project registry")
     );
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn wiki_digest_start_rejects_codex_without_explicit_gate() -> Result<()> {
+    let root = create_wiki_fixture_root("cli-wiki-codex-gate")?;
+    let output = Command::new(darc_binary())
+        .args([
+            "wiki",
+            "digest",
+            "start",
+            "--root",
+            root.to_string_lossy().as_ref(),
+            "--project-id",
+            "repo-abc123",
+            "--session-ref",
+            "codex:session-1",
+            "--agent",
+            "codex",
+            "--runtime",
+            "external-cli",
+            "--model",
+            "gpt-5.4",
+            "--json",
+        ])
+        .env_remove("DARC_WIKI_UNSAFE_ENABLE_CODEX")
+        .output()
+        .context("failed to run compiled darc binary without codex gate override")?;
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("DARC_WIKI_UNSAFE_ENABLE_CODEX=1"));
 
     remove_root(&root)?;
     Ok(())
@@ -1646,7 +1680,7 @@ fn wiki_digest_fails_on_invalid_claude_proposal() -> Result<()> {
             "unexpected=\"\"\n",
             "while [ \"$#\" -gt 0 ]; do\n",
             "  case \"$1\" in\n",
-            "    --model|--input-format|--output-format|--json-schema|--permission-mode|--tools)\n",
+            "    --model|--input-format|--output-format|--json-schema|--permission-mode|--tools|--allowed-tools|--add-dir)\n",
             "      shift 2\n",
             "      ;;\n",
             "    --print|--bare|--strict-mcp-config|--disable-slash-commands|--no-session-persistence|--no-chrome)\n",

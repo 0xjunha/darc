@@ -1,7 +1,7 @@
 mod api;
 mod artifacts;
-mod context;
 mod models;
+mod request;
 mod runtime;
 mod state;
 mod worker;
@@ -23,7 +23,6 @@ pub(crate) use models::{DigestResultArtifact, DigestRuntimeArtifact, DigestValid
 pub(crate) use state::load_visible_run_summaries;
 
 const RUN_REQUEST_SCHEMA: &str = "darc.wiki.digest.request.v1";
-const RUN_CONTEXT_SCHEMA: &str = "darc.wiki.digest.context.v1";
 const RUN_RESULT_SCHEMA: &str = "darc.wiki.digest.result.v1";
 const RUN_EVENT_LEVEL_INFO: &str = "info";
 const RUN_EVENT_LEVEL_WARN: &str = "warn";

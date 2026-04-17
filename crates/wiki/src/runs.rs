@@ -29,8 +29,8 @@ pub enum RunStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunPhase {
+    #[serde(alias = "reading_turns")]
     PreparingContext,
-    ReadingTurns,
     WaitingForAgent,
     ValidatingProposal,
     MergingEntries,
