@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use super::file_access::{
     CodeChangeSummary, ToolAccessKind, apply_patch_changed_paths, derive_apply_patch_file_accesses,
-    push_access, summarize_apply_patch_changes,
+    path_looks_directory_like, push_access, summarize_apply_patch_changes,
 };
 
 /// Stores one shell-like command decoded from one tool-call payload.
@@ -320,10 +320,11 @@ fn derive_shell_fragment_file_accesses(
         "node" | "python" | "python3" | "ruby" => extract_script_runner_file_accesses(tokens),
         "cp" => extract_copy_file_accesses(tokens),
         "mv" => extract_move_file_accesses(tokens),
-        "rm" | "rmdir" | "chmod" | "chown" => {
-            extract_simple_path_accesses(tokens, ToolAccessKind::Edit, &[])
-        }
-        "mkdir" | "touch" => extract_simple_path_accesses(tokens, ToolAccessKind::Write, &[]),
+        "rm" => extract_rm_file_accesses(tokens),
+        "chmod" | "chown" => extract_simple_path_accesses(tokens, ToolAccessKind::Edit, &[]),
+        "rmdir" => extract_directory_only_edit_accesses(tokens),
+        "mkdir" => extract_directory_only_write_accesses(tokens),
+        "touch" => extract_simple_path_accesses(tokens, ToolAccessKind::Write, &[]),
         "curl" => extract_output_option_file_accesses(tokens),
         "echo" | "printf" | ":" => extract_redirection_file_accesses(tokens),
         "source" | "." => tokens
@@ -332,9 +333,10 @@ fn derive_shell_fragment_file_accesses(
             .unwrap_or_default(),
         "test" | "[" => extract_test_file_accesses(tokens),
         "fd" => extract_fd_file_accesses(tokens),
-        "wc" | "rustfmt" | "lsof" | "sort" | "stat" | "xxd" | "mdls" | "file" | "diff" => {
+        "wc" | "rustfmt" | "lsof" | "sort" | "stat" | "xxd" | "mdls" | "file" => {
             extract_simple_path_accesses(tokens, ToolAccessKind::Read, &[])
         }
+        "diff" => extract_diff_file_accesses(tokens),
         "perl" => extract_perl_file_accesses(tokens),
         "ln" => extract_link_file_accesses(tokens),
         _ => Vec::new(),
@@ -446,7 +448,7 @@ fn extract_ripgrep_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, Stri
         ToolAccessKind::Read
     };
     for token in path_tokens {
-        push_access(&mut accesses, access_type, token);
+        push_file_like_access(&mut accesses, access_type, token);
     }
     accesses
 }
@@ -476,7 +478,7 @@ fn extract_grep_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)
     }
 
     for token in non_option_tokens.into_iter().skip(1) {
-        push_access(&mut accesses, ToolAccessKind::Read, token);
+        push_file_like_access(&mut accesses, ToolAccessKind::Read, token);
     }
     accesses
 }
@@ -524,7 +526,7 @@ fn extract_find_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)
         if saw_expression {
             continue;
         }
-        push_access(&mut accesses, ToolAccessKind::List, token);
+        push_file_like_access(&mut accesses, ToolAccessKind::List, token);
     }
 
     accesses
@@ -551,12 +553,40 @@ fn extract_simple_path_accesses(
             skip_next = true;
         } else if token.starts_with('-') {
             // Ignore option flags.
+        } else if access_type == ToolAccessKind::List {
+            push_file_like_access(&mut accesses, access_type, token);
         } else {
             push_access(&mut accesses, access_type, token);
         }
         index += 1;
     }
 
+    accesses
+}
+
+/// Preserves redirection writes while dropping directory-only `mkdir` operands.
+fn extract_directory_only_write_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)> {
+    extract_redirection_file_accesses(tokens)
+}
+
+/// Preserves redirection writes while dropping directory-only `rmdir` operands.
+fn extract_directory_only_edit_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)> {
+    extract_redirection_file_accesses(tokens)
+}
+
+/// Preserves file edits while dropping recursive `rm` directory operands.
+fn extract_rm_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)> {
+    let recursive = tokens
+        .iter()
+        .any(|token| token == "--recursive" || short_flag_contains(token, 'r'));
+    let mut accesses = extract_redirection_file_accesses(tokens);
+    for path in collect_non_option_tokens(tokens) {
+        if recursive {
+            push_file_like_access(&mut accesses, ToolAccessKind::Edit, path);
+        } else {
+            push_access(&mut accesses, ToolAccessKind::Edit, path);
+        }
+    }
     accesses
 }
 
@@ -702,10 +732,31 @@ fn extract_move_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)
 
 /// Extracts read checks from one `test` or `[` command.
 fn extract_test_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)> {
+    let directory_check = tokens.iter().any(|token| token == "-d");
     let mut accesses = Vec::new();
     for token in &tokens[1..] {
         if !token.starts_with('-') {
-            push_access(&mut accesses, ToolAccessKind::Read, token);
+            if directory_check {
+                push_file_like_access(&mut accesses, ToolAccessKind::Read, token);
+            } else {
+                push_access(&mut accesses, ToolAccessKind::Read, token);
+            }
+        }
+    }
+    accesses
+}
+
+/// Preserves file reads while dropping recursive `diff` directory operands.
+fn extract_diff_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)> {
+    let recursive = tokens
+        .iter()
+        .any(|token| token == "--recursive" || short_flag_contains(token, 'r'));
+    let mut accesses = extract_redirection_file_accesses(tokens);
+    for path in collect_non_option_tokens(tokens) {
+        if recursive {
+            push_file_like_access(&mut accesses, ToolAccessKind::Read, path);
+        } else {
+            push_access(&mut accesses, ToolAccessKind::Read, path);
         }
     }
     accesses
@@ -720,9 +771,25 @@ fn extract_fd_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)> 
 
     let mut accesses = Vec::new();
     for path in paths.into_iter().skip(1) {
-        push_access(&mut accesses, ToolAccessKind::List, path);
+        push_file_like_access(&mut accesses, ToolAccessKind::List, path);
     }
     accesses
+}
+
+/// Appends one extracted access path when the operand still looks file-like.
+fn push_file_like_access(
+    accesses: &mut Vec<(ToolAccessKind, String)>,
+    access_type: ToolAccessKind,
+    path: &str,
+) {
+    if !path_looks_directory_like(path) {
+        push_access(accesses, access_type, path);
+    }
+}
+
+/// Returns whether one combined short-option token contains the requested flag.
+fn short_flag_contains(token: &str, flag: char) -> bool {
+    token.starts_with('-') && !token.starts_with("--") && token.chars().skip(1).any(|ch| ch == flag)
 }
 
 /// Extracts edit accesses from one in-place perl command.

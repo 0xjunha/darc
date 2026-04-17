@@ -288,6 +288,7 @@ fn derive_explicit_tool_file_accesses(
 
     extract_tool_paths(arguments_text)
         .into_iter()
+        .filter(|path| access_type != ToolAccessKind::List || !path_looks_directory_like(path))
         .map(|path| (access_type, path))
         .collect()
 }
@@ -325,6 +326,37 @@ pub fn apply_patch_changed_paths(text: &str) -> Vec<String> {
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
+}
+
+/// Returns whether one extracted path looks like a directory root instead of a file path.
+pub(super) fn path_looks_directory_like(path: &str) -> bool {
+    let path = path
+        .trim()
+        .trim_matches(['"', '\''])
+        .trim()
+        .trim_end_matches('/');
+    if path.is_empty() {
+        return false;
+    }
+
+    let path = Path::new(path);
+    if path.extension().is_some() {
+        return false;
+    }
+
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    if matches!(file_name, "." | ".." | "~") {
+        return true;
+    }
+    if file_name.starts_with('.') || file_name.starts_with('$') {
+        return true;
+    }
+
+    file_name
+        .chars()
+        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '_' | '-'))
 }
 
 /// Builds concrete file-access rows from raw `(kind, path)` pairs.

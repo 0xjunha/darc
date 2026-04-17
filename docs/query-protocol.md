@@ -316,9 +316,9 @@ Today:
 - explicit tool names such as `write`, `edit`, `replace`, and `patch` count toward write/edit-style file analytics
 - Darc also derives file accesses from selected shell-like tools by parsing observed command forms
 - current shell rules cover common explicit file-target commands such as `sed`, `rg`, `grep`, `cat`, `nl`, `ls`, `find`, `head`, `tail`, `awk`, `jq`, `cp`, `mv`, `rm`, `mkdir`, `touch`, `chmod`, and `apply_patch`
-- shell commands only contribute file analytics when Darc can extract a concrete path from the command text; implicit cwd-only access and dynamic shell-variable expansion may still be omitted
+- shell commands only contribute file analytics when Darc can extract a concrete file-like path from the command text; obvious directory-only operands from list, search, and directory-creation commands are dropped, and implicit cwd-only access plus dynamic shell-variable expansion may still be omitted
 - this layer is best effort, not a perfect trace: archived rollouts record tool payloads and command text, not syscall-level file I/O, so commands such as `git`, `cargo`, inline Python, shell loops, subshells, or helper scripts may touch files without naming every path explicitly
-- paths are currently reported as the raw extracted path string
+- paths are currently reported as the extracted path string after Darc drops obvious directory-only operands such as `ls crates`, `find crates ...`, `rg foo crates`, or `mkdir -p scratch/cache`
 - `repo_relative_path` is included on file-usage rows when the indexed access already carried a repo-relative label; otherwise it is `null`
 
 These rules may evolve before stabilization.
@@ -341,7 +341,7 @@ Today:
 - `tools` comes from normalized per-turn `tool_calls` rows, grouped by `tool_name`
 - `shell_commands` comes from Darc-owned parsing of shell-like `tool_calls` payloads such as `exec_command`, `shell_command`, `shell`, and `Bash`
 - each `shell_commands[*]` item currently reports the originating `tool_name`, the extracted `command_text`, and optional `workdir`
-- `files` comes from normalized per-turn `file_accesses` rows, grouped by `path`
+- `files` comes from normalized per-turn `file_accesses` rows, grouped by `path`, after obvious directory-only operands are filtered during extraction
 - `files[*].read_count` currently counts both `read` and `list` access kinds
 - `files[*].write_count` currently counts both `write` and `edit` access kinds
 - `tools` is ordered by higher `count` first, then `name` ascending
@@ -406,7 +406,7 @@ Today:
 - `mode=path` ranks session rows by higher `touch_count`, then newer `last_touched_at`, then `provider`, then `session_id`
 - `mode=path` session rows report `provider`, `session_id`, `touch_count`, `read_count`, `write_count`, `first_turn_ordinal`, `last_turn_ordinal`, `first_touched_at`, `last_touched_at`, and deterministic `matched_paths`
 - `matched_paths` is the canonical matched file list for that session, ordered by display path ascending
-- `query files --path` currently excludes derived `list` accesses so directory listings and glob roots do not count as file touches
+- `query files --path` currently excludes derived `list` accesses, and obvious directory-only operands are omitted during extraction, so directory listings, search roots, and `mkdir`-style directory writes do not count as file touches
 - `mode=co_touched_with` treats the seed path as one exact canonical display path, normalizing project-root absolute paths down to project-relative form when possible
 - `mode=co_touched_with` only considers project-scoped in-repo file identities and does not expose or rank external absolute paths
 - `mode=co_touched_with` ranks file rows by higher `co_touch_count`, then `path` ascending
@@ -414,7 +414,7 @@ Today:
 - `darc.query.session_files.v1` reports `project_id`, `provider`, `session_id`, and deterministic `files`
 - `session_files` rows report canonical `path`, best-effort `repo_relative_path`, `read_count`, `write_count`, `first_turn_ordinal`, and `last_turn_ordinal`
 - `session_files` rows collapse equivalent absolute, repo-relative, and `./`-prefixed accesses for the same in-repo file onto one canonical display path before counting
-- `session_files` rows omit out-of-project accesses and exclude derived `list` accesses
+- `session_files` rows omit out-of-project accesses, exclude derived `list` accesses, and omit directory-only operands that Darc filtered during extraction
 - `query sessions --touched-path <glob>` reuses the same project-scoped glob semantics as the file-pivot and grep surfaces
 
 ### Session bundles

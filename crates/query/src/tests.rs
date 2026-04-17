@@ -272,7 +272,7 @@ fn derives_file_accesses_from_shell_commands_and_patches() {
     assert!(file_accesses.iter().any(|record| {
         record.path == "new.rs" && matches!(record.access_type, ToolAccessKind::Write)
     }));
-    assert!(file_accesses.iter().any(|record| {
+    assert!(!file_accesses.iter().any(|record| {
         record.path == "src" && matches!(record.access_type, ToolAccessKind::List)
     }));
     assert!(file_accesses.iter().any(|record| {
