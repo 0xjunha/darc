@@ -121,6 +121,7 @@ fn backend_round_trips_run_state_through_core_wiring() -> Result<()> {
         progress_percent: None,
         headline: Some("Queued".to_owned()),
         proposal_path: None,
+        proposal_schema_path: None,
         result_path: None,
         events_path: None,
         stdout_log_path: None,
@@ -189,6 +190,7 @@ fn stale_running_run_is_repaired_to_interrupted() -> Result<()> {
         progress_percent: Some(20),
         headline: Some("Waiting".to_owned()),
         proposal_path: Some("proposal.json".to_owned()),
+        proposal_schema_path: Some("context-wiki/proposal.schema.v1.json".to_owned()),
         result_path: Some("result.json".to_owned()),
         events_path: Some("events.jsonl".to_owned()),
         stdout_log_path: Some("agent.stdout.log".to_owned()),
@@ -254,6 +256,7 @@ fn stale_running_run_with_live_pid_stays_running() -> Result<()> {
         progress_percent: Some(20),
         headline: Some("Reading turns".to_owned()),
         proposal_path: Some("proposal.json".to_owned()),
+        proposal_schema_path: Some("context-wiki/proposal.schema.v1.json".to_owned()),
         result_path: Some("result.json".to_owned()),
         events_path: Some("events.jsonl".to_owned()),
         stdout_log_path: Some("agent.stdout.log".to_owned()),
@@ -319,6 +322,7 @@ fn runtime_request_uses_run_directory_as_workdir() -> Result<()> {
         progress_percent: None,
         headline: Some("Queued".to_owned()),
         proposal_path: None,
+        proposal_schema_path: Some("context-wiki/proposal.schema.v1.json".to_owned()),
         result_path: None,
         events_path: None,
         stdout_log_path: None,
@@ -330,12 +334,13 @@ fn runtime_request_uses_run_directory_as_workdir() -> Result<()> {
         error_message: None,
     };
     let prompt = build_digest_runtime_prompt("{}", project_id, run_id.as_str());
-    let schema_path = layout.run_dir(&run_id).join("proposal.schema.json");
+    let schema_path = layout.digest_proposal_schema_path();
 
     let request =
         super::runtime::build_runtime_request(&layout, &run_id, &state, &prompt, &schema_path)?;
 
     assert_eq!(request.workdir, layout.run_dir(&run_id));
+    assert_eq!(request.schema_path, layout.digest_proposal_schema_path());
 
     fs::remove_dir_all(&root)?;
     Ok(())
@@ -385,6 +390,7 @@ fn recent_reading_turns_run_stays_running_on_read_side() -> Result<()> {
         progress_percent: Some(20),
         headline: Some("Reading turns".to_owned()),
         proposal_path: Some("proposal.json".to_owned()),
+        proposal_schema_path: Some("context-wiki/proposal.schema.v1.json".to_owned()),
         result_path: Some("result.json".to_owned()),
         events_path: Some("events.jsonl".to_owned()),
         stdout_log_path: Some("agent.stdout.log".to_owned()),

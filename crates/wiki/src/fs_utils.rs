@@ -54,7 +54,7 @@ fn collect_markdown_files_into(root: &Path, files: &mut Vec<PathBuf>) -> Result<
 }
 
 /// Writes one string through a temp sibling path and atomically renames it into place.
-pub(crate) fn write_string_atomically(path: &Path, content: &str) -> Result<()> {
+pub fn write_string_atomically(path: &Path, content: &str) -> Result<()> {
     let parent = path.parent().ok_or_else(|| WikiError::WriteFile {
         path: path.to_path_buf(),
         source: std::io::Error::other("missing parent directory"),

@@ -173,13 +173,16 @@ Important files:
 - `run.toml`: durable lifecycle state, selected sessions, runtime metadata, progress, and terminal error fields
 - `request.json`: original digest request payload
 - `context.json`: assembled registry and narrative-turn context given to the runtime
-- `proposal.schema.json`: JSON Schema supplied to the runtime
 - `proposal.json`: captured structured proposal artifact when one is produced
 - `result.json`: terminal runtime and validation summary
 - `events.jsonl`: progress and warning events emitted by the worker
 - `agent.stdout.log`: captured runtime stdout
 - `agent.stderr.log`: captured runtime stderr
 - `cancel.flag`: cancellation signal written by `darc wiki digest cancel`
+
+Shared runtime files under `~/.darc/context-wiki/`:
+
+- `proposal.schema.v1.json`: shared JSON Schema supplied to Codex digest runs and recorded in `run.toml` as `proposal_schema_path`
 
 ## Current Success Semantics
 

@@ -26,6 +26,8 @@ const RUN_STDOUT_LOG_FILE_NAME: &str = "agent.stdout.log";
 const RUN_STDERR_LOG_FILE_NAME: &str = "agent.stderr.log";
 const RUN_CANCEL_FLAG_FILE_NAME: &str = "cancel.flag";
 const PROJECT_MERGE_LOCK_FILE_NAME: &str = "merge.lock";
+const DIGEST_PROPOSAL_SCHEMA_FILE_NAME: &str = "proposal.schema.v1.json";
+const DIGEST_PROPOSAL_SCHEMA_LOCK_FILE_NAME: &str = "proposal.schema.v1.json.lock";
 
 /// Resolves the top-level Context Wiki layout rooted under one Darc root.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +117,21 @@ impl ContextWikiLayout {
             runs_dir: root.join("runs"),
         })
     }
+
+    /// Resolves the shared digest proposal schema path under the top-level wiki root.
+    pub fn digest_proposal_schema_path(&self) -> PathBuf {
+        self.root.join(DIGEST_PROPOSAL_SCHEMA_FILE_NAME)
+    }
+
+    /// Resolves the shared digest proposal schema lock path under the top-level wiki root.
+    pub fn digest_proposal_schema_lock_path(&self) -> PathBuf {
+        self.root.join(DIGEST_PROPOSAL_SCHEMA_LOCK_FILE_NAME)
+    }
+
+    /// Resolves the shared digest proposal schema path relative to the Darc root.
+    pub fn digest_proposal_schema_relative_path(&self) -> PathBuf {
+        PathBuf::from(CONTEXT_WIKI_DIR_NAME).join(DIGEST_PROPOSAL_SCHEMA_FILE_NAME)
+    }
 }
 
 /// Resolves the full on-disk directory layout for one project wiki.
@@ -161,6 +178,21 @@ impl ProjectLayout {
     /// Resolves the project-scoped canonical merge lock path.
     pub fn project_merge_lock_path(&self) -> PathBuf {
         self.root.join(PROJECT_MERGE_LOCK_FILE_NAME)
+    }
+
+    /// Resolves the shared digest proposal schema path reused across all project runs.
+    pub fn digest_proposal_schema_path(&self) -> PathBuf {
+        self.context.digest_proposal_schema_path()
+    }
+
+    /// Resolves the shared digest proposal schema lock path reused across all project runs.
+    pub fn digest_proposal_schema_lock_path(&self) -> PathBuf {
+        self.context.digest_proposal_schema_lock_path()
+    }
+
+    /// Resolves the shared digest proposal schema path relative to the Darc root.
+    pub fn digest_proposal_schema_relative_path(&self) -> PathBuf {
+        self.context.digest_proposal_schema_relative_path()
     }
 
     /// Resolves one canonical entry Markdown path under the category-scoped entries layout.

@@ -85,6 +85,8 @@ pub struct RunState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proposal_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposal_schema_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub events_path: Option<String>,
@@ -307,6 +309,7 @@ mod tests {
             progress_percent: Some(30),
             headline: Some("Reading narrative turns".to_owned()),
             proposal_path: Some("proposal.json".to_owned()),
+            proposal_schema_path: Some("context-wiki/proposal.schema.v1.json".to_owned()),
             result_path: None,
             events_path: Some("events.jsonl".to_owned()),
             stdout_log_path: Some("agent.stdout.log".to_owned()),

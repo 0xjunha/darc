@@ -25,6 +25,7 @@ pub use entries::{
     restore_entry,
 };
 pub use errors::{Result, WikiError};
+pub use fs_utils::write_string_atomically;
 pub use ids::{DigestId, EntryId, RunId};
 pub use layout::{CONTEXT_WIKI_DIR_NAME, ContextWikiLayout, ProjectLayout, STORAGE_VERSION};
 pub use merge::{MergeDigestArtifacts, merge_digest_proposal};

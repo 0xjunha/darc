@@ -4,9 +4,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use darc_agent::ProposalOutputSource;
-use darc_wiki::{ProjectLayout, RunId, RunState};
+use darc_wiki::{ProjectLayout, RunId, RunState, write_string_atomically};
 use serde::Serialize;
 
 use super::{
@@ -29,13 +29,30 @@ pub(super) fn write_json_artifact<T: Serialize>(path: &Path, value: &T) -> Resul
         .with_context(|| format!("failed to write {}", path.display()))
 }
 
-/// Writes one UTF-8 text artifact file after ensuring its parent directory exists.
-pub(super) fn write_text_artifact(path: &Path, content: &str) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
+/// Ensures one shared UTF-8 artifact exists with the expected bytes without overwriting mismatches.
+pub(super) fn ensure_shared_text_artifact(
+    path: &Path,
+    lock_path: &Path,
+    content: &str,
+) -> Result<()> {
+    if file_bytes_match(path, content.as_bytes())? {
+        return Ok(());
     }
-    fs::write(path, content).with_context(|| format!("failed to write {}", path.display()))
+
+    let _lock = lock_shared_artifact(lock_path)?;
+    if file_bytes_match(path, content.as_bytes())? {
+        return Ok(());
+    }
+    if path.exists() {
+        bail!(
+            "shared artifact {} already exists with different bytes; refusing to overwrite it",
+            path.display()
+        );
+    }
+
+    write_string_atomically(path, content)
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(())
 }
 
 /// Writes one opaque byte artifact file after ensuring its parent directory exists.
@@ -55,6 +72,33 @@ pub(super) fn touch_file(path: &Path) -> Result<()> {
     }
     File::create(path).with_context(|| format!("failed to create {}", path.display()))?;
     Ok(())
+}
+
+/// Compares one file's current bytes with the desired content bytes.
+fn file_bytes_match(path: &Path, expected: &[u8]) -> Result<bool> {
+    match fs::read(path) {
+        Ok(existing) => Ok(existing == expected),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(source) => Err(source).with_context(|| format!("failed to read {}", path.display())),
+    }
+}
+
+/// Locks one shared artifact mutation path using the standard blocking file-lock pattern.
+fn lock_shared_artifact(lock_path: &Path) -> Result<File> {
+    if let Some(parent) = lock_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_path)
+        .with_context(|| format!("failed to open {}", lock_path.display()))?;
+    file.lock()
+        .with_context(|| format!("failed to lock {}", lock_path.display()))?;
+    Ok(file)
 }
 
 /// Returns the basename string for one run artifact path.
@@ -150,5 +194,56 @@ fn runtime_proposal_source_name(runtime: &RuntimeExecution) -> String {
             "stdout".to_owned()
         }
         ProposalOutputSource::File(_) => "file".to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, thread};
+
+    use anyhow::Result;
+    use darc_test_utils::unique_test_dir;
+
+    use super::ensure_shared_text_artifact;
+
+    /// Verifies that matching shared schema writers converge on one stable file.
+    #[test]
+    fn shared_text_artifact_allows_concurrent_identical_writers() -> Result<()> {
+        let root = unique_test_dir("shared-schema-concurrent");
+        let path = root.join("proposal.schema.v1.json");
+        let lock_path = root.join("proposal.schema.v1.json.lock");
+        let handles = (0..8)
+            .map(|_| {
+                let path = path.clone();
+                let lock_path = lock_path.clone();
+                thread::spawn(move || {
+                    ensure_shared_text_artifact(&path, &lock_path, "shared-schema")
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for handle in handles {
+            handle.join().expect("writer thread panicked")?;
+        }
+        assert_eq!(fs::read_to_string(&path)?, "shared-schema");
+
+        fs::remove_dir_all(&root)?;
+        Ok(())
+    }
+
+    /// Verifies that a shared schema file is treated as immutable once initialized.
+    #[test]
+    fn shared_text_artifact_rejects_mismatched_existing_bytes() -> Result<()> {
+        let root = unique_test_dir("shared-schema-mismatch");
+        let path = root.join("proposal.schema.v1.json");
+        let lock_path = root.join("proposal.schema.v1.json.lock");
+
+        ensure_shared_text_artifact(&path, &lock_path, "alpha")?;
+        let error = ensure_shared_text_artifact(&path, &lock_path, "beta").unwrap_err();
+        assert!(error.to_string().contains("refusing to overwrite"));
+        assert_eq!(fs::read_to_string(&path)?, "alpha");
+
+        fs::remove_dir_all(&root)?;
+        Ok(())
     }
 }
