@@ -28,7 +28,7 @@ use crate::query::{
     open_existing_index_database, parse_session_kind, query_project_files,
     query_project_session_bundle, query_project_session_files, query_project_sessions,
     query_project_turn_matches, query_project_turns, query_search_turns,
-    query_session_turn_details, query_turn_detail, smoke_test_sql,
+    query_session_turn_details, query_turn_detail, query_turn_exists, smoke_test_sql,
 };
 
 /// Builds one temporary SQLite index path for query tests.
@@ -1613,6 +1613,57 @@ fn session_turn_details_reuse_one_session_query_shape() -> Result<()> {
         NormalizedTurnStep::ToolCall { arguments, .. } if arguments.is_empty()
     ));
     assert!(details.iter().all(|detail| detail.insights.is_none()));
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn query_turn_exists_checks_project_scoped_index_presence() -> Result<()> {
+    let index_path = test_index_path("turn-exists");
+    let connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture::new(
+            "repo-a",
+            SourceKind::Codex,
+            "session-1",
+            0,
+            "2026-04-06T10:00:00Z",
+            "completed",
+            "[]",
+        ),
+    )?;
+
+    assert!(query_turn_exists(
+        &index_path,
+        "repo-a",
+        SourceKind::Codex,
+        "session-1",
+        0,
+    )?);
+    assert!(!query_turn_exists(
+        &index_path,
+        "repo-a",
+        SourceKind::Codex,
+        "session-1",
+        1,
+    )?);
+    assert!(!query_turn_exists(
+        &index_path,
+        "repo-b",
+        SourceKind::Codex,
+        "session-1",
+        0,
+    )?);
 
     fs::remove_dir_all(
         index_path

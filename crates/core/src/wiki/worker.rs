@@ -1,15 +1,19 @@
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
     time::SystemTime,
 };
 
 use anyhow::{Context, Result};
 use darc_agent::{RuntimeCommand, build_runtime_command};
+use darc_index::INDEX_DB_FILE_NAME;
 use darc_paths::current_utc_timestamp;
+use darc_query::TurnExistenceResolver;
 use darc_wiki::{
-    DigestProposal, DigestRuntimePrompt, MergeDigestArtifacts, ProjectLayout, ProjectRegistry,
-    ProposalValidationOptions, RunId, RunPhase, RunState, build_digest_runtime_prompt,
-    load_registry, load_run_state, merge_digest_proposal, validate_digest_proposal,
+    DigestProposal, DigestRuntimePrompt, EvidenceReference, MergeDigestArtifacts, ProjectLayout,
+    ProjectRegistry, ProposalValidationOptions, RunId, RunPhase, RunState,
+    build_digest_runtime_prompt, load_registry, load_run_state, merge_digest_proposal,
+    validate_digest_proposal,
 };
 
 use super::{
@@ -18,10 +22,7 @@ use super::{
         append_run_event, ensure_shared_text_artifact, write_bytes_artifact, write_json_artifact,
         write_terminal_result,
     },
-    context::{
-        build_allowed_domains, build_allowed_evidence_refs, build_runtime_context_json,
-        load_selected_session_context,
-    },
+    context::{build_allowed_domains, build_runtime_context_json, load_selected_session_context},
     models::{DigestContextArtifact, DigestValidationArtifact, RunEvent, RuntimeExecution},
     runtime::{build_runtime_request, execute_runtime_command},
     state::{
@@ -110,7 +111,7 @@ impl<'a> DigestWorker<'a> {
             None => return Ok(()),
         };
 
-        let validated = match self.validate_proposal(&registry, &context, &runtime_execution)? {
+        let validated = match self.validate_proposal(&registry, &runtime_execution)? {
             Some(validated) => validated,
             None => return Ok(()),
         };
@@ -410,11 +411,10 @@ impl<'a> DigestWorker<'a> {
         Ok(Some(runtime_command))
     }
 
-    /// Validates the captured proposal artifact against Darc's schema and allowlists.
+    /// Validates the captured proposal artifact against Darc's schema and indexed evidence rules.
     fn validate_proposal(
         &self,
         registry: &ProjectRegistry,
-        context: &DigestContextArtifact,
         runtime_execution: &RuntimeExecution,
     ) -> Result<Option<ValidatedProposal>> {
         transition_worker_state(
@@ -461,7 +461,25 @@ impl<'a> DigestWorker<'a> {
             }
         };
         let allowed_domains = build_allowed_domains(registry);
-        let allowed_evidence_refs = build_allowed_evidence_refs(context);
+        let evidence_resolver =
+            match TurnExistenceResolver::open(&self.root.join(INDEX_DB_FILE_NAME)) {
+                Ok(resolver) => resolver,
+                Err(error) => {
+                    return self.fail(WorkerFailure {
+                        phase: RunPhase::ValidatingProposal,
+                        headline: "Proposal validation failed",
+                        error_code: "proposal_validation_failed",
+                        error_message: error.to_string(),
+                        runtime: Some(runtime_execution),
+                        validation: DigestValidationArtifact {
+                            attempted: true,
+                            ..DigestValidationArtifact::default()
+                        },
+                        event_message: "Failed to prepare proposal evidence resolver".to_owned(),
+                    });
+                }
+            };
+        let mut resolved_evidence = BTreeMap::new();
         let artifact = match validate_digest_proposal(
             &proposal,
             &ProposalValidationOptions {
@@ -469,7 +487,27 @@ impl<'a> DigestWorker<'a> {
                 run_id: self.run_id.as_str(),
                 allowed_categories: &registry.categories,
                 allowed_domains: &allowed_domains,
-                allowed_evidence_refs: &allowed_evidence_refs,
+            },
+            &mut |reference: &EvidenceReference<'_>| {
+                let cache_key = format!(
+                    "{}:{}#{}",
+                    reference.session.provider.directory_name(),
+                    reference.session.session_id,
+                    reference.turn_ordinal
+                );
+                if let Some(exists) = resolved_evidence.get(cache_key.as_str()) {
+                    return Ok(*exists);
+                }
+                let exists = evidence_resolver
+                    .turn_exists(
+                        self.project_id,
+                        reference.session.provider,
+                        reference.session.session_id,
+                        reference.turn_ordinal,
+                    )
+                    .map_err(|error| error.to_string())?;
+                resolved_evidence.insert(cache_key, exists);
+                Ok(exists)
             },
         ) {
             Ok(summary) => DigestValidationArtifact {

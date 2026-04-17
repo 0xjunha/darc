@@ -117,24 +117,6 @@ pub(super) fn build_allowed_domains(registry: &ProjectRegistry) -> Vec<String> {
     registry.domains.clone()
 }
 
-/// Builds the exact evidence-reference allowlist from the loaded digest context.
-pub(super) fn build_allowed_evidence_refs(context: &DigestContextArtifact) -> Vec<String> {
-    context
-        .sessions
-        .iter()
-        .flat_map(|session| {
-            session.turns.iter().map(|turn| {
-                format!(
-                    "{}:{}#{}",
-                    session.session.provider.directory_name(),
-                    session.session.session_id,
-                    turn.turn_ordinal
-                )
-            })
-        })
-        .collect()
-}
-
 /// Serializes the extraction-only prompt view for one digest context artifact.
 struct RuntimePromptContext<'a> {
     context: &'a DigestContextArtifact,

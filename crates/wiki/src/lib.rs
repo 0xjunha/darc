@@ -33,9 +33,9 @@ pub use prompt::{DigestRuntimePrompt, build_digest_runtime_prompt};
 pub use proposal::{
     DIGEST_PROPOSAL_OUTPUT_SCHEMA_JSON, DIGEST_PROPOSAL_SCHEMA, DigestProposal,
     DigestProposalEntry, DigestProposalOption, DigestProposalOptionStatus,
-    DigestProposalRunSummary, ProposalEntryOperation, ProposalValidationError,
-    ProposalValidationErrors, ProposalValidationOptions, ProposalValidationSummary,
-    is_valid_domain_id, validate_digest_proposal,
+    DigestProposalRunSummary, ProposalEntryOperation, ProposalEvidenceResolver,
+    ProposalValidationError, ProposalValidationErrors, ProposalValidationOptions,
+    ProposalValidationSummary, is_valid_domain_id, validate_digest_proposal,
 };
 pub use references::{
     EvidenceReference, SessionReference, parse_evidence_reference, parse_session_reference,
