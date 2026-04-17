@@ -9,7 +9,6 @@ use darc_wiki::{
 use serde::{Deserialize, Serialize};
 
 use super::{RUN_EVENT_LEVEL_INFO, RUN_EVENT_LEVEL_WARN};
-use crate::query::{SessionSummary, TurnDetail};
 
 /// Collects the empty or populated read-side wiki payload for one configured project.
 #[derive(Debug, Clone)]
@@ -95,27 +94,6 @@ pub(super) struct DigestRequestArtifact {
     pub requested_by: String,
     pub request_source: String,
     pub created_at: String,
-}
-
-/// Stores one persisted digest context artifact.
-#[derive(Debug, Serialize)]
-pub(super) struct DigestContextArtifact {
-    pub schema: String,
-    pub project_id: String,
-    pub run_id: String,
-    pub selected_sessions: Vec<String>,
-    pub target_categories: Vec<String>,
-    pub target_domains: Vec<String>,
-    pub registry: ProjectRegistry,
-    pub sessions: Vec<DigestContextSession>,
-    pub generated_at: String,
-}
-
-/// Stores one selected session plus narrative turn details in the digest context artifact.
-#[derive(Debug, Clone, Serialize)]
-pub(super) struct DigestContextSession {
-    pub session: SessionSummary,
-    pub turns: Vec<TurnDetail>,
 }
 
 /// Stores the runtime execution metadata captured for one digest run.

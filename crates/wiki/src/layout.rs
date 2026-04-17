@@ -17,7 +17,6 @@ pub const CONTEXT_WIKI_DIR_NAME: &str = "context-wiki";
 pub const STORAGE_VERSION: &str = "1";
 
 const RUN_REQUEST_FILE_NAME: &str = "request.json";
-const RUN_CONTEXT_FILE_NAME: &str = "context.json";
 const RUN_PROPOSAL_FILE_NAME: &str = "proposal.json";
 const RUN_RESULT_FILE_NAME: &str = "result.json";
 const RUN_STATE_LOCK_FILE_NAME: &str = "run.toml.lock";
@@ -224,11 +223,6 @@ impl ProjectLayout {
     /// Resolves one run request artifact path under the project layout.
     pub fn run_request_path(&self, run_id: &RunId) -> PathBuf {
         self.run_dir(run_id).join(RUN_REQUEST_FILE_NAME)
-    }
-
-    /// Resolves one run context artifact path under the project layout.
-    pub fn run_context_path(&self, run_id: &RunId) -> PathBuf {
-        self.run_dir(run_id).join(RUN_CONTEXT_FILE_NAME)
     }
 
     /// Resolves one run proposal artifact path under the project layout.

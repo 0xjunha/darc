@@ -5,7 +5,9 @@ use crate::{
     runtime::{CLAUDE_BINARY_ENV_VAR, ProposalOutputSource, RuntimeCommand, RuntimeRequest},
 };
 
-const CLAUDE_TOOLS: &str = "";
+const CLAUDE_TOOLS: &str = "Bash,Read";
+const CLAUDE_ALLOWED_TOOLS: &str =
+    "Read,Bash(darc query:*),Bash(rg:*),Bash(git log:*),Bash(git show:*),Bash(git diff:*)";
 
 /// Builds one Claude argv vector for a digest proposal run.
 fn build_claude_args(request: &RuntimeRequest, include_bare: bool) -> Vec<String> {
@@ -26,7 +28,11 @@ fn build_claude_args(request: &RuntimeRequest, include_bare: bool) -> Vec<String
         "plan".to_owned(),
         "--tools".to_owned(),
         CLAUDE_TOOLS.to_owned(),
+        "--allowed-tools".to_owned(),
+        CLAUDE_ALLOWED_TOOLS.to_owned(),
         "--strict-mcp-config".to_owned(),
+        "--add-dir".to_owned(),
+        request.darc_root.to_string_lossy().into_owned(),
         "--disable-slash-commands".to_owned(),
         "--no-session-persistence".to_owned(),
         "--no-chrome".to_owned(),
@@ -75,7 +81,7 @@ mod tests {
     use std::{ffi::OsString, path::PathBuf};
 
     use super::{
-        CLAUDE_TOOLS, build_claude_args, build_claude_external_cli_command,
+        CLAUDE_ALLOWED_TOOLS, CLAUDE_TOOLS, build_claude_args, build_claude_external_cli_command,
         supports_claude_bare_mode_with,
     };
     use crate::runtime::{AgentId, RuntimeKind, RuntimeRequest};
@@ -88,6 +94,7 @@ mod tests {
             auth_profile: None,
             prompt: "prompt".to_owned(),
             schema_json: "{\"type\":\"object\"}".to_owned(),
+            darc_root: PathBuf::from("/tmp/darc-root"),
             workdir: PathBuf::from("/tmp/project-root"),
             schema_path: PathBuf::from("/tmp/run/proposal.schema.json"),
             proposal_path: PathBuf::from("/tmp/run/proposal.json"),
@@ -95,7 +102,7 @@ mod tests {
     }
 
     #[test]
-    fn build_claude_args_without_bare_keeps_bundle_safe_shape() {
+    fn build_claude_args_without_bare_uses_tool_runtime_shape() {
         let request = sample_request();
         assert_eq!(
             build_claude_args(&request, false),
@@ -113,7 +120,11 @@ mod tests {
                 "plan",
                 "--tools",
                 CLAUDE_TOOLS,
+                "--allowed-tools",
+                CLAUDE_ALLOWED_TOOLS,
                 "--strict-mcp-config",
+                "--add-dir",
+                "/tmp/darc-root",
                 "--disable-slash-commands",
                 "--no-session-persistence",
                 "--no-chrome",
@@ -141,7 +152,11 @@ mod tests {
                 "plan",
                 "--tools",
                 CLAUDE_TOOLS,
+                "--allowed-tools",
+                CLAUDE_ALLOWED_TOOLS,
                 "--strict-mcp-config",
+                "--add-dir",
+                "/tmp/darc-root",
                 "--disable-slash-commands",
                 "--no-session-persistence",
                 "--no-chrome",

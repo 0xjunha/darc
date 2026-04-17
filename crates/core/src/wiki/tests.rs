@@ -235,7 +235,7 @@ fn stale_running_run_with_live_pid_stays_running() -> Result<()> {
         run_id: run_id.clone(),
         project_id: project_id.to_owned(),
         status: RunStatus::Running,
-        phase: RunPhase::ReadingTurns,
+        phase: RunPhase::PreparingContext,
         created_at: heartbeat_at.clone(),
         started_at: Some(heartbeat_at.clone()),
         updated_at: heartbeat_at.clone(),
@@ -254,7 +254,7 @@ fn stale_running_run_with_live_pid_stays_running() -> Result<()> {
         target_categories: Vec::new(),
         target_domains: Vec::new(),
         progress_percent: Some(20),
-        headline: Some("Reading turns".to_owned()),
+        headline: Some("Preparing agent runtime".to_owned()),
         proposal_path: Some("proposal.json".to_owned()),
         proposal_schema_path: Some("context-wiki/proposal.schema.v1.json".to_owned()),
         result_path: Some("result.json".to_owned()),
@@ -333,7 +333,14 @@ fn runtime_request_uses_project_root_as_workdir() -> Result<()> {
         error_code: None,
         error_message: None,
     };
-    let prompt = build_digest_runtime_prompt("{}", project_id, run_id.as_str());
+    let prompt = build_digest_runtime_prompt(
+        &root,
+        project_id,
+        run_id.as_str(),
+        &state.selected_sessions,
+        &state.target_categories,
+        &state.target_domains,
+    );
     let schema_path = layout.digest_proposal_schema_path();
 
     let request = super::runtime::build_runtime_request(
@@ -353,7 +360,7 @@ fn runtime_request_uses_project_root_as_workdir() -> Result<()> {
 }
 
 #[test]
-fn recent_reading_turns_run_stays_running_on_read_side() -> Result<()> {
+fn recent_preparing_context_run_stays_running_on_read_side() -> Result<()> {
     let root = unique_test_dir("core-wiki-recent");
     let project_root = root.join("repo");
     let project_id = "repo-123";
@@ -375,7 +382,7 @@ fn recent_reading_turns_run_stays_running_on_read_side() -> Result<()> {
         run_id: run_id.clone(),
         project_id: project_id.to_owned(),
         status: RunStatus::Running,
-        phase: RunPhase::ReadingTurns,
+        phase: RunPhase::PreparingContext,
         created_at: heartbeat_at.clone(),
         started_at: Some(heartbeat_at.clone()),
         updated_at: heartbeat_at.clone(),
@@ -394,7 +401,7 @@ fn recent_reading_turns_run_stays_running_on_read_side() -> Result<()> {
         target_categories: Vec::new(),
         target_domains: Vec::new(),
         progress_percent: Some(20),
-        headline: Some("Reading turns".to_owned()),
+        headline: Some("Preparing agent runtime".to_owned()),
         proposal_path: Some("proposal.json".to_owned()),
         proposal_schema_path: Some("context-wiki/proposal.schema.v1.json".to_owned()),
         result_path: Some("result.json".to_owned()),
@@ -421,7 +428,57 @@ fn recent_reading_turns_run_stays_running_on_read_side() -> Result<()> {
 }
 
 #[test]
-fn worker_setup_failure_still_writes_terminal_result() -> Result<()> {
+fn legacy_reading_turns_phase_loads_as_preparing_context() -> Result<()> {
+    let root = unique_test_dir("core-wiki-legacy-reading-turns");
+    let project_root = root.join("repo");
+    let project_id = "repo-123";
+    fs::create_dir_all(&project_root)?;
+    write_config(
+        &root,
+        &SharedConfig::new(
+            root.clone(),
+            vec![build_project(&root, project_id, project_root)],
+            SourcesConfig::default(),
+        ),
+    )?;
+
+    let layout = ensure_project_wiki(Some(root.clone()), project_id)?;
+    let run_id = RunId::new("cwrun_01legacy")?;
+    fs::create_dir_all(layout.run_dir(&run_id))?;
+    fs::write(
+        layout.run_state_path(&run_id),
+        concat!(
+            "schema_version = 1\n",
+            "run_id = \"cwrun_01legacy\"\n",
+            "project_id = \"repo-123\"\n",
+            "status = \"running\"\n",
+            "phase = \"reading_turns\"\n",
+            "created_at = \"2026-04-13T10:00:00Z\"\n",
+            "updated_at = \"2026-04-13T10:00:00Z\"\n",
+            "attempt = 1\n",
+            "cancel_requested = false\n",
+            "selected_sessions = [\"codex:session-1\"]\n",
+            "target_categories = []\n",
+            "target_domains = []\n",
+            "created_entry_ids = []\n",
+            "updated_entry_ids = []\n",
+        ),
+    )?;
+
+    let loaded = load_project_wiki_run(Some(root.clone()), project_id, &run_id)?;
+    assert_eq!(loaded.phase, RunPhase::PreparingContext);
+
+    store_run_state(&layout, &loaded)?;
+    let rewritten = fs::read_to_string(layout.run_state_path(&run_id))?;
+    assert!(rewritten.contains("phase = \"preparing_context\""));
+    assert!(!rewritten.contains("reading_turns"));
+
+    fs::remove_dir_all(&root)?;
+    Ok(())
+}
+
+#[test]
+fn runtime_prepare_failure_still_writes_terminal_result() -> Result<()> {
     let root = unique_test_dir("core-wiki-worker-failure");
     let project_root = root.join("repo");
     let project_id = "repo-123";
@@ -439,8 +496,8 @@ fn worker_setup_failure_still_writes_terminal_result() -> Result<()> {
         Some(root.clone()),
         project_id,
         &DigestStartOptions {
-            session_refs: vec!["codex:session-1".to_owned()],
-            agent_id: "codex".to_owned(),
+            session_refs: vec!["claude:session-1".to_owned()],
+            agent_id: "claude".to_owned(),
             runtime: "external_cli".to_owned(),
             model: "gpt-5.4".to_owned(),
             auth_profile: None,
@@ -458,17 +515,18 @@ fn worker_setup_failure_still_writes_terminal_result() -> Result<()> {
     )?;
 
     let layout = ensure_project_wiki(Some(root.clone()), project_id)?;
-    fs::write(&layout.categories_path, "not valid toml")?;
-    let error = run_project_wiki_digest_worker(Some(root.clone()), project_id, &prepared.run_id)
-        .expect_err("worker should fail after registry corruption");
-    assert!(!error.to_string().is_empty());
+    let mut state = load_run_state(&layout, &prepared.run_id)?;
+    state.model = None;
+    store_run_state(&layout, &state)?;
+
+    run_project_wiki_digest_worker(Some(root.clone()), project_id, &prepared.run_id)?;
 
     let run = load_run_state(&layout, &prepared.run_id)?;
     assert_eq!(run.status, RunStatus::Failed);
-    assert_eq!(run.error_code.as_deref(), Some("worker_failed"));
+    assert_eq!(run.error_code.as_deref(), Some("runtime_prepare_failed"));
     let result = fs::read_to_string(layout.run_result_path(&prepared.run_id))?;
     assert!(result.contains("\"status\": \"failed\""));
-    assert!(result.contains("\"error_code\": \"worker_failed\""));
+    assert!(result.contains("\"error_code\": \"runtime_prepare_failed\""));
 
     fs::remove_dir_all(&root)?;
     Ok(())
@@ -493,8 +551,8 @@ fn spawn_failure_writes_terminal_result() -> Result<()> {
         Some(root.clone()),
         project_id,
         &DigestStartOptions {
-            session_refs: vec!["codex:session-1".to_owned()],
-            agent_id: "codex".to_owned(),
+            session_refs: vec!["claude:session-1".to_owned()],
+            agent_id: "claude".to_owned(),
             runtime: "external_cli".to_owned(),
             model: "gpt-5.4".to_owned(),
             auth_profile: None,
@@ -519,6 +577,47 @@ fn spawn_failure_writes_terminal_result() -> Result<()> {
     let result = fs::read_to_string(layout.run_result_path(&prepared.run_id))?;
     assert!(result.contains("\"status\": \"failed\""));
     assert!(result.contains("\"error_code\": \"worker_spawn_failed\""));
+
+    fs::remove_dir_all(&root)?;
+    Ok(())
+}
+
+#[test]
+fn codex_digest_start_requires_explicit_gate() -> Result<()> {
+    let root = unique_test_dir("core-wiki-codex-gate");
+    let project_root = root.join("repo");
+    let project_id = "repo-123";
+    fs::create_dir_all(&project_root)?;
+    write_config(
+        &root,
+        &SharedConfig::new(
+            root.clone(),
+            vec![build_project(&root, project_id, project_root)],
+            SourcesConfig::default(),
+        ),
+    )?;
+
+    let error = prepare_project_wiki_digest_start(
+        Some(root.clone()),
+        project_id,
+        &DigestStartOptions {
+            session_refs: vec!["codex:session-1".to_owned()],
+            agent_id: "codex".to_owned(),
+            runtime: "external_cli".to_owned(),
+            model: "gpt-5.4".to_owned(),
+            auth_profile: None,
+            requested_by: None,
+            request_source: None,
+            target_categories: Vec::new(),
+            target_domains: Vec::new(),
+        },
+    )
+    .expect_err("codex digest start should be gated by default");
+    assert!(
+        error
+            .to_string()
+            .contains("DARC_WIKI_UNSAFE_ENABLE_CODEX=1")
+    );
 
     fs::remove_dir_all(&root)?;
     Ok(())

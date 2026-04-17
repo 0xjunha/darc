@@ -10,14 +10,13 @@ use darc_wiki::{
 
 use super::{
     DEFAULT_REQUESTED_BY, DigestCancelReport, DigestStartOptions, DigestStartReport,
-    EntryMutationReport, PreparedDigestRun, ProjectWikiData, RUN_CONTEXT_SCHEMA,
-    RUN_REQUEST_SCHEMA,
+    EntryMutationReport, PreparedDigestRun, ProjectWikiData, RUN_REQUEST_SCHEMA,
     artifacts::{
         append_run_event, relative_artifact_name, touch_file, write_json_artifact,
         write_terminal_result,
     },
-    context::{validate_digest_start_options, validate_digest_targets},
-    models::{DigestContextArtifact, DigestRequestArtifact, DigestValidationArtifact, RunEvent},
+    models::{DigestRequestArtifact, DigestValidationArtifact, RunEvent},
+    request::{validate_digest_start_options, validate_digest_targets},
     state::{
         finalize_run_failed, is_finished_status, load_visible_run_summaries, next_run_id,
         repair_run_if_stale, report_from_run_state, update_run_state,
@@ -104,19 +103,7 @@ pub fn prepare_project_wiki_digest_start(
         request_source: request_source.clone(),
         created_at: now.clone(),
     };
-    let context = DigestContextArtifact {
-        schema: RUN_CONTEXT_SCHEMA.to_owned(),
-        project_id: project_id.to_owned(),
-        run_id: run_id.to_string(),
-        selected_sessions: options.session_refs.clone(),
-        target_categories: options.target_categories.clone(),
-        target_domains: options.target_domains.clone(),
-        registry: load_registry(&layout)?,
-        sessions: Vec::new(),
-        generated_at: now.clone(),
-    };
     write_json_artifact(&layout.run_request_path(&run_id), &request)?;
-    write_json_artifact(&layout.run_context_path(&run_id), &context)?;
     touch_file(&layout.run_events_path(&run_id))?;
     touch_file(&layout.run_stdout_log_path(&run_id))?;
     touch_file(&layout.run_stderr_log_path(&run_id))?;
@@ -201,7 +188,7 @@ pub fn mark_project_wiki_digest_started(
         state.updated_at = started_at.clone();
         state.heartbeat_at = Some(started_at.clone());
         state.pid = Some(pid);
-        state.headline = Some("Preparing digest context".to_owned());
+        state.headline = Some("Preparing agent runtime".to_owned());
     })?;
     append_run_event(
         &layout,

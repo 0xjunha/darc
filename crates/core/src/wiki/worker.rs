@@ -1,13 +1,11 @@
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
-    time::SystemTime,
 };
 
 use anyhow::{Context, Result};
 use darc_agent::{RuntimeCommand, build_runtime_command};
 use darc_index::INDEX_DB_FILE_NAME;
-use darc_paths::current_utc_timestamp;
 use darc_query::TurnExistenceResolver;
 use darc_wiki::{
     DigestProposal, DigestRuntimePrompt, EvidenceReference, MergeDigestArtifacts, ProjectLayout,
@@ -17,21 +15,18 @@ use darc_wiki::{
 };
 
 use super::{
-    RUN_CONTEXT_SCHEMA, RUN_HEARTBEAT_INTERVAL,
     artifacts::{
-        append_run_event, ensure_shared_text_artifact, write_bytes_artifact, write_json_artifact,
-        write_terminal_result,
+        append_run_event, ensure_shared_text_artifact, write_bytes_artifact, write_terminal_result,
     },
-    context::{build_allowed_domains, build_runtime_context_json, load_selected_session_context},
-    models::{DigestContextArtifact, DigestValidationArtifact, RunEvent, RuntimeExecution},
+    models::{DigestValidationArtifact, RunEvent, RuntimeExecution},
     runtime::{build_runtime_request, execute_runtime_command},
     state::{
         build_succeeded_run_state, cancel_requested, finalize_run_canceled, finalize_run_failed,
-        is_finished_status, refresh_worker_heartbeat, transition_worker_state,
-        wait_for_worker_registration, with_locked_run_state,
+        is_finished_status, transition_worker_state, wait_for_worker_registration,
+        with_locked_run_state,
     },
 };
-use crate::{default_root_path, query::query_sessions};
+use crate::default_root_path;
 
 /// Runs the hidden digest worker loop for one existing run.
 pub(super) fn run_project_wiki_digest_worker(
@@ -101,19 +96,14 @@ impl<'a> DigestWorker<'a> {
             return Ok(());
         }
 
-        let registry =
-            load_registry(&self.layout).context("failed to load project wiki registry")?;
-        let context = match self.build_context(&state, &registry)? {
-            Some(context) => context,
-            None => return Ok(()),
-        };
-
         let state = load_run_state(&self.layout, self.run_id)?;
-        let runtime_execution = match self.execute_runtime(&state, &context)? {
+        let runtime_execution = match self.execute_runtime(&state)? {
             Some(runtime_execution) => runtime_execution,
             None => return Ok(()),
         };
 
+        let registry =
+            load_registry(&self.layout).context("failed to load project wiki registry")?;
         let validated = match self.validate_proposal(&registry, &runtime_execution)? {
             Some(validated) => validated,
             None => return Ok(()),
@@ -122,151 +112,8 @@ impl<'a> DigestWorker<'a> {
         self.complete(&validated, &runtime_execution)
     }
 
-    /// Builds and persists the digest context artifact before runtime invocation.
-    fn build_context(
-        &self,
-        state: &RunState,
-        registry: &ProjectRegistry,
-    ) -> Result<Option<DigestContextArtifact>> {
-        transition_worker_state(
-            &self.layout,
-            self.run_id,
-            RunPhase::ReadingTurns,
-            Some(10),
-            "Preparing context bundle",
-        )?;
-        let session_summaries =
-            match query_sessions(Some(self.root.clone()), self.project_id, None, None, None)
-                .context("failed to load indexed session summaries for digest context")
-            {
-                Ok(data) => data.sessions,
-                Err(error) => {
-                    return self.fail(WorkerFailure {
-                        phase: RunPhase::ReadingTurns,
-                        headline: "Context build failed",
-                        error_code: "context_build_failed",
-                        error_message: error.to_string(),
-                        runtime: None,
-                        validation: DigestValidationArtifact::default(),
-                        event_message: "Failed to build digest context".to_owned(),
-                    });
-                }
-            };
-        append_run_event(
-            &self.layout,
-            self.run_id,
-            RunEvent::info(
-                RunPhase::ReadingTurns,
-                format!(
-                    "Resolved {} selected session reference(s)",
-                    state.selected_sessions.len()
-                ),
-            ),
-        )?;
-
-        let selected_sessions = state.selected_sessions.clone();
-        let total_sessions = selected_sessions.len().max(1);
-        let mut total_turns = 0_usize;
-        let mut context_sessions = Vec::with_capacity(selected_sessions.len());
-        let mut last_heartbeat = SystemTime::now();
-        for (index, session_ref) in selected_sessions.iter().enumerate() {
-            transition_worker_state(
-                &self.layout,
-                self.run_id,
-                RunPhase::ReadingTurns,
-                Some(10 + (((index + 1) * 25) / total_sessions) as u8),
-                &format!(
-                    "Reading narrative turns for session {} of {}",
-                    index + 1,
-                    total_sessions
-                ),
-            )?;
-            let session = match load_selected_session_context(
-                &self.root,
-                self.project_id,
-                session_ref,
-                &session_summaries,
-                || {
-                    if last_heartbeat.elapsed().unwrap_or_default() >= RUN_HEARTBEAT_INTERVAL {
-                        refresh_worker_heartbeat(&self.layout, self.run_id)?;
-                        last_heartbeat = SystemTime::now();
-                    }
-                    Ok(())
-                },
-            ) {
-                Ok(session) => session,
-                Err(error) => {
-                    return self.fail(WorkerFailure {
-                        phase: RunPhase::ReadingTurns,
-                        headline: "Context build failed",
-                        error_code: "context_build_failed",
-                        error_message: error.to_string(),
-                        runtime: None,
-                        validation: DigestValidationArtifact::default(),
-                        event_message: format!(
-                            "Failed to load session context for `{session_ref}`"
-                        ),
-                    });
-                }
-            };
-            total_turns += session.turns.len();
-            append_run_event(
-                &self.layout,
-                self.run_id,
-                RunEvent::info(
-                    RunPhase::ReadingTurns,
-                    format!(
-                        "Loaded {} narrative turn(s) from `{session_ref}`",
-                        session.turns.len()
-                    ),
-                ),
-            )?;
-            context_sessions.push(session);
-
-            let current_state = load_run_state(&self.layout, self.run_id)?;
-            if cancel_requested(&self.layout, self.run_id, &current_state)? {
-                return self.cancel(RunPhase::ReadingTurns, None, None);
-            }
-        }
-
-        let context = DigestContextArtifact {
-            schema: RUN_CONTEXT_SCHEMA.to_owned(),
-            project_id: self.project_id.to_owned(),
-            run_id: self.run_id.to_string(),
-            selected_sessions: state.selected_sessions.clone(),
-            target_categories: state.target_categories.clone(),
-            target_domains: state.target_domains.clone(),
-            registry: registry.clone(),
-            sessions: context_sessions,
-            generated_at: current_utc_timestamp(),
-        };
-        write_json_artifact(&self.layout.run_context_path(self.run_id), &context)?;
-        append_run_event(
-            &self.layout,
-            self.run_id,
-            RunEvent::info(
-                RunPhase::ReadingTurns,
-                format!(
-                    "Loaded {total_turns} narrative turn(s) across {} session(s)",
-                    state.selected_sessions.len()
-                ),
-            ),
-        )?;
-
-        let current_state = load_run_state(&self.layout, self.run_id)?;
-        if cancel_requested(&self.layout, self.run_id, &current_state)? {
-            return self.cancel(RunPhase::ReadingTurns, None, None);
-        }
-
-        Ok(Some(context))
-    }
-
     /// Prepares the runtime command, executes it, and captures its proposal artifact.
-    fn execute_runtime(
-        &self,
-        state: &RunState,
-        context: &DigestContextArtifact,
-    ) -> Result<Option<RuntimeExecution>> {
+    fn execute_runtime(&self, state: &RunState) -> Result<Option<RuntimeExecution>> {
         transition_worker_state(
             &self.layout,
             self.run_id,
@@ -276,9 +123,14 @@ impl<'a> DigestWorker<'a> {
         )?;
         let proposal_schema_path = self.layout.digest_proposal_schema_path();
         let proposal_schema_lock_path = self.layout.digest_proposal_schema_lock_path();
-        let context_json = build_runtime_context_json(context)?;
-        let prompt =
-            build_digest_runtime_prompt(&context_json, &context.project_id, &context.run_id);
+        let prompt = build_digest_runtime_prompt(
+            &self.root,
+            self.project_id,
+            self.run_id.as_str(),
+            &state.selected_sessions,
+            &state.target_categories,
+            &state.target_domains,
+        );
         ensure_shared_text_artifact(
             &proposal_schema_path,
             &proposal_schema_lock_path,
@@ -464,7 +316,6 @@ impl<'a> DigestWorker<'a> {
                 });
             }
         };
-        let allowed_domains = build_allowed_domains(registry);
         let evidence_resolver =
             match TurnExistenceResolver::open(&self.root.join(INDEX_DB_FILE_NAME)) {
                 Ok(resolver) => resolver,
@@ -490,7 +341,7 @@ impl<'a> DigestWorker<'a> {
                 project_id: self.project_id,
                 run_id: self.run_id.as_str(),
                 allowed_categories: &registry.categories,
-                allowed_domains: &allowed_domains,
+                allowed_domains: &registry.domains,
             },
             &mut |reference: &EvidenceReference<'_>| {
                 let cache_key = format!(

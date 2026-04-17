@@ -93,6 +93,7 @@ pub struct RuntimeRequest {
     pub auth_profile: Option<String>,
     pub prompt: String,
     pub schema_json: String,
+    pub darc_root: PathBuf,
     pub workdir: PathBuf,
     pub schema_path: PathBuf,
     pub proposal_path: PathBuf,
