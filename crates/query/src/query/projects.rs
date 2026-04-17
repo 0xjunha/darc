@@ -700,13 +700,10 @@ fn query_grep_turns(
             session_id: turn.session_id.clone(),
             turn_ordinal: turn.turn_ordinal,
         };
+        turn.oneline_role = request.role;
         if match_keys.contains(&turn_key) {
             turn.match_kind = Some(TurnMatchKind::Match);
             turn.match_snippet = match_snippets.get(&turn_key).cloned();
-            turn.oneline_role = match request.role {
-                TurnSearchRole::Both => TurnSearchRole::Both,
-                role => role,
-            };
         } else {
             turn.match_kind = Some(TurnMatchKind::Context);
             turn.match_snippet = None;

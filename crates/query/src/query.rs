@@ -229,6 +229,8 @@ pub struct TurnSummary {
     pub completed_at: Option<String>,
     pub status: NormalizedTurnStatus,
     pub user_preview: String,
+    /// Caches the compact first-line preview for CLI `--view oneline` rendering.
+    #[serde(skip_serializing)]
     pub oneline_user_preview: String,
     pub has_final_answer: bool,
     pub step_count: u64,
@@ -240,6 +242,8 @@ pub struct TurnSummary {
     pub changed_file_count: u64,
     pub added_line_count: u64,
     pub removed_line_count: u64,
+    /// Caches the compact row role label for CLI `--view oneline` rendering.
+    #[serde(skip_serializing)]
     pub oneline_role: TurnSearchRole,
     pub match_kind: Option<TurnMatchKind>,
     pub match_snippet: Option<String>,
