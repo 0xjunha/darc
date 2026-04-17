@@ -301,6 +301,41 @@ fn parses_query_wiki_digest_command() {
 }
 
 #[test]
+fn parses_query_wiki_digests_with_time_bounds() {
+    let cli = Cli::try_parse_from([
+        "darc",
+        "query",
+        "wiki",
+        "digests",
+        "--project-id",
+        "repo-abc123",
+        "--since",
+        "30d",
+        "--until",
+        "2026-04-07T00:00:00Z",
+        "--json",
+    ])
+    .unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Query(super::QueryArgs {
+            command: QueryCommands::Wiki(super::QueryWikiArgs {
+                command: QueryWikiCommands::Digests(super::QueryWikiDigestsArgs {
+                    project_id,
+                    since,
+                    until,
+                    json,
+                    ..
+                }),
+            }),
+        }) if project_id == "repo-abc123"
+            && since.as_deref() == Some("30d")
+            && until.as_deref() == Some("2026-04-07T00:00:00Z")
+            && json
+    ));
+}
+
+#[test]
 fn parses_query_wiki_runs_with_status_and_limit() {
     let cli = Cli::try_parse_from([
         "darc",
@@ -311,6 +346,10 @@ fn parses_query_wiki_runs_with_status_and_limit() {
         "repo-abc123",
         "--status",
         "running",
+        "--since",
+        "7d",
+        "--until",
+        "2026-04-07T00:00:00Z",
         "--limit",
         "5",
         "--json",
@@ -323,6 +362,8 @@ fn parses_query_wiki_runs_with_status_and_limit() {
                 command: QueryWikiCommands::Runs(super::QueryWikiRunsArgs {
                     project_id,
                     status,
+                    since,
+                    until,
                     limit,
                     json,
                     ..
@@ -330,6 +371,8 @@ fn parses_query_wiki_runs_with_status_and_limit() {
             }),
         }) if project_id == "repo-abc123"
             && matches!(status, Some(super::WikiRunStatusArg::Running))
+            && since.as_deref() == Some("7d")
+            && until.as_deref() == Some("2026-04-07T00:00:00Z")
             && limit == Some(5)
             && json
     ));
@@ -572,6 +615,7 @@ fn parses_query_turns_session_scope_command() {
                 grep,
                 role,
                 context,
+                view,
                 json,
                 ..
             }),
@@ -581,6 +625,7 @@ fn parses_query_turns_session_scope_command() {
             && grep.is_none()
             && matches!(role, super::TurnSearchRoleArg::Both)
             && context == 0
+            && matches!(view, super::TurnListViewArg::Full)
             && json
     ));
 }
@@ -603,6 +648,8 @@ fn parses_query_turns_grep_with_context_and_filters() {
         "5d",
         "--until",
         "2026-04-07T00:00:00Z",
+        "--view",
+        "oneline",
         "--touched-path",
         "crates/index/**",
         "--json",
@@ -618,6 +665,7 @@ fn parses_query_turns_grep_with_context_and_filters() {
                 context,
                 since,
                 until,
+                view,
                 touched_path,
                 json,
                 ..
@@ -628,6 +676,7 @@ fn parses_query_turns_grep_with_context_and_filters() {
             && context == 1
             && since.as_deref() == Some("5d")
             && until.as_deref() == Some("2026-04-07T00:00:00Z")
+            && matches!(view, super::TurnListViewArg::Oneline)
             && touched_path.as_deref() == Some("crates/index/**")
             && json
     ));
@@ -731,6 +780,10 @@ fn query_turns_help_mentions_grep_context_and_touched_path() {
     assert!(help.contains("--grep"));
     assert!(help.contains("--role"));
     assert!(help.contains("--context"));
+    assert!(help.contains("--view"));
+    assert!(help.contains("oneline"));
+    assert!(help.contains("--since"));
+    assert!(help.contains("--until"));
     assert!(help.contains("--touched-path"));
 }
 
@@ -938,6 +991,7 @@ fn rejects_invalid_query_time_bounds() {
     let now = UNIX_EPOCH + Duration::from_secs(1_744_022_096);
     assert!(resolve_query_time_bound_at("weekly", now).is_err());
     assert!(resolve_query_time_bound_at("", now).is_err());
+    assert!(resolve_query_time_bound_at("2026-99-99T00:00:00Z", now).is_err());
 }
 
 #[test]

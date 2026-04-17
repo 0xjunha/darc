@@ -22,11 +22,11 @@ use darc_test_utils::{
 use crate::query::{
     FilesQueryRequest, HardDebuggingTurn, LocalDate, ProjectInsights, SearchMode,
     SearchTurnsRequest, SessionKind, TurnDetailOptions, TurnInsights, TurnMatchKind,
-    TurnMatchesQueryRequest, TurnSearchRole, build_project_insights, build_turn_insights,
-    build_workspace_insights, open_existing_index_database, parse_session_kind,
-    query_project_files, query_project_session_files, query_project_sessions,
-    query_project_turn_matches, query_search_turns, query_session_turn_details, query_turn_detail,
-    smoke_test_sql,
+    TurnMatchesQueryRequest, TurnSearchRole, TurnsQueryRequest, TurnsView, build_project_insights,
+    build_turn_insights, build_workspace_insights, open_existing_index_database,
+    parse_session_kind, query_project_files, query_project_session_files, query_project_sessions,
+    query_project_turn_matches, query_project_turns, query_search_turns,
+    query_session_turn_details, query_turn_detail, smoke_test_sql,
 };
 
 /// Builds one temporary SQLite index path for query tests.
@@ -1338,6 +1338,67 @@ fn turn_detail_narrative_view_strips_bulky_step_fields() -> Result<()> {
 }
 
 #[test]
+fn query_project_turns_support_since_until_and_tool_call_counts() -> Result<()> {
+    let index_path = test_index_path("query-project-turns-bounds");
+    let connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
+    )?;
+    for (turn_ordinal, started_at, tool_call_count) in [
+        (0, "2026-04-06T09:59:00Z", 1),
+        (1, "2026-04-06T10:00:00Z", 2),
+        (2, "2026-04-06T10:01:00Z", 3),
+    ] {
+        let user_message = format!("Turn {turn_ordinal}");
+        insert_indexed_turn(
+            &connection,
+            IndexedTurnFixture {
+                user_message: user_message.as_str(),
+                step_count: tool_call_count + 1,
+                tool_call_count,
+                duration_ms: 3_000,
+                ..IndexedTurnFixture::new(
+                    "repo-a",
+                    SourceKind::Codex,
+                    "session-1",
+                    turn_ordinal,
+                    started_at,
+                    "completed",
+                    "[]",
+                )
+            },
+        )?;
+    }
+
+    let result = query_project_turns(
+        &index_path,
+        TurnsQueryRequest {
+            project_id: "repo-a",
+            provider: SourceKind::Codex,
+            session_id: "session-1",
+            since: Some("2026-04-06T10:00:00Z"),
+            until: Some("2026-04-06T10:01:00Z"),
+            view: TurnsView::Oneline,
+        },
+    )?;
+
+    assert_eq!(result.view, TurnsView::Oneline);
+    assert_eq!(result.since.as_deref(), Some("2026-04-06T10:00:00Z"));
+    assert_eq!(result.until.as_deref(), Some("2026-04-06T10:01:00Z"));
+    assert_eq!(result.turns.len(), 1);
+    assert_eq!(result.turns[0].turn_ordinal, 1);
+    assert_eq!(result.turns[0].tool_call_count, 2);
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
 fn session_turn_details_reuse_one_session_query_shape() -> Result<()> {
     let index_path = test_index_path("session-turn-details");
     let connection = open_index_database(&index_path)?;
@@ -2040,6 +2101,7 @@ fn query_turn_matches_user_role_scopes_phrase_to_user_text_only() -> Result<()> 
             since: None,
             until: None,
             touched_path: None,
+            view: TurnsView::Full,
         },
     )?;
 
@@ -2106,6 +2168,7 @@ fn query_turn_matches_require_contiguous_phrase_order() -> Result<()> {
             since: None,
             until: None,
             touched_path: None,
+            view: TurnsView::Full,
         },
     )?;
 
@@ -2224,6 +2287,7 @@ fn query_turn_matches_support_context_and_absolute_touched_paths() -> Result<()>
             since: Some("2026-04-06T00:00:00Z"),
             until: Some("2026-04-07T00:00:00Z"),
             touched_path: Some("/tmp/repo-a/crates/index/**"),
+            view: TurnsView::Full,
         },
     )?;
 
@@ -2319,6 +2383,7 @@ fn query_turn_matches_assistant_role_only_matches_assistant_text() -> Result<()>
             since: None,
             until: None,
             touched_path: None,
+            view: TurnsView::Full,
         },
     )?;
     let user_result = query_project_turn_matches(
@@ -2334,6 +2399,7 @@ fn query_turn_matches_assistant_role_only_matches_assistant_text() -> Result<()>
             since: None,
             until: None,
             touched_path: None,
+            view: TurnsView::Full,
         },
     )?;
 
@@ -2376,6 +2442,7 @@ fn query_turn_matches_reject_context_over_limit() {
             since: None,
             until: None,
             touched_path: None,
+            view: TurnsView::Full,
         },
     )
     .unwrap_err();
