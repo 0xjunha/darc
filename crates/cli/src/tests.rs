@@ -161,7 +161,7 @@ fn parses_query_resolve_session_command() {
         "darc",
         "query",
         "resolve-session",
-        "019d9059",
+        "11111111",
         "--provider",
         "codex",
         "--pick-one",
@@ -178,7 +178,7 @@ fn parses_query_resolve_session_command() {
                 json,
                 ..
             }),
-        }) if input == "019d9059"
+        }) if input == "11111111"
             && matches!(provider, Some(super::ProviderArg::Codex))
             && pick_one
             && json
@@ -1108,13 +1108,13 @@ fn formats_query_errors_as_json() {
 #[test]
 fn formats_structured_query_errors_with_code_and_details() {
     let payload = format_query_error(
-        &darc_core::query::QueryProtocolError::unknown_data_session("019d9059", true).into(),
+        &darc_core::query::QueryProtocolError::unknown_data_session("11111111", true).into(),
     );
     let value: Value = serde_json::from_str(&payload).unwrap();
 
     assert_eq!(value["schema"], "darc.error.v1");
     assert_eq!(value["error"]["code"], "unknown_session");
-    assert_eq!(value["error"]["details"]["session"], "019d9059");
+    assert_eq!(value["error"]["details"]["session"], "11111111");
     assert_eq!(value["error"]["details"]["looks_like_prefix"], true);
 }
 

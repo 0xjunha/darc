@@ -431,12 +431,12 @@ fn refresh_project_syncs_and_indexes_active_project() -> Result<()> {
     let codex_home = root.join(".codex");
     let codex_sessions_root = codex_home.join("sessions");
     let project_sessions_root = root.join("projects/repo-123/sessions");
-    let rollout_name = "rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl";
+    let rollout_name = "rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl";
     fs::create_dir_all(&project_root)?;
     write_codex_rollout(
         &codex_sessions_root,
         rollout_name,
-        "019d3415-0b9c-7dc3-88e0-e9cb7a789e3f",
+        "22222222-2222-4222-8222-22222222223f",
         &project_root,
         "Refresh me",
         "Done",
@@ -499,16 +499,16 @@ fn refresh_all_projects_refreshes_each_registered_project() -> Result<()> {
     fs::create_dir_all(&right_root)?;
     write_codex_rollout(
         &codex_sessions_root,
-        "rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl",
-        "019d3415-0b9c-7dc3-88e0-e9cb7a789e3f",
+        "rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl",
+        "22222222-2222-4222-8222-22222222223f",
         &left_root,
         "Inspect repo-a",
         "Indexed repo-a",
     )?;
     write_codex_rollout(
         &codex_sessions_root,
-        "rollout-2026-04-01T10-05-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e40.jsonl",
-        "019d3415-0b9c-7dc3-88e0-e9cb7a789e40",
+        "rollout-2026-04-01T10-05-00-22222222-2222-4222-8222-222222222240.jsonl",
+        "22222222-2222-4222-8222-222222222240",
         &right_root,
         "Inspect repo-b",
         "Indexed repo-b",
@@ -597,13 +597,13 @@ fn rename_project_links_syncs_indexes_and_removes_source() -> Result<()> {
     let codex_sessions_root = codex_home.join("sessions");
     let source_sessions_root = root.join("projects/memstack-456/sessions");
     let target_sessions_root = root.join("projects/darc-123/sessions");
-    let rollout_name = "rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl";
+    let rollout_name = "rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl";
     fs::create_dir_all(&target_root)?;
     write_file(
         &codex_sessions_root.join(format!("2026/04/01/{rollout_name}")),
         &format!(
             concat!(
-                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:02Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"First task\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:03Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"First reply\"}}]}}}}\n"
@@ -700,7 +700,7 @@ fn rename_project_supports_old_only_config_after_directory_rename() -> Result<()
     let codex_home = root.join(".codex");
     let codex_sessions_root = codex_home.join("sessions");
     let source_sessions_root = root.join("projects/memstack-456/sessions");
-    let rollout_name = "rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl";
+    let rollout_name = "rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl";
     let shared_worktree = root.join("shared-worktree");
     fs::create_dir_all(&target_root)?;
     fs::create_dir_all(&shared_worktree)?;
@@ -708,7 +708,7 @@ fn rename_project_supports_old_only_config_after_directory_rename() -> Result<()
         &codex_sessions_root.join(format!("2026/04/01/{rollout_name}")),
         &format!(
             concat!(
-                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:02Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Rename me\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:03Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Linked\"}}]}}}}\n"
@@ -785,14 +785,14 @@ fn rename_project_keeps_source_when_sync_fails() -> Result<()> {
     let broken_sessions_root = root.join("broken");
     let codex_home = root.join(".codex");
     let codex_sessions_root = codex_home.join("sessions");
-    let rollout_name = "rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl";
+    let rollout_name = "rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl";
     fs::create_dir_all(&target_root)?;
     fs::create_dir_all(&source_root)?;
     write_file(
         &codex_sessions_root.join(format!("2026/04/01/{rollout_name}")),
         &format!(
             concat!(
-                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:02Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Copy me\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:03Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Done\"}}]}}}}\n"
