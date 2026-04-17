@@ -284,6 +284,24 @@ struct QueryWikiEntriesArgs {
 
     #[arg(
         long,
+        help = "Restrict entries to case-insensitive substring matches across title, body, and domains"
+    )]
+    grep: Option<String>,
+
+    #[arg(
+        long = "evidence-ref",
+        help = "Restrict entries to those citing this `<provider>:<session-id>#<turn-ordinal>` evidence ref"
+    )]
+    evidence_ref: Vec<String>,
+
+    #[arg(
+        long = "covers-session",
+        help = "Restrict entries to those citing any turn from this `<provider>:<session-id>` session"
+    )]
+    covers_session: Vec<String>,
+
+    #[arg(
+        long,
         required = true,
         help = "Required. Emit the stable machine-readable JSON envelope on stdout"
     )]
@@ -1141,6 +1159,9 @@ fn run_query_wiki_entries(args: QueryWikiEntriesArgs) -> Result<()> {
             category: args.category,
             domain: args.domain,
             status: args.status.map(wiki_entry_status_arg_to_status),
+            grep: args.grep,
+            evidence_refs: args.evidence_ref,
+            covers_sessions: args.covers_session,
         },
     )?;
     print_json_envelope("darc.query.wiki.entries.v1", &data)

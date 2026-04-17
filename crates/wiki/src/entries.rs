@@ -157,6 +157,22 @@ pub fn list_entries(layout: &ProjectLayout) -> Result<Vec<EntrySummary>> {
     Ok(entries)
 }
 
+/// Lists every canonical entry document plus body content in deterministic order.
+pub fn list_entry_details(layout: &ProjectLayout) -> Result<Vec<EntryDetailDocument>> {
+    layout.validate_storage()?;
+    let mut entries = collect_markdown_files(&layout.entries_dir)?
+        .into_iter()
+        .map(|path| {
+            let document = load_entry_detail(&path)?;
+            validate_entry_schema_version(&path, document.frontmatter.schema_version)?;
+            validate_entry_project(layout, &document.frontmatter)?;
+            Ok(document)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    entries.sort_by(|left, right| left.frontmatter.entry_id.cmp(&right.frontmatter.entry_id));
+    Ok(entries)
+}
+
 /// Marks one active canonical entry as discarded without deleting its durable artifact.
 pub fn discard_entry(layout: &ProjectLayout, entry_id: &EntryId) -> Result<EntryStatusChange> {
     mutate_entry_status(layout, entry_id, EntryStatus::Discarded)

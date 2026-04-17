@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     EntryFrontmatter, EntryType,
     decision_trace::{existing_content_fingerprint, proposal_content_fingerprint},
+    parse_evidence_reference,
     slug::is_valid_slug_id,
 };
 
@@ -504,28 +505,6 @@ pub(crate) fn normalize_identity_domains(domains: &[String]) -> Vec<String> {
     domains.sort();
     domains.dedup();
     domains
-}
-
-/// Stores one parsed evidence reference used for proposal validation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct EvidenceReference {
-    session_ref: String,
-    turn_ordinal: u64,
-}
-
-/// Parses one evidence reference into its selected-session components.
-fn parse_evidence_reference(value: &str) -> Option<EvidenceReference> {
-    let (session_ref, turn_ordinal) = value.rsplit_once('#')?;
-    let (provider, session_id) = session_ref.split_once(':')?;
-    if !matches!(provider, "claude" | "codex") || session_id.trim().is_empty() {
-        return None;
-    }
-    let turn_ordinal = turn_ordinal.parse::<u64>().ok()?;
-    Some(EvidenceReference {
-        session_ref: format!("{provider}:{session_id}"),
-        turn_ordinal,
-    })
-    .filter(|reference| value == format!("{}#{}", reference.session_ref, reference.turn_ordinal))
 }
 
 /// Validates one ISO date string against the fixed `YYYY-MM-DD` shape.
