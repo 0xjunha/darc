@@ -147,6 +147,12 @@ pub fn prepare_project_wiki_digest_start(
         progress_percent: Some(0),
         headline: Some("Queued digest worker".to_owned()),
         proposal_path: Some(relative_artifact_name(layout.run_proposal_path(&run_id))),
+        proposal_schema_path: Some(
+            layout
+                .digest_proposal_schema_relative_path()
+                .to_string_lossy()
+                .into_owned(),
+        ),
         result_path: Some(relative_artifact_name(layout.run_result_path(&run_id))),
         events_path: Some(relative_artifact_name(layout.run_events_path(&run_id))),
         stdout_log_path: Some(relative_artifact_name(layout.run_stdout_log_path(&run_id))),

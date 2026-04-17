@@ -428,6 +428,7 @@ mod tests {
                 progress_percent: Some(100),
                 headline: Some("Writing final result artifacts".to_owned()),
                 proposal_path: Some("proposal.json".to_owned()),
+                proposal_schema_path: Some("context-wiki/proposal.schema.v1.json".to_owned()),
                 result_path: Some("result.json".to_owned()),
                 events_path: Some("events.jsonl".to_owned()),
                 stdout_log_path: Some("agent.stdout.log".to_owned()),

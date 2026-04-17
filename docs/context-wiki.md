@@ -182,7 +182,7 @@ Important files:
 
 Shared runtime files under `~/.darc/context-wiki/`:
 
-- `proposal.schema.v1.json`: shared JSON Schema supplied to Codex digest runs
+- `proposal.schema.v1.json`: shared JSON Schema supplied to Codex digest runs and recorded in `run.toml` as `proposal_schema_path`
 
 ## Current Success Semantics
 
