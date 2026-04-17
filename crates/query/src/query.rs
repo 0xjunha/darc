@@ -254,6 +254,8 @@ pub struct TurnsQueryData {
     pub project_id: String,
     pub provider: SourceKind,
     pub session_id: String,
+    pub since: Option<String>,
+    pub until: Option<String>,
     pub turns: Vec<TurnSummary>,
 }
 
@@ -278,6 +280,8 @@ pub struct TurnsQueryRequest<'a> {
     pub project_id: &'a str,
     pub provider: SourceKind,
     pub session_id: &'a str,
+    pub since: Option<&'a str>,
+    pub until: Option<&'a str>,
 }
 
 /// Collects the supported filters for one machine-readable grep-scoped turn query.

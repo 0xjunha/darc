@@ -22,11 +22,11 @@ use darc_test_utils::{
 use crate::query::{
     FilesQueryRequest, HardDebuggingTurn, LocalDate, ProjectInsights, SearchMode,
     SearchTurnsRequest, SessionKind, TurnDetailOptions, TurnInsights, TurnMatchKind,
-    TurnMatchesQueryRequest, TurnSearchRole, build_project_insights, build_turn_insights,
-    build_workspace_insights, open_existing_index_database, parse_session_kind,
-    query_project_files, query_project_session_files, query_project_sessions,
-    query_project_turn_matches, query_search_turns, query_session_turn_details, query_turn_detail,
-    smoke_test_sql,
+    TurnMatchesQueryRequest, TurnSearchRole, TurnsQueryRequest, build_project_insights,
+    build_turn_insights, build_workspace_insights, open_existing_index_database,
+    parse_session_kind, query_project_files, query_project_session_files, query_project_sessions,
+    query_project_turn_matches, query_project_turns, query_search_turns,
+    query_session_turn_details, query_turn_detail, smoke_test_sql,
 };
 
 /// Builds one temporary SQLite index path for query tests.
@@ -1328,6 +1328,63 @@ fn turn_detail_narrative_view_strips_bulky_step_fields() -> Result<()> {
             ..
         } if payload_json.is_empty() && item_type == "web_search_call"
     ));
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn query_project_turns_support_since_until() -> Result<()> {
+    let index_path = test_index_path("query-project-turns-bounds");
+    let connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
+    )?;
+    for (turn_ordinal, started_at) in [
+        (0, "2026-04-06T09:59:00Z"),
+        (1, "2026-04-06T10:00:00Z"),
+        (2, "2026-04-06T10:01:00Z"),
+    ] {
+        let user_message = format!("Turn {turn_ordinal}");
+        insert_indexed_turn(
+            &connection,
+            IndexedTurnFixture {
+                user_message: user_message.as_str(),
+                step_count: 1,
+                duration_ms: 3_000,
+                ..IndexedTurnFixture::new(
+                    "repo-a",
+                    SourceKind::Codex,
+                    "session-1",
+                    turn_ordinal,
+                    started_at,
+                    "completed",
+                    "[]",
+                )
+            },
+        )?;
+    }
+
+    let result = query_project_turns(
+        &index_path,
+        TurnsQueryRequest {
+            project_id: "repo-a",
+            provider: SourceKind::Codex,
+            session_id: "session-1",
+            since: Some("2026-04-06T10:00:00Z"),
+            until: Some("2026-04-06T10:01:00Z"),
+        },
+    )?;
+
+    assert_eq!(result.since.as_deref(), Some("2026-04-06T10:00:00Z"));
+    assert_eq!(result.until.as_deref(), Some("2026-04-06T10:01:00Z"));
+    assert_eq!(result.turns.len(), 1);
+    assert_eq!(result.turns[0].turn_ordinal, 1);
 
     fs::remove_dir_all(
         index_path

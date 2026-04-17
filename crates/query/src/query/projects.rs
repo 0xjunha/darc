@@ -414,11 +414,15 @@ fn build_turns_query(
         project_id: project_id.to_owned(),
         provider: request.provider,
         session_id: request.session_id.to_owned(),
+        since: request.since.map(str::to_owned),
+        until: request.until.map(str::to_owned),
         turns: query_session_turn_summaries(
             connection,
             project_id,
             request.provider,
             request.session_id,
+            request.since,
+            request.until,
         )?,
     })
 }
@@ -573,13 +577,21 @@ fn query_session_turn_summaries(
     project_id: &str,
     provider: SourceKind,
     session_id: &str,
+    since: Option<&str>,
+    until: Option<&str>,
 ) -> Result<Vec<TurnSummary>> {
     let mut statement = connection
         .prepare(session_turns_sql())
         .context("failed to prepare indexed turn query")?;
     let rows = statement
         .query_map(
-            (project_id, provider.directory_name(), session_id),
+            (
+                project_id,
+                provider.directory_name(),
+                session_id,
+                since,
+                until,
+            ),
             read_turn_summary_row,
         )
         .context("failed to query indexed turns")?
@@ -883,7 +895,11 @@ fn build_session_turns_sql() -> String {
     SELECT
 {select_list}
     FROM turns
-    WHERE project_id = ?1 AND provider = ?2 AND session_id = ?3
+    WHERE project_id = ?1
+        AND provider = ?2
+        AND session_id = ?3
+        AND (?4 IS NULL OR julianday(started_at) >= julianday(?4))
+        AND (?5 IS NULL OR julianday(started_at) < julianday(?5))
     ORDER BY turn_ordinal ASC
 ",
         select_list = build_turn_summary_select_list(""),

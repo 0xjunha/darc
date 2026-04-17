@@ -5,7 +5,9 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use darc_index::INDEX_DB_FILE_NAME;
-use darc_paths::SourceKind;
+use darc_paths::{
+    SourceKind, parse_utc_timestamp, resolve_query_time_bound as resolve_shared_query_time_bound,
+};
 pub use darc_query::{
     CoTouchedFileSummary, DailyTimeStat, FileSessionSummary, FileUsageStat, FilesQueryData,
     FilesQueryMode, FilesQueryRequest, HardDebuggingTurn, ProjectInsights, ProjectSummary,
@@ -325,15 +327,19 @@ pub struct WikiEntryQueryData {
 }
 
 /// Stores the supported limits for one project-scoped wiki digest list query.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct WikiDigestsQueryOptions {
     pub limit: Option<usize>,
+    pub since: Option<String>,
+    pub until: Option<String>,
 }
 
 /// Stores the digest-list payload for one project-scoped wiki query.
 #[derive(Debug, Clone, Serialize)]
 pub struct WikiDigestsQueryData {
     pub project_id: String,
+    pub since: Option<String>,
+    pub until: Option<String>,
     pub digests: Vec<WikiDigestListItem>,
 }
 
@@ -345,16 +351,20 @@ pub struct WikiDigestQueryData {
 }
 
 /// Stores the supported filters for one project-scoped wiki run list query.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct WikiRunsQueryOptions {
     pub status: Option<RunStatus>,
     pub limit: Option<usize>,
+    pub since: Option<String>,
+    pub until: Option<String>,
 }
 
 /// Stores the run-list payload for one project-scoped wiki query.
 #[derive(Debug, Clone, Serialize)]
 pub struct WikiRunsQueryData {
     pub project_id: String,
+    pub since: Option<String>,
+    pub until: Option<String>,
     pub runs: Vec<WikiRunListItem>,
 }
 
@@ -742,8 +752,9 @@ pub fn query_wiki_digests(
 ) -> Result<WikiDigestsQueryData> {
     let context = load_project_config_context(root, project_id)?;
     let layout = load_project_wiki_layout(&context)?;
+    let bounds = QueryTimeBounds::new(options.since.as_deref(), options.until.as_deref())?;
     let digests = apply_limit(
-        list_digests(&layout)?
+        sort_items_by_created_at_desc(filter_by_created_at_bounds(list_digests(&layout)?, bounds))
             .into_iter()
             .map(WikiDigestListItem::from)
             .collect(),
@@ -751,6 +762,8 @@ pub fn query_wiki_digests(
     );
     Ok(WikiDigestsQueryData {
         project_id: context.project.id,
+        since: options.since.clone(),
+        until: options.until.clone(),
         digests,
     })
 }
@@ -782,16 +795,22 @@ pub fn query_wiki_runs(
 ) -> Result<WikiRunsQueryData> {
     let context = load_project_config_context(root, project_id)?;
     let layout = load_project_wiki_layout(&context)?;
+    let bounds = QueryTimeBounds::new(options.since.as_deref(), options.until.as_deref())?;
     let runs = apply_limit(
-        load_visible_run_summaries(&layout)?
-            .into_iter()
-            .filter(|run| options.status.is_none_or(|status| run.status == status))
-            .map(WikiRunListItem::from)
-            .collect(),
+        sort_items_by_created_at_desc(filter_by_created_at_bounds(
+            load_visible_run_summaries(&layout)?,
+            bounds,
+        ))
+        .into_iter()
+        .filter(|run| options.status.is_none_or(|status| run.status == status))
+        .map(WikiRunListItem::from)
+        .collect(),
         options.limit,
     );
     Ok(WikiRunsQueryData {
         project_id: context.project.id,
+        since: options.since.clone(),
+        until: options.until.clone(),
         runs,
     })
 }
@@ -817,6 +836,107 @@ fn apply_limit<T>(items: Vec<T>, limit: Option<usize>) -> Vec<T> {
     match limit {
         Some(limit) => items.into_iter().take(limit).collect(),
         None => items,
+    }
+}
+
+/// Stores one parsed inclusive/exclusive timestamp filter pair for in-memory wiki queries.
+#[derive(Debug, Clone)]
+struct QueryTimeBounds {
+    since: Option<String>,
+    until: Option<String>,
+}
+
+impl QueryTimeBounds {
+    /// Parses one optional `--since` and `--until` pair into comparable UTC timestamps.
+    fn new(since: Option<&str>, until: Option<&str>) -> Result<Self> {
+        Ok(Self {
+            since: parse_optional_query_time_bound("since", since)?,
+            until: parse_optional_query_time_bound("until", until)?,
+        })
+    }
+
+    /// Returns whether any timestamp filters are active for the current query.
+    fn has_filters(&self) -> bool {
+        self.since.is_some() || self.until.is_some()
+    }
+
+    /// Returns whether one created-at timestamp satisfies the configured bounds.
+    fn matches(&self, created_at: &str) -> bool {
+        if !self.has_filters() {
+            return true;
+        }
+        if parse_utc_timestamp(created_at).is_none() {
+            return false;
+        }
+        self.since
+            .as_deref()
+            .is_none_or(|since| created_at >= since)
+            && self.until.as_deref().is_none_or(|until| created_at < until)
+    }
+}
+
+/// Parses one optional query time bound using the shared CLI/read-side semantics.
+fn parse_optional_query_time_bound(label: &str, value: Option<&str>) -> Result<Option<String>> {
+    value
+        .map(|value| {
+            resolve_shared_query_time_bound(value)
+                .map_err(|error| anyhow::anyhow!(error))
+                .with_context(|| format!("invalid {label} query time bound `{value}`"))
+        })
+        .transpose()
+}
+
+/// Filters one in-memory list by `created_at` using the shared inclusive/exclusive semantics.
+fn filter_by_created_at_bounds<T>(items: Vec<T>, bounds: QueryTimeBounds) -> Vec<T>
+where
+    T: CreatedAtTimestamp,
+{
+    items
+        .into_iter()
+        .filter(|item| bounds.matches(item.created_at()))
+        .collect()
+}
+
+/// Sorts one wiki list recency-first by `created_at`, pushing malformed timestamps last.
+fn sort_items_by_created_at_desc<T>(mut items: Vec<T>) -> Vec<T>
+where
+    T: CreatedAtTimestamp,
+{
+    items.sort_by(|left, right| {
+        parse_utc_timestamp(right.created_at())
+            .cmp(&parse_utc_timestamp(left.created_at()))
+            .then_with(|| right.created_at().cmp(left.created_at()))
+            .then_with(|| left.stable_id().cmp(right.stable_id()))
+    });
+    items
+}
+
+/// Exposes one created-at timestamp for shared in-memory wiki list filtering.
+trait CreatedAtTimestamp {
+    /// Returns the canonical UTC `created_at` timestamp for the current row.
+    fn created_at(&self) -> &str;
+
+    /// Returns one deterministic stable id used to break ordering ties.
+    fn stable_id(&self) -> &str;
+}
+
+impl CreatedAtTimestamp for DigestSummary {
+    fn created_at(&self) -> &str {
+        &self.created_at
+    }
+
+    fn stable_id(&self) -> &str {
+        self.digest_id.as_str()
+    }
+}
+
+impl CreatedAtTimestamp for RunSummary {
+    fn created_at(&self) -> &str {
+        &self.created_at
+    }
+
+    fn stable_id(&self) -> &str {
+        self.run_id.as_str()
     }
 }
 
@@ -1090,6 +1210,7 @@ mod tests {
         digest_id: &DigestId,
         run_id: &RunId,
         title: &str,
+        created_at: &str,
         body_markdown: &str,
     ) -> Result<()> {
         fs::write(
@@ -1102,8 +1223,8 @@ mod tests {
                     "project_id = \"{project_id}\"\n",
                     "run_id = \"{run_id}\"\n",
                     "title = \"{title}\"\n",
-                    "created_at = \"2026-04-13T11:00:00Z\"\n",
-                    "updated_at = \"2026-04-13T11:00:00Z\"\n",
+                    "created_at = \"{created_at}\"\n",
+                    "updated_at = \"{created_at}\"\n",
                     "extracted_decision_count = 1\n",
                     "+++\n\n",
                     "{body_markdown}\n"
@@ -1112,6 +1233,7 @@ mod tests {
                 project_id = layout.project_id,
                 run_id = run_id,
                 title = title,
+                created_at = created_at,
                 body_markdown = body_markdown,
             ),
         )?;
@@ -1119,18 +1241,23 @@ mod tests {
     }
 
     /// Builds one minimal persisted run-state fixture for wiki run-list queries.
-    fn build_run_state(project_id: &str, run_id: &RunId, status: RunStatus) -> RunState {
+    fn build_run_state(
+        project_id: &str,
+        run_id: &RunId,
+        status: RunStatus,
+        created_at: &str,
+    ) -> RunState {
         RunState {
             schema_version: 1,
             run_id: run_id.clone(),
             project_id: project_id.to_owned(),
             status,
             phase: RunPhase::WritingArtifacts,
-            created_at: "2026-04-13T12:00:00Z".to_owned(),
-            started_at: Some("2026-04-13T12:00:01Z".to_owned()),
-            updated_at: "2026-04-13T12:00:02Z".to_owned(),
-            finished_at: Some("2026-04-13T12:00:03Z".to_owned()),
-            heartbeat_at: Some("2026-04-13T12:00:02Z".to_owned()),
+            created_at: created_at.to_owned(),
+            started_at: Some(created_at.to_owned()),
+            updated_at: created_at.to_owned(),
+            finished_at: Some(created_at.to_owned()),
+            heartbeat_at: Some(created_at.to_owned()),
             requested_by: Some("desktop".to_owned()),
             request_source: Some("darc-desktop/0.1.0".to_owned()),
             attempt: 1,
@@ -1219,6 +1346,7 @@ mod tests {
             &first_digest_id,
             &first_run_id,
             "First digest",
+            "2026-04-13T11:00:00Z",
             "## Summary\n\nFirst body.",
         )?;
         write_digest(
@@ -1226,26 +1354,43 @@ mod tests {
             &second_digest_id,
             &second_run_id,
             "Second digest",
+            "2026-04-14T11:00:00Z",
             "## Summary\n\nSecond body.",
         )?;
         store_project_wiki_run(
             Some(root.clone()),
             project_id,
-            &build_run_state(project_id, &first_run_id, RunStatus::Running),
+            &build_run_state(
+                project_id,
+                &first_run_id,
+                RunStatus::Running,
+                "2026-04-13T12:00:00Z",
+            ),
         )?;
         store_project_wiki_run(
             Some(root.clone()),
             project_id,
-            &build_run_state(project_id, &second_run_id, RunStatus::Succeeded),
+            &build_run_state(
+                project_id,
+                &second_run_id,
+                RunStatus::Succeeded,
+                "2026-04-14T12:00:00Z",
+            ),
         )?;
 
         let digests = query_wiki_digests(
             Some(root.clone()),
             project_id,
-            &WikiDigestsQueryOptions { limit: Some(1) },
+            &WikiDigestsQueryOptions {
+                limit: Some(1),
+                since: Some("2026-04-13T00:00:00Z".to_owned()),
+                until: Some("2026-04-14T00:00:00Z".to_owned()),
+            },
         )?;
         assert_eq!(digests.digests.len(), 1);
         assert_eq!(digests.digests[0].digest_id, first_digest_id);
+        assert_eq!(digests.since.as_deref(), Some("2026-04-13T00:00:00Z"));
+        assert_eq!(digests.until.as_deref(), Some("2026-04-14T00:00:00Z"));
 
         let digest = query_wiki_digest(Some(root.clone()), project_id, &second_digest_id)?;
         assert_eq!(digest.digest.digest_id, second_digest_id);
@@ -1257,11 +1402,145 @@ mod tests {
             &WikiRunsQueryOptions {
                 status: Some(RunStatus::Succeeded),
                 limit: Some(1),
+                since: Some("2026-04-14T00:00:00Z".to_owned()),
+                until: Some("2026-04-15T00:00:00Z".to_owned()),
             },
         )?;
         assert_eq!(runs.runs.len(), 1);
         assert_eq!(runs.runs[0].run_id, second_run_id);
         assert_eq!(runs.runs[0].status, RunStatus::Succeeded);
+        assert_eq!(runs.since.as_deref(), Some("2026-04-14T00:00:00Z"));
+        assert_eq!(runs.until.as_deref(), Some("2026-04-15T00:00:00Z"));
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn wiki_digest_and_run_queries_sort_recency_first_and_tolerate_malformed_created_at()
+    -> Result<()> {
+        let root = unique_test_dir("query-wiki-recency");
+        let project_id = "repo-123";
+        write_config(&root, project_id)?;
+        let layout = ensure_project_wiki(Some(root.clone()), project_id)?;
+        let early_run_id = RunId::new("cwrun_01early")?;
+        let late_run_id = RunId::new("cwrun_01late")?;
+        let malformed_run_id = RunId::new("cwrun_01broken")?;
+        let early_digest_id = DigestId::new("dg_01early")?;
+        let late_digest_id = DigestId::new("dg_01late")?;
+        let malformed_digest_id = DigestId::new("dg_01broken")?;
+        write_digest(
+            &layout,
+            &early_digest_id,
+            &early_run_id,
+            "Early digest",
+            "2026-04-13T11:00:00Z",
+            "early",
+        )?;
+        write_digest(
+            &layout,
+            &late_digest_id,
+            &late_run_id,
+            "Late digest",
+            "2026-04-15T11:00:00Z",
+            "late",
+        )?;
+        write_digest(
+            &layout,
+            &malformed_digest_id,
+            &malformed_run_id,
+            "Broken digest",
+            "not-a-timestamp",
+            "broken",
+        )?;
+        store_project_wiki_run(
+            Some(root.clone()),
+            project_id,
+            &build_run_state(
+                project_id,
+                &early_run_id,
+                RunStatus::Succeeded,
+                "2026-04-13T12:00:00Z",
+            ),
+        )?;
+        store_project_wiki_run(
+            Some(root.clone()),
+            project_id,
+            &build_run_state(
+                project_id,
+                &late_run_id,
+                RunStatus::Succeeded,
+                "2026-04-15T12:00:00Z",
+            ),
+        )?;
+        store_project_wiki_run(
+            Some(root.clone()),
+            project_id,
+            &build_run_state(
+                project_id,
+                &malformed_run_id,
+                RunStatus::Succeeded,
+                "not-a-timestamp",
+            ),
+        )?;
+
+        let digests = query_wiki_digests(
+            Some(root.clone()),
+            project_id,
+            &WikiDigestsQueryOptions {
+                limit: Some(1),
+                since: None,
+                until: None,
+            },
+        )?;
+        let runs = query_wiki_runs(
+            Some(root.clone()),
+            project_id,
+            &WikiRunsQueryOptions {
+                status: Some(RunStatus::Succeeded),
+                limit: Some(1),
+                since: None,
+                until: None,
+            },
+        )?;
+        assert_eq!(digests.digests[0].digest_id, late_digest_id);
+        assert_eq!(runs.runs[0].run_id, late_run_id);
+
+        let filtered_digests = query_wiki_digests(
+            Some(root.clone()),
+            project_id,
+            &WikiDigestsQueryOptions {
+                limit: None,
+                since: Some("2026-04-14T00:00:00Z".to_owned()),
+                until: Some("2026-04-16T00:00:00Z".to_owned()),
+            },
+        )?;
+        let filtered_runs = query_wiki_runs(
+            Some(root.clone()),
+            project_id,
+            &WikiRunsQueryOptions {
+                status: Some(RunStatus::Succeeded),
+                limit: None,
+                since: Some("2026-04-14T00:00:00Z".to_owned()),
+                until: Some("2026-04-16T00:00:00Z".to_owned()),
+            },
+        )?;
+        assert_eq!(
+            filtered_digests
+                .digests
+                .iter()
+                .map(|digest| digest.digest_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![late_digest_id.as_str()]
+        );
+        assert_eq!(
+            filtered_runs
+                .runs
+                .iter()
+                .map(|run| run.run_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![late_run_id.as_str()]
+        );
 
         fs::remove_dir_all(root)?;
         Ok(())

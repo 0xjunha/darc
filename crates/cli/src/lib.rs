@@ -319,6 +319,18 @@ struct QueryWikiDigestsArgs {
     #[arg(long = "project-id", help = "Query this configured project id")]
     project_id: String,
 
+    #[arg(
+        long,
+        help = "Inclusive created_at lower bound. Example: `5d` or `2026-04-07T00:00:00Z`"
+    )]
+    since: Option<String>,
+
+    #[arg(
+        long,
+        help = "Exclusive created_at upper bound. Example: `1d` or `2026-04-08T00:00:00Z`"
+    )]
+    until: Option<String>,
+
     #[arg(long, help = "Maximum digests to return")]
     limit: Option<usize>,
 
@@ -361,6 +373,18 @@ struct QueryWikiRunsArgs {
 
     #[arg(long, value_enum, help = "Restrict runs to this lifecycle status")]
     status: Option<WikiRunStatusArg>,
+
+    #[arg(
+        long,
+        help = "Inclusive created_at lower bound. Example: `5d` or `2026-04-07T00:00:00Z`"
+    )]
+    since: Option<String>,
+
+    #[arg(
+        long,
+        help = "Exclusive created_at upper bound. Example: `1d` or `2026-04-08T00:00:00Z`"
+    )]
+    until: Option<String>,
 
     #[arg(long, help = "Maximum runs to return")]
     limit: Option<usize>,
@@ -463,13 +487,13 @@ struct QueryTurnsArgs {
 
     #[arg(
         long,
-        help = "Inclusive started_at lower bound for grep mode. Example: `5d` or `2026-04-07T00:00:00Z`"
+        help = "Inclusive started_at lower bound. Example: `5d` or `2026-04-07T00:00:00Z`"
     )]
     since: Option<String>,
 
     #[arg(
         long,
-        help = "Exclusive started_at upper bound for grep mode. Example: `1d` or `2026-04-08T00:00:00Z`"
+        help = "Exclusive started_at upper bound. Example: `1d` or `2026-04-08T00:00:00Z`"
     )]
     until: Option<String>,
 
@@ -1118,10 +1142,24 @@ fn run_query_wiki_entry(args: QueryWikiEntryArgs) -> Result<()> {
 /// Queries the project-scoped Context Wiki digest list.
 fn run_query_wiki_digests(args: QueryWikiDigestsArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
+    let since = args
+        .since
+        .as_deref()
+        .map(resolve_query_time_bound)
+        .transpose()?;
+    let until = args
+        .until
+        .as_deref()
+        .map(resolve_query_time_bound)
+        .transpose()?;
     let data = query_wiki_digests(
         Some(args.root),
         &args.project_id,
-        &WikiDigestsQueryOptions { limit: args.limit },
+        &WikiDigestsQueryOptions {
+            limit: args.limit,
+            since,
+            until,
+        },
     )?;
     print_json_envelope("darc.query.wiki.digests.v1", &data)
 }
@@ -1137,12 +1175,24 @@ fn run_query_wiki_digest(args: QueryWikiDigestArgs) -> Result<()> {
 /// Queries the project-scoped Context Wiki run list.
 fn run_query_wiki_runs(args: QueryWikiRunsArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
+    let since = args
+        .since
+        .as_deref()
+        .map(resolve_query_time_bound)
+        .transpose()?;
+    let until = args
+        .until
+        .as_deref()
+        .map(resolve_query_time_bound)
+        .transpose()?;
     let data = query_wiki_runs(
         Some(args.root),
         &args.project_id,
         &WikiRunsQueryOptions {
             status: args.status.map(wiki_run_status_arg_to_status),
             limit: args.limit,
+            since,
+            until,
         },
     )?;
     print_json_envelope("darc.query.wiki.runs.v1", &data)
@@ -1257,12 +1307,6 @@ fn run_query_turns(args: QueryTurnsArgs) -> Result<()> {
     if args.context != 0 {
         bail!("--context requires --grep");
     }
-    if since.is_some() {
-        bail!("--since currently requires --grep");
-    }
-    if until.is_some() {
-        bail!("--until currently requires --grep");
-    }
     if args.touched_path.is_some() {
         bail!("--touched-path requires --grep");
     }
@@ -1280,6 +1324,8 @@ fn run_query_turns(args: QueryTurnsArgs) -> Result<()> {
             project_id: &args.project_id,
             provider: provider_arg_to_source_kind(provider),
             session_id,
+            since: since.as_deref(),
+            until: until.as_deref(),
         },
     )?;
     print_json_envelope("darc.query.turns.v1", &data)

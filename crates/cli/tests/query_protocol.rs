@@ -468,6 +468,35 @@ fn wiki_runs_query_emits_api_shaped_success_envelope_without_registry_dependency
 }
 
 #[test]
+fn wiki_runs_query_rejects_invalid_absolute_time_bounds() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-wiki-runs-invalid-bound")?;
+    let output = run_darc([
+        "query",
+        "wiki",
+        "runs",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--since",
+        "2026-99-99T00:00:00Z",
+        "--json",
+    ])?;
+
+    assert!(!output.status.success());
+    let value = parse_json(&output.stderr, "stderr")?;
+    assert_eq!(value["schema"], "darc.error.v1");
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("UTC ISO-8601"))
+    );
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
 fn wiki_runs_query_repairs_stale_running_runs_to_interrupted() -> Result<()> {
     let root = create_query_fixture_root("cli-query-wiki-runs-stale")?;
     write_file(&root.join("context-wiki/VERSION"), "1\n")?;
@@ -958,6 +987,8 @@ fn turns_query_emits_success_envelope() -> Result<()> {
     assert!(output.stderr.is_empty());
     let value = parse_json(&output.stdout, "stdout")?;
     assert_eq!(value["schema"], "darc.query.turns.v1");
+    assert_eq!(value["data"]["since"], Value::Null);
+    assert_eq!(value["data"]["until"], Value::Null);
     assert_eq!(value["data"]["turns"][0]["turn_id"], "turn-1");
     assert_eq!(value["data"]["turns"][0]["step_count"], 2);
     assert_eq!(value["data"]["turns"][0]["primary_model"], "gpt-5.4");
@@ -997,6 +1028,111 @@ fn turns_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["turns"][0]["changed_file_count"], 1);
     assert_eq!(value["data"]["turns"][0]["added_line_count"], 2);
     assert_eq!(value["data"]["turns"][0]["removed_line_count"], 1);
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn turns_query_rejects_invalid_absolute_time_bounds() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-turns-invalid-bound")?;
+    let output = run_darc([
+        "query",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--provider",
+        "codex",
+        "--session-id",
+        "session-1",
+        "--since",
+        "2026-99-99T00:00:00Z",
+        "--json",
+    ])?;
+
+    assert!(!output.status.success());
+    let value = parse_json(&output.stderr, "stderr")?;
+    assert_eq!(value["schema"], "darc.error.v1");
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("UTC ISO-8601"))
+    );
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn turns_query_applies_since_and_until_filters_in_session_mode() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-turns-bounds")?;
+    let connection = open_index_database(&root.join("index.sqlite"))?;
+    for (turn_ordinal, started_at) in [
+        (1, "2026-04-06T09:59:00Z"),
+        (2, "2026-04-06T10:01:00Z"),
+        (3, "2026-04-06T10:03:00Z"),
+    ] {
+        let turn_id = format!("turn-{turn_ordinal}");
+        let completed_at = started_at.replace(":00Z", ":05Z");
+        let user_message = format!("Turn {turn_ordinal}");
+        insert_indexed_turn(
+            &connection,
+            IndexedTurnFixture {
+                turn_id: Some(turn_id.as_str()),
+                completed_at: Some(completed_at.as_str()),
+                user_message: user_message.as_str(),
+                step_count: 1,
+                tool_call_count: 1,
+                tool_output_count: 1,
+                duration_ms: 5_000,
+                has_final_answer: true,
+                ..IndexedTurnFixture::new(
+                    "repo-abc123",
+                    SourceKind::Codex,
+                    "session-1",
+                    turn_ordinal,
+                    started_at,
+                    "completed",
+                    "[]",
+                )
+            },
+        )?;
+    }
+    drop(connection);
+
+    let output = run_darc([
+        "query",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--provider",
+        "codex",
+        "--session-id",
+        "session-1",
+        "--since",
+        "2026-04-06T10:00:00Z",
+        "--until",
+        "2026-04-06T10:03:00Z",
+        "--json",
+    ])?;
+
+    assert!(output.status.success());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["data"]["since"], "2026-04-06T10:00:00Z");
+    assert_eq!(value["data"]["until"], "2026-04-06T10:03:00Z");
+    assert_eq!(
+        value["data"]["turns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|turn| turn["turn_ordinal"].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![0, 2]
+    );
 
     remove_root(&root)?;
     Ok(())
