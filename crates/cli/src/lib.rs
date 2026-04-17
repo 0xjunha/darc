@@ -910,7 +910,11 @@ struct WikiDigestStartArgs {
     )]
     session_ref: Vec<String>,
 
-    #[arg(long = "agent", value_enum, help = "Select the agent runtime id")]
+    #[arg(
+        long = "agent",
+        value_enum,
+        help = "Select the agent runtime id (`codex` requires DARC_WIKI_UNSAFE_ENABLE_CODEX=1)"
+    )]
     agent: WikiAgentArg,
 
     #[arg(long = "runtime", value_enum, help = "Select the runtime kind")]
@@ -921,7 +925,7 @@ struct WikiDigestStartArgs {
 
     #[arg(
         long = "auth-profile",
-        help = "Record the named auth profile for this run"
+        help = "Record auth profile metadata for this run only"
     )]
     auth_profile: Option<String>,
 
