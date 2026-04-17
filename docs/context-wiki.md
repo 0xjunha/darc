@@ -50,7 +50,7 @@ Before drafting or reviewing decision-trace proposals, check the existing wiki c
 - combine `--evidence-ref` and `--covers-session` when you want the union of exact-turn and session-level overlap checks
 
 These query commands ship today for human operators and external clients. The digest worker now uses this read-side
-surface directly at runtime instead of passing a pre-baked bundle artifact.
+surface directly at runtime instead of relying on a pre-baked narrative artifact.
 
 ## Starting A Digest
 
@@ -75,7 +75,8 @@ darc wiki digest start \
 
 Key flags:
 
-- `--session-ref <provider>:<session-id>` selects one archived session. Pass it more than once to build a multi-session digest.
+- `--session-ref <provider>:<session-id>` selects one archived session as a focus seed. Pass it more than once to build a multi-session digest.
+- selected seed sessions guide the runtime's initial investigation, but they are not a hard evidence boundary. The runtime may still inspect and cite non-seed sessions through `darc query ...` when they support the same decision trace.
 - `--agent <codex|claude>` selects the agent family. `codex` is disabled by default until documented MCP-isolation controls exist; set `DARC_WIKI_UNSAFE_ENABLE_CODEX=1` to opt in at your own risk.
 - `--runtime external-cli` selects the currently supported runtime kind.
 - `--model <name>` is required and is forwarded to the external CLI.
@@ -194,7 +195,7 @@ Important files:
 
 Shared runtime files under `~/.darc/context-wiki/`:
 
-- `proposal.schema.v1.json`: shared JSON Schema supplied to Codex digest runs and recorded in `run.toml` as `proposal_schema_path`
+- `proposal.schema.v1.json`: shared JSON Schema artifact recorded in `run.toml` as `proposal_schema_path`; Codex consumes the file path directly, while Claude receives the equivalent schema JSON inline
 
 ## Current Success Semantics
 

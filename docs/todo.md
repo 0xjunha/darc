@@ -31,38 +31,6 @@ Needed:
 - Enforce slug validation, dedupe and similarity checks, and per-run proposal limits.
 - Keep category promotion stricter than domain promotion.
 
-#### Decide the extractor evidence-gathering surface
-
-Current state:
-
-- The worker builds a curated context bundle from indexed sessions and registry data.
-- Extractors do not have a deliberate, documented policy for repo or git reads beyond whatever the
-  runtime already permits.
-
-Needed:
-
-- Decide whether the curated bundle stays the hard boundary or whether tightly scoped repo, git, or
-  CLI reads are allowed.
-- If wider read access is allowed, define provenance, reproducibility, and read-surface limits up
-  front instead of adding ad hoc exceptions.
-
-#### Batch multi-session digest context loading better
-
-Current state:
-
-- The old per-turn N+1 shape is already fixed. One selected session now loads its turn details with
-  one session-scoped query instead of calling `query_turn()` once per turn.
-- Multi-session digest runs still rebuild project query context and reopen SQLite once per selected
-  session.
-
-Needed:
-
-- Reuse one project/query context across all selected sessions in a digest run.
-- Reuse one SQLite connection or one coherent session-scoped query flow for the full multi-session
-  context build.
-- Keep the current narrative turn payload shape unchanged while removing avoidable per-session
-  overhead.
-
 #### Add Windows-capable stale-run liveness checks
 
 Current state:

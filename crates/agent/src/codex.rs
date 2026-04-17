@@ -113,7 +113,7 @@ mod tests {
     }
 
     #[test]
-    fn build_codex_exec_args_matches_pr2_shape() {
+    fn build_codex_exec_args_use_read_only_exec_shape() {
         let request = sample_request();
         assert_eq!(
             build_codex_exec_args(&request),
