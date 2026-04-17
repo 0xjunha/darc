@@ -1649,7 +1649,7 @@ fn wiki_digest_fails_on_invalid_claude_proposal() -> Result<()> {
             "    --model|--input-format|--output-format|--json-schema|--permission-mode|--tools)\n",
             "      shift 2\n",
             "      ;;\n",
-            "    --print|--bare|--disable-slash-commands|--no-session-persistence)\n",
+            "    --print|--bare|--strict-mcp-config|--disable-slash-commands|--no-session-persistence|--no-chrome)\n",
             "      shift\n",
             "      ;;\n",
             "    *)\n",
