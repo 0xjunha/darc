@@ -445,7 +445,7 @@ impl WikiEntryListItem {
     }
 }
 
-/// Stores the primary reason one wiki entry matched an additive Q4 filter.
+/// Stores the primary reason one wiki entry matched a wiki-entry filter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WikiEntryMatchReason {
@@ -1173,14 +1173,14 @@ fn load_project_wiki_layout(context: &ProjectQueryContext) -> Result<darc_wiki::
         .context("failed to resolve project wiki layout")
 }
 
-/// Stores the additive Q4 match metadata attached to one wiki entry list row.
+/// Stores the additive match metadata attached to one wiki entry list row.
 #[derive(Debug, Clone, Default)]
 struct WikiEntryMatchMetadata {
     matched_evidence: Vec<String>,
     match_reason: Option<WikiEntryMatchReason>,
 }
 
-/// Builds one wiki entry match result for the supplied Q4 grep and coverage filters.
+/// Builds one wiki entry match result for the supplied grep and coverage filters.
 fn build_wiki_entry_match_metadata(
     entry: &EntrySummary,
     grep: Option<&str>,

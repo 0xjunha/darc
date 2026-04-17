@@ -22,15 +22,12 @@ Current gaps:
 Use `darc query wiki ... --json` to inspect Context Wiki state without invoking a runtime.
 
 - `darc query wiki registry --root <path> --project-id <id> --json`
-- `darc query wiki entries --root <path> --project-id <id> --json`
-- `darc query wiki entries --root <path> --project-id <id> --category <id> --domain <id> --status active --json`
-- `darc query wiki entries --root <path> --project-id <id> --grep <text> --evidence-ref <provider>:<session-id>#<turn-ordinal> --covers-session <provider>:<session-id> --json`
+- `darc query wiki entries --root <path> --project-id <id> [--category <id>] [--domain <id>] [--status <status>] [--grep <text>] [--evidence-ref <provider>:<session-id>#<turn-ordinal>] [--covers-session <provider>:<session-id>] --json`
 - `darc query wiki entry --root <path> --project-id <id> --entry-id <id> --json`
-- `darc query wiki digests --root <path> --project-id <id> --json`
-- `darc query wiki digests --root <path> --project-id <id> --limit 50 --json`
+- `darc query wiki digests --root <path> --project-id <id> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] --json`
 - `darc query wiki digest --root <path> --project-id <id> --digest-id <id> --json`
+- `darc query wiki runs --root <path> --project-id <id> [--status <status>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] --json`
 - `darc query wiki run --root <path> --project-id <id> --run-id <id> --json`
-- `darc query wiki runs --root <path> --project-id <id> --status running --limit 50 --json`
 
 The query protocol remains the machine-readable contract for desktop and other clients. See
 [Query protocol](query-protocol.md).
@@ -41,6 +38,7 @@ For history investigation and proposal preparation, prefer the project-scoped re
 - `darc query files --path ...` to pivot from one file path to the sessions that touched it
 - `darc query files --co-touched-with ...` to discover nearby files often touched in the same sessions
 - `darc query session-files ...` to inspect one session's in-project file activity
+- `darc query session-bundle ...` to fetch one session summary, its turn detail, and its touched files in one call
 - `darc query sessions --touched-path ...` to narrow the session list to work that touched a path of interest
 
 Before drafting or reviewing decision-trace proposals, check the existing wiki coverage first:
@@ -48,9 +46,11 @@ Before drafting or reviewing decision-trace proposals, check the existing wiki c
 - `darc query wiki entries --grep ...` to find prior entries by title/body/domain language
 - `darc query wiki entries --evidence-ref ...` to see whether a specific supporting turn is already cited
 - `darc query wiki entries --covers-session ...` to find entries that already cover any turn from a candidate session
+- combine `--evidence-ref` and `--covers-session` when you want the union of exact-turn and session-level overlap checks
 
-This is the intended read-side workflow for later extractor refactors where `darc wiki digest start`
-hands the agent read-only Darc/file access instead of a fully pre-baked context bundle.
+These query commands ship today for human operators and external clients. The digest worker still passes a
+pre-baked `context.json` bundle to the runtime; a later extractor refactor will let the agent call this read-side
+surface directly.
 
 ## Starting A Digest
 

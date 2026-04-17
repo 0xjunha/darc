@@ -6,9 +6,9 @@ Darc keeps the root README focused on overview and quickstart. Use these docs fo
   Covers the experimental digest workflow, canonical artifact merge, supported runtimes, run artifacts, and current
   limitations.
 - [Query protocol](query-protocol.md)
-  Includes workspace, session, turn, search, and insights query commands plus machine-readable payload contracts,
-  including turn-level grep, file/session pivots, best-effort model/token/runtime/patch-count fields on session and
-  turn payloads, and the read-side Context Wiki queries.
+  Includes workspace, session, turn, file-pivot, search, wiki, and insights query commands plus machine-readable
+  payload contracts, including turn-level grep, compact `--view oneline` skims, session bundles, best-effort
+  model/token/runtime/patch-count fields on session and turn payloads, and the read-side Context Wiki queries.
 - [Project rename and linking](project-rename.md)
 - [Schema audits](schema-audits.md)
 - [Claude support](claude-support.md)

@@ -12,33 +12,49 @@ Use it instead of:
 
 All query commands currently require `--json`.
 
+### Workspace
+
 - `darc query workspace --root <path> --json`
+
+### Context Wiki
+
 - `darc query wiki registry --root <path> --project-id <id> --json`
-- `darc query wiki entries --root <path> --project-id <id> --json`
-- `darc query wiki entries --root <path> --project-id <id> --category <id> --domain <id> --status active --json`
-- `darc query wiki entries --root <path> --project-id <id> --grep <text> --evidence-ref <provider>:<session-id>#<turn-ordinal> --covers-session <provider>:<session-id> --json`
+- `darc query wiki entries --root <path> --project-id <id> [--category <id>] [--domain <id>] [--status <status>] [--grep <text>] [--evidence-ref <provider>:<session-id>#<turn-ordinal>] [--covers-session <provider>:<session-id>] --json`
 - `darc query wiki entry --root <path> --project-id <id> --entry-id <id> --json`
-- `darc query wiki digests --root <path> --project-id <id> --since <iso-8601|<days>d> --until <iso-8601|<days>d> --json`
-- `darc query wiki digests --root <path> --project-id <id> --since <iso-8601|<days>d> --until <iso-8601|<days>d> --limit <n> --json`
+- `darc query wiki digests --root <path> --project-id <id> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] --json`
 - `darc query wiki digest --root <path> --project-id <id> --digest-id <id> --json`
+- `darc query wiki runs --root <path> --project-id <id> [--status <status>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] --json`
 - `darc query wiki run --root <path> --project-id <id> --run-id <id> --json`
-- `darc query wiki runs --root <path> --project-id <id> --status <status> --since <iso-8601|<days>d> --until <iso-8601|<days>d> --limit <n> --json`
-- `darc query sessions --root <path> --project-id <id> --json`
-- `darc query sessions --root <path> --project-id <id> --since <iso-8601|<days>d> --until <iso-8601|<days>d> --touched-path <glob> --json`
-- `darc query files --root <path> --project-id <id> --path <glob> --since <iso-8601|<days>d> --until <iso-8601|<days>d> --json`
-- `darc query files --root <path> --project-id <id> --co-touched-with <path> --limit <n> --json`
+
+### Sessions, Turns, And Files
+
+- `darc query sessions --root <path> --project-id <id> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--touched-path <glob>] --json`
+- `darc query files --root <path> --project-id <id> --path <glob> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] --json`
+- `darc query files --root <path> --project-id <id> --co-touched-with <path> [--limit <n>] --json`
 - `darc query session-files --root <path> --project-id <id> --provider <provider> --session-id <id> --json`
-- `darc query session-bundle --root <path> --project-id <id> --provider <provider> --session-id <id> --view <full|narrative> --json`
-- `darc query turns --root <path> --project-id <id> --provider <provider> --session-id <id> --since <iso-8601|<days>d> --until <iso-8601|<days>d> --view <full|oneline> --json`
-- `darc query turns --root <path> --project-id <id> --grep <text> --role <user|assistant|both> --context <n> --since <iso-8601|<days>d> --until <iso-8601|<days>d> --view <full|oneline> --touched-path <glob> --json`
-- `darc query turn --root <path> --project-id <id> --provider <provider> --session-id <id> --turn-ordinal <n> --json`
-- `darc query turn --root <path> --project-id <id> --provider <provider> --session-id <id> --turn-ordinal <n> --view <full|narrative> --json`
-- `darc query turn --root <path> --project-id <id> --provider <provider> --session-id <id> --turn-ordinal <n> --include-raw --json`
-- `darc query turn --root <path> --project-id <id> --provider <provider> --session-id <id> --turn-ordinal <n> --include-insights --json`
-- `darc query search turns --root <path> --project-id <id> --mode <keyword|file-name|file-path> --query <text> --json`
+- `darc query session-bundle --root <path> --project-id <id> --provider <provider> --session-id <id> [--view <full|narrative>] --json`
+- `darc query turns --root <path> --project-id <id> --provider <provider> --session-id <id> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--view <full|oneline>] --json`
+- `darc query turns --root <path> --project-id <id> --grep <text> [--provider <provider>] [--session-id <id>] [--role <user|assistant|both>] [--context <n>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--view <full|oneline>] [--touched-path <glob>] --json`
+- `darc query turn --root <path> --project-id <id> --provider <provider> --session-id <id> --turn-ordinal <n> [--view <full|narrative>] [--include-raw] [--include-insights] --json`
+
+### Search
+
+- `darc query search turns --root <path> --project-id <id> --mode <keyword|file-name|file-path> --query <text> [--provider <provider>] [--session-id <id>] [--limit <n>] [--offset <n>] --json`
+
+### Insights
+
 - `darc query insights workspace --root <path> --window <days>d --json`
 - `darc query insights project --root <path> --project-id <id> --limit <n> --json`
 - `darc query insights turn --root <path> --project-id <id> --provider <provider> --session-id <id> --turn-ordinal <n> --json`
+
+## Argument rules
+
+- every project-scoped query requires `--project-id`
+- `darc query turns` without `--grep` requires both `--provider` and `--session-id`
+- `--role`, `--context`, and `--touched-path` on `darc query turns` require `--grep`
+- `darc query files` requires exactly one of `--path` or `--co-touched-with`
+- `--since` and `--until` on `darc query files` require `--path`
+- `--limit` on `darc query files` requires `--co-touched-with`
 
 ## Common Workflows
 
@@ -164,7 +180,9 @@ Current schema ids:
 - `darc.query.workspace.v1`
 - `darc.query.wiki.registry.v1`
 - `darc.query.wiki.entries.v1`
+- `darc.query.wiki.entry.v1`
 - `darc.query.wiki.digests.v1`
+- `darc.query.wiki.digest.v1`
 - `darc.query.wiki.run.v1`
 - `darc.query.wiki.runs.v1`
 - `darc.query.sessions.v1`
@@ -197,7 +215,7 @@ Today:
 - when no on-disk registry exists yet, `darc.query.wiki.registry.v1` returns the default category set and an empty domain list
 - `darc.query.wiki.registry.v1` returns `project_id`, `schema_version`, `categories`, and `domains`
 - `darc.query.wiki.entries.v1` returns `project_id` plus deterministic `entries`, with optional `category`, `domain`, `status`, `grep`, `evidence_ref`, and `covers_session` filters
-- `darc.query.wiki.entries.v1` entry rows include `matched_evidence` plus nullable `match_reason`; without the additive Q4 filters these default to `[]` and `null`
+- `darc.query.wiki.entries.v1` entry rows include `matched_evidence` plus nullable `match_reason`; without grep, evidence-ref, or covers-session filters these default to `[]` and `null`
 - `darc.query.wiki.entry.v1` returns one canonical entry detail including metadata, evidence, and Markdown body
 - `darc.query.wiki.digests.v1` echoes optional `since` and `until` filters and applies them to digest `created_at`
 - `darc.query.wiki.digests.v1` returns `project_id` plus deterministic `digests`, with an optional `limit`
@@ -213,7 +231,8 @@ Today:
 - `view: "full"` keeps the existing turn-summary shape and now also includes `tool_call_count`
 - `view: "oneline"` returns a smaller per-turn object with `turn_ordinal`, `role`, `user_preview`, `step_count`, and `tool_call_count`
 - `oneline.user_preview` is derived from the first `user_message` line and capped at 80 characters
-- `oneline.role` uses the same `user` / `assistant` / `both` spellings as the grep filter when a grep match row is returned
+- session-scoped oneline rows currently emit `role: "user"` because the preview always comes from the first user message line
+- grep-scoped oneline rows echo the requested `role` filter on every returned row, including context rows
 
 ## Stability rules
 

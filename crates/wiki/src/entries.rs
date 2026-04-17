@@ -17,7 +17,7 @@ use crate::{
 
 const ENTRY_SCHEMA_VERSION: u32 = 1;
 
-/// Stores the canonical entry type supported by the current wiki MVP.
+/// Stores the canonical entry type supported by the current Context Wiki workflow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EntryType {

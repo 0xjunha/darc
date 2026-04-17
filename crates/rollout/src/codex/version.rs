@@ -111,7 +111,7 @@ pub const fn latest_exact_supported_codex_cli_version() -> CodexCliVersion {
 
 /// Returns whether one `response_item.type` variant is expected for the given Codex CLI version.
 ///
-/// Historical rollout milestones tracked here:
+/// Historical rollout version thresholds tracked here:
 /// - base variants (`message`, `reasoning`, `local_shell_call`, function/custom tool calls,
 ///   `web_search_call`) predate the earliest exact-supported epoch at `0.33.0`
 /// - `ghost_snapshot` appears in `>=0.51.0`
