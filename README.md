@@ -14,7 +14,8 @@ The daily happy path is `darc refresh`, which runs `sync` and `index` together.
 - Registers local projects in a shared `~/.darc` workspace and resolves the active project from the current checkout.
 - Archives matching Claude and Codex session history into a per-project rollout archive.
 - Rebuilds a normalized SQLite index from archived rollouts for insights, reporting, and downstream tooling.
-- Exposes a stable machine-readable `darc query` protocol for workspace, session, turn, search, and insights data.
+- Exposes a stable machine-readable `darc query` protocol for workspace, session, turn, file-pivot, search, wiki,
+  and insights data.
 - Provides an experimental Context Wiki workflow with read-side wiki queries plus agent-backed digest runs that
   validate structured proposal artifacts, merge canonical wiki artifacts, and persist durable run logs under
   `~/.darc/context-wiki/`.
@@ -86,9 +87,8 @@ darc refresh --all
   project with `--all`.
 - `darc sync` archives matching Claude and Codex sessions for the active project.
 - `darc index` indexes archived sessions into SQLite.
-- `darc query` exposes the machine-readable read protocol for workspace, session, turn, search, and insights data.
-  This includes the read-side `darc query wiki ...` commands. Query commands currently require `--json`; see
-  [Query protocol](docs/query-protocol.md).
+- `darc query` exposes the machine-readable read protocol for workspace, session, turn, file-pivot, search, wiki, and
+  insights data. Query commands currently require `--json`; see [Query protocol](docs/query-protocol.md).
 - `darc wiki` hosts the experimental imperative Context Wiki workflow, including digest start/cancel commands plus
   entry discard/restore lifecycle commands.
 - `darc link`, `darc remove`, and `darc rename-from` manage renamed or merged projects.
@@ -110,17 +110,18 @@ Darc now exposes best-effort session and turn stats through `darc query`.
 
 See [Query protocol](docs/query-protocol.md) for the exact payload contract and semantics.
 
-## Search
+## Query Workflows
 
-Darc now supports project-scoped turn search and file/session pivots through the query protocol.
+Darc's read-side query surface now covers project-scoped search, compact turn skims, file/session pivots, wiki overlap
+checks, and single-call session bundles.
 
-- keyword search uses SQLite FTS5 over derived turn text
-- turn grep uses SQLite FTS5 over turn text at turn granularity, with role, context, time, and touched-path filters
-- file-name search uses derived basenames from indexed `file_accesses`
-- file-path search uses derived repo-relative or raw paths from indexed `file_accesses`
-- file pivots let you move from one file path to the sessions that touched it, from one session to the files it touched,
-  and from one seed file to commonly co-touched files
-- file-name and file-path search currently rank exact matches first, then prefix matches, then substring matches
+- `darc query search turns` handles keyword, file-name, and file-path search with optional provider/session filters.
+- `darc query turns` works in two modes: session-scoped lists (`--provider --session-id`) and grep-scoped matches
+  (`--grep`) with role, context, time, touched-path, and compact `--view oneline` options.
+- `darc query files`, `darc query session-files`, and `darc query session-bundle` let clients pivot between matched
+  files, touched sessions, per-session file summaries, and one-call session detail bundles.
+- `darc query wiki entries` adds grep, evidence-reference, and session-coverage filters so digest prep can check
+  existing wiki coverage before proposing new entries.
 
 Examples:
 
@@ -151,14 +152,23 @@ darc query files \
 ```
 
 ```bash
-darc query session-files \
+darc query session-bundle \
   --project-id repo-abc123 \
   --provider codex \
   --session-id session-1 \
+  --view narrative \
   --json
 ```
 
-See [Query protocol](docs/query-protocol.md) for the full search payload contract and filters.
+```bash
+darc query wiki entries \
+  --project-id repo-abc123 \
+  --covers-session codex:session-1 \
+  --evidence-ref codex:session-1#4 \
+  --json
+```
+
+See [Query protocol](docs/query-protocol.md) for the full command matrix, payload contracts, and filter semantics.
 
 ## Context Wiki
 
@@ -166,8 +176,9 @@ Darc includes an experimental backend-owned Context Wiki workflow under `~/.darc
 
 - Use `darc query wiki ... --json` for read-side access to registry, entries, digests, and runs.
 - Use the read-side `darc query` surface to investigate history before or alongside digest work. In particular,
-  `darc query turns --grep ...`, `darc query files ...`, `darc query session-files ...`, and
-  `darc query sessions --touched-path ...` are the intended project-scoped primitives for narrowing evidence.
+  `darc query turns --grep ...`, `darc query files ...`, `darc query session-files ...`,
+  `darc query session-bundle ...`, and `darc query sessions --touched-path ...` are the intended project-scoped
+  primitives for narrowing evidence and reviewing one candidate session in full.
 - Use `darc wiki digest start` to assemble selected session context, invoke an external Codex or Claude Code CLI,
   validate the returned structured proposal artifact, and merge the validated result into canonical wiki artifacts.
 - Use `darc wiki digest cancel` to request cancellation for an in-flight run.

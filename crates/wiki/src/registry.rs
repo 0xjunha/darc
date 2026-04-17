@@ -6,7 +6,7 @@ use crate::{ProjectLayout, Result, WikiError, slug::is_valid_slug_id};
 
 const REGISTRY_SCHEMA_VERSION: u32 = 1;
 
-/// Stores the fixed default decision-trace categories shipped in Milestone 1.
+/// Stores the fixed default decision-trace categories for newly initialized registries.
 pub const DEFAULT_CATEGORY_IDS: &[&str] = &["architecture", "data", "product", "process"];
 
 /// Represents the project-scoped wiki registry used by read-side filtering.

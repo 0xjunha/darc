@@ -123,7 +123,7 @@ pub struct DigestProposalEntry {
     pub evidence: Vec<String>,
 }
 
-/// Stores the supported proposal mutation operations for Milestone 4.
+/// Stores the supported proposal mutation operations for digest proposals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProposalEntryOperation {
@@ -216,7 +216,7 @@ pub fn is_valid_domain_id(value: &str) -> bool {
     is_valid_slug_id(value)
 }
 
-/// Validates one parsed digest proposal against the current MVP contract.
+/// Validates one parsed digest proposal against the current digest proposal contract.
 pub fn validate_digest_proposal(
     proposal: &DigestProposal,
     options: &ProposalValidationOptions<'_>,
