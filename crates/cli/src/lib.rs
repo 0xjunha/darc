@@ -1,11 +1,7 @@
 #[cfg(test)]
 mod tests;
 
-use std::{
-    path::PathBuf,
-    process::Command,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{path::PathBuf, process::Command};
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -27,7 +23,9 @@ use darc_core::{
     prepare_sync, refresh_all_projects, refresh_project, remove_project, rename_project,
     restore_project_wiki_entry, run_project_wiki_digest_worker, write_init,
 };
-use darc_paths::{current_utc_timestamp, current_utc_timestamp_at};
+use darc_paths::{
+    current_utc_timestamp, resolve_query_time_bound as resolve_shared_query_time_bound,
+};
 use darc_rollout_audit::claude::{
     ClaudeSchemaAuditOptions, ClaudeSchemaAuditOutcome, ClaudeSchemaAuditReport,
     ClaudeSchemaSurveyMode, run_claude_schema_audit_with_progress,
@@ -1581,45 +1579,16 @@ fn parse_window_days(value: &str) -> Result<u32, String> {
 
 /// Resolves one query time bound from relative shorthand or absolute ISO-like text.
 fn resolve_query_time_bound(value: &str) -> Result<String> {
-    resolve_query_time_bound_at(value, SystemTime::now()).map_err(|message| anyhow!(message))
+    resolve_shared_query_time_bound(value).map_err(|message| anyhow!(message))
 }
 
 /// Resolves one query time bound against one fixed clock for deterministic tests.
+#[cfg(test)]
 fn resolve_query_time_bound_at(
     value: &str,
-    now: SystemTime,
+    now: std::time::SystemTime,
 ) -> std::result::Result<String, String> {
-    let value = value.trim();
-    if value.is_empty() {
-        return Err("time bound must not be empty".to_owned());
-    }
-    if let Some(days) = value.strip_suffix('d') {
-        return resolve_relative_query_days(days, now);
-    }
-    if value.contains('-') {
-        return Ok(value.to_owned());
-    }
-    Err(format!(
-        "time bound `{value}` must be ISO-8601 text or `<days>d`, for example `5d`"
-    ))
-}
-
-/// Resolves one `<days>d` shorthand into an absolute UTC timestamp string.
-fn resolve_relative_query_days(days: &str, now: SystemTime) -> std::result::Result<String, String> {
-    let days = days
-        .parse::<u64>()
-        .map_err(|_| format!("invalid day shorthand `{days}d`"))?;
-    let delta_seconds = days
-        .checked_mul(86_400)
-        .ok_or_else(|| "relative day shorthand overflowed".to_owned())?;
-    let unix_seconds = now
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-        .saturating_sub(delta_seconds);
-    Ok(current_utc_timestamp_at(
-        UNIX_EPOCH + Duration::from_secs(unix_seconds),
-    ))
+    darc_paths::resolve_query_time_bound_at(value, now)
 }
 
 /// Converts one parsed provider argument back into the shared source kind.

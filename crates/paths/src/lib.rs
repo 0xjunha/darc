@@ -93,6 +93,49 @@ pub fn parse_utc_timestamp(value: &str) -> Option<SystemTime> {
     Some(UNIX_EPOCH + Duration::from_secs(days.checked_mul(86_400)?.checked_add(seconds_of_day)?))
 }
 
+/// Resolves one query time bound from canonical UTC text or `<days>d` shorthand.
+pub fn resolve_query_time_bound(value: &str) -> std::result::Result<String, String> {
+    resolve_query_time_bound_at(value, SystemTime::now())
+}
+
+/// Resolves one query time bound against one fixed clock for deterministic tests.
+pub fn resolve_query_time_bound_at(
+    value: &str,
+    now: SystemTime,
+) -> std::result::Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("time bound must not be empty".to_owned());
+    }
+    if let Some(days) = value.strip_suffix('d') {
+        return resolve_relative_query_days(days, now);
+    }
+    if parse_utc_timestamp(value).is_some() {
+        return Ok(value.to_owned());
+    }
+    Err(format!(
+        "time bound `{value}` must be a UTC ISO-8601 timestamp like `2026-04-07T00:00:00Z` or `<days>d` like `5d`"
+    ))
+}
+
+/// Resolves one `<days>d` shorthand into a canonical UTC timestamp string.
+fn resolve_relative_query_days(days: &str, now: SystemTime) -> std::result::Result<String, String> {
+    let days = days
+        .parse::<u64>()
+        .map_err(|_| format!("invalid day shorthand `{days}d`"))?;
+    let delta_seconds = days
+        .checked_mul(86_400)
+        .ok_or_else(|| "relative day shorthand overflowed".to_owned())?;
+    let unix_seconds = now
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .saturating_sub(delta_seconds);
+    Ok(current_utc_timestamp_at(
+        UNIX_EPOCH + Duration::from_secs(unix_seconds),
+    ))
+}
+
 /// Encodes a project path using Claude's directory naming rule.
 pub fn encode_path_for_claude(path: &Path) -> String {
     path.to_string_lossy().replace('/', "-")
@@ -348,5 +391,28 @@ branch refs/heads/feature
 
         assert_eq!(text, "2025-04-07T10:34:56Z");
         assert_eq!(parse_utc_timestamp(&text), Some(timestamp));
+    }
+
+    #[test]
+    fn query_time_bounds_accept_canonical_utc_and_relative_days() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_744_022_096);
+
+        assert_eq!(
+            resolve_query_time_bound_at("2025-04-07T10:34:56Z", now),
+            Ok("2025-04-07T10:34:56Z".to_owned())
+        );
+        assert_eq!(
+            resolve_query_time_bound_at("5d", now),
+            Ok("2025-04-02T10:34:56Z".to_owned())
+        );
+    }
+
+    #[test]
+    fn query_time_bounds_reject_invalid_absolute_timestamps() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_744_022_096);
+
+        assert!(resolve_query_time_bound_at("2026-99-99T00:00:00Z", now).is_err());
+        assert!(resolve_query_time_bound_at("2026-04-07T00:00:00+09:00", now).is_err());
+        assert!(resolve_query_time_bound_at("2026-04-07T00:00:00.123Z", now).is_err());
     }
 }

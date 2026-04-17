@@ -938,6 +938,7 @@ fn rejects_invalid_query_time_bounds() {
     let now = UNIX_EPOCH + Duration::from_secs(1_744_022_096);
     assert!(resolve_query_time_bound_at("weekly", now).is_err());
     assert!(resolve_query_time_bound_at("", now).is_err());
+    assert!(resolve_query_time_bound_at("2026-99-99T00:00:00Z", now).is_err());
 }
 
 #[test]
