@@ -18,6 +18,7 @@ use darc_test_utils::{
     IndexedSessionFixture, IndexedTurnFixture, insert_indexed_session, insert_indexed_turn,
     seed_legacy_codex_index, unique_test_dir,
 };
+use serde_json::to_value;
 
 use crate::query::{
     FilesQueryRequest, HardDebuggingTurn, LocalDate, ProjectInsights, SearchMode,
@@ -2483,6 +2484,113 @@ fn query_turn_matches_support_context_and_absolute_touched_paths() -> Result<()>
 }
 
 #[test]
+fn query_turn_matches_context_rows_keep_requested_oneline_role() -> Result<()> {
+    let index_path = test_index_path("turn-matches-context-role");
+    let connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            user_message: "Prep the migration",
+            step_count: 1,
+            duration_ms: 3_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                0,
+                "2026-04-06T09:59:00Z",
+                "completed",
+                "[]",
+            )
+        },
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            user_message: "Apply the chosen approach",
+            final_answer_text: Some("Use staged init for the database bootstrap."),
+            step_count: 1,
+            has_final_answer: true,
+            duration_ms: 3_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                1,
+                "2026-04-06T10:00:00Z",
+                "completed",
+                "[]",
+            )
+        },
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            user_message: "Ship the follow-up change",
+            step_count: 1,
+            duration_ms: 3_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                2,
+                "2026-04-06T10:01:00Z",
+                "completed",
+                "[]",
+            )
+        },
+    )?;
+
+    let result = query_project_turn_matches(
+        &index_path,
+        TurnMatchesQueryRequest {
+            project_id: "repo-a",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            provider: None,
+            session_id: None,
+            grep: "staged init",
+            role: TurnSearchRole::Assistant,
+            context: 1,
+            since: None,
+            until: None,
+            touched_path: None,
+            view: TurnsView::Oneline,
+        },
+    )?;
+
+    assert_eq!(result.turns.len(), 3);
+    assert!(
+        result
+            .turns
+            .iter()
+            .all(|turn| turn.oneline_role == TurnSearchRole::Assistant)
+    );
+    assert_eq!(
+        result
+            .turns
+            .iter()
+            .map(|turn| turn.match_kind)
+            .collect::<Vec<_>>(),
+        vec![
+            Some(TurnMatchKind::Context),
+            Some(TurnMatchKind::Match),
+            Some(TurnMatchKind::Context),
+        ]
+    );
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
 fn query_turn_matches_assistant_role_only_matches_assistant_text() -> Result<()> {
     let index_path = test_index_path("turn-matches-assistant");
     let connection = open_index_database(&index_path)?;
@@ -2577,6 +2685,83 @@ fn query_turn_matches_assistant_role_only_matches_assistant_text() -> Result<()>
             .is_some_and(|snippet| snippet.contains("staged init"))
     }));
     assert!(user_result.turns.is_empty());
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn full_turn_payload_serialization_skips_oneline_helper_fields() -> Result<()> {
+    let index_path = test_index_path("turn-payload-skip-oneline-helpers");
+    let connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            user_message: "Please use staged init here",
+            final_answer_text: Some("Use staged init in the reply too."),
+            step_count: 1,
+            has_final_answer: true,
+            duration_ms: 3_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                0,
+                "2026-04-06T10:00:00Z",
+                "completed",
+                "[]",
+            )
+        },
+    )?;
+
+    let turns = query_project_turns(
+        &index_path,
+        TurnsQueryRequest {
+            project_id: "repo-a",
+            provider: SourceKind::Codex,
+            session_id: "session-1",
+            since: None,
+            until: None,
+            view: TurnsView::Full,
+        },
+    )?;
+    let turns_value = to_value(&turns)?;
+    let turns_row = turns_value["turns"][0]
+        .as_object()
+        .context("turn row should serialize as an object")?;
+    assert!(!turns_row.contains_key("oneline_user_preview"));
+    assert!(!turns_row.contains_key("oneline_role"));
+
+    let turn_matches = query_project_turn_matches(
+        &index_path,
+        TurnMatchesQueryRequest {
+            project_id: "repo-a",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            provider: None,
+            session_id: None,
+            grep: "staged init",
+            role: TurnSearchRole::Both,
+            context: 0,
+            since: None,
+            until: None,
+            touched_path: None,
+            view: TurnsView::Full,
+        },
+    )?;
+    let turn_matches_value = to_value(&turn_matches)?;
+    let turn_matches_row = turn_matches_value["turns"][0]
+        .as_object()
+        .context("grep turn row should serialize as an object")?;
+    assert!(!turn_matches_row.contains_key("oneline_user_preview"));
+    assert!(!turn_matches_row.contains_key("oneline_role"));
 
     fs::remove_dir_all(
         index_path
