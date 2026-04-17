@@ -29,6 +29,7 @@ pub(super) fn build_runtime_request(
     state: &RunState,
     prompt: &DigestRuntimePrompt,
     schema_path: &Path,
+    project_root: &Path,
 ) -> Result<RuntimeRequest> {
     let agent = AgentId::parse(state.agent_id.as_deref().unwrap_or_default())
         .context("run state is missing a supported agent id")?;
@@ -41,7 +42,7 @@ pub(super) fn build_runtime_request(
         auth_profile: state.auth_profile.clone(),
         prompt: prompt.prompt.clone(),
         schema_json: prompt.schema_json.clone(),
-        workdir: layout.run_dir(run_id),
+        workdir: project_root.to_path_buf(),
         schema_path: schema_path.to_path_buf(),
         proposal_path: layout.run_proposal_path(run_id),
     })

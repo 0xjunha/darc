@@ -336,14 +336,24 @@ pub(super) fn resolve_project_layout(
     root: Option<PathBuf>,
     project_id: &str,
 ) -> Result<ProjectLayout> {
+    let (layout, _) = resolve_project_layout_and_root(root, project_id)?;
+    Ok(layout)
+}
+
+/// Resolves one validated project wiki layout plus configured project root path.
+pub(super) fn resolve_project_layout_and_root(
+    root: Option<PathBuf>,
+    project_id: &str,
+) -> Result<(ProjectLayout, PathBuf)> {
     let root = root.unwrap_or_else(default_root_path);
     let project = registered_projects(&root)?
         .into_iter()
         .find(|project| project.id == project_id)
         .with_context(|| format!("project id `{project_id}` was not found in the shared config"))?;
-    ContextWikiLayout::new(root)
+    let layout = ContextWikiLayout::new(root)
         .project_layout(project.id)
-        .context("failed to resolve project wiki layout")
+        .context("failed to resolve project wiki layout")?;
+    Ok((layout, project.local_path))
 }
 
 /// Converts one leaf wiki entry status change into the external CLI response shape.

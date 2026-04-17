@@ -45,6 +45,7 @@ pub(super) fn run_project_wiki_digest_worker(
 /// Coordinates the multi-phase digest worker lifecycle for one run.
 struct DigestWorker<'a> {
     root: PathBuf,
+    project_root: PathBuf,
     project_id: &'a str,
     run_id: &'a RunId,
     layout: ProjectLayout,
@@ -71,9 +72,11 @@ impl<'a> DigestWorker<'a> {
     /// Builds one digest worker wrapper from the configured Darc root and run id.
     fn new(root: Option<PathBuf>, project_id: &'a str, run_id: &'a RunId) -> Result<Self> {
         let root = root.unwrap_or_else(default_root_path);
-        let layout = super::api::resolve_project_layout(Some(root.clone()), project_id)?;
+        let (layout, project_root) =
+            super::api::resolve_project_layout_and_root(Some(root.clone()), project_id)?;
         Ok(Self {
             root,
+            project_root,
             project_id,
             run_id,
             layout,
@@ -380,6 +383,7 @@ impl<'a> DigestWorker<'a> {
             state,
             prompt,
             proposal_schema_path,
+            &self.project_root,
         ) {
             Ok(runtime_request) => runtime_request,
             Err(error) => {
