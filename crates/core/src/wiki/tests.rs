@@ -330,12 +330,13 @@ fn runtime_request_uses_run_directory_as_workdir() -> Result<()> {
         error_message: None,
     };
     let prompt = build_digest_runtime_prompt("{}", project_id, run_id.as_str());
-    let schema_path = layout.run_dir(&run_id).join("proposal.schema.json");
+    let schema_path = layout.digest_proposal_schema_path();
 
     let request =
         super::runtime::build_runtime_request(&layout, &run_id, &state, &prompt, &schema_path)?;
 
     assert_eq!(request.workdir, layout.run_dir(&run_id));
+    assert_eq!(request.schema_path, layout.digest_proposal_schema_path());
 
     fs::remove_dir_all(&root)?;
     Ok(())

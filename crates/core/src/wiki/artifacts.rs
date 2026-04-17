@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use darc_agent::ProposalOutputSource;
-use darc_wiki::{ProjectLayout, RunId, RunState};
+use darc_wiki::{ProjectLayout, RunId, RunState, write_string_atomically};
 use serde::Serialize;
 
 use super::{
@@ -29,13 +29,15 @@ pub(super) fn write_json_artifact<T: Serialize>(path: &Path, value: &T) -> Resul
         .with_context(|| format!("failed to write {}", path.display()))
 }
 
-/// Writes one UTF-8 text artifact file after ensuring its parent directory exists.
-pub(super) fn write_text_artifact(path: &Path, content: &str) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
+/// Writes one UTF-8 text artifact only when its bytes change, using atomic replacement.
+pub(super) fn write_text_artifact_if_changed(path: &Path, content: &str) -> Result<()> {
+    if file_bytes_match(path, content.as_bytes())? {
+        return Ok(());
     }
-    fs::write(path, content).with_context(|| format!("failed to write {}", path.display()))
+
+    write_string_atomically(path, content)
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(())
 }
 
 /// Writes one opaque byte artifact file after ensuring its parent directory exists.
@@ -55,6 +57,15 @@ pub(super) fn touch_file(path: &Path) -> Result<()> {
     }
     File::create(path).with_context(|| format!("failed to create {}", path.display()))?;
     Ok(())
+}
+
+/// Compares one file's current bytes with the desired content bytes.
+fn file_bytes_match(path: &Path, expected: &[u8]) -> Result<bool> {
+    match fs::read(path) {
+        Ok(existing) => Ok(existing == expected),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(source) => Err(source).with_context(|| format!("failed to read {}", path.display())),
+    }
 }
 
 /// Returns the basename string for one run artifact path.

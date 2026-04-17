@@ -13,10 +13,10 @@ use darc_wiki::{
 };
 
 use super::{
-    PROPOSAL_SCHEMA_FILE_NAME, RUN_CONTEXT_SCHEMA, RUN_HEARTBEAT_INTERVAL,
+    RUN_CONTEXT_SCHEMA, RUN_HEARTBEAT_INTERVAL,
     artifacts::{
         append_run_event, write_bytes_artifact, write_json_artifact, write_terminal_result,
-        write_text_artifact,
+        write_text_artifact_if_changed,
     },
     context::{
         build_allowed_domains, build_allowed_evidence_refs, build_runtime_context_json,
@@ -270,14 +270,11 @@ impl<'a> DigestWorker<'a> {
             Some(40),
             "Preparing agent runtime",
         )?;
-        let proposal_schema_path = self
-            .layout
-            .run_dir(self.run_id)
-            .join(PROPOSAL_SCHEMA_FILE_NAME);
+        let proposal_schema_path = self.layout.digest_proposal_schema_path();
         let context_json = build_runtime_context_json(context)?;
         let prompt =
             build_digest_runtime_prompt(&context_json, &context.project_id, &context.run_id);
-        write_text_artifact(&proposal_schema_path, &prompt.schema_json)?;
+        write_text_artifact_if_changed(&proposal_schema_path, &prompt.schema_json)?;
 
         let runtime_command =
             match self.prepare_runtime_command(state, &prompt, &proposal_schema_path)? {

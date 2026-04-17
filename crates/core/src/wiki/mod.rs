@@ -34,7 +34,6 @@ const RUN_STALE_TIMEOUT: Duration = Duration::from_secs(60);
 const RUNTIME_CANCEL_GRACE_PERIOD: Duration = Duration::from_secs(5);
 const WORKER_REGISTRATION_TIMEOUT: Duration = Duration::from_secs(2);
 const WORKER_REGISTRATION_POLL_INTERVAL: Duration = Duration::from_millis(50);
-const PROPOSAL_SCHEMA_FILE_NAME: &str = "proposal.schema.json";
 
 #[cfg(test)]
 mod tests;
