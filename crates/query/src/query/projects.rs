@@ -101,6 +101,8 @@ const PROJECT_SESSIONS_SQL: &str = "
             SUM(COALESCE(removed_line_count, 0)) AS removed_line_count
         FROM turns
         WHERE project_id = ?1
+            AND (?4 IS NULL OR provider = ?4)
+            AND (?5 IS NULL OR session_id = ?5)
         GROUP BY project_id, provider, session_id
     ),
     filtered_sessions AS (
@@ -147,6 +149,8 @@ const PROJECT_SESSIONS_SQL: &str = "
         WHERE s.project_id = ?1
             AND (?2 IS NULL OR julianday(turn_stats.latest_turn_at) >= julianday(?2))
             AND (?3 IS NULL OR julianday(turn_stats.latest_turn_at) < julianday(?3))
+            AND (?4 IS NULL OR s.provider = ?4)
+            AND (?5 IS NULL OR s.session_id = ?5)
     ),
     session_edited_files AS (
         SELECT
@@ -336,7 +340,7 @@ pub fn query_project_sessions(
     touched_path: Option<&str>,
 ) -> Result<SessionsQueryData> {
     let connection = open_existing_index_database(index_db_path)?;
-    let sessions = query_sessions(&connection, project_id, since, until)?;
+    let sessions = query_sessions(&connection, project_id, since, until, None, None)?;
     let sessions = if let Some(touched_path) = touched_path {
         filter_session_summaries_by_touched_path(
             &connection,
@@ -457,45 +461,51 @@ fn build_turn_matches_query(
 }
 
 /// Queries the indexed sessions for one configured project.
-fn query_sessions(
+pub(crate) fn query_sessions(
     connection: &Connection,
     project_id: &str,
     since: Option<&str>,
     until: Option<&str>,
+    provider: Option<SourceKind>,
+    session_id: Option<&str>,
 ) -> Result<Vec<SessionSummary>> {
+    let provider = provider.map(SourceKind::directory_name);
     let mut statement = connection
         .prepare(PROJECT_SESSIONS_SQL)
         .context("failed to prepare indexed session query")?;
     let rows = statement
-        .query_map(params![project_id, since, until], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, Option<String>>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, String>(5)?,
-                row.get::<_, i64>(6)?,
-                row.get::<_, Option<String>>(7)?,
-                row.get::<_, Option<String>>(8)?,
-                row.get::<_, Option<String>>(9)?,
-                row.get::<_, Option<i64>>(10)?,
-                row.get::<_, Option<i64>>(11)?,
-                row.get::<_, Option<i64>>(12)?,
-                row.get::<_, Option<i64>>(13)?,
-                row.get::<_, Option<i64>>(14)?,
-                row.get::<_, Option<i64>>(15)?,
-                row.get::<_, Option<i64>>(16)?,
-                row.get::<_, Option<i64>>(17)?,
-                row.get::<_, i64>(18)?,
-                row.get::<_, i64>(19)?,
-                row.get::<_, i64>(20)?,
-                row.get::<_, Option<String>>(21)?,
-                row.get::<_, Option<String>>(22)?,
-                row.get::<_, i64>(23)?,
-                row.get::<_, String>(24)?,
-            ))
-        })
+        .query_map(
+            params![project_id, since, until, provider, session_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                    row.get::<_, Option<i64>>(10)?,
+                    row.get::<_, Option<i64>>(11)?,
+                    row.get::<_, Option<i64>>(12)?,
+                    row.get::<_, Option<i64>>(13)?,
+                    row.get::<_, Option<i64>>(14)?,
+                    row.get::<_, Option<i64>>(15)?,
+                    row.get::<_, Option<i64>>(16)?,
+                    row.get::<_, Option<i64>>(17)?,
+                    row.get::<_, i64>(18)?,
+                    row.get::<_, i64>(19)?,
+                    row.get::<_, i64>(20)?,
+                    row.get::<_, Option<String>>(21)?,
+                    row.get::<_, Option<String>>(22)?,
+                    row.get::<_, i64>(23)?,
+                    row.get::<_, String>(24)?,
+                ))
+            },
+        )
         .context("failed to query indexed sessions")?
         .collect::<rusqlite::Result<Vec<_>>>()
         .context("failed to read indexed session rows")?;
@@ -567,6 +577,27 @@ fn query_sessions(
             },
         )
         .collect()
+}
+
+/// Queries one indexed session summary for one configured project session.
+pub(crate) fn query_session_summary(
+    connection: &Connection,
+    project_id: &str,
+    provider: SourceKind,
+    session_id: &str,
+) -> Result<SessionSummary> {
+    let session_ref = format!("{}:{session_id}", provider.directory_name());
+    query_sessions(
+        connection,
+        project_id,
+        None,
+        None,
+        Some(provider),
+        Some(session_id),
+    )?
+    .into_iter()
+    .next()
+    .with_context(|| format!("session `{session_ref}` was not found in project `{project_id}`"))
 }
 
 /// Parses one JSON array of edited session file paths from SQLite aggregation output.

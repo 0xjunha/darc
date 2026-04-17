@@ -1,3 +1,4 @@
+mod bundles;
 mod files;
 mod insights;
 mod projects;
@@ -7,6 +8,7 @@ mod turns;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+pub use bundles::query_project_session_bundle;
 use darc_index::{open_index_database, policy::HardDebuggingCandidate};
 use darc_paths::SourceKind;
 use darc_rollout::model::{NormalizedTokenUsage, NormalizedTurnStatus, NormalizedTurnStep};
@@ -206,6 +208,15 @@ pub struct SessionFilesQueryData {
     pub files: Vec<SessionFileSummary>,
 }
 
+/// Identifies which turn-detail projection one session bundle returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionBundleView {
+    #[default]
+    Full,
+    Narrative,
+}
+
 /// Stores one indexed turn summary for one session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TurnSummary {
@@ -382,6 +393,18 @@ pub struct TurnDetail {
     pub steps: Vec<NormalizedTurnStep>,
     pub raw_steps_json: Option<String>,
     pub insights: Option<TurnDetailInsights>,
+}
+
+/// Stores one composite session bundle for extractor-friendly single-call reads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SessionBundleQueryData {
+    pub project_id: String,
+    pub provider: SourceKind,
+    pub session_id: String,
+    pub view: SessionBundleView,
+    pub session: SessionSummary,
+    pub turns: Vec<TurnDetail>,
+    pub session_files: SessionFilesQueryData,
 }
 
 /// Stores one turn-detail projection and enrichment configuration.

@@ -154,7 +154,7 @@ fn build_turn_detail(
 }
 
 /// Builds every normalized turn detail row for one indexed session.
-fn build_session_turn_details(
+pub(crate) fn build_session_turn_details(
     connection: &Connection,
     project_id: &str,
     provider: SourceKind,

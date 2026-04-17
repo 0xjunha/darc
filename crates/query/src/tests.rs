@@ -21,10 +21,11 @@ use darc_test_utils::{
 
 use crate::query::{
     FilesQueryRequest, HardDebuggingTurn, LocalDate, ProjectInsights, SearchMode,
-    SearchTurnsRequest, SessionKind, TurnDetailOptions, TurnInsights, TurnMatchKind,
-    TurnMatchesQueryRequest, TurnSearchRole, TurnsQueryRequest, TurnsView, build_project_insights,
-    build_turn_insights, build_workspace_insights, open_existing_index_database,
-    parse_session_kind, query_project_files, query_project_session_files, query_project_sessions,
+    SearchTurnsRequest, SessionBundleView, SessionKind, TurnDetailOptions, TurnInsights,
+    TurnMatchKind, TurnMatchesQueryRequest, TurnSearchRole, TurnsQueryRequest, TurnsView,
+    build_project_insights, build_turn_insights, build_workspace_insights,
+    open_existing_index_database, parse_session_kind, query_project_files,
+    query_project_session_bundle, query_project_session_files, query_project_sessions,
     query_project_turn_matches, query_project_turns, query_search_turns,
     query_session_turn_details, query_turn_detail, smoke_test_sql,
 };
@@ -1225,6 +1226,166 @@ fn query_session_files_exclude_out_of_project_and_list_only_paths() -> Result<()
         vec!["README.md"]
     );
     assert!(co_touched.files.is_empty());
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn query_session_bundle_reuses_session_and_file_shapes_with_narrative_turns() -> Result<()> {
+    let index_path = test_index_path("query-session-bundle");
+    let connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            user_message: "Inspect README",
+            step_count: 1,
+            tool_call_count: 1,
+            duration_ms: 3_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                0,
+                "2026-04-06T10:00:00Z",
+                "completed",
+                r##"[{"type":"tool_call","timestamp":"2026-04-06T10:00:01Z","call_id":"call-1","name":"Read","arguments":"{\"file_path\":\"README.md\"}"}]"##,
+            )
+        },
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            user_message: "Update lib",
+            step_count: 1,
+            tool_call_count: 1,
+            duration_ms: 3_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                1,
+                "2026-04-06T10:05:00Z",
+                "completed",
+                r##"[{"type":"tool_call","timestamp":"2026-04-06T10:05:01Z","call_id":"call-2","name":"Edit","arguments":"{\"path\":\"src/lib.rs\"}"}]"##,
+            )
+        },
+    )?;
+
+    let result = query_project_session_bundle(
+        &index_path,
+        "repo-a",
+        SourceKind::Codex,
+        "session-1",
+        Some(Path::new("/tmp/repo-a")),
+        SessionBundleView::Narrative,
+    )?;
+
+    assert_eq!(result.project_id, "repo-a");
+    assert_eq!(result.provider, SourceKind::Codex);
+    assert_eq!(result.session_id, "session-1");
+    assert_eq!(result.view, SessionBundleView::Narrative);
+    assert_eq!(result.session.session_id, "session-1");
+    assert_eq!(result.session.turn_count, 2);
+    assert_eq!(result.turns.len(), 2);
+    assert_eq!(result.turns[0].turn_ordinal, 0);
+    assert_eq!(result.turns[1].turn_ordinal, 1);
+    assert!(matches!(
+        &result.turns[0].steps[0],
+        NormalizedTurnStep::ToolCall { arguments, .. } if arguments.is_empty()
+    ));
+    assert_eq!(
+        result
+            .session_files
+            .files
+            .iter()
+            .map(|file| {
+                (
+                    file.path.as_str(),
+                    file.read_count,
+                    file.write_count,
+                    file.first_turn_ordinal,
+                    file.last_turn_ordinal,
+                )
+            })
+            .collect::<Vec<_>>(),
+        vec![("src/lib.rs", 0, 1, 1, 1), ("README.md", 1, 0, 0, 0)]
+    );
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn query_session_bundle_ignores_unrelated_invalid_session_rows() -> Result<()> {
+    let index_path = test_index_path("query-session-bundle-targeted-summary");
+    let connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture::new(
+            "repo-a",
+            SourceKind::Codex,
+            "session-1",
+            0,
+            "2026-04-06T10:00:00Z",
+            "completed",
+            "[]",
+        ),
+    )?;
+    connection.execute(
+        "
+        INSERT INTO sessions (
+            project_id,
+            provider,
+            session_id,
+            parent_session_id,
+            session_kind,
+            archive_path,
+            cwd,
+            cli_version,
+            schema_id,
+            determinism,
+            source_size,
+            source_mtime_ms
+        ) VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, NULL, NULL, NULL, NULL, NULL)
+        ",
+        (
+            "repo-a",
+            "bogus",
+            "broken-session",
+            "primary",
+            "/tmp/repo-a/.darc/broken-session.jsonl",
+            "/tmp/repo-a",
+        ),
+    )?;
+
+    let result = query_project_session_bundle(
+        &index_path,
+        "repo-a",
+        SourceKind::Codex,
+        "session-1",
+        Some(Path::new("/tmp/repo-a")),
+        SessionBundleView::Full,
+    )?;
+
+    assert_eq!(result.session.session_id, "session-1");
+    assert_eq!(result.turns.len(), 1);
 
     fs::remove_dir_all(
         index_path
