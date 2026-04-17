@@ -157,7 +157,7 @@ fn stale_running_run_is_repaired_to_interrupted() -> Result<()> {
         &root,
         &SharedConfig::new(
             root.clone(),
-            vec![build_project(&root, project_id, project_root)],
+            vec![build_project(&root, project_id, project_root.clone())],
             SourcesConfig::default(),
         ),
     )?;
@@ -221,7 +221,7 @@ fn stale_running_run_with_live_pid_stays_running() -> Result<()> {
         &root,
         &SharedConfig::new(
             root.clone(),
-            vec![build_project(&root, project_id, project_root)],
+            vec![build_project(&root, project_id, project_root.clone())],
             SourcesConfig::default(),
         ),
     )?;
@@ -280,7 +280,7 @@ fn stale_running_run_with_live_pid_stays_running() -> Result<()> {
 }
 
 #[test]
-fn runtime_request_uses_run_directory_as_workdir() -> Result<()> {
+fn runtime_request_uses_project_root_as_workdir() -> Result<()> {
     let root = unique_test_dir("core-wiki-runtime-workdir");
     let project_root = root.join("repo");
     let project_id = "repo-123";
@@ -289,7 +289,7 @@ fn runtime_request_uses_run_directory_as_workdir() -> Result<()> {
         &root,
         &SharedConfig::new(
             root.clone(),
-            vec![build_project(&root, project_id, project_root)],
+            vec![build_project(&root, project_id, project_root.clone())],
             SourcesConfig::default(),
         ),
     )?;
@@ -336,10 +336,16 @@ fn runtime_request_uses_run_directory_as_workdir() -> Result<()> {
     let prompt = build_digest_runtime_prompt("{}", project_id, run_id.as_str());
     let schema_path = layout.digest_proposal_schema_path();
 
-    let request =
-        super::runtime::build_runtime_request(&layout, &run_id, &state, &prompt, &schema_path)?;
+    let request = super::runtime::build_runtime_request(
+        &layout,
+        &run_id,
+        &state,
+        &prompt,
+        &schema_path,
+        &project_root,
+    )?;
 
-    assert_eq!(request.workdir, layout.run_dir(&run_id));
+    assert_eq!(request.workdir, project_root);
     assert_eq!(request.schema_path, layout.digest_proposal_schema_path());
 
     fs::remove_dir_all(&root)?;
