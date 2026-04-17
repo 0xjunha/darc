@@ -30,7 +30,7 @@ use darc_query::{
     query_resolve_sessions as query_index_resolve_sessions,
     query_search_turns as query_project_search_turns,
     query_session_turn_details as query_project_session_turn_details, query_turn_detail,
-    query_turn_exists as query_index_turn_exists, query_turn_insights, query_workspace_insights,
+    query_turn_insights, query_workspace_insights,
 };
 use darc_wiki::{
     ContextWikiLayout, DigestId, DigestSummary, EntryId, EntryStatus, EntrySummary, EntryType,
@@ -279,25 +279,6 @@ pub fn query_turn(
         session_id,
         turn_ordinal,
         options,
-    )
-}
-
-/// Checks whether one indexed provider session turn exists for the configured project.
-pub(crate) fn query_turn_exists(
-    root: Option<PathBuf>,
-    project_id: &str,
-    provider: SourceKind,
-    session_id: &str,
-    turn_ordinal: u64,
-) -> Result<bool> {
-    let root = inspect_root(root);
-    ensure_database_exists(&root)?;
-    query_index_turn_exists(
-        &root.database_path,
-        project_id,
-        provider,
-        session_id,
-        turn_ordinal,
     )
 }
 

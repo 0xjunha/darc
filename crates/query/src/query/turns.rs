@@ -143,6 +143,36 @@ pub fn query_turn_insights(
     build_turn_insights(&connection, project_id, provider, session_id, turn_ordinal)
 }
 
+/// Stores one reusable index handle for repeated indexed-turn existence checks.
+pub struct TurnExistenceResolver {
+    connection: Connection,
+}
+
+impl TurnExistenceResolver {
+    /// Opens one reusable index resolver for repeated turn existence checks.
+    pub fn open(index_db_path: &Path) -> Result<Self> {
+        let connection = open_existing_index_database(index_db_path)?;
+        Ok(Self { connection })
+    }
+
+    /// Queries whether one indexed provider session turn exists for the current project.
+    pub fn turn_exists(
+        &self,
+        project_id: &str,
+        provider: SourceKind,
+        session_id: &str,
+        turn_ordinal: u64,
+    ) -> Result<bool> {
+        build_turn_exists(
+            &self.connection,
+            project_id,
+            provider,
+            session_id,
+            turn_ordinal,
+        )
+    }
+}
+
 /// Queries whether one indexed provider session turn exists for the current project.
 pub fn query_turn_exists(
     index_db_path: &Path,
@@ -151,8 +181,8 @@ pub fn query_turn_exists(
     session_id: &str,
     turn_ordinal: u64,
 ) -> Result<bool> {
-    let connection = open_existing_index_database(index_db_path)?;
-    build_turn_exists(&connection, project_id, provider, session_id, turn_ordinal)
+    let resolver = TurnExistenceResolver::open(index_db_path)?;
+    resolver.turn_exists(project_id, provider, session_id, turn_ordinal)
 }
 
 /// Builds one normalized turn detail row from the index.

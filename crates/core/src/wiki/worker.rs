@@ -1,11 +1,14 @@
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
     time::SystemTime,
 };
 
 use anyhow::{Context, Result};
 use darc_agent::{RuntimeCommand, build_runtime_command};
+use darc_index::INDEX_DB_FILE_NAME;
 use darc_paths::current_utc_timestamp;
+use darc_query::TurnExistenceResolver;
 use darc_wiki::{
     DigestProposal, DigestRuntimePrompt, EvidenceReference, MergeDigestArtifacts, ProjectLayout,
     ProjectRegistry, ProposalValidationOptions, RunId, RunPhase, RunState,
@@ -28,10 +31,7 @@ use super::{
         wait_for_worker_registration, with_locked_run_state,
     },
 };
-use crate::{
-    default_root_path,
-    query::{query_sessions, query_turn_exists},
-};
+use crate::{default_root_path, query::query_sessions};
 
 /// Runs the hidden digest worker loop for one existing run.
 pub(super) fn run_project_wiki_digest_worker(
@@ -461,6 +461,25 @@ impl<'a> DigestWorker<'a> {
             }
         };
         let allowed_domains = build_allowed_domains(registry);
+        let evidence_resolver =
+            match TurnExistenceResolver::open(&self.root.join(INDEX_DB_FILE_NAME)) {
+                Ok(resolver) => resolver,
+                Err(error) => {
+                    return self.fail(WorkerFailure {
+                        phase: RunPhase::ValidatingProposal,
+                        headline: "Proposal validation failed",
+                        error_code: "proposal_validation_failed",
+                        error_message: error.to_string(),
+                        runtime: Some(runtime_execution),
+                        validation: DigestValidationArtifact {
+                            attempted: true,
+                            ..DigestValidationArtifact::default()
+                        },
+                        event_message: "Failed to prepare proposal evidence resolver".to_owned(),
+                    });
+                }
+            };
+        let mut resolved_evidence = BTreeMap::new();
         let artifact = match validate_digest_proposal(
             &proposal,
             &ProposalValidationOptions {
@@ -470,14 +489,25 @@ impl<'a> DigestWorker<'a> {
                 allowed_domains: &allowed_domains,
             },
             &mut |reference: &EvidenceReference<'_>| {
-                query_turn_exists(
-                    Some(self.root.clone()),
-                    self.project_id,
-                    reference.session.provider,
+                let cache_key = format!(
+                    "{}:{}#{}",
+                    reference.session.provider.directory_name(),
                     reference.session.session_id,
-                    reference.turn_ordinal,
-                )
-                .map_err(|error| error.to_string())
+                    reference.turn_ordinal
+                );
+                if let Some(exists) = resolved_evidence.get(cache_key.as_str()) {
+                    return Ok(*exists);
+                }
+                let exists = evidence_resolver
+                    .turn_exists(
+                        self.project_id,
+                        reference.session.provider,
+                        reference.session.session_id,
+                        reference.turn_ordinal,
+                    )
+                    .map_err(|error| error.to_string())?;
+                resolved_evidence.insert(cache_key, exists);
+                Ok(exists)
             },
         ) {
             Ok(summary) => DigestValidationArtifact {
