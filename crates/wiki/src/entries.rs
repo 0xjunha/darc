@@ -92,6 +92,8 @@ pub struct EntrySummary {
     pub status: EntryStatus,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub evidence: Vec<String>,
     pub path: PathBuf,
 }
 
@@ -118,6 +120,7 @@ impl From<EntryDocument> for EntrySummary {
             status: document.frontmatter.status,
             created_at: document.frontmatter.created_at,
             updated_at: document.frontmatter.updated_at,
+            evidence: document.frontmatter.evidence,
             path: document.path,
         }
     }

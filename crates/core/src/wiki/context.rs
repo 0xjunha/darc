@@ -3,7 +3,9 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use darc_agent::{AgentId, RuntimeKind};
 use darc_paths::SourceKind;
-use darc_wiki::{ProjectLayout, ProjectRegistry, is_valid_domain_id, load_registry};
+use darc_wiki::{
+    ProjectLayout, ProjectRegistry, is_valid_domain_id, load_registry, parse_session_reference,
+};
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use super::{
@@ -61,15 +63,13 @@ pub(super) fn validate_digest_targets(
 
 /// Parses one selected session reference into its typed source kind and session id.
 pub(super) fn parse_session_ref(session_ref: &str) -> Result<(SourceKind, &str)> {
-    let Some((provider, session_id)) = session_ref.split_once(':') else {
-        bail!("session ref `{session_ref}` must use the `<provider>:<session-id>` format");
+    let Some(reference) = parse_session_reference(session_ref) else {
+        if !session_ref.contains(':') {
+            bail!("session ref `{session_ref}` must use the `<provider>:<session-id>` format");
+        }
+        bail!("session ref `{session_ref}` must start with `claude:` or `codex:`");
     };
-    let provider = match provider {
-        "claude" => SourceKind::Claude,
-        "codex" => SourceKind::Codex,
-        _ => bail!("session ref `{session_ref}` must start with `claude:` or `codex:`"),
-    };
-    Ok((provider, session_id))
+    Ok((reference.provider, reference.session_id))
 }
 
 /// Loads one selected session plus its narrative turn details for the digest context bundle.

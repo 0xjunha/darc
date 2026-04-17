@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     env, fs,
     path::{Path, PathBuf},
 };
@@ -29,7 +30,8 @@ use darc_query::{
 use darc_wiki::{
     ContextWikiLayout, DigestId, DigestSummary, EntryId, EntryStatus, EntrySummary, EntryType,
     RunId, RunPhase, RunState, RunStatus, RunSummary, list_digests, list_entries,
-    load_digest_detail, load_entry_detail, load_registry,
+    load_digest_detail, load_entry_detail, load_registry, parse_evidence_reference,
+    parse_session_reference,
 };
 use serde::Serialize;
 
@@ -310,6 +312,9 @@ pub struct WikiEntriesQueryOptions {
     pub category: Option<String>,
     pub domain: Option<String>,
     pub status: Option<EntryStatus>,
+    pub grep: Option<String>,
+    pub evidence_refs: Vec<String>,
+    pub covers_sessions: Vec<String>,
 }
 
 /// Stores the entry-list payload for one project-scoped wiki query.
@@ -387,10 +392,23 @@ pub struct WikiEntryListItem {
     pub status: EntryStatus,
     pub created_at: String,
     pub updated_at: String,
+    pub matched_evidence: Vec<String>,
+    pub match_reason: Option<WikiEntryMatchReason>,
 }
 
 impl From<EntrySummary> for WikiEntryListItem {
     fn from(summary: EntrySummary) -> Self {
+        Self::from_summary(summary, Vec::new(), None)
+    }
+}
+
+impl WikiEntryListItem {
+    /// Builds one entry-list row from one canonical entry summary plus optional match metadata.
+    fn from_summary(
+        summary: EntrySummary,
+        matched_evidence: Vec<String>,
+        match_reason: Option<WikiEntryMatchReason>,
+    ) -> Self {
         Self {
             entry_id: summary.entry_id,
             display_id: summary.display_id,
@@ -401,8 +419,21 @@ impl From<EntrySummary> for WikiEntryListItem {
             status: summary.status,
             created_at: summary.created_at,
             updated_at: summary.updated_at,
+            matched_evidence,
+            match_reason,
         }
     }
+}
+
+/// Stores the primary reason one wiki entry matched an additive Q4 filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WikiEntryMatchReason {
+    GrepTitle,
+    GrepBody,
+    GrepDomain,
+    EvidenceRef,
+    CoversSession,
 }
 
 impl WikiEntryDetailItem {
@@ -700,6 +731,18 @@ pub fn query_wiki_entries(
 ) -> Result<WikiEntriesQueryData> {
     let context = load_project_config_context(root, project_id)?;
     let layout = load_project_wiki_layout(&context)?;
+    let grep = match options.grep.as_deref() {
+        Some(grep) => {
+            let grep = grep.trim();
+            if grep.is_empty() {
+                bail!("wiki entry grep query must not be empty");
+            }
+            Some(normalize_casefold(grep))
+        }
+        None => None,
+    };
+    let requested_evidence_refs = parse_requested_evidence_refs(&options.evidence_refs)?;
+    let requested_cover_sessions = parse_requested_cover_sessions(&options.covers_sessions)?;
     let entries = list_entries(&layout)?
         .into_iter()
         .filter(|entry| {
@@ -717,7 +760,26 @@ pub fn query_wiki_entries(
             })
         })
         .filter(|entry| options.status.is_none_or(|status| entry.status == status))
-        .map(WikiEntryListItem::from)
+        .map(|entry| {
+            build_wiki_entry_match_metadata(
+                &entry,
+                grep.as_deref(),
+                &requested_evidence_refs,
+                &requested_cover_sessions,
+            )
+            .map(|metadata| {
+                metadata.map(|metadata| {
+                    WikiEntryListItem::from_summary(
+                        entry,
+                        metadata.matched_evidence,
+                        metadata.match_reason,
+                    )
+                })
+            })
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
         .collect();
     Ok(WikiEntriesQueryData {
         project_id: context.project.id,
@@ -1091,6 +1153,158 @@ fn load_project_wiki_layout(context: &ProjectQueryContext) -> Result<darc_wiki::
         .context("failed to resolve project wiki layout")
 }
 
+/// Stores the additive Q4 match metadata attached to one wiki entry list row.
+#[derive(Debug, Clone, Default)]
+struct WikiEntryMatchMetadata {
+    matched_evidence: Vec<String>,
+    match_reason: Option<WikiEntryMatchReason>,
+}
+
+/// Builds one wiki entry match result for the supplied Q4 grep and coverage filters.
+fn build_wiki_entry_match_metadata(
+    entry: &EntrySummary,
+    grep: Option<&str>,
+    requested_evidence_refs: &BTreeSet<String>,
+    requested_cover_sessions: &BTreeSet<String>,
+) -> Result<Option<WikiEntryMatchMetadata>> {
+    let grep_reason = match grep {
+        Some(value) => match_wiki_entry_grep(entry, value)?,
+        None => None,
+    };
+    if grep.is_some() && grep_reason.is_none() {
+        return Ok(None);
+    }
+    let exact_evidence_matches =
+        collect_exact_evidence_matches(&entry.evidence, requested_evidence_refs);
+    let session_evidence_matches =
+        collect_cover_session_matches(&entry.evidence, requested_cover_sessions);
+    let overlap_requested =
+        !requested_evidence_refs.is_empty() || !requested_cover_sessions.is_empty();
+    let overlap_matched =
+        !exact_evidence_matches.is_empty() || !session_evidence_matches.is_empty();
+    if overlap_requested && !overlap_matched {
+        return Ok(None);
+    }
+
+    let mut matched_evidence = Vec::new();
+    for evidence in exact_evidence_matches
+        .iter()
+        .chain(session_evidence_matches.iter())
+    {
+        if !matched_evidence.contains(evidence) {
+            matched_evidence.push(evidence.clone());
+        }
+    }
+
+    Ok(Some(WikiEntryMatchMetadata {
+        matched_evidence,
+        match_reason: if !exact_evidence_matches.is_empty() {
+            Some(WikiEntryMatchReason::EvidenceRef)
+        } else if !session_evidence_matches.is_empty() {
+            Some(WikiEntryMatchReason::CoversSession)
+        } else {
+            grep_reason
+        },
+    }))
+}
+
+/// Normalizes one case-insensitive match string using Rust's standard lowercase rules.
+fn normalize_casefold(value: &str) -> String {
+    value.to_lowercase()
+}
+
+/// Validates and canonicalizes requested wiki evidence-reference filters.
+fn parse_requested_evidence_refs(values: &[String]) -> Result<BTreeSet<String>> {
+    let mut parsed = values
+        .iter()
+        .map(|value| {
+            let trimmed = value.trim();
+            if parse_evidence_reference(trimmed).is_none() {
+                bail!(
+                    "--evidence-ref `{}` must use `<provider>:<session-id>#<turn-ordinal>`",
+                    value
+                );
+            }
+            Ok(trimmed.to_owned())
+        })
+        .collect::<Result<Vec<_>>>()?;
+    parsed.sort();
+    parsed.dedup();
+    Ok(parsed.into_iter().collect())
+}
+
+/// Validates and canonicalizes requested wiki session-coverage filters.
+fn parse_requested_cover_sessions(values: &[String]) -> Result<BTreeSet<String>> {
+    let mut parsed = values
+        .iter()
+        .map(|value| {
+            let trimmed = value.trim();
+            if parse_session_reference(trimmed).is_none() {
+                bail!(
+                    "--covers-session `{}` must use `<provider>:<session-id>`",
+                    value
+                );
+            }
+            Ok(trimmed.to_owned())
+        })
+        .collect::<Result<Vec<_>>>()?;
+    parsed.sort();
+    parsed.dedup();
+    Ok(parsed.into_iter().collect())
+}
+
+/// Resolves which grep field matched one wiki entry, if any.
+fn match_wiki_entry_grep(entry: &EntrySummary, grep: &str) -> Result<Option<WikiEntryMatchReason>> {
+    if normalize_casefold(&entry.title).contains(grep) {
+        return Ok(Some(WikiEntryMatchReason::GrepTitle));
+    }
+    if entry
+        .domains
+        .iter()
+        .any(|domain| normalize_casefold(domain).contains(grep))
+    {
+        return Ok(Some(WikiEntryMatchReason::GrepDomain));
+    }
+    let document = load_entry_detail(&entry.path)?;
+    Ok(normalize_casefold(&document.body_markdown)
+        .contains(grep)
+        .then_some(WikiEntryMatchReason::GrepBody))
+}
+
+/// Collects exact evidence references from one entry that match the requested filter set.
+fn collect_exact_evidence_matches(
+    entry_evidence: &[String],
+    requested_evidence_refs: &BTreeSet<String>,
+) -> Vec<String> {
+    entry_evidence
+        .iter()
+        .filter(|evidence| requested_evidence_refs.contains(*evidence))
+        .cloned()
+        .collect()
+}
+
+/// Collects entry evidence references that cite any session from the requested filter set.
+fn collect_cover_session_matches(
+    entry_evidence: &[String],
+    requested_cover_sessions: &BTreeSet<String>,
+) -> Vec<String> {
+    entry_evidence
+        .iter()
+        .filter(|evidence| {
+            parse_evidence_reference(evidence)
+                .map(|reference| {
+                    requested_cover_sessions.contains(&format!(
+                        "{}:{}",
+                        reference.session.provider.directory_name(),
+                        reference.session.session_id
+                    ))
+                })
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect()
+}
+
 /// Loads one parsed run result artifact when the durable result file exists.
 fn load_run_result_artifact(path: &Path) -> Result<Option<DigestResultArtifact>> {
     if !path.exists() {
@@ -1117,8 +1331,9 @@ mod tests {
     use darc_test_utils::unique_test_dir;
 
     use super::{
-        WikiDigestsQueryOptions, WikiEntriesQueryOptions, WikiRunsQueryOptions, query_wiki_digest,
-        query_wiki_digests, query_wiki_entries, query_wiki_entry, query_wiki_runs,
+        WikiDigestsQueryOptions, WikiEntriesQueryOptions, WikiEntryMatchReason,
+        WikiRunsQueryOptions, query_wiki_digest, query_wiki_digests, query_wiki_entries,
+        query_wiki_entry, query_wiki_runs,
     };
     use crate::{
         DigestId, EntryId, EntryStatus, RunId, RunPhase, RunState, RunStatus,
@@ -1126,6 +1341,16 @@ mod tests {
         constants::CONFIG_FILE_NAME,
         wiki::{ensure_project_wiki, store_project_wiki_run},
     };
+
+    /// Stores one canonical wiki entry fixture used by query tests.
+    struct EntryFixture<'a> {
+        title: &'a str,
+        category: &'a str,
+        domains: &'a [&'a str],
+        status: &'a str,
+        evidence: &'a [&'a str],
+        body_markdown: &'a str,
+    }
 
     /// Writes one minimal shared config fixture for one query test root.
     fn write_config(root: &Path, project_id: &str) -> Result<()> {
@@ -1158,12 +1383,41 @@ mod tests {
         status: &str,
         body_markdown: &str,
     ) -> Result<()> {
-        let path = layout.entry_path(category, entry_id);
+        write_entry_fixture(
+            layout,
+            entry_id,
+            EntryFixture {
+                title: &format!("Entry {entry_id}"),
+                category,
+                domains,
+                status,
+                evidence: &["codex:session-1#2"],
+                body_markdown,
+            },
+        )
+    }
+
+    fn write_entry_fixture(
+        layout: &darc_wiki::ProjectLayout,
+        entry_id: &EntryId,
+        fixture: EntryFixture<'_>,
+    ) -> Result<()> {
+        let path = layout.entry_path(fixture.category, entry_id);
         let domains = format!(
             "[{}]",
-            domains
+            fixture
+                .domains
                 .iter()
                 .map(|domain| format!("\"{domain}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let evidence = format!(
+            "[{}]",
+            fixture
+                .evidence
+                .iter()
+                .map(|value| format!("\"{value}\""))
                 .collect::<Vec<_>>()
                 .join(", ")
         );
@@ -1185,7 +1439,7 @@ mod tests {
                     "created_at = \"2026-04-13T10:31:22Z\"\n",
                     "updated_at = \"2026-04-13T10:31:22Z\"\n",
                     "decision_date = \"2026-04-13\"\n",
-                    "evidence = [\"codex:session-1#2\"]\n",
+                    "evidence = {evidence}\n",
                     "created_by_run_id = \"cwrun_01write\"\n",
                     "updated_by_run_id = \"cwrun_01write\"\n",
                     "supersedes = []\n",
@@ -1194,11 +1448,12 @@ mod tests {
                 ),
                 entry_id = entry_id,
                 project_id = layout.project_id,
-                title = format!("Entry {entry_id}"),
-                category = category,
+                title = fixture.title,
+                category = fixture.category,
                 domains = domains,
-                status = status,
-                body_markdown = body_markdown,
+                status = fixture.status,
+                evidence = evidence,
+                body_markdown = fixture.body_markdown,
             ),
         )?;
         Ok(())
@@ -1317,6 +1572,7 @@ mod tests {
                 category: Some("product".to_owned()),
                 domain: Some("query".to_owned()),
                 status: Some(EntryStatus::Active),
+                ..WikiEntriesQueryOptions::default()
             },
         )?;
         assert_eq!(entries.entries.len(), 1);
@@ -1326,6 +1582,126 @@ mod tests {
         assert_eq!(detail.entry.entry_id, active_entry_id);
         assert_eq!(detail.entry.evidence, vec!["codex:session-1#2".to_owned()]);
         assert!(detail.entry.body_markdown.contains("## Final Decision"));
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn wiki_entry_queries_support_q4_grep_and_coverage_filters() -> Result<()> {
+        let root = unique_test_dir("query-wiki-entry-q4");
+        let project_id = "repo-123";
+        write_config(&root, project_id)?;
+        let layout = ensure_project_wiki(Some(root.clone()), project_id)?;
+        let grep_entry_id = EntryId::new("cw_01stage000000")?;
+        let coverage_entry_id = EntryId::new("cw_01cover000000")?;
+        write_entry_fixture(
+            &layout,
+            &grep_entry_id,
+            EntryFixture {
+                title: "Staged init rollout",
+                category: "product",
+                domains: &["query-protocol"],
+                status: "active",
+                evidence: &["codex:session-1#2", "codex:session-1#4"],
+                body_markdown: "## Final Decision\n\nUse staged init for the index bootstrap.",
+            },
+        )?;
+        write_entry_fixture(
+            &layout,
+            &coverage_entry_id,
+            EntryFixture {
+                title: "Schema follow-up",
+                category: "architecture",
+                domains: &["storage"],
+                status: "active",
+                evidence: &["claude:session-2#1"],
+                body_markdown: "## Final Decision\n\nTrack the storage schema follow-up.",
+            },
+        )?;
+
+        let grep_entries = query_wiki_entries(
+            Some(root.clone()),
+            project_id,
+            &WikiEntriesQueryOptions {
+                grep: Some("staged init".to_owned()),
+                ..WikiEntriesQueryOptions::default()
+            },
+        )?;
+        assert_eq!(grep_entries.entries.len(), 1);
+        assert_eq!(grep_entries.entries[0].entry_id, grep_entry_id);
+        assert_eq!(
+            grep_entries.entries[0].match_reason,
+            Some(WikiEntryMatchReason::GrepTitle)
+        );
+        assert!(grep_entries.entries[0].matched_evidence.is_empty());
+
+        let evidence_entries = query_wiki_entries(
+            Some(root.clone()),
+            project_id,
+            &WikiEntriesQueryOptions {
+                evidence_refs: vec!["codex:session-1#4".to_owned()],
+                ..WikiEntriesQueryOptions::default()
+            },
+        )?;
+        assert_eq!(evidence_entries.entries.len(), 1);
+        assert_eq!(evidence_entries.entries[0].entry_id, grep_entry_id);
+        assert_eq!(
+            evidence_entries.entries[0].match_reason,
+            Some(WikiEntryMatchReason::EvidenceRef)
+        );
+        assert_eq!(
+            evidence_entries.entries[0].matched_evidence,
+            vec!["codex:session-1#4".to_owned()]
+        );
+
+        let coverage_entries = query_wiki_entries(
+            Some(root.clone()),
+            project_id,
+            &WikiEntriesQueryOptions {
+                covers_sessions: vec!["codex:session-1".to_owned(), "claude:session-2".to_owned()],
+                ..WikiEntriesQueryOptions::default()
+            },
+        )?;
+        assert_eq!(coverage_entries.entries.len(), 2);
+        assert_eq!(coverage_entries.entries[0].entry_id, coverage_entry_id);
+        assert_eq!(
+            coverage_entries.entries[0].match_reason,
+            Some(WikiEntryMatchReason::CoversSession)
+        );
+        assert_eq!(
+            coverage_entries.entries[0].matched_evidence,
+            vec!["claude:session-2#1".to_owned()]
+        );
+        assert_eq!(coverage_entries.entries[1].entry_id, grep_entry_id);
+        assert_eq!(
+            coverage_entries.entries[1].match_reason,
+            Some(WikiEntryMatchReason::CoversSession)
+        );
+        assert_eq!(
+            coverage_entries.entries[1].matched_evidence,
+            vec![
+                "codex:session-1#2".to_owned(),
+                "codex:session-1#4".to_owned()
+            ]
+        );
+
+        let overlap_entries = query_wiki_entries(
+            Some(root.clone()),
+            project_id,
+            &WikiEntriesQueryOptions {
+                evidence_refs: vec!["codex:session-1#4".to_owned()],
+                covers_sessions: vec!["claude:session-2".to_owned()],
+                ..WikiEntriesQueryOptions::default()
+            },
+        )?;
+        assert_eq!(overlap_entries.entries.len(), 2);
+        assert_eq!(overlap_entries.entries[0].entry_id, coverage_entry_id);
+        assert_eq!(overlap_entries.entries[1].entry_id, grep_entry_id);
+        assert_eq!(
+            overlap_entries.entries[1].match_reason,
+            Some(WikiEntryMatchReason::EvidenceRef)
+        );
 
         fs::remove_dir_all(root)?;
         Ok(())

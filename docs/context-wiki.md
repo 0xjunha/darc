@@ -24,6 +24,7 @@ Use `darc query wiki ... --json` to inspect Context Wiki state without invoking 
 - `darc query wiki registry --root <path> --project-id <id> --json`
 - `darc query wiki entries --root <path> --project-id <id> --json`
 - `darc query wiki entries --root <path> --project-id <id> --category <id> --domain <id> --status active --json`
+- `darc query wiki entries --root <path> --project-id <id> --grep <text> --evidence-ref <provider>:<session-id>#<turn-ordinal> --covers-session <provider>:<session-id> --json`
 - `darc query wiki entry --root <path> --project-id <id> --entry-id <id> --json`
 - `darc query wiki digests --root <path> --project-id <id> --json`
 - `darc query wiki digests --root <path> --project-id <id> --limit 50 --json`
@@ -41,6 +42,15 @@ For history investigation and proposal preparation, prefer the project-scoped re
 - `darc query files --co-touched-with ...` to discover nearby files often touched in the same sessions
 - `darc query session-files ...` to inspect one session's in-project file activity
 - `darc query sessions --touched-path ...` to narrow the session list to work that touched a path of interest
+
+Before drafting or reviewing decision-trace proposals, check the existing wiki coverage first:
+
+- `darc query wiki entries --grep ...` to find prior entries by title/body/domain language
+- `darc query wiki entries --evidence-ref ...` to see whether a specific supporting turn is already cited
+- `darc query wiki entries --covers-session ...` to find entries that already cover any turn from a candidate session
+
+This is the intended read-side workflow for later extractor refactors where `darc wiki digest start`
+hands the agent read-only Darc/file access instead of a fully pre-baked context bundle.
 
 ## Starting A Digest
 

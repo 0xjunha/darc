@@ -218,6 +218,14 @@ fn parses_query_wiki_entries_with_filters() {
         "query",
         "--status",
         "active",
+        "--grep",
+        "staged init",
+        "--evidence-ref",
+        "codex:session-1#4",
+        "--evidence-ref",
+        "claude:session-2#1",
+        "--covers-session",
+        "codex:session-1",
         "--json",
     ])
     .unwrap();
@@ -230,6 +238,9 @@ fn parses_query_wiki_entries_with_filters() {
                     category,
                     domain,
                     status,
+                    grep,
+                    evidence_ref,
+                    covers_session,
                     json,
                     ..
                 }),
@@ -238,6 +249,9 @@ fn parses_query_wiki_entries_with_filters() {
             && category.as_deref() == Some("product")
             && domain.as_deref() == Some("query")
             && matches!(status, Some(super::WikiEntryStatusArg::Active))
+            && grep.as_deref() == Some("staged init")
+            && evidence_ref == vec!["codex:session-1#4".to_owned(), "claude:session-2#1".to_owned()]
+            && covers_session == vec!["codex:session-1".to_owned()]
             && json
     ));
 }
@@ -727,6 +741,25 @@ fn query_wiki_help_mentions_registry_subcommand() {
     assert!(help.contains("digest"));
     assert!(help.contains("digests"));
     assert!(help.contains("runs"));
+}
+
+#[test]
+fn query_wiki_entries_help_mentions_q4_filters() {
+    let mut command = Cli::command();
+    let query = command
+        .find_subcommand_mut("query")
+        .expect("query subcommand should be present");
+    let help = query
+        .find_subcommand_mut("wiki")
+        .expect("wiki query subcommand should be present")
+        .find_subcommand_mut("entries")
+        .expect("wiki entries query subcommand should be present")
+        .render_long_help()
+        .to_string();
+
+    assert!(help.contains("--grep"));
+    assert!(help.contains("--evidence-ref"));
+    assert!(help.contains("--covers-session"));
 }
 
 #[test]

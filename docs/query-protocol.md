@@ -16,6 +16,7 @@ All query commands currently require `--json`.
 - `darc query wiki registry --root <path> --project-id <id> --json`
 - `darc query wiki entries --root <path> --project-id <id> --json`
 - `darc query wiki entries --root <path> --project-id <id> --category <id> --domain <id> --status active --json`
+- `darc query wiki entries --root <path> --project-id <id> --grep <text> --evidence-ref <provider>:<session-id>#<turn-ordinal> --covers-session <provider>:<session-id> --json`
 - `darc query wiki entry --root <path> --project-id <id> --entry-id <id> --json`
 - `darc query wiki digests --root <path> --project-id <id> --since <iso-8601|<days>d> --until <iso-8601|<days>d> --json`
 - `darc query wiki digests --root <path> --project-id <id> --since <iso-8601|<days>d> --until <iso-8601|<days>d> --limit <n> --json`
@@ -87,6 +88,20 @@ The protocol is intentionally composable. A few common read patterns are now fir
     --view oneline \
     --json
   ```
+
+- check whether the wiki already covers one session or cited turn before proposing a new entry:
+
+  ```bash
+  darc query wiki entries \
+    --root ~/.darc \
+    --project-id repo-abc123 \
+    --covers-session codex:session-1 \
+    --evidence-ref codex:session-1#4 \
+    --json
+  ```
+
+  When both overlap flags are present, entries matching either the cited turn or any cited turn
+  from the requested session are returned.
 
 ## Success envelope
 
@@ -167,7 +182,8 @@ Today:
 - wiki queries are read-only and do not create the on-disk wiki layout
 - when no on-disk registry exists yet, `darc.query.wiki.registry.v1` returns the default category set and an empty domain list
 - `darc.query.wiki.registry.v1` returns `project_id`, `schema_version`, `categories`, and `domains`
-- `darc.query.wiki.entries.v1` returns `project_id` plus deterministic `entries`, with optional `category`, `domain`, and `status` filters
+- `darc.query.wiki.entries.v1` returns `project_id` plus deterministic `entries`, with optional `category`, `domain`, `status`, `grep`, `evidence_ref`, and `covers_session` filters
+- `darc.query.wiki.entries.v1` entry rows include `matched_evidence` plus nullable `match_reason`; without the additive Q4 filters these default to `[]` and `null`
 - `darc.query.wiki.entry.v1` returns one canonical entry detail including metadata, evidence, and Markdown body
 - `darc.query.wiki.digests.v1` echoes optional `since` and `until` filters and applies them to digest `created_at`
 - `darc.query.wiki.digests.v1` returns `project_id` plus deterministic `digests`, with an optional `limit`

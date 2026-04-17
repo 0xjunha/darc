@@ -408,6 +408,202 @@ fn wiki_entries_query_rejects_cross_project_entry() -> Result<()> {
 }
 
 #[test]
+fn wiki_entries_query_supports_q4_filters_and_match_metadata() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-wiki-entries-q4")?;
+    write_file(&root.join("context-wiki/VERSION"), "1\n")?;
+    write_file(
+        &root.join("context-wiki/projects/repo-abc123/entries/product/cw_01entry.md"),
+        concat!(
+            "+++\n",
+            "schema_version = 1\n",
+            "entry_id = \"cw_01entry\"\n",
+            "entry_type = \"decision_trace\"\n",
+            "project_id = \"repo-abc123\"\n",
+            "title = \"Staged init rollout\"\n",
+            "category = \"product\"\n",
+            "domains = [\"query-protocol\"]\n",
+            "status = \"active\"\n",
+            "created_at = \"2026-04-13T10:00:00Z\"\n",
+            "updated_at = \"2026-04-13T10:00:00Z\"\n",
+            "decision_date = \"2026-04-13\"\n",
+            "evidence = [\"codex:session-1#2\", \"codex:session-1#4\"]\n",
+            "created_by_run_id = \"cwrun_01entry\"\n",
+            "updated_by_run_id = \"cwrun_01entry\"\n",
+            "supersedes = []\n",
+            "+++\n",
+            "\n",
+            "Use staged init for the index bootstrap.\n"
+        ),
+    )?;
+    write_file(
+        &root.join("context-wiki/projects/repo-abc123/entries/architecture/cw_02entry.md"),
+        concat!(
+            "+++\n",
+            "schema_version = 1\n",
+            "entry_id = \"cw_02entry\"\n",
+            "entry_type = \"decision_trace\"\n",
+            "project_id = \"repo-abc123\"\n",
+            "title = \"Schema follow-up\"\n",
+            "category = \"architecture\"\n",
+            "domains = [\"storage\"]\n",
+            "status = \"active\"\n",
+            "created_at = \"2026-04-13T11:00:00Z\"\n",
+            "updated_at = \"2026-04-13T11:00:00Z\"\n",
+            "decision_date = \"2026-04-13\"\n",
+            "evidence = [\"claude:session-2#1\"]\n",
+            "created_by_run_id = \"cwrun_02entry\"\n",
+            "updated_by_run_id = \"cwrun_02entry\"\n",
+            "supersedes = []\n",
+            "+++\n",
+            "\n",
+            "Track the storage schema follow-up.\n"
+        ),
+    )?;
+
+    let grep_output = run_darc([
+        "query",
+        "wiki",
+        "entries",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--grep",
+        "staged init",
+        "--json",
+    ])?;
+    assert!(grep_output.status.success());
+    let grep_value = parse_json(&grep_output.stdout, "stdout")?;
+    assert_eq!(grep_value["schema"], "darc.query.wiki.entries.v1");
+    assert_eq!(
+        grep_value["data"]["entries"][0]["match_reason"],
+        Value::String("grep_title".to_owned())
+    );
+    assert_eq!(
+        grep_value["data"]["entries"][0]["matched_evidence"],
+        Value::Array(vec![])
+    );
+
+    let evidence_output = run_darc([
+        "query",
+        "wiki",
+        "entries",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--evidence-ref",
+        "codex:session-1#4",
+        "--json",
+    ])?;
+    assert!(evidence_output.status.success());
+    let evidence_value = parse_json(&evidence_output.stdout, "stdout")?;
+    assert_eq!(
+        evidence_value["data"]["entries"][0]["matched_evidence"],
+        Value::Array(vec![Value::String("codex:session-1#4".to_owned())])
+    );
+    assert_eq!(
+        evidence_value["data"]["entries"][0]["match_reason"],
+        Value::String("evidence_ref".to_owned())
+    );
+
+    let coverage_output = run_darc([
+        "query",
+        "wiki",
+        "entries",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--covers-session",
+        "codex:session-1",
+        "--covers-session",
+        "claude:session-2",
+        "--json",
+    ])?;
+    assert!(coverage_output.status.success());
+    let coverage_value = parse_json(&coverage_output.stdout, "stdout")?;
+    assert_eq!(
+        coverage_value["data"]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["entry_id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["cw_01entry", "cw_02entry"]
+    );
+    assert_eq!(
+        coverage_value["data"]["entries"][0]["matched_evidence"],
+        Value::Array(vec![
+            Value::String("codex:session-1#2".to_owned()),
+            Value::String("codex:session-1#4".to_owned())
+        ])
+    );
+    assert_eq!(
+        coverage_value["data"]["entries"][1]["match_reason"],
+        Value::String("covers_session".to_owned())
+    );
+
+    let overlap_output = run_darc([
+        "query",
+        "wiki",
+        "entries",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--covers-session",
+        "claude:session-2",
+        "--evidence-ref",
+        "codex:session-1#4",
+        "--json",
+    ])?;
+    assert!(overlap_output.status.success());
+    let overlap_value = parse_json(&overlap_output.stdout, "stdout")?;
+    assert_eq!(
+        overlap_value["data"]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["entry_id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["cw_01entry", "cw_02entry"]
+    );
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn wiki_entries_query_rejects_invalid_q4_evidence_ref() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-wiki-entries-invalid-evidence")?;
+    let output = run_darc([
+        "query",
+        "wiki",
+        "entries",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--evidence-ref",
+        "codex:session-1",
+        "--json",
+    ])?;
+
+    assert!(!output.status.success());
+    let value = parse_json(&output.stderr, "stderr")?;
+    assert_eq!(value["schema"], "darc.error.v1");
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("--evidence-ref"))
+    );
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
 fn wiki_runs_query_emits_api_shaped_success_envelope_without_registry_dependency() -> Result<()> {
     let root = create_query_fixture_root("cli-query-wiki-runs")?;
     write_file(&root.join("context-wiki/VERSION"), "1\n")?;

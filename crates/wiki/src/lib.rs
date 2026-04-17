@@ -9,6 +9,7 @@ mod layout;
 mod merge;
 mod prompt;
 mod proposal;
+mod references;
 mod registry;
 mod render;
 mod runs;
@@ -34,6 +35,9 @@ pub use proposal::{
     DigestProposalRunSummary, ProposalEntryOperation, ProposalValidationError,
     ProposalValidationErrors, ProposalValidationOptions, ProposalValidationSummary,
     is_valid_domain_id, validate_digest_proposal,
+};
+pub use references::{
+    EvidenceReference, SessionReference, parse_evidence_reference, parse_session_reference,
 };
 pub use registry::{DEFAULT_CATEGORY_IDS, ProjectRegistry, ensure_registry, load_registry};
 pub use runs::{
