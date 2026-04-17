@@ -6,13 +6,13 @@ use std::{path::PathBuf, process::Command};
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use darc_core::query::{
-    FilesQueryRequest, SearchMode, SearchTurnsRequest, TurnDetailOptions, TurnMatchesQueryRequest,
-    TurnSearchRole, TurnsQueryRequest, TurnsView, WikiDigestsQueryOptions, WikiEntriesQueryOptions,
-    WikiRunsQueryOptions, query_files, query_project_insight_report, query_search_turns,
-    query_session_files, query_sessions, query_turn, query_turn_insight_report, query_turn_matches,
-    query_turns, query_wiki_digest, query_wiki_digests, query_wiki_entries, query_wiki_entry,
-    query_wiki_registry, query_wiki_run, query_wiki_runs, query_workspace,
-    query_workspace_insight_report,
+    FilesQueryRequest, SearchMode, SearchTurnsRequest, SessionBundleView, TurnDetailOptions,
+    TurnMatchesQueryRequest, TurnSearchRole, TurnsQueryRequest, TurnsView, WikiDigestsQueryOptions,
+    WikiEntriesQueryOptions, WikiRunsQueryOptions, query_files, query_project_insight_report,
+    query_search_turns, query_session_bundle, query_session_files, query_sessions, query_turn,
+    query_turn_insight_report, query_turn_matches, query_turns, query_wiki_digest,
+    query_wiki_digests, query_wiki_entries, query_wiki_entry, query_wiki_registry, query_wiki_run,
+    query_wiki_runs, query_workspace, query_workspace_insight_report,
 };
 use darc_core::{
     DigestId, DigestStartOptions, EntryId, EntryStatus, IndexOptions, InitDraft, RefreshOptions,
@@ -197,6 +197,8 @@ enum QueryCommands {
     Files(QueryFilesArgs),
     /// Queries per-file access summaries for one provider session.
     SessionFiles(QuerySessionFilesArgs),
+    /// Queries one composite session bundle for one provider session.
+    SessionBundle(QuerySessionBundleArgs),
     /// Queries the turn list for one provider session or grep request.
     Turns(QueryTurnsArgs),
     /// Queries one full turn detail payload.
@@ -598,6 +600,37 @@ struct QuerySessionFilesArgs {
 
     #[arg(long = "session-id", help = "Query this session id")]
     session_id: String,
+
+    #[arg(
+        long,
+        required = true,
+        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
+    )]
+    json: bool,
+}
+
+/// Queries one composite session bundle payload.
+#[derive(Debug, Args)]
+struct QuerySessionBundleArgs {
+    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    root: PathBuf,
+
+    #[arg(long = "project-id", help = "Query this configured project id")]
+    project_id: String,
+
+    #[arg(long, value_enum, help = "Query this provider session")]
+    provider: ProviderArg,
+
+    #[arg(long = "session-id", help = "Query this session id")]
+    session_id: String,
+
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = ViewArg::Full,
+        help = "Turn detail level. `narrative` omits tool arguments, outputs, and payload blobs"
+    )]
+    view: ViewArg,
 
     #[arg(
         long,
@@ -1116,6 +1149,7 @@ fn run_query(args: QueryArgs) -> Result<()> {
         QueryCommands::Sessions(args) => run_query_sessions(args),
         QueryCommands::Files(args) => run_query_files(args),
         QueryCommands::SessionFiles(args) => run_query_session_files(args),
+        QueryCommands::SessionBundle(args) => run_query_session_bundle(args),
         QueryCommands::Turns(args) => run_query_turns(args),
         QueryCommands::Turn(args) => run_query_turn(args),
         QueryCommands::Search(args) => run_query_search(args),
@@ -1303,6 +1337,19 @@ fn run_query_session_files(args: QuerySessionFilesArgs) -> Result<()> {
         &args.session_id,
     )?;
     print_json_envelope("darc.query.session_files.v1", &data)
+}
+
+/// Queries one composite session bundle payload.
+fn run_query_session_bundle(args: QuerySessionBundleArgs) -> Result<()> {
+    ensure_json_requested(args.json)?;
+    let data = query_session_bundle(
+        Some(args.root),
+        &args.project_id,
+        provider_arg_to_source_kind(args.provider),
+        &args.session_id,
+        view_arg_to_session_bundle_view(args.view),
+    )?;
+    print_json_envelope("darc.query.session_bundle.v1", &data)
 }
 
 /// Queries the turn list for one provider session or grep request.
@@ -1739,6 +1786,14 @@ fn wiki_run_status_arg_to_status(status: WikiRunStatusArg) -> RunStatus {
         WikiRunStatusArg::CancelRequested => RunStatus::CancelRequested,
         WikiRunStatusArg::Canceled => RunStatus::Canceled,
         WikiRunStatusArg::Interrupted => RunStatus::Interrupted,
+    }
+}
+
+/// Converts one parsed turn-detail view argument into the shared session-bundle view.
+fn view_arg_to_session_bundle_view(view: ViewArg) -> SessionBundleView {
+    match view {
+        ViewArg::Full => SessionBundleView::Full,
+        ViewArg::Narrative => SessionBundleView::Narrative,
     }
 }
 

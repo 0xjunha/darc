@@ -373,7 +373,7 @@ fn build_files_query(
 }
 
 /// Builds one session-scoped per-file summary payload from canonicalized file touches.
-fn build_session_files_query(
+pub(crate) fn build_session_files_query(
     connection: &Connection,
     project_id: &str,
     provider: SourceKind,

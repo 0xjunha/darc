@@ -1004,6 +1004,50 @@ fn session_files_query_emits_success_envelope() -> Result<()> {
 }
 
 #[test]
+fn session_bundle_query_emits_success_envelope() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-session-bundle")?;
+
+    let output = run_darc([
+        "query",
+        "session-bundle",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--provider",
+        "codex",
+        "--session-id",
+        "session-1",
+        "--view",
+        "narrative",
+        "--json",
+    ])?;
+
+    assert!(output.status.success());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.session_bundle.v1");
+    assert_eq!(value["data"]["project_id"], "repo-abc123");
+    assert_eq!(value["data"]["provider"], "codex");
+    assert_eq!(value["data"]["session_id"], "session-1");
+    assert_eq!(value["data"]["view"], "narrative");
+    assert_eq!(value["data"]["session"]["session_id"], "session-1");
+    assert_eq!(value["data"]["turns"][0]["turn_ordinal"], 0);
+    assert_eq!(value["data"]["turns"][0]["steps"][0]["type"], "tool_call");
+    assert_eq!(value["data"]["turns"][0]["steps"][0]["arguments"], "");
+    assert_eq!(
+        value["data"]["session_files"]["files"][0]["path"],
+        "README.md"
+    );
+    assert_eq!(
+        value["data"]["session_files"]["files"][0]["read_count"],
+        serde_json::json!(1)
+    );
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
 fn sessions_query_includes_first_turn_abort_counts_and_edited_files() -> Result<()> {
     let root = create_query_fixture_root("cli-query-sessions-fields")?;
     let connection = open_index_database(&root.join("index.sqlite"))?;

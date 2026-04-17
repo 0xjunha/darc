@@ -28,6 +28,7 @@ All query commands currently require `--json`.
 - `darc query files --root <path> --project-id <id> --path <glob> --since <iso-8601|<days>d> --until <iso-8601|<days>d> --json`
 - `darc query files --root <path> --project-id <id> --co-touched-with <path> --limit <n> --json`
 - `darc query session-files --root <path> --project-id <id> --provider <provider> --session-id <id> --json`
+- `darc query session-bundle --root <path> --project-id <id> --provider <provider> --session-id <id> --view <full|narrative> --json`
 - `darc query turns --root <path> --project-id <id> --provider <provider> --session-id <id> --since <iso-8601|<days>d> --until <iso-8601|<days>d> --view <full|oneline> --json`
 - `darc query turns --root <path> --project-id <id> --grep <text> --role <user|assistant|both> --context <n> --since <iso-8601|<days>d> --until <iso-8601|<days>d> --view <full|oneline> --touched-path <glob> --json`
 - `darc query turn --root <path> --project-id <id> --provider <provider> --session-id <id> --turn-ordinal <n> --json`
@@ -74,6 +75,18 @@ The protocol is intentionally composable. A few common read patterns are now fir
     --project-id repo-abc123 \
     --provider codex \
     --session-id session-1 \
+    --json
+  ```
+
+- fetch one session summary, narrative turn detail, and touched files in one call:
+
+  ```bash
+  darc query session-bundle \
+    --root ~/.darc \
+    --project-id repo-abc123 \
+    --provider codex \
+    --session-id session-1 \
+    --view narrative \
     --json
   ```
 
@@ -157,6 +170,7 @@ Current schema ids:
 - `darc.query.sessions.v1`
 - `darc.query.files.v1`
 - `darc.query.session_files.v1`
+- `darc.query.session_bundle.v1`
 - `darc.query.turns.v1`
 - `darc.query.turn_matches.v1`
 - `darc.query.turn.v1`
@@ -363,6 +377,19 @@ Today:
 - `session_files` rows collapse equivalent absolute, repo-relative, and `./`-prefixed accesses for the same in-repo file onto one canonical display path before counting
 - `session_files` rows omit out-of-project accesses and exclude derived `list` accesses
 - `query sessions --touched-path <glob>` reuses the same project-scoped glob semantics as the file-pivot and grep surfaces
+
+### Session bundles
+
+`darc.query.session_bundle.v1` is the preferred single-round-trip protocol when a client needs one session summary, its turn detail, and its in-project file touches together.
+
+Today:
+
+- the top-level payload echoes `project_id`, `provider`, `session_id`, and `view`
+- `session` reuses the exact `darc.query.sessions.v1` session row shape
+- `turns` reuses the exact `darc.query.turn.v1` turn-detail row shape without wrapping each row in its own envelope
+- `session_files` reuses the exact `darc.query.session_files.v1` payload shape
+- `view=narrative` applies the same step projection rules as `darc query turn --view narrative --json`
+- `view=full` keeps the full normalized turn-step payload with `raw_steps_json` still forced to `null`
 
 ### Narrative turn detail
 

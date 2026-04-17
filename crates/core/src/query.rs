@@ -13,16 +13,17 @@ pub use darc_query::{
     CoTouchedFileSummary, DailyTimeStat, FileSessionSummary, FileUsageStat, FilesQueryData,
     FilesQueryMode, FilesQueryRequest, HardDebuggingTurn, ProjectInsights, ProjectSummary,
     ProjectTimeStat, RootAvailability, RootInfo, SearchMode, SearchTurnHit, SearchTurnsQueryData,
-    SearchTurnsRequest, SessionFileSummary, SessionFilesQueryData, SessionKind, SessionRuntimeStat,
-    SessionSummary, SessionsQueryData, ShellCommandSummary, ToolUsageStat, TurnDetail,
-    TurnDetailInsights, TurnDetailOptions, TurnInsights, TurnMatchKind, TurnMatchesQueryData,
-    TurnMatchesQueryRequest, TurnSearchRole, TurnSummary, TurnsQueryData, TurnsQueryRequest,
-    TurnsView, WorkspaceDailyTimeStat, WorkspaceInsights, WorkspaceQueryData,
+    SearchTurnsRequest, SessionBundleQueryData, SessionBundleView, SessionFileSummary,
+    SessionFilesQueryData, SessionKind, SessionRuntimeStat, SessionSummary, SessionsQueryData,
+    ShellCommandSummary, ToolUsageStat, TurnDetail, TurnDetailInsights, TurnDetailOptions,
+    TurnInsights, TurnMatchKind, TurnMatchesQueryData, TurnMatchesQueryRequest, TurnSearchRole,
+    TurnSummary, TurnsQueryData, TurnsQueryRequest, TurnsView, WorkspaceDailyTimeStat,
+    WorkspaceInsights, WorkspaceQueryData,
 };
 use darc_query::{
     ProjectIndexAggregate, list_project_index_aggregates, query_project_files,
-    query_project_insights, query_project_session_files, query_project_sessions,
-    query_project_turn_matches as query_index_turn_matches,
+    query_project_insights, query_project_session_bundle, query_project_session_files,
+    query_project_sessions, query_project_turn_matches as query_index_turn_matches,
     query_project_turns as query_index_turns, query_search_turns as query_project_search_turns,
     query_session_turn_details as query_project_session_turn_details, query_turn_detail,
     query_turn_insights, query_workspace_insights,
@@ -172,6 +173,25 @@ pub fn query_session_files(
         provider,
         session_id,
         Some(context.project.local_path.as_path()),
+    )
+}
+
+/// Queries one composite session bundle for one configured provider session.
+pub fn query_session_bundle(
+    root: Option<PathBuf>,
+    project_id: &str,
+    provider: SourceKind,
+    session_id: &str,
+    view: SessionBundleView,
+) -> Result<SessionBundleQueryData> {
+    let context = load_project_query_context(root, project_id)?;
+    query_project_session_bundle(
+        &context.root.database_path,
+        &context.project.id,
+        provider,
+        session_id,
+        Some(context.project.local_path.as_path()),
+        view,
     )
 }
 

@@ -605,6 +605,42 @@ fn parses_query_session_files_command() {
 }
 
 #[test]
+fn parses_query_session_bundle_command() {
+    let cli = Cli::try_parse_from([
+        "darc",
+        "query",
+        "session-bundle",
+        "--project-id",
+        "repo-abc123",
+        "--provider",
+        "codex",
+        "--session-id",
+        "session-1",
+        "--view",
+        "narrative",
+        "--json",
+    ])
+    .unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Query(super::QueryArgs {
+            command: QueryCommands::SessionBundle(super::QuerySessionBundleArgs {
+                project_id,
+                provider,
+                session_id,
+                view,
+                json,
+                ..
+            }),
+        }) if project_id == "repo-abc123"
+            && matches!(provider, super::ProviderArg::Codex)
+            && session_id == "session-1"
+            && matches!(view, super::ViewArg::Narrative)
+            && json
+    ));
+}
+
+#[test]
 fn parses_query_turns_session_scope_command() {
     let cli = Cli::try_parse_from([
         "darc",
