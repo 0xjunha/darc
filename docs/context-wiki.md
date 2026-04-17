@@ -8,7 +8,7 @@ Current MVP scope:
 - read-side wiki queries via `darc query wiki ... --json`
 - imperative digest lifecycle via `darc wiki digest start` and `darc wiki digest cancel`
 - imperative entry lifecycle via `darc wiki entry discard` and `darc wiki entry restore`
-- external CLI runtimes for `codex` and `claude`
+- external CLI runtime for `claude`, plus a gated `codex` opt-in for manual testing
 - structured `decision_trace` proposal validation
 - canonical merge into decision-trace entry markdown plus one digest report per successful run
 - durable run artifacts and logs for each digest run
@@ -49,13 +49,12 @@ Before drafting or reviewing decision-trace proposals, check the existing wiki c
 - `darc query wiki entries --covers-session ...` to find entries that already cover any turn from a candidate session
 - combine `--evidence-ref` and `--covers-session` when you want the union of exact-turn and session-level overlap checks
 
-These query commands ship today for human operators and external clients. The digest worker still passes a
-pre-baked `context.json` bundle to the runtime; a later extractor refactor will let the agent call this read-side
-surface directly.
+These query commands ship today for human operators and external clients. The digest worker now uses this read-side
+surface directly at runtime instead of passing a pre-baked bundle artifact.
 
 ## Starting A Digest
 
-`darc wiki digest start` creates a new run, snapshots the request and context artifacts, spawns a background worker,
+`darc wiki digest start` creates a new run, snapshots the request artifact, spawns a background worker,
 and returns either human-readable status or a machine-readable JSON envelope.
 
 Example:
@@ -64,11 +63,11 @@ Example:
 darc wiki digest start \
   --root ~/.darc \
   --project-id repo-abc123 \
-  --session-ref codex:session-1 \
+  --session-ref claude:session-1 \
   --session-ref claude:session-2 \
-  --agent codex \
+  --agent claude \
   --runtime external-cli \
-  --model gpt-5.4 \
+  --model claude-sonnet-4-6 \
   --target-category product \
   --target-domain query-protocol \
   --json
@@ -77,10 +76,10 @@ darc wiki digest start \
 Key flags:
 
 - `--session-ref <provider>:<session-id>` selects one archived session. Pass it more than once to build a multi-session digest.
-- `--agent <codex|claude>` selects the agent family.
+- `--agent <codex|claude>` selects the agent family. `codex` is disabled by default until documented MCP-isolation controls exist; set `DARC_WIKI_UNSAFE_ENABLE_CODEX=1` to opt in at your own risk.
 - `--runtime external-cli` selects the currently supported runtime kind.
 - `--model <name>` is required and is forwarded to the external CLI.
-- `--auth-profile <name>` is optional metadata recorded in run artifacts. It does not currently select credentials.
+- `--auth-profile <name>` is optional metadata recorded in run artifacts. It does not currently select credentials, accounts, or billing budgets.
 - `--target-category <name>` prioritizes an existing registry category and must already exist in the project registry.
 - `--target-domain <slug>` prioritizes a project-scoped registry domain and must already exist in the project registry.
 - `--json` emits the `darc.wiki.digest.start.v1` envelope on stdout.
@@ -149,8 +148,8 @@ discarded idea as a new entry.
 
 The current MVP uses external CLIs already installed on the host machine.
 
-- `--agent codex` expects the `codex` CLI.
 - `--agent claude` expects the `claude` CLI.
+- `--agent codex` expects the `codex` CLI, but the digest runtime is disabled by default until documented MCP-isolation controls exist. Set `DARC_WIKI_UNSAFE_ENABLE_CODEX=1` only when you intentionally want the ungated Codex path for manual testing.
 - Set `DARC_WIKI_CODEX_BIN` to override the Codex executable path.
 - Set `DARC_WIKI_CLAUDE_BIN` to override the Claude executable path.
 - Digest workers invoke these CLIs in a background process and capture stdout/stderr into run-local log files.
@@ -159,6 +158,20 @@ Current auth caveat:
 
 - Darc currently launches these CLIs with inherited host environment and ambient login state.
 - `auth_profile` is metadata only today. It does not enforce profile selection or sandbox credentials.
+- Codex remains gated because `codex exec` does not yet expose documented MCP-isolation controls for this workflow.
+
+### Auth And Billing Behavior
+
+- `darc wiki digest` does not provide its own token budget, billing account, or separate runtime identity.
+- Each digest run uses whatever auth context the underlying CLI is already using on the host machine.
+- `--auth-profile` is metadata only today. It does not switch accounts, credentials, or billing budgets.
+- For `--agent claude`:
+  - when bare-compatible auth is available, Darc runs Claude with `--bare`
+  - bare-compatible auth currently means one of: `ANTHROPIC_API_KEY`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, or `CLAUDE_CODE_USE_FOUNDRY`
+  - otherwise, Darc falls back to the normal Claude Code CLI path without `--bare`, and usage follows the machine's current Claude CLI login/auth context
+- For `--agent codex`:
+  - usage follows the current Codex CLI auth context on the machine
+  - Darc does not currently select a separate Codex account or billing budget
 
 ## Run Artifacts
 
@@ -172,7 +185,6 @@ Important files:
 
 - `run.toml`: durable lifecycle state, selected sessions, runtime metadata, progress, and terminal error fields
 - `request.json`: original digest request payload
-- `context.json`: assembled registry and narrative-turn context given to the runtime
 - `proposal.json`: captured structured proposal artifact when one is produced
 - `result.json`: terminal runtime and validation summary
 - `events.jsonl`: progress and warning events emitted by the worker
@@ -188,7 +200,7 @@ Shared runtime files under `~/.darc/context-wiki/`:
 
 Currently, a `succeeded` run means:
 
-- the selected session context was assembled successfully
+- the runtime request and shared proposal schema artifacts were prepared successfully
 - the external runtime exited successfully
 - the returned JSON matched Darc's proposal contract
 - proposal validation passed
@@ -213,11 +225,12 @@ Current validation rules include:
 - categories must come from the project registry
 - domains must come from registry domains
 - `--target-domain` only prioritizes existing registry domains for the run
-- evidence references must use `<provider>:<session-id>#<turn-ordinal>` and only reference selected sessions
-- zero proposed entries is valid when the selected sessions contain no durable decisions worth preserving
+- evidence references must use `<provider>:<session-id>#<turn-ordinal>` and resolve to indexed turns for the current project
+- zero proposed entries is valid when the inspected evidence does not contain durable decisions worth preserving
 
 ## Current Limitations
 
 - Context Wiki imperative workflows are experimental and may still change.
 - `darc query wiki ...` is the stable read-side contract; imperative `darc wiki ...` behavior is still MVP-stage.
+- The Codex digest runtime is not normal supported behavior yet; use the explicit unsafe opt-in only for controlled manual testing.
 - Read-side wiki queries do not expose internal artifact paths; use `darc query wiki run ... --json` for run/result detail and inspect the run directory directly only when you need raw logs.
