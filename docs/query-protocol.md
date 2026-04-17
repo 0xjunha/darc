@@ -28,6 +28,7 @@ All query commands currently require `--json`.
 
 ### Sessions, Turns, And Files
 
+- `darc query resolve-session <uuid-or-prefix> --root <path> [--provider <provider>] [--pick-one] --json`
 - `darc query sessions --root <path> --project-id <id> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--touched-path <glob>] --json`
 - `darc query files --root <path> --project-id <id> --path <glob> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] --json`
 - `darc query files --root <path> --project-id <id> --co-touched-with <path> [--limit <n>] --json`
@@ -50,11 +51,13 @@ All query commands currently require `--json`.
 ## Argument rules
 
 - every project-scoped query requires `--project-id`
+- `darc query resolve-session` accepts either one full UUID or one UUID prefix
 - `darc query turns` without `--grep` requires both `--provider` and `--session-id`
 - `--role`, `--context`, and `--touched-path` on `darc query turns` require `--grep`
 - `darc query files` requires exactly one of `--path` or `--co-touched-with`
 - `--since` and `--until` on `darc query files` require `--path`
 - `--limit` on `darc query files` requires `--co-touched-with`
+- session-scoped data commands require a full UUID `--session-id`; malformed ids return `invalid_session_id`, unknown UUIDs return `unknown_session`, and UUID-like prefixes fail explicitly instead of auto-resolving
 
 ## Common Workflows
 
@@ -90,18 +93,20 @@ The protocol is intentionally composable. A few common read patterns are now fir
     --root ~/.darc \
     --project-id repo-abc123 \
     --provider codex \
-    --session-id session-1 \
+    --session-id 11111111-1111-4111-8111-111111111111 \
     --json
   ```
 
 - fetch one session summary, narrative turn detail, and touched files in one call:
 
   ```bash
+  ID=$(darc query resolve-session 11111111 --pick-one --json | jq -r '.data.match.session_id')
+
   darc query session-bundle \
     --root ~/.darc \
     --project-id repo-abc123 \
     --provider codex \
-    --session-id session-1 \
+    --session-id "$ID" \
     --view narrative \
     --json
   ```
@@ -113,7 +118,7 @@ The protocol is intentionally composable. A few common read patterns are now fir
     --root ~/.darc \
     --project-id repo-abc123 \
     --provider codex \
-    --session-id session-1 \
+    --session-id 11111111-1111-4111-8111-111111111111 \
     --view oneline \
     --json
   ```
@@ -162,7 +167,12 @@ Query failures return non-zero exit status and write a structured error envelope
   "generated_at": "2026-04-06T12:00:00Z",
   "darc_version": "0.1.0",
   "error": {
-    "message": "Darc root was not found at /tmp/missing-root.",
+    "code": "unknown_session",
+    "message": "No session found for id `11111111`. The session id must be the full UUID. Try `darc query resolve-session 11111111` to expand a prefix.",
+    "details": {
+      "session": "11111111",
+      "looks_like_prefix": true
+    },
     "causes": []
   }
 }
@@ -170,14 +180,23 @@ Query failures return non-zero exit status and write a structured error envelope
 
 Fields:
 
+- `error.code`: optional stable machine-readable error code
 - `error.message`: top-level error message
+- `error.details`: optional structured metadata for known error codes
 - `error.causes`: causal chain in outer-to-inner order, excluding the top-level message
+
+Session-id-specific error codes:
+
+- `invalid_session_id`: the supplied resolver query or data-command `--session-id` is not a full UUID or accepted UUID-prefix shape
+- `unknown_session`: the full UUID or explicit prefix did not resolve to an indexed session
+- `ambiguous_session`: `darc query resolve-session --pick-one` found more than one candidate
 
 ## Schema ids
 
 Current schema ids:
 
 - `darc.query.workspace.v1`
+- `darc.query.resolve_session.v1`
 - `darc.query.wiki.registry.v1`
 - `darc.query.wiki.entries.v1`
 - `darc.query.wiki.entry.v1`
@@ -367,6 +386,7 @@ Today:
 - grep mode applies `--since` and `--until` to matched turns using `turns.started_at`, with inclusive lower-bound and exclusive upper-bound semantics
 - `--context <n>` expands each grep hit to include up to `n` earlier and `n` later turns from the same session, ordered by session group then `turn_ordinal`
 - `--context` currently has a hard maximum of `50`
+- session-scoped data commands do not auto-resolve UUID prefixes; callers must expand prefixes explicitly with `darc query resolve-session`
 - `query files --path <glob>` and `--touched-path <glob>` on `query sessions` / `query turns --grep` currently use the Rust `glob` crate syntax, matched case-insensitively against one canonical project-scoped display path per access
 - absolute query paths under the configured project root are normalized down to project-relative form before matching, so `/repo/README.md` and `README.md` hit the same indexed access
 - out-of-project paths are not exposed and do not participate in these path-matching filters
@@ -409,6 +429,21 @@ Today:
 - `session_files` reuses the exact `darc.query.session_files.v1` payload shape
 - `view=narrative` applies the same step projection rules as `darc query turn --view narrative --json`
 - `view=full` keeps the full normalized turn-step payload with `raw_steps_json` still forced to `null`
+
+### Session resolution
+
+`darc.query.resolve_session.v1` is the explicit UUID-prefix expansion protocol for humans and scripts.
+
+Today:
+
+- `query` echoes the supplied full UUID or prefix exactly as resolved by the CLI
+- without `--pick-one`, the payload includes deterministic `matches`, `total`, and `truncated` fields
+- `matches[*]` rows report `provider` plus canonical `session_id`
+- matches are ordered by `provider` ascending, then `session_id` ascending
+- results are capped to a generous fixed page and set `truncated=true` when more candidates exist
+- with `--pick-one`, the success payload uses one top-level `match` object for convenience
+- a full UUID that does not exist returns `unknown_session`
+- `--pick-one` returns `unknown_session` for zero matches and `ambiguous_session` for multiple matches
 
 ### Narrative turn detail
 

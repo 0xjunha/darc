@@ -13,6 +13,12 @@ use darc_test_utils::{
 };
 use serde_json::Value;
 
+const PRIMARY_SESSION_ID: &str = "11111111-1111-4111-8111-111111111111";
+const SECONDARY_SESSION_ID: &str = "11111111-1111-4111-8111-111111111112";
+const TERTIARY_SESSION_ID: &str = "11111111-1111-4111-8111-111111111113";
+const UNKNOWN_SESSION_ID: &str = "11111111-1111-4111-8111-1111111111ff";
+const PRIMARY_SESSION_PREFIX: &str = "11111111";
+
 /// Stores one minimal darc config fixture written for CLI protocol tests.
 #[derive(serde::Serialize)]
 struct ConfigFixture {
@@ -83,7 +89,7 @@ fn create_query_fixture_root(prefix: &str) -> Result<PathBuf> {
         IndexedSessionFixture::new(
             "repo-abc123",
             SourceKind::Codex,
-            "session-1",
+            PRIMARY_SESSION_ID,
             project_root.to_string_lossy().as_ref(),
         ),
     )?;
@@ -118,7 +124,7 @@ fn create_query_fixture_root(prefix: &str) -> Result<PathBuf> {
             ..IndexedTurnFixture::new(
                 "repo-abc123",
                 SourceKind::Codex,
-                "session-1",
+                PRIMARY_SESSION_ID,
                 0,
                 "2026-04-06T10:00:00Z",
                 "completed",
@@ -133,16 +139,26 @@ fn create_query_fixture_root(prefix: &str) -> Result<PathBuf> {
 
 /// Adds one extra indexed session fixture at one specified latest-turn timestamp.
 fn insert_query_fixture_session(root: &Path, session_id: &str, started_at: &str) -> Result<()> {
+    insert_query_fixture_provider_session(root, SourceKind::Codex, session_id, started_at)
+}
+
+/// Adds one extra indexed session fixture for one provider at one specified latest-turn timestamp.
+fn insert_query_fixture_provider_session(
+    root: &Path,
+    provider: SourceKind,
+    session_id: &str,
+    started_at: &str,
+) -> Result<()> {
     let connection = open_index_database(&root.join("index.sqlite"))?;
     insert_indexed_session(
         &connection,
-        IndexedSessionFixture::new("repo-abc123", SourceKind::Codex, session_id, "/tmp/repo"),
+        IndexedSessionFixture::new("repo-abc123", provider, session_id, "/tmp/repo"),
     )?;
     insert_indexed_turn(
         &connection,
         IndexedTurnFixture::new(
             "repo-abc123",
-            SourceKind::Codex,
+            provider,
             session_id,
             0,
             started_at,
@@ -838,7 +854,10 @@ fn sessions_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["since"], Value::Null);
     assert_eq!(value["data"]["until"], Value::Null);
     assert_eq!(value["data"]["touched_path"], Value::Null);
-    assert_eq!(value["data"]["sessions"][0]["session_id"], "session-1");
+    assert_eq!(
+        value["data"]["sessions"][0]["session_id"],
+        PRIMARY_SESSION_ID
+    );
     assert_eq!(value["data"]["sessions"][0]["latest_status"], "completed");
     assert_eq!(value["data"]["sessions"][0]["primary_model"], "gpt-5.4");
     assert_eq!(
@@ -898,7 +917,7 @@ fn sessions_query_emits_success_envelope() -> Result<()> {
 #[test]
 fn sessions_query_applies_touched_path_filter() -> Result<()> {
     let root = create_query_fixture_root("cli-query-sessions-touched-path")?;
-    insert_query_fixture_session(&root, "session-2", "2026-04-07T10:00:00Z")?;
+    insert_query_fixture_session(&root, SECONDARY_SESSION_ID, "2026-04-07T10:00:00Z")?;
     let touched_path = root.join("repo").join("README.md");
     let touched_path = touched_path.to_string_lossy().into_owned();
 
@@ -925,7 +944,7 @@ fn sessions_query_applies_touched_path_filter() -> Result<()> {
             .iter()
             .map(|session| session["session_id"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        vec!["session-1"]
+        vec![PRIMARY_SESSION_ID]
     );
 
     remove_root(&root)?;
@@ -957,7 +976,10 @@ fn files_query_path_mode_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["mode"], "path");
     assert_eq!(value["data"]["path"], path);
     assert_eq!(value["data"]["co_touched_with"], Value::Null);
-    assert_eq!(value["data"]["sessions"][0]["session_id"], "session-1");
+    assert_eq!(
+        value["data"]["sessions"][0]["session_id"],
+        PRIMARY_SESSION_ID
+    );
     assert_eq!(value["data"]["sessions"][0]["touch_count"], 1);
     assert_eq!(
         value["data"]["sessions"][0]["matched_paths"],
@@ -983,7 +1005,7 @@ fn session_files_query_emits_success_envelope() -> Result<()> {
         "--provider",
         "codex",
         "--session-id",
-        "session-1",
+        PRIMARY_SESSION_ID,
         "--json",
     ])?;
 
@@ -992,7 +1014,7 @@ fn session_files_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["schema"], "darc.query.session_files.v1");
     assert_eq!(value["data"]["project_id"], "repo-abc123");
     assert_eq!(value["data"]["provider"], "codex");
-    assert_eq!(value["data"]["session_id"], "session-1");
+    assert_eq!(value["data"]["session_id"], PRIMARY_SESSION_ID);
     assert_eq!(value["data"]["files"][0]["path"], "README.md");
     assert_eq!(value["data"]["files"][0]["read_count"], 1);
     assert_eq!(value["data"]["files"][0]["write_count"], 0);
@@ -1017,7 +1039,7 @@ fn session_bundle_query_emits_success_envelope() -> Result<()> {
         "--provider",
         "codex",
         "--session-id",
-        "session-1",
+        PRIMARY_SESSION_ID,
         "--view",
         "narrative",
         "--json",
@@ -1028,9 +1050,9 @@ fn session_bundle_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["schema"], "darc.query.session_bundle.v1");
     assert_eq!(value["data"]["project_id"], "repo-abc123");
     assert_eq!(value["data"]["provider"], "codex");
-    assert_eq!(value["data"]["session_id"], "session-1");
+    assert_eq!(value["data"]["session_id"], PRIMARY_SESSION_ID);
     assert_eq!(value["data"]["view"], "narrative");
-    assert_eq!(value["data"]["session"]["session_id"], "session-1");
+    assert_eq!(value["data"]["session"]["session_id"], PRIMARY_SESSION_ID);
     assert_eq!(value["data"]["turns"][0]["turn_ordinal"], 0);
     assert_eq!(value["data"]["turns"][0]["steps"][0]["type"], "tool_call");
     assert_eq!(value["data"]["turns"][0]["steps"][0]["arguments"], "");
@@ -1042,6 +1064,94 @@ fn session_bundle_query_emits_success_envelope() -> Result<()> {
         value["data"]["session_files"]["files"][0]["read_count"],
         serde_json::json!(1)
     );
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn session_files_query_rejects_invalid_session_id() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-session-files-invalid-id")?;
+    let output = run_darc([
+        "query",
+        "session-files",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--provider",
+        "codex",
+        "--session-id",
+        "abc",
+        "--json",
+    ])?;
+
+    assert!(!output.status.success());
+    let value = parse_json(&output.stderr, "stderr")?;
+    assert_eq!(value["schema"], "darc.error.v1");
+    assert_eq!(value["error"]["code"], "invalid_session_id");
+    assert_eq!(value["error"]["details"]["session"], "abc");
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn session_files_query_rejects_prefix_session_id_with_resolver_hint() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-session-files-prefix-id")?;
+    let output = run_darc([
+        "query",
+        "session-files",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--provider",
+        "codex",
+        "--session-id",
+        PRIMARY_SESSION_PREFIX,
+        "--json",
+    ])?;
+
+    assert!(!output.status.success());
+    let value = parse_json(&output.stderr, "stderr")?;
+    assert_eq!(value["schema"], "darc.error.v1");
+    assert_eq!(value["error"]["code"], "unknown_session");
+    assert_eq!(value["error"]["details"]["session"], PRIMARY_SESSION_PREFIX);
+    assert_eq!(value["error"]["details"]["looks_like_prefix"], true);
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("resolve-session"))
+    );
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn session_files_query_rejects_unknown_uuid_session_id() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-session-files-unknown-id")?;
+    let output = run_darc([
+        "query",
+        "session-files",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--provider",
+        "codex",
+        "--session-id",
+        UNKNOWN_SESSION_ID,
+        "--json",
+    ])?;
+
+    assert!(!output.status.success());
+    let value = parse_json(&output.stderr, "stderr")?;
+    assert_eq!(value["schema"], "darc.error.v1");
+    assert_eq!(value["error"]["code"], "unknown_session");
+    assert_eq!(value["error"]["details"]["session"], UNKNOWN_SESSION_ID);
+    assert_eq!(value["error"]["details"]["looks_like_prefix"], false);
 
     remove_root(&root)?;
     Ok(())
@@ -1062,7 +1172,7 @@ fn sessions_query_includes_first_turn_abort_counts_and_edited_files() -> Result<
             ..IndexedTurnFixture::new(
                 "repo-abc123",
                 SourceKind::Codex,
-                "session-1",
+                PRIMARY_SESSION_ID,
                 1,
                 "2026-04-06T10:10:00Z",
                 "aborted",
@@ -1083,7 +1193,7 @@ fn sessions_query_includes_first_turn_abort_counts_and_edited_files() -> Result<
             ..IndexedTurnFixture::new(
                 "repo-abc123",
                 SourceKind::Codex,
-                "session-1",
+                PRIMARY_SESSION_ID,
                 2,
                 "2026-04-06T10:20:00Z",
                 "completed",
@@ -1128,8 +1238,9 @@ fn sessions_query_includes_first_turn_abort_counts_and_edited_files() -> Result<
 #[test]
 fn sessions_query_applies_since_and_until_filters() -> Result<()> {
     let root = create_query_fixture_root("cli-query-sessions-bounds")?;
-    insert_query_fixture_session(&root, "session-0", "2026-04-05T10:00:00Z")?;
-    insert_query_fixture_session(&root, "session-2", "2026-04-07T10:00:00Z")?;
+    let early_session_id = "11111111-1111-4111-8111-111111111114";
+    insert_query_fixture_session(&root, early_session_id, "2026-04-05T10:00:00Z")?;
+    insert_query_fixture_session(&root, SECONDARY_SESSION_ID, "2026-04-07T10:00:00Z")?;
 
     let since_output = run_darc([
         "query",
@@ -1151,7 +1262,7 @@ fn sessions_query_applies_since_and_until_filters() -> Result<()> {
             .iter()
             .map(|session| session["session_id"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        vec!["session-2", "session-1"]
+        vec![SECONDARY_SESSION_ID, PRIMARY_SESSION_ID]
     );
 
     let until_output = run_darc([
@@ -1174,7 +1285,7 @@ fn sessions_query_applies_since_and_until_filters() -> Result<()> {
             .iter()
             .map(|session| session["session_id"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        vec!["session-1", "session-0"]
+        vec![PRIMARY_SESSION_ID, early_session_id]
     );
 
     let bounded_output = run_darc([
@@ -1199,7 +1310,7 @@ fn sessions_query_applies_since_and_until_filters() -> Result<()> {
             .iter()
             .map(|session| session["session_id"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        vec!["session-1"]
+        vec![PRIMARY_SESSION_ID]
     );
 
     remove_root(&root)?;
@@ -1219,7 +1330,7 @@ fn turns_query_emits_success_envelope() -> Result<()> {
         "--provider",
         "codex",
         "--session-id",
-        "session-1",
+        PRIMARY_SESSION_ID,
         "--json",
     ])?;
 
@@ -1288,7 +1399,7 @@ fn turns_query_rejects_invalid_absolute_time_bounds() -> Result<()> {
         "--provider",
         "codex",
         "--session-id",
-        "session-1",
+        PRIMARY_SESSION_ID,
         "--since",
         "2026-99-99T00:00:00Z",
         "--json",
@@ -1333,7 +1444,7 @@ fn turns_query_applies_since_and_until_filters_in_session_mode() -> Result<()> {
                 ..IndexedTurnFixture::new(
                     "repo-abc123",
                     SourceKind::Codex,
-                    "session-1",
+                    PRIMARY_SESSION_ID,
                     turn_ordinal,
                     started_at,
                     "completed",
@@ -1354,7 +1465,7 @@ fn turns_query_applies_since_and_until_filters_in_session_mode() -> Result<()> {
         "--provider",
         "codex",
         "--session-id",
-        "session-1",
+        PRIMARY_SESSION_ID,
         "--since",
         "2026-04-06T10:00:00Z",
         "--until",
@@ -1393,7 +1504,7 @@ fn turns_query_oneline_view_emits_compact_rows() -> Result<()> {
         "--provider",
         "codex",
         "--session-id",
-        "session-1",
+        PRIMARY_SESSION_ID,
         "--json",
     ])?;
     let oneline_output = run_darc([
@@ -1406,7 +1517,7 @@ fn turns_query_oneline_view_emits_compact_rows() -> Result<()> {
         "--provider",
         "codex",
         "--session-id",
-        "session-1",
+        PRIMARY_SESSION_ID,
         "--view",
         "oneline",
         "--json",
@@ -1455,7 +1566,7 @@ fn turns_query_grep_emits_match_and_context_rows() -> Result<()> {
             ..IndexedTurnFixture::new(
                 "repo-abc123",
                 SourceKind::Codex,
-                "session-1",
+                PRIMARY_SESSION_ID,
                 1,
                 "2026-04-06T10:05:00Z",
                 "completed",
@@ -1478,7 +1589,7 @@ fn turns_query_grep_emits_match_and_context_rows() -> Result<()> {
             ..IndexedTurnFixture::new(
                 "repo-abc123",
                 SourceKind::Codex,
-                "session-1",
+                PRIMARY_SESSION_ID,
                 2,
                 "2026-04-06T10:10:00Z",
                 "completed",
@@ -1488,7 +1599,12 @@ fn turns_query_grep_emits_match_and_context_rows() -> Result<()> {
     )?;
     insert_indexed_session(
         &connection,
-        IndexedSessionFixture::new("repo-abc123", SourceKind::Codex, "session-2", "/tmp/repo"),
+        IndexedSessionFixture::new(
+            "repo-abc123",
+            SourceKind::Codex,
+            SECONDARY_SESSION_ID,
+            "/tmp/repo",
+        ),
     )?;
     insert_indexed_turn(
         &connection,
@@ -1500,7 +1616,7 @@ fn turns_query_grep_emits_match_and_context_rows() -> Result<()> {
             ..IndexedTurnFixture::new(
                 "repo-abc123",
                 SourceKind::Codex,
-                "session-2",
+                SECONDARY_SESSION_ID,
                 0,
                 "2026-04-06T11:00:00Z",
                 "completed",
@@ -1586,7 +1702,7 @@ fn turns_query_oneline_grep_reports_assistant_role_and_first_user_line() -> Resu
             ..IndexedTurnFixture::new(
                 "repo-abc123",
                 SourceKind::Codex,
-                "session-1",
+                PRIMARY_SESSION_ID,
                 1,
                 "2026-04-06T10:05:00Z",
                 "completed",
@@ -1665,7 +1781,7 @@ fn turn_query_emits_success_envelope_and_raw_field() -> Result<()> {
         "--provider",
         "codex",
         "--session-id",
-        "session-1",
+        PRIMARY_SESSION_ID,
         "--turn-ordinal",
         "0",
         "--include-raw",
@@ -1676,7 +1792,7 @@ fn turn_query_emits_success_envelope_and_raw_field() -> Result<()> {
     assert!(output.stderr.is_empty());
     let value = parse_json(&output.stdout, "stdout")?;
     assert_eq!(value["schema"], "darc.query.turn.v1");
-    assert_eq!(value["data"]["session_id"], "session-1");
+    assert_eq!(value["data"]["session_id"], PRIMARY_SESSION_ID);
     assert_eq!(value["data"]["steps"][0]["type"], "tool_call");
     assert!(value["data"]["raw_steps_json"].is_string());
     assert!(value["data"]["insights"].is_null());
@@ -1698,7 +1814,7 @@ fn turn_query_can_embed_derived_insights() -> Result<()> {
         "--provider",
         "codex",
         "--session-id",
-        "session-1",
+        PRIMARY_SESSION_ID,
         "--turn-ordinal",
         "0",
         "--include-insights",
@@ -1770,7 +1886,7 @@ fn turn_query_narrative_view_strips_bulky_fields() -> Result<()> {
         "--provider",
         "codex",
         "--session-id",
-        "session-1",
+        PRIMARY_SESSION_ID,
         "--turn-ordinal",
         "0",
         "--view",
@@ -1816,7 +1932,7 @@ fn search_turns_query_emits_keyword_search_envelope() -> Result<()> {
     let value = parse_json(&output.stdout, "stdout")?;
     assert_eq!(value["schema"], "darc.query.search.turns.v1");
     assert_eq!(value["data"]["mode"], "keyword");
-    assert_eq!(value["data"]["hits"][0]["session_id"], "session-1");
+    assert_eq!(value["data"]["hits"][0]["session_id"], PRIMARY_SESSION_ID);
     assert_eq!(
         value["data"]["hits"][0]["matched_paths"],
         Value::Array(vec![])
@@ -1949,7 +2065,7 @@ fn turn_insights_query_emits_success_envelope() -> Result<()> {
         "--provider",
         "codex",
         "--session-id",
-        "session-1",
+        PRIMARY_SESSION_ID,
         "--turn-ordinal",
         "0",
         "--json",
@@ -2018,7 +2134,7 @@ fn turn_insights_query_emits_shell_commands() -> Result<()> {
             ..IndexedTurnFixture::new(
                 "repo-abc123",
                 SourceKind::Codex,
-                "session-1",
+                PRIMARY_SESSION_ID,
                 1,
                 "2026-04-06T10:10:00Z",
                 "completed",
@@ -2039,7 +2155,7 @@ fn turn_insights_query_emits_shell_commands() -> Result<()> {
         "--provider",
         "codex",
         "--session-id",
-        "session-1",
+        PRIMARY_SESSION_ID,
         "--turn-ordinal",
         "1",
         "--json",
@@ -2077,7 +2193,7 @@ fn turn_insights_query_missing_turn_emits_error_envelope() -> Result<()> {
         "--provider",
         "codex",
         "--session-id",
-        "session-1",
+        PRIMARY_SESSION_ID,
         "--turn-ordinal",
         "9",
         "--json",
@@ -2090,8 +2206,353 @@ fn turn_insights_query_missing_turn_emits_error_envelope() -> Result<()> {
         value["error"]["message"]
             .as_str()
             .unwrap_or_default()
-            .contains("turn 9 was not found in session session-1 for provider codex")
+            .contains(&format!(
+                "turn 9 was not found in session {} for provider codex",
+                PRIMARY_SESSION_ID
+            ))
     );
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn turns_query_grep_rejects_prefix_session_id() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-turns-grep-prefix-id")?;
+    let output = run_darc([
+        "query",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--grep",
+        "Inspect",
+        "--session-id",
+        PRIMARY_SESSION_PREFIX,
+        "--json",
+    ])?;
+
+    assert!(!output.status.success());
+    let value = parse_json(&output.stderr, "stderr")?;
+    assert_eq!(value["schema"], "darc.error.v1");
+    assert_eq!(value["error"]["code"], "unknown_session");
+    assert_eq!(value["error"]["details"]["session"], PRIMARY_SESSION_PREFIX);
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn search_turns_query_rejects_unknown_session_id_filter() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-search-unknown-session-id")?;
+    let output = run_darc([
+        "query",
+        "search",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--mode",
+        "keyword",
+        "--query",
+        "Inspect",
+        "--session-id",
+        UNKNOWN_SESSION_ID,
+        "--json",
+    ])?;
+
+    assert!(!output.status.success());
+    let value = parse_json(&output.stderr, "stderr")?;
+    assert_eq!(value["schema"], "darc.error.v1");
+    assert_eq!(value["error"]["code"], "unknown_session");
+    assert_eq!(value["error"]["details"]["session"], UNKNOWN_SESSION_ID);
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn turn_query_rejects_invalid_session_id() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-turn-invalid-session-id")?;
+    let output = run_darc([
+        "query",
+        "turn",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--provider",
+        "codex",
+        "--session-id",
+        "abc",
+        "--turn-ordinal",
+        "0",
+        "--json",
+    ])?;
+
+    assert!(!output.status.success());
+    let value = parse_json(&output.stderr, "stderr")?;
+    assert_eq!(value["schema"], "darc.error.v1");
+    assert_eq!(value["error"]["code"], "invalid_session_id");
+    assert_eq!(value["error"]["details"]["session"], "abc");
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn turn_insights_query_rejects_prefix_session_id() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-turn-insights-prefix-id")?;
+    let output = run_darc([
+        "query",
+        "insights",
+        "turn",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--provider",
+        "codex",
+        "--session-id",
+        PRIMARY_SESSION_PREFIX,
+        "--turn-ordinal",
+        "0",
+        "--json",
+    ])?;
+
+    assert!(!output.status.success());
+    let value = parse_json(&output.stderr, "stderr")?;
+    assert_eq!(value["schema"], "darc.error.v1");
+    assert_eq!(value["error"]["code"], "unknown_session");
+    assert_eq!(value["error"]["details"]["session"], PRIMARY_SESSION_PREFIX);
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn resolve_session_query_emits_single_match_success() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-resolve-session-single")?;
+    let output = run_darc([
+        "query",
+        "resolve-session",
+        PRIMARY_SESSION_PREFIX,
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--json",
+    ])?;
+
+    assert!(output.status.success());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.resolve_session.v1");
+    assert_eq!(value["data"]["query"], PRIMARY_SESSION_PREFIX);
+    assert_eq!(value["data"]["matches"][0]["provider"], "codex");
+    assert_eq!(
+        value["data"]["matches"][0]["session_id"],
+        PRIMARY_SESSION_ID
+    );
+    assert_eq!(value["data"]["total"], 1);
+    assert_eq!(value["data"]["truncated"], false);
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn resolve_session_query_lists_matches_and_reports_ambiguity() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-resolve-session-multi")?;
+    insert_query_fixture_session(&root, SECONDARY_SESSION_ID, "2026-04-07T10:00:00Z")?;
+    insert_query_fixture_provider_session(
+        &root,
+        SourceKind::Claude,
+        TERTIARY_SESSION_ID,
+        "2026-04-07T11:00:00Z",
+    )?;
+
+    let output = run_darc([
+        "query",
+        "resolve-session",
+        PRIMARY_SESSION_PREFIX,
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--json",
+    ])?;
+    assert!(output.status.success());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(
+        value["data"]["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| {
+                (
+                    row["provider"].as_str().unwrap(),
+                    row["session_id"].as_str().unwrap(),
+                )
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            ("claude", TERTIARY_SESSION_ID),
+            ("codex", PRIMARY_SESSION_ID),
+            ("codex", SECONDARY_SESSION_ID),
+        ]
+    );
+
+    let provider_output = run_darc([
+        "query",
+        "resolve-session",
+        PRIMARY_SESSION_PREFIX,
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--provider",
+        "codex",
+        "--json",
+    ])?;
+    assert!(provider_output.status.success());
+    let provider_value = parse_json(&provider_output.stdout, "stdout")?;
+    assert_eq!(
+        provider_value["data"]["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["session_id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec![PRIMARY_SESSION_ID, SECONDARY_SESSION_ID]
+    );
+
+    let ambiguous_output = run_darc([
+        "query",
+        "resolve-session",
+        PRIMARY_SESSION_PREFIX,
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--pick-one",
+        "--json",
+    ])?;
+    assert!(!ambiguous_output.status.success());
+    let ambiguous_value = parse_json(&ambiguous_output.stderr, "stderr")?;
+    assert_eq!(ambiguous_value["schema"], "darc.error.v1");
+    assert_eq!(ambiguous_value["error"]["code"], "ambiguous_session");
+    assert_eq!(
+        ambiguous_value["error"]["details"]["query"],
+        PRIMARY_SESSION_PREFIX
+    );
+    assert_eq!(
+        ambiguous_value["error"]["details"]["matches"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn resolve_session_query_reports_unknown_full_uuid() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-resolve-session-unknown")?;
+    let output = run_darc([
+        "query",
+        "resolve-session",
+        UNKNOWN_SESSION_ID,
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--json",
+    ])?;
+
+    assert!(!output.status.success());
+    let value = parse_json(&output.stderr, "stderr")?;
+    assert_eq!(value["schema"], "darc.error.v1");
+    assert_eq!(value["error"]["code"], "unknown_session");
+    assert_eq!(value["error"]["details"]["query"], UNKNOWN_SESSION_ID);
+    assert_eq!(value["error"]["details"]["looks_like_prefix"], false);
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn resolve_session_query_reports_truncation() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-resolve-session-truncated")?;
+    for suffix in 0_u16..60 {
+        let session_id = format!("11111111-1111-4111-8111-{suffix:012x}");
+        insert_query_fixture_session(&root, &session_id, "2026-04-07T10:00:00Z")?;
+    }
+
+    let output = run_darc([
+        "query",
+        "resolve-session",
+        PRIMARY_SESSION_PREFIX,
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--json",
+    ])?;
+
+    assert!(output.status.success());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.resolve_session.v1");
+    assert_eq!(value["data"]["total"], 50);
+    assert_eq!(value["data"]["truncated"], true);
+    assert_eq!(value["data"]["matches"].as_array().unwrap().len(), 50);
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn resolve_session_pick_one_feeds_session_bundle() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-resolve-session-e2e")?;
+    let resolved = run_darc([
+        "query",
+        "resolve-session",
+        PRIMARY_SESSION_PREFIX,
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--pick-one",
+        "--json",
+    ])?;
+    assert!(resolved.status.success());
+    let resolved_value = parse_json(&resolved.stdout, "stdout")?;
+    let resolved_session_id = resolved_value["data"]["match"]["session_id"]
+        .as_str()
+        .context("missing resolved session id")?
+        .to_owned();
+    assert_eq!(resolved_session_id, PRIMARY_SESSION_ID);
+
+    let bundle = run_darc([
+        "query",
+        "session-bundle",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--provider",
+        "codex",
+        "--session-id",
+        &resolved_session_id,
+        "--json",
+    ])?;
+    assert!(bundle.status.success());
+
+    let prefix_bundle = run_darc([
+        "query",
+        "session-bundle",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--provider",
+        "codex",
+        "--session-id",
+        PRIMARY_SESSION_PREFIX,
+        "--json",
+    ])?;
+    assert!(!prefix_bundle.status.success());
+    let prefix_value = parse_json(&prefix_bundle.stderr, "stderr")?;
+    assert_eq!(prefix_value["error"]["code"], "unknown_session");
 
     remove_root(&root)?;
     Ok(())

@@ -17,8 +17,8 @@ pub use files::{query_project_files, query_project_session_files};
 pub(crate) use insights::{build_project_insights, build_workspace_insights};
 pub use insights::{query_project_insights, query_workspace_insights};
 pub use projects::{
-    list_project_index_aggregates, query_project_sessions, query_project_turn_matches,
-    query_project_turns,
+    list_project_index_aggregates, lookup_project_session_id, query_project_sessions,
+    query_project_turn_matches, query_project_turns, query_resolve_sessions,
 };
 use rusqlite::Connection;
 pub use search::query_search_turns;
@@ -37,6 +37,9 @@ pub(crate) fn smoke_test_sql(connection: &Connection) -> Result<()> {
     search::smoke_test_sql(connection)?;
     Ok(())
 }
+
+/// Caps `resolve-session` responses to one generous deterministic page.
+pub const DEFAULT_RESOLVE_SESSION_MATCH_LIMIT: usize = 50;
 
 /// Stores one indexed project aggregate used by the workspace sidebar.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -130,6 +133,30 @@ pub struct SessionsQueryData {
     pub until: Option<String>,
     pub touched_path: Option<String>,
     pub sessions: Vec<SessionSummary>,
+}
+
+/// Stores one provider plus canonical session id candidate returned by `resolve-session`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ResolvedSessionMatch {
+    pub provider: SourceKind,
+    pub session_id: String,
+}
+
+/// Stores the session-resolution payload returned by `darc query resolve-session`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ResolveSessionQueryData {
+    pub query: String,
+    pub matches: Vec<ResolvedSessionMatch>,
+    pub total: u64,
+    pub truncated: bool,
+}
+
+/// Collects the supported filters for one session-resolution query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolveSessionQueryRequest<'a> {
+    pub query: &'a str,
+    pub provider: Option<SourceKind>,
+    pub limit: usize,
 }
 
 /// Identifies which file-pivot query variant populated one files payload.

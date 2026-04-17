@@ -156,6 +156,36 @@ fn parses_query_workspace_command() {
 }
 
 #[test]
+fn parses_query_resolve_session_command() {
+    let cli = Cli::try_parse_from([
+        "darc",
+        "query",
+        "resolve-session",
+        "019d9059",
+        "--provider",
+        "codex",
+        "--pick-one",
+        "--json",
+    ])
+    .unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Query(super::QueryArgs {
+            command: QueryCommands::ResolveSession(super::QueryResolveSessionArgs {
+                input,
+                provider,
+                pick_one,
+                json,
+                ..
+            }),
+        }) if input == "019d9059"
+            && matches!(provider, Some(super::ProviderArg::Codex))
+            && pick_one
+            && json
+    ));
+}
+
+#[test]
 fn query_workspace_requires_json_flag() {
     let error = Cli::try_parse_from(["darc", "query", "workspace"]).unwrap_err();
 
@@ -1070,7 +1100,22 @@ fn formats_query_errors_as_json() {
 
     assert_eq!(value["schema"], "darc.error.v1");
     assert_eq!(value["error"]["message"], "boom");
+    assert!(value["error"]["code"].is_null());
+    assert!(value["error"]["details"].is_null());
     assert!(value["generated_at"].as_str().unwrap().ends_with('Z'));
+}
+
+#[test]
+fn formats_structured_query_errors_with_code_and_details() {
+    let payload = format_query_error(
+        &darc_core::query::QueryProtocolError::unknown_data_session("019d9059", true).into(),
+    );
+    let value: Value = serde_json::from_str(&payload).unwrap();
+
+    assert_eq!(value["schema"], "darc.error.v1");
+    assert_eq!(value["error"]["code"], "unknown_session");
+    assert_eq!(value["error"]["details"]["session"], "019d9059");
+    assert_eq!(value["error"]["details"]["looks_like_prefix"], true);
 }
 
 #[test]

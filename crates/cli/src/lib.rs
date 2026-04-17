@@ -6,13 +6,15 @@ use std::{path::PathBuf, process::Command};
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use darc_core::query::{
-    FilesQueryRequest, SearchMode, SearchTurnsRequest, SessionBundleView, TurnDetailOptions,
-    TurnMatchesQueryRequest, TurnSearchRole, TurnsQueryRequest, TurnsView, WikiDigestsQueryOptions,
-    WikiEntriesQueryOptions, WikiRunsQueryOptions, query_files, query_project_insight_report,
+    DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, FilesQueryRequest, QueryProtocolError,
+    ResolveSessionQueryRequest, ResolvedSessionMatch, SearchMode, SearchTurnsRequest,
+    SessionBundleView, TurnDetailOptions, TurnMatchesQueryRequest, TurnSearchRole,
+    TurnsQueryRequest, TurnsView, WikiDigestsQueryOptions, WikiEntriesQueryOptions,
+    WikiRunsQueryOptions, query_files, query_project_insight_report, query_resolve_sessions,
     query_search_turns, query_session_bundle, query_session_files, query_sessions, query_turn,
     query_turn_insight_report, query_turn_matches, query_turns, query_wiki_digest,
     query_wiki_digests, query_wiki_entries, query_wiki_entry, query_wiki_registry, query_wiki_run,
-    query_wiki_runs, query_workspace, query_workspace_insight_report,
+    query_wiki_runs, query_workspace, query_workspace_insight_report, resolve_query_session_id,
 };
 use darc_core::{
     DigestId, DigestStartOptions, EntryId, EntryStatus, IndexOptions, InitDraft, RefreshOptions,
@@ -35,6 +37,7 @@ use darc_rollout_audit::codex::{
     run_codex_schema_audit_with_progress,
 };
 use serde::Serialize;
+use serde_json::Value as JsonValue;
 
 #[derive(Debug, Parser)]
 #[command(name = "darc", version, about = "Darc CLI")]
@@ -191,6 +194,8 @@ enum QueryCommands {
     Workspace(QueryWorkspaceArgs),
     /// Queries canonical Context Wiki artifacts for one configured project.
     Wiki(QueryWikiArgs),
+    /// Resolves one full session id or UUID prefix into canonical matches.
+    ResolveSession(QueryResolveSessionArgs),
     /// Queries the session list for one configured project.
     Sessions(QuerySessionsArgs),
     /// Queries file pivots for one configured project.
@@ -428,6 +433,32 @@ struct QueryWikiRunArgs {
 
     #[arg(long = "run-id", help = "Query this wiki run id")]
     run_id: String,
+
+    #[arg(
+        long,
+        required = true,
+        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
+    )]
+    json: bool,
+}
+
+/// Resolves one full session id or UUID prefix into canonical provider/session matches.
+#[derive(Debug, Args)]
+struct QueryResolveSessionArgs {
+    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    root: PathBuf,
+
+    #[arg(help = "Resolve this full UUID or UUID prefix")]
+    input: String,
+
+    #[arg(long, value_enum, help = "Restrict matches to this provider")]
+    provider: Option<ProviderArg>,
+
+    #[arg(
+        long,
+        help = "Require exactly one match and return it as one convenience object"
+    )]
+    pick_one: bool,
 
     #[arg(
         long,
@@ -1146,6 +1177,7 @@ fn run_query(args: QueryArgs) -> Result<()> {
     match args.command {
         QueryCommands::Workspace(args) => run_query_workspace(args),
         QueryCommands::Wiki(args) => run_query_wiki(args),
+        QueryCommands::ResolveSession(args) => run_query_resolve_session(args),
         QueryCommands::Sessions(args) => run_query_sessions(args),
         QueryCommands::Files(args) => run_query_files(args),
         QueryCommands::SessionFiles(args) => run_query_session_files(args),
@@ -1173,6 +1205,40 @@ fn run_query_wiki(args: QueryWikiArgs) -> Result<()> {
         QueryWikiCommands::Digest(args) => run_query_wiki_digest(args),
         QueryWikiCommands::Run(args) => run_query_wiki_run(args),
         QueryWikiCommands::Runs(args) => run_query_wiki_runs(args),
+    }
+}
+
+/// Resolves one full session id or UUID prefix into canonical matches.
+fn run_query_resolve_session(args: QueryResolveSessionArgs) -> Result<()> {
+    ensure_json_requested(args.json)?;
+    let data = query_resolve_sessions(
+        Some(args.root),
+        ResolveSessionQueryRequest {
+            query: &args.input,
+            provider: args.provider.map(provider_arg_to_source_kind),
+            limit: DEFAULT_RESOLVE_SESSION_MATCH_LIMIT,
+        },
+    )?;
+    if !args.pick_one {
+        if data.matches.is_empty() && is_full_uuid_text(&data.query) {
+            return Err(QueryProtocolError::unknown_resolve_session(&data.query, false).into());
+        }
+        return print_json_envelope("darc.query.resolve_session.v1", &data);
+    }
+
+    match data.matches.as_slice() {
+        [] => Err(QueryProtocolError::unknown_resolve_session(
+            &data.query,
+            !is_full_uuid_text(&data.query),
+        )
+        .into()),
+        [resolved] => print_json_envelope(
+            "darc.query.resolve_session.v1",
+            &ResolveSessionPickOneQueryData::new(&data.query, resolved.clone()),
+        ),
+        _ => Err(
+            QueryProtocolError::ambiguous_session(&data.query, data.matches, data.truncated).into(),
+        ),
     }
 }
 
@@ -1330,11 +1396,17 @@ fn run_query_files(args: QueryFilesArgs) -> Result<()> {
 /// Queries one session-scoped per-file access summary payload.
 fn run_query_session_files(args: QuerySessionFilesArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
+    let session_id = resolve_query_session_id(
+        Some(args.root.clone()),
+        &args.project_id,
+        Some(provider_arg_to_source_kind(args.provider)),
+        &args.session_id,
+    )?;
     let data = query_session_files(
         Some(args.root),
         &args.project_id,
         provider_arg_to_source_kind(args.provider),
-        &args.session_id,
+        &session_id,
     )?;
     print_json_envelope("darc.query.session_files.v1", &data)
 }
@@ -1342,11 +1414,17 @@ fn run_query_session_files(args: QuerySessionFilesArgs) -> Result<()> {
 /// Queries one composite session bundle payload.
 fn run_query_session_bundle(args: QuerySessionBundleArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
+    let session_id = resolve_query_session_id(
+        Some(args.root.clone()),
+        &args.project_id,
+        Some(provider_arg_to_source_kind(args.provider)),
+        &args.session_id,
+    )?;
     let data = query_session_bundle(
         Some(args.root),
         &args.project_id,
         provider_arg_to_source_kind(args.provider),
-        &args.session_id,
+        &session_id,
         view_arg_to_session_bundle_view(args.view),
     )?;
     print_json_envelope("darc.query.session_bundle.v1", &data)
@@ -1365,6 +1443,18 @@ fn run_query_turns(args: QueryTurnsArgs) -> Result<()> {
         .as_deref()
         .map(resolve_query_time_bound)
         .transpose()?;
+    let resolved_session_id = args
+        .session_id
+        .as_deref()
+        .map(|session_id| {
+            resolve_query_session_id(
+                Some(args.root.clone()),
+                &args.project_id,
+                args.provider.map(provider_arg_to_source_kind),
+                session_id,
+            )
+        })
+        .transpose()?;
     if let Some(grep) = args.grep.as_deref() {
         let data = query_turn_matches(
             Some(args.root),
@@ -1372,7 +1462,7 @@ fn run_query_turns(args: QueryTurnsArgs) -> Result<()> {
                 project_id: &args.project_id,
                 project_root: None,
                 provider: args.provider.map(provider_arg_to_source_kind),
-                session_id: args.session_id.as_deref(),
+                session_id: resolved_session_id.as_deref(),
                 grep,
                 role: turn_search_role_arg_to_role(args.role),
                 context: args.context,
@@ -1398,8 +1488,7 @@ fn run_query_turns(args: QueryTurnsArgs) -> Result<()> {
     let provider = args
         .provider
         .context("query turns without --grep requires --provider")?;
-    let session_id = args
-        .session_id
+    let session_id = resolved_session_id
         .as_deref()
         .context("query turns without --grep requires --session-id")?;
     let data = query_turns(
@@ -1419,11 +1508,17 @@ fn run_query_turns(args: QueryTurnsArgs) -> Result<()> {
 /// Queries one full turn detail payload.
 fn run_query_turn(args: QueryTurnArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
+    let session_id = resolve_query_session_id(
+        Some(args.root.clone()),
+        &args.project_id,
+        Some(provider_arg_to_source_kind(args.provider)),
+        &args.session_id,
+    )?;
     let data = query_turn(
         Some(args.root),
         &args.project_id,
         provider_arg_to_source_kind(args.provider),
-        &args.session_id,
+        &session_id,
         args.turn_ordinal,
         TurnDetailOptions {
             include_raw: args.include_raw,
@@ -1444,6 +1539,18 @@ fn run_query_search(args: QuerySearchArgs) -> Result<()> {
 /// Queries one paginated turn-search payload.
 fn run_query_search_turns(args: QuerySearchTurnsArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
+    let session_id = args
+        .session_id
+        .as_deref()
+        .map(|session_id| {
+            resolve_query_session_id(
+                Some(args.root.clone()),
+                &args.project_id,
+                args.provider.map(provider_arg_to_source_kind),
+                session_id,
+            )
+        })
+        .transpose()?;
     let data = query_search_turns(
         Some(args.root),
         SearchTurnsRequest {
@@ -1451,7 +1558,7 @@ fn run_query_search_turns(args: QuerySearchTurnsArgs) -> Result<()> {
             mode: search_mode_arg_to_search_mode(args.mode),
             query: &args.query,
             provider: args.provider.map(provider_arg_to_source_kind),
-            session_id: args.session_id.as_deref(),
+            session_id: session_id.as_deref(),
             limit: args.limit,
             offset: args.offset,
         },
@@ -1485,11 +1592,17 @@ fn run_query_project_insights(args: QueryProjectInsightsArgs) -> Result<()> {
 /// Queries the turn insights payload for one provider session turn.
 fn run_query_turn_insights(args: QueryTurnInsightsArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
+    let session_id = resolve_query_session_id(
+        Some(args.root.clone()),
+        &args.project_id,
+        Some(provider_arg_to_source_kind(args.provider)),
+        &args.session_id,
+    )?;
     let data = query_turn_insight_report(
         Some(args.root),
         &args.project_id,
         provider_arg_to_source_kind(args.provider),
-        &args.session_id,
+        &session_id,
         args.turn_ordinal,
     )?;
     print_json_envelope("darc.query.insights.turn.v1", &data)
@@ -1694,12 +1807,15 @@ fn format_query_error(error: &anyhow::Error) -> String {
         .skip(1)
         .map(ToString::to_string)
         .collect::<Vec<_>>();
+    let structured = error.downcast_ref::<QueryProtocolError>();
     let payload = QueryErrorEnvelope {
         schema: "darc.error.v1",
         generated_at: current_utc_timestamp(),
         darc_version: env!("CARGO_PKG_VERSION"),
         error: QueryErrorData {
             message: error.to_string(),
+            code: structured.map(QueryProtocolError::code),
+            details: structured.map(QueryProtocolError::details),
             causes,
         },
     };
@@ -1714,6 +1830,23 @@ fn ensure_json_requested(json: bool) -> Result<()> {
         return Ok(());
     }
     bail!("query commands currently require --json")
+}
+
+/// Returns whether one string is a full canonical UUID text value.
+fn is_full_uuid_text(input: &str) -> bool {
+    input.len() == 36
+        && input
+            .chars()
+            .enumerate()
+            .all(|(index, ch)| matches_uuid_character(index, ch))
+}
+
+/// Returns whether one character matches the canonical UUID grammar at one fixed position.
+fn matches_uuid_character(index: usize, ch: char) -> bool {
+    match index {
+        8 | 13 | 18 | 23 => ch == '-',
+        _ => ch.is_ascii_hexdigit(),
+    }
 }
 
 /// Parses one rolling day-window argument such as `7d`.
@@ -1933,6 +2066,24 @@ impl TurnMatchesOnelineQueryData {
     }
 }
 
+/// Stores the `--pick-one` success payload for `darc query resolve-session`.
+#[derive(Debug, Clone, Serialize)]
+struct ResolveSessionPickOneQueryData {
+    query: String,
+    #[serde(rename = "match")]
+    r#match: ResolvedSessionMatch,
+}
+
+impl ResolveSessionPickOneQueryData {
+    /// Builds one single-match convenience payload from one resolved candidate.
+    fn new(query: &str, r#match: ResolvedSessionMatch) -> Self {
+        Self {
+            query: query.to_owned(),
+            r#match,
+        }
+    }
+}
+
 /// Stores one machine-readable query success envelope.
 #[derive(Debug, Serialize)]
 struct JsonEnvelope<'a, T> {
@@ -1955,6 +2106,10 @@ struct QueryErrorEnvelope<'a> {
 #[derive(Debug, Serialize)]
 struct QueryErrorData {
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    details: Option<JsonValue>,
     causes: Vec<String>,
 }
 
