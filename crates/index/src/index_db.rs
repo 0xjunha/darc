@@ -18,7 +18,7 @@ use self::{
 };
 
 /// Tracks one-shot SQLite migrations for derived analytics tables.
-const INDEX_DB_SCHEMA_VERSION: i32 = 5;
+const INDEX_DB_SCHEMA_VERSION: i32 = 8;
 
 /// Opens the index database and creates the current schema when missing.
 pub fn open_index_database(path: &Path) -> Result<Connection> {

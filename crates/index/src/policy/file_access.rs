@@ -288,6 +288,7 @@ fn derive_explicit_tool_file_accesses(
 
     extract_tool_paths(arguments_text)
         .into_iter()
+        .filter(|path| access_type != ToolAccessKind::List || !path_looks_directory_like(path))
         .map(|path| (access_type, path))
         .collect()
 }
@@ -327,11 +328,6 @@ pub fn apply_patch_changed_paths(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Returns whether one extracted access path still looks like a file path worth indexing.
-fn should_index_access_path(access_type: ToolAccessKind, path: &str) -> bool {
-    access_type != ToolAccessKind::List || !path_looks_directory_like(path)
-}
-
 /// Returns whether one extracted path looks like a directory root instead of a file path.
 pub(super) fn path_looks_directory_like(path: &str) -> bool {
     let path = path
@@ -351,10 +347,10 @@ pub(super) fn path_looks_directory_like(path: &str) -> bool {
     let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
-    if matches!(file_name, "." | "..") {
+    if matches!(file_name, "." | ".." | "~") {
         return true;
     }
-    if file_name.starts_with('.') {
+    if file_name.starts_with('.') || file_name.starts_with('$') {
         return true;
     }
 
@@ -372,9 +368,7 @@ fn build_file_access_records(
     let unique = accesses
         .iter()
         .filter_map(|(access_type, path)| {
-            sanitize_access_path(path)
-                .filter(|path| should_index_access_path(*access_type, path))
-                .map(|path| (*access_type, path))
+            sanitize_access_path(path).map(|path| (*access_type, path))
         })
         .collect::<BTreeSet<_>>();
 
