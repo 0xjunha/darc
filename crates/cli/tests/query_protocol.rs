@@ -989,8 +989,10 @@ fn turns_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["schema"], "darc.query.turns.v1");
     assert_eq!(value["data"]["since"], Value::Null);
     assert_eq!(value["data"]["until"], Value::Null);
+    assert_eq!(value["data"]["view"], "full");
     assert_eq!(value["data"]["turns"][0]["turn_id"], "turn-1");
     assert_eq!(value["data"]["turns"][0]["step_count"], 2);
+    assert_eq!(value["data"]["turns"][0]["tool_call_count"], 1);
     assert_eq!(value["data"]["turns"][0]["primary_model"], "gpt-5.4");
     assert_eq!(value["data"]["turns"][0]["total_token_count"], 321);
     assert_eq!(
@@ -1139,6 +1141,64 @@ fn turns_query_applies_since_and_until_filters_in_session_mode() -> Result<()> {
 }
 
 #[test]
+fn turns_query_oneline_view_emits_compact_rows() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-turns-oneline")?;
+    let full_output = run_darc([
+        "query",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--provider",
+        "codex",
+        "--session-id",
+        "session-1",
+        "--json",
+    ])?;
+    let oneline_output = run_darc([
+        "query",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--provider",
+        "codex",
+        "--session-id",
+        "session-1",
+        "--view",
+        "oneline",
+        "--json",
+    ])?;
+
+    assert!(full_output.status.success());
+    assert!(oneline_output.status.success());
+    let value = parse_json(&oneline_output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.turns.v1");
+    assert_eq!(value["data"]["view"], "oneline");
+    assert_eq!(value["data"]["turns"][0]["turn_ordinal"], 0);
+    assert_eq!(value["data"]["turns"][0]["role"], "user");
+    assert_eq!(
+        value["data"]["turns"][0]["user_preview"],
+        "Inspect the repository status"
+    );
+    assert_eq!(value["data"]["turns"][0]["step_count"], 2);
+    assert_eq!(value["data"]["turns"][0]["tool_call_count"], 1);
+    assert!(
+        value["data"]["turns"][0]
+            .as_object()
+            .unwrap()
+            .get("turn_id")
+            .is_none()
+    );
+    assert!(oneline_output.stdout.len() < full_output.stdout.len());
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
 fn turns_query_grep_emits_match_and_context_rows() -> Result<()> {
     let root = create_query_fixture_root("cli-query-turns-grep")?;
     let connection = open_index_database(&root.join("index.sqlite"))?;
@@ -1226,6 +1286,8 @@ fn turns_query_grep_emits_match_and_context_rows() -> Result<()> {
         "2026-04-06T00:00:00Z",
         "--until",
         "2026-04-07T00:00:00Z",
+        "--view",
+        "oneline",
         "--touched-path",
         "crates/index/**",
         "--json",
@@ -1239,6 +1301,7 @@ fn turns_query_grep_emits_match_and_context_rows() -> Result<()> {
     assert_eq!(value["data"]["session_id"], Value::Null);
     assert_eq!(value["data"]["role"], "user");
     assert_eq!(value["data"]["context"], 1);
+    assert_eq!(value["data"]["view"], "oneline");
     assert_eq!(
         value["data"]["turns"]
             .as_array()
@@ -1251,12 +1314,69 @@ fn turns_query_grep_emits_match_and_context_rows() -> Result<()> {
     assert_eq!(value["data"]["turns"][0]["match_kind"], "context");
     assert_eq!(value["data"]["turns"][1]["match_kind"], "match");
     assert_eq!(value["data"]["turns"][2]["match_kind"], "context");
+    assert_eq!(value["data"]["turns"][1]["tool_call_count"], 1);
     assert_eq!(value["data"]["turns"][0]["match_snippet"], Value::Null);
     assert!(
         value["data"]["turns"][1]["match_snippet"]
             .as_str()
             .is_some_and(|snippet| snippet.contains("staged init"))
     );
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn turns_query_oneline_grep_reports_assistant_role_and_first_user_line() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-turns-oneline-assistant")?;
+    let connection = open_index_database(&root.join("index.sqlite"))?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            turn_id: Some("turn-2"),
+            completed_at: Some("2026-04-06T10:05:05Z"),
+            user_message: "First line only\nSecond line should not appear",
+            final_answer_at: Some("2026-04-06T10:05:05Z"),
+            final_answer_text: Some("Use staged init in the assistant reply."),
+            step_count: 1,
+            tool_call_count: 1,
+            tool_output_count: 1,
+            has_final_answer: true,
+            duration_ms: 5_000,
+            ..IndexedTurnFixture::new(
+                "repo-abc123",
+                SourceKind::Codex,
+                "session-1",
+                1,
+                "2026-04-06T10:05:00Z",
+                "completed",
+                "[]",
+            )
+        },
+    )?;
+    drop(connection);
+
+    let output = run_darc([
+        "query",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--grep",
+        "staged init",
+        "--role",
+        "assistant",
+        "--view",
+        "oneline",
+        "--json",
+    ])?;
+
+    assert!(output.status.success());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.turn_matches.v1");
+    assert_eq!(value["data"]["turns"][0]["role"], "assistant");
+    assert_eq!(value["data"]["turns"][0]["user_preview"], "First line only");
 
     remove_root(&root)?;
     Ok(())

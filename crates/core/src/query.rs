@@ -16,7 +16,7 @@ pub use darc_query::{
     SessionSummary, SessionsQueryData, ShellCommandSummary, ToolUsageStat, TurnDetail,
     TurnDetailInsights, TurnDetailOptions, TurnInsights, TurnMatchKind, TurnMatchesQueryData,
     TurnMatchesQueryRequest, TurnSearchRole, TurnSummary, TurnsQueryData, TurnsQueryRequest,
-    WorkspaceDailyTimeStat, WorkspaceInsights, WorkspaceQueryData,
+    TurnsView, WorkspaceDailyTimeStat, WorkspaceInsights, WorkspaceQueryData,
 };
 use darc_query::{
     ProjectIndexAggregate, list_project_index_aggregates, query_project_files,

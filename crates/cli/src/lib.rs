@@ -7,7 +7,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use darc_core::query::{
     FilesQueryRequest, SearchMode, SearchTurnsRequest, TurnDetailOptions, TurnMatchesQueryRequest,
-    TurnSearchRole, TurnsQueryRequest, WikiDigestsQueryOptions, WikiEntriesQueryOptions,
+    TurnSearchRole, TurnsQueryRequest, TurnsView, WikiDigestsQueryOptions, WikiEntriesQueryOptions,
     WikiRunsQueryOptions, query_files, query_project_insight_report, query_search_turns,
     query_session_files, query_sessions, query_turn, query_turn_insight_report, query_turn_matches,
     query_turns, query_wiki_digest, query_wiki_digests, query_wiki_entries, query_wiki_entry,
@@ -496,6 +496,14 @@ struct QueryTurnsArgs {
         help = "Exclusive started_at upper bound. Example: `1d` or `2026-04-08T00:00:00Z`"
     )]
     until: Option<String>,
+
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = TurnListViewArg::Full,
+        help = "Return full turn summaries or a compact one-line skim"
+    )]
+    view: TurnListViewArg,
 
     #[arg(
         long = "touched-path",
@@ -1020,6 +1028,13 @@ enum TurnSearchRoleArg {
     Both,
 }
 
+/// Represents the supported turn-list projections for machine-readable turn queries.
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum TurnListViewArg {
+    Full,
+    Oneline,
+}
+
 /// Represents the supported turn-detail projection modes.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ViewArg {
@@ -1296,9 +1311,10 @@ fn run_query_turns(args: QueryTurnsArgs) -> Result<()> {
                 since: since.as_deref(),
                 until: until.as_deref(),
                 touched_path: args.touched_path.as_deref(),
+                view: turn_list_view_arg_to_view(args.view),
             },
         )?;
-        return print_json_envelope("darc.query.turn_matches.v1", &data);
+        return print_turn_matches_query_envelope(&data);
     }
 
     if args.role != TurnSearchRoleArg::Both {
@@ -1326,9 +1342,10 @@ fn run_query_turns(args: QueryTurnsArgs) -> Result<()> {
             session_id,
             since: since.as_deref(),
             until: until.as_deref(),
+            view: turn_list_view_arg_to_view(args.view),
         },
     )?;
-    print_json_envelope("darc.query.turns.v1", &data)
+    print_turns_query_envelope(&data)
 }
 
 /// Queries one full turn detail payload.
@@ -1580,6 +1597,28 @@ fn print_json_envelope<T: Serialize>(schema: &'static str, data: &T) -> Result<(
     Ok(())
 }
 
+/// Writes one `darc.query.turns.v1` envelope, compacting rows when `view` is `oneline`.
+fn print_turns_query_envelope(data: &darc_core::query::TurnsQueryData) -> Result<()> {
+    match data.view {
+        TurnsView::Full => print_json_envelope("darc.query.turns.v1", data),
+        TurnsView::Oneline => print_json_envelope(
+            "darc.query.turns.v1",
+            &TurnsOnelineQueryData::from_turns_query(data),
+        ),
+    }
+}
+
+/// Writes one `darc.query.turn_matches.v1` envelope, compacting rows when `view` is `oneline`.
+fn print_turn_matches_query_envelope(data: &darc_core::query::TurnMatchesQueryData) -> Result<()> {
+    match data.view {
+        TurnsView::Full => print_json_envelope("darc.query.turn_matches.v1", data),
+        TurnsView::Oneline => print_json_envelope(
+            "darc.query.turn_matches.v1",
+            &TurnMatchesOnelineQueryData::from_turn_matches_query(data),
+        ),
+    }
+}
+
 /// Returns one machine-readable JSON error envelope string.
 fn format_query_error(error: &anyhow::Error) -> String {
     let causes = error
@@ -1697,6 +1736,124 @@ fn turn_search_role_arg_to_role(role: TurnSearchRoleArg) -> TurnSearchRole {
         TurnSearchRoleArg::User => TurnSearchRole::User,
         TurnSearchRoleArg::Assistant => TurnSearchRole::Assistant,
         TurnSearchRoleArg::Both => TurnSearchRole::Both,
+    }
+}
+
+/// Converts one parsed turn-list view argument into the shared query projection enum.
+fn turn_list_view_arg_to_view(view: TurnListViewArg) -> TurnsView {
+    match view {
+        TurnListViewArg::Full => TurnsView::Full,
+        TurnListViewArg::Oneline => TurnsView::Oneline,
+    }
+}
+
+/// Stores one compact row for session-scoped `darc query turns --view oneline`.
+#[derive(Debug, Clone, Serialize)]
+struct TurnsOnelineTurnRow {
+    turn_ordinal: u64,
+    role: TurnSearchRole,
+    user_preview: String,
+    step_count: u64,
+    tool_call_count: u64,
+}
+
+/// Stores one compact top-level payload for session-scoped turn skims.
+#[derive(Debug, Clone, Serialize)]
+struct TurnsOnelineQueryData {
+    project_id: String,
+    provider: SourceKind,
+    session_id: String,
+    since: Option<String>,
+    until: Option<String>,
+    view: TurnsView,
+    turns: Vec<TurnsOnelineTurnRow>,
+}
+
+impl TurnsOnelineQueryData {
+    /// Builds one compact session-turn payload from the full shared query result.
+    fn from_turns_query(data: &darc_core::query::TurnsQueryData) -> Self {
+        Self {
+            project_id: data.project_id.clone(),
+            provider: data.provider,
+            session_id: data.session_id.clone(),
+            since: data.since.clone(),
+            until: data.until.clone(),
+            view: data.view,
+            turns: data
+                .turns
+                .iter()
+                .map(|turn| TurnsOnelineTurnRow {
+                    turn_ordinal: turn.turn_ordinal,
+                    role: turn.oneline_role,
+                    user_preview: turn.oneline_user_preview.clone(),
+                    step_count: turn.step_count,
+                    tool_call_count: turn.tool_call_count,
+                })
+                .collect(),
+        }
+    }
+}
+
+/// Stores one compact row for grep-scoped `darc query turns --grep --view oneline`.
+#[derive(Debug, Clone, Serialize)]
+struct TurnMatchesOnelineTurnRow {
+    provider: SourceKind,
+    session_id: String,
+    turn_ordinal: u64,
+    role: TurnSearchRole,
+    user_preview: String,
+    step_count: u64,
+    tool_call_count: u64,
+    match_kind: Option<darc_core::query::TurnMatchKind>,
+    match_snippet: Option<String>,
+}
+
+/// Stores one compact top-level payload for grep-scoped turn skims.
+#[derive(Debug, Clone, Serialize)]
+struct TurnMatchesOnelineQueryData {
+    project_id: String,
+    provider: Option<SourceKind>,
+    session_id: Option<String>,
+    grep: String,
+    role: TurnSearchRole,
+    context: u64,
+    since: Option<String>,
+    until: Option<String>,
+    touched_path: Option<String>,
+    view: TurnsView,
+    turns: Vec<TurnMatchesOnelineTurnRow>,
+}
+
+impl TurnMatchesOnelineQueryData {
+    /// Builds one compact grep-turn payload from the full shared query result.
+    fn from_turn_matches_query(data: &darc_core::query::TurnMatchesQueryData) -> Self {
+        Self {
+            project_id: data.project_id.clone(),
+            provider: data.provider,
+            session_id: data.session_id.clone(),
+            grep: data.grep.clone(),
+            role: data.role,
+            context: data.context,
+            since: data.since.clone(),
+            until: data.until.clone(),
+            touched_path: data.touched_path.clone(),
+            view: data.view,
+            turns: data
+                .turns
+                .iter()
+                .map(|turn| TurnMatchesOnelineTurnRow {
+                    provider: turn.provider,
+                    session_id: turn.session_id.clone(),
+                    turn_ordinal: turn.turn_ordinal,
+                    role: turn.oneline_role,
+                    user_preview: turn.oneline_user_preview.clone(),
+                    step_count: turn.step_count,
+                    tool_call_count: turn.tool_call_count,
+                    match_kind: turn.match_kind,
+                    match_snippet: turn.match_snippet.clone(),
+                })
+                .collect(),
+        }
     }
 }
 

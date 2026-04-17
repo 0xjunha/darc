@@ -27,8 +27,8 @@ All query commands currently require `--json`.
 - `darc query files --root <path> --project-id <id> --path <glob> --since <iso-8601|<days>d> --until <iso-8601|<days>d> --json`
 - `darc query files --root <path> --project-id <id> --co-touched-with <path> --limit <n> --json`
 - `darc query session-files --root <path> --project-id <id> --provider <provider> --session-id <id> --json`
-- `darc query turns --root <path> --project-id <id> --provider <provider> --session-id <id> --since <iso-8601|<days>d> --until <iso-8601|<days>d> --json`
-- `darc query turns --root <path> --project-id <id> --grep <text> --role <user|assistant|both> --context <n> --since <iso-8601|<days>d> --until <iso-8601|<days>d> --touched-path <glob> --json`
+- `darc query turns --root <path> --project-id <id> --provider <provider> --session-id <id> --since <iso-8601|<days>d> --until <iso-8601|<days>d> --view <full|oneline> --json`
+- `darc query turns --root <path> --project-id <id> --grep <text> --role <user|assistant|both> --context <n> --since <iso-8601|<days>d> --until <iso-8601|<days>d> --view <full|oneline> --touched-path <glob> --json`
 - `darc query turn --root <path> --project-id <id> --provider <provider> --session-id <id> --turn-ordinal <n> --json`
 - `darc query turn --root <path> --project-id <id> --provider <provider> --session-id <id> --turn-ordinal <n> --view <full|narrative> --json`
 - `darc query turn --root <path> --project-id <id> --provider <provider> --session-id <id> --turn-ordinal <n> --include-raw --json`
@@ -73,6 +73,18 @@ The protocol is intentionally composable. A few common read patterns are now fir
     --project-id repo-abc123 \
     --provider codex \
     --session-id session-1 \
+    --json
+  ```
+
+- skim one long session as one compact row per turn:
+
+  ```bash
+  darc query turns \
+    --root ~/.darc \
+    --project-id repo-abc123 \
+    --provider codex \
+    --session-id session-1 \
+    --view oneline \
     --json
   ```
 
@@ -165,6 +177,13 @@ Today:
 - `darc.query.wiki.runs.v1` returns `project_id` plus deterministic `runs`, with optional `status` and `limit`
 - empty lists are returned when no canonical entries, digests, or runs exist yet
 - wiki payloads do not expose internal storage paths
+
+`darc query turns` now supports two projections under the existing schemas:
+
+- `view: "full"` keeps the existing turn-summary shape and now also includes `tool_call_count`
+- `view: "oneline"` returns a smaller per-turn object with `turn_ordinal`, `role`, `user_preview`, `step_count`, and `tool_call_count`
+- `oneline.user_preview` is derived from the first `user_message` line and capped at 80 characters
+- `oneline.role` uses the same `user` / `assistant` / `both` spellings as the grep filter when a grep match row is returned
 
 ## Stability rules
 

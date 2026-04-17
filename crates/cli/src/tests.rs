@@ -615,6 +615,7 @@ fn parses_query_turns_session_scope_command() {
                 grep,
                 role,
                 context,
+                view,
                 json,
                 ..
             }),
@@ -624,6 +625,7 @@ fn parses_query_turns_session_scope_command() {
             && grep.is_none()
             && matches!(role, super::TurnSearchRoleArg::Both)
             && context == 0
+            && matches!(view, super::TurnListViewArg::Full)
             && json
     ));
 }
@@ -646,6 +648,8 @@ fn parses_query_turns_grep_with_context_and_filters() {
         "5d",
         "--until",
         "2026-04-07T00:00:00Z",
+        "--view",
+        "oneline",
         "--touched-path",
         "crates/index/**",
         "--json",
@@ -661,6 +665,7 @@ fn parses_query_turns_grep_with_context_and_filters() {
                 context,
                 since,
                 until,
+                view,
                 touched_path,
                 json,
                 ..
@@ -671,6 +676,7 @@ fn parses_query_turns_grep_with_context_and_filters() {
             && context == 1
             && since.as_deref() == Some("5d")
             && until.as_deref() == Some("2026-04-07T00:00:00Z")
+            && matches!(view, super::TurnListViewArg::Oneline)
             && touched_path.as_deref() == Some("crates/index/**")
             && json
     ));
@@ -774,6 +780,8 @@ fn query_turns_help_mentions_grep_context_and_touched_path() {
     assert!(help.contains("--grep"));
     assert!(help.contains("--role"));
     assert!(help.contains("--context"));
+    assert!(help.contains("--view"));
+    assert!(help.contains("oneline"));
     assert!(help.contains("--since"));
     assert!(help.contains("--until"));
     assert!(help.contains("--touched-path"));

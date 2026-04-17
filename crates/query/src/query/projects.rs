@@ -20,7 +20,7 @@ use super::{
     ProjectIndexAggregate, SessionSummary, SessionsQueryData, TurnMatchKind, TurnMatchesQueryData,
     TurnMatchesQueryRequest, TurnSearchRole, TurnSummary, TurnsQueryData, TurnsQueryRequest,
     open_existing_index_database, optional_sql_count_to_u64, parse_provider, parse_session_kind,
-    parse_turn_status, preview_text, sql_count_to_u64,
+    parse_turn_status, preview_first_line, preview_text, sql_count_to_u64,
 };
 
 const PROJECT_INDEX_AGGREGATES_SQL: &str = "
@@ -257,6 +257,7 @@ const TURN_SUMMARY_COLUMNS: &[&str] = &[
     "user_message",
     "has_final_answer",
     "step_count",
+    "tool_call_count",
     "primary_model",
     "total_token_count",
     "provider_total_token_count",
@@ -296,6 +297,7 @@ type RawTurnSummaryRow = (
     Option<String>,
     String,
     String,
+    i64,
     i64,
     i64,
     Option<String>,
@@ -416,6 +418,7 @@ fn build_turns_query(
         session_id: request.session_id.to_owned(),
         since: request.since.map(str::to_owned),
         until: request.until.map(str::to_owned),
+        view: request.view,
         turns: query_session_turn_summaries(
             connection,
             project_id,
@@ -448,6 +451,7 @@ fn build_turn_matches_query(
         since: request.since.map(str::to_owned),
         until: request.until.map(str::to_owned),
         touched_path: request.touched_path.map(str::to_owned),
+        view: request.view,
         turns,
     })
 }
@@ -668,6 +672,10 @@ fn query_grep_turns(
         if match_keys.contains(&turn_key) {
             turn.match_kind = Some(TurnMatchKind::Match);
             turn.match_snippet = match_snippets.get(&turn_key).cloned();
+            turn.oneline_role = match request.role {
+                TurnSearchRole::Both => TurnSearchRole::Both,
+                role => role,
+            };
         } else {
             turn.match_kind = Some(TurnMatchKind::Context);
             turn.match_snippet = None;
@@ -981,8 +989,8 @@ fn read_turn_summary_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawTurnSum
         row.get::<_, String>(8)?,
         row.get::<_, i64>(9)?,
         row.get::<_, i64>(10)?,
-        row.get::<_, Option<String>>(11)?,
-        row.get::<_, Option<i64>>(12)?,
+        row.get::<_, i64>(11)?,
+        row.get::<_, Option<String>>(12)?,
         row.get::<_, Option<i64>>(13)?,
         row.get::<_, Option<i64>>(14)?,
         row.get::<_, Option<i64>>(15)?,
@@ -990,9 +998,10 @@ fn read_turn_summary_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawTurnSum
         row.get::<_, Option<i64>>(17)?,
         row.get::<_, Option<i64>>(18)?,
         row.get::<_, Option<i64>>(19)?,
-        row.get::<_, i64>(20)?,
+        row.get::<_, Option<i64>>(20)?,
         row.get::<_, i64>(21)?,
         row.get::<_, i64>(22)?,
+        row.get::<_, i64>(23)?,
     ))
 }
 
@@ -1008,15 +1017,18 @@ fn build_turn_summary(row: RawTurnSummaryRow) -> Result<TurnSummary> {
         completed_at: row.6,
         status: parse_turn_status(&row.7)?,
         user_preview: preview_text(&row.8),
+        oneline_user_preview: preview_first_line(&row.8),
         has_final_answer: row.9 != 0,
         step_count: sql_count_to_u64(row.10)?,
-        primary_model: row.11,
-        token_usage: build_token_usage(row.13, row.14, row.15, row.16, row.17, row.18, row.12)?,
-        total_token_count: optional_sql_count_to_u64(row.12)?,
-        effective_agent_runtime_ms: optional_sql_count_to_u64(row.19)?,
-        changed_file_count: sql_count_to_u64(row.20)?,
-        added_line_count: sql_count_to_u64(row.21)?,
-        removed_line_count: sql_count_to_u64(row.22)?,
+        tool_call_count: sql_count_to_u64(row.11)?,
+        primary_model: row.12,
+        token_usage: build_token_usage(row.14, row.15, row.16, row.17, row.18, row.19, row.13)?,
+        total_token_count: optional_sql_count_to_u64(row.13)?,
+        effective_agent_runtime_ms: optional_sql_count_to_u64(row.20)?,
+        changed_file_count: sql_count_to_u64(row.21)?,
+        added_line_count: sql_count_to_u64(row.22)?,
+        removed_line_count: sql_count_to_u64(row.23)?,
+        oneline_role: TurnSearchRole::User,
         match_kind: None,
         match_snippet: None,
     })

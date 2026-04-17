@@ -218,8 +218,10 @@ pub struct TurnSummary {
     pub completed_at: Option<String>,
     pub status: NormalizedTurnStatus,
     pub user_preview: String,
+    pub oneline_user_preview: String,
     pub has_final_answer: bool,
     pub step_count: u64,
+    pub tool_call_count: u64,
     pub primary_model: Option<String>,
     pub token_usage: Option<NormalizedTokenUsage>,
     pub total_token_count: Option<u64>,
@@ -227,6 +229,7 @@ pub struct TurnSummary {
     pub changed_file_count: u64,
     pub added_line_count: u64,
     pub removed_line_count: u64,
+    pub oneline_role: TurnSearchRole,
     pub match_kind: Option<TurnMatchKind>,
     pub match_snippet: Option<String>,
 }
@@ -248,6 +251,15 @@ pub enum TurnMatchKind {
     Context,
 }
 
+/// Identifies which turn-list projection one machine client requested.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnsView {
+    #[default]
+    Full,
+    Oneline,
+}
+
 /// Stores the full turn-list query payload for one provider session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TurnsQueryData {
@@ -256,6 +268,7 @@ pub struct TurnsQueryData {
     pub session_id: String,
     pub since: Option<String>,
     pub until: Option<String>,
+    pub view: TurnsView,
     pub turns: Vec<TurnSummary>,
 }
 
@@ -271,6 +284,7 @@ pub struct TurnMatchesQueryData {
     pub since: Option<String>,
     pub until: Option<String>,
     pub touched_path: Option<String>,
+    pub view: TurnsView,
     pub turns: Vec<TurnSummary>,
 }
 
@@ -282,6 +296,7 @@ pub struct TurnsQueryRequest<'a> {
     pub session_id: &'a str,
     pub since: Option<&'a str>,
     pub until: Option<&'a str>,
+    pub view: TurnsView,
 }
 
 /// Collects the supported filters for one machine-readable grep-scoped turn query.
@@ -297,6 +312,7 @@ pub struct TurnMatchesQueryRequest<'a> {
     pub since: Option<&'a str>,
     pub until: Option<&'a str>,
     pub touched_path: Option<&'a str>,
+    pub view: TurnsView,
 }
 
 /// Identifies the supported turn-search modes.
@@ -597,11 +613,31 @@ fn optional_sql_count_to_u64(value: Option<i64>) -> Result<Option<u64>> {
 
 /// Normalizes one user message into a single-line turn preview.
 fn preview_text(text: &str) -> String {
-    let single_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if single_line.len() <= 126 {
-        return single_line;
+    truncate_preview(&normalize_preview_whitespace(text), 126)
+}
+
+/// Normalizes one user message into a single-line first-line preview for compact lists.
+fn preview_first_line(text: &str) -> String {
+    truncate_preview(
+        &normalize_preview_whitespace(text.lines().next().unwrap_or_default()),
+        80,
+    )
+}
+
+/// Collapses one preview string's whitespace into single spaces.
+fn normalize_preview_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Truncates one normalized preview to the requested character cap.
+fn truncate_preview(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_owned();
     }
-    let mut preview = single_line.chars().take(125).collect::<String>();
+    let mut preview = text
+        .chars()
+        .take(max_chars.saturating_sub(1))
+        .collect::<String>();
     preview.push('…');
     preview
 }
