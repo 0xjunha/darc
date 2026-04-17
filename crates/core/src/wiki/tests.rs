@@ -49,7 +49,7 @@ fn backend_creates_empty_project_wiki_and_lists_zero_state() -> Result<()> {
         &root,
         &SharedConfig::new(
             root.clone(),
-            vec![build_project(&root, project_id, project_root)],
+            vec![build_project(&root, project_id, project_root.clone())],
             SourcesConfig::default(),
         ),
     )?;
@@ -90,7 +90,7 @@ fn backend_round_trips_run_state_through_core_wiring() -> Result<()> {
         &root,
         &SharedConfig::new(
             root.clone(),
-            vec![build_project(&root, project_id, project_root)],
+            vec![build_project(&root, project_id, project_root.clone())],
             SourcesConfig::default(),
         ),
     )?;
