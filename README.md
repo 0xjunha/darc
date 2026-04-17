@@ -116,10 +116,11 @@ Darc's read-side query surface now covers project-scoped search, compact turn sk
 checks, and single-call session bundles.
 
 - `darc query search turns` handles keyword, file-name, and file-path search with optional provider/session filters.
-- `darc query turns` works in two modes: session-scoped lists (`--provider --session-id`) and grep-scoped matches
-  (`--grep`) with role, context, time, touched-path, and compact `--view oneline` options.
+- `darc query turns` works in two modes: session-scoped lists (`--provider --session-id`, full UUID only) and
+  grep-scoped matches (`--grep`) with role, context, time, touched-path, and compact `--view oneline` options.
 - `darc query files`, `darc query session-files`, and `darc query session-bundle` let clients pivot between matched
   files, touched sessions, per-session file summaries, and one-call session detail bundles.
+- `darc query resolve-session` explicitly expands a UUID prefix before you call session-scoped data commands.
 - `darc query wiki entries` adds grep, evidence-reference, and session-coverage filters so digest prep can check
   existing wiki coverage before proposing new entries.
 
@@ -152,10 +153,12 @@ darc query files \
 ```
 
 ```bash
+ID=$(darc query resolve-session 11111111 --pick-one --json | jq -r '.data.match.session_id')
+
 darc query session-bundle \
   --project-id repo-abc123 \
   --provider codex \
-  --session-id session-1 \
+  --session-id "$ID" \
   --view narrative \
   --json
 ```

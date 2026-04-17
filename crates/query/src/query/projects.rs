@@ -8,7 +8,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use darc_paths::SourceKind;
 use glob::Pattern;
-use rusqlite::{Connection, params, params_from_iter, types::Value};
+use rusqlite::{Connection, OptionalExtension, params, params_from_iter, types::Value};
 
 use super::files::{
     filter_session_summaries_by_touched_path, glob_match_options, normalize_query_path_pattern,
@@ -17,7 +17,8 @@ use super::files::{
 use super::search::build_fts_phrase_query;
 use super::turns::build_token_usage;
 use super::{
-    ProjectIndexAggregate, SessionSummary, SessionsQueryData, TurnMatchKind, TurnMatchesQueryData,
+    ProjectIndexAggregate, ResolveSessionQueryData, ResolveSessionQueryRequest,
+    ResolvedSessionMatch, SessionSummary, SessionsQueryData, TurnMatchKind, TurnMatchesQueryData,
     TurnMatchesQueryRequest, TurnSearchRole, TurnSummary, TurnsQueryData, TurnsQueryRequest,
     open_existing_index_database, optional_sql_count_to_u64, parse_provider, parse_session_kind,
     parse_turn_status, preview_first_line, preview_text, sql_count_to_u64,
@@ -245,6 +246,32 @@ const TURN_MATCHES_SQL: &str = "
         turn_search.turn_ordinal ASC
 ";
 
+const RESOLVE_SESSIONS_SQL: &str = "
+    SELECT DISTINCT
+        provider,
+        session_id
+    FROM sessions
+    WHERE (?1 IS NULL OR provider = ?1)
+        AND session_id LIKE ?2 || '%' COLLATE NOCASE
+    ORDER BY
+        provider ASC,
+        session_id ASC
+    LIMIT ?3
+";
+
+const PROJECT_SESSION_ID_SQL: &str = "
+    SELECT
+        session_id
+    FROM sessions
+    WHERE project_id = ?1
+        AND (?2 IS NULL OR provider = ?2)
+        AND session_id = ?3 COLLATE NOCASE
+    ORDER BY
+        provider ASC,
+        session_id ASC
+    LIMIT 1
+";
+
 const MATCH_SNIPPET_START: &str = "[[";
 const MATCH_SNIPPET_END: &str = "]]";
 const MAX_TURN_KEYS_PER_QUERY: usize = 250;
@@ -379,6 +406,26 @@ pub fn query_project_turn_matches(
     build_turn_matches_query(&connection, request)
 }
 
+/// Resolves one full session id or prefix into deterministic provider/session matches.
+pub fn query_resolve_sessions(
+    index_db_path: &Path,
+    request: ResolveSessionQueryRequest<'_>,
+) -> Result<ResolveSessionQueryData> {
+    let connection = open_existing_index_database(index_db_path)?;
+    build_resolve_sessions_query(&connection, request)
+}
+
+/// Looks up one canonical project-scoped session id using exact case-insensitive matching.
+pub fn lookup_project_session_id(
+    index_db_path: &Path,
+    project_id: &str,
+    provider: Option<SourceKind>,
+    session_id: &str,
+) -> Result<Option<String>> {
+    let connection = open_existing_index_database(index_db_path)?;
+    query_project_session_id(&connection, project_id, provider, session_id)
+}
+
 /// Queries the stored project aggregates for every indexed project.
 fn query_project_index_aggregates(connection: &Connection) -> Result<Vec<ProjectIndexAggregate>> {
     let mut statement = connection
@@ -408,6 +455,46 @@ fn query_project_index_aggregates(connection: &Connection) -> Result<Vec<Project
             },
         )
         .collect()
+}
+
+/// Builds one session-resolution response from the indexed session table.
+fn build_resolve_sessions_query(
+    connection: &Connection,
+    request: ResolveSessionQueryRequest<'_>,
+) -> Result<ResolveSessionQueryData> {
+    let limit = request
+        .limit
+        .checked_add(1)
+        .context("resolve-session limit exceeds usize range")?;
+    let limit = i64::try_from(limit).context("resolve-session limit exceeds SQLite range")?;
+    let provider = request.provider.map(SourceKind::directory_name);
+    let mut statement = connection
+        .prepare(RESOLVE_SESSIONS_SQL)
+        .context("failed to prepare resolve-session query")?;
+    let rows = statement
+        .query_map(params![provider, request.query, limit], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .context("failed to query session resolution matches")?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed to read session resolution rows")?;
+    let truncated = rows.len() > request.limit;
+    let matches = rows
+        .into_iter()
+        .take(request.limit)
+        .map(|(provider, session_id)| -> Result<_> {
+            Ok(ResolvedSessionMatch {
+                provider: parse_provider(&provider)?,
+                session_id,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(ResolveSessionQueryData {
+        query: request.query.to_owned(),
+        total: u64::try_from(matches.len()).context("resolve-session match count exceeds u64")?,
+        truncated,
+        matches,
+    })
 }
 
 /// Builds one session-scoped turn-list response.
@@ -598,6 +685,26 @@ pub(crate) fn query_session_summary(
     .into_iter()
     .next()
     .with_context(|| format!("session `{session_ref}` was not found in project `{project_id}`"))
+}
+
+/// Queries one canonical project-scoped session id using exact case-insensitive matching.
+pub(crate) fn query_project_session_id(
+    connection: &Connection,
+    project_id: &str,
+    provider: Option<SourceKind>,
+    session_id: &str,
+) -> Result<Option<String>> {
+    let provider = provider.map(SourceKind::directory_name);
+    let mut statement = connection
+        .prepare(PROJECT_SESSION_ID_SQL)
+        .context("failed to prepare project session id query")?;
+    let session_id = statement
+        .query_row(params![project_id, provider, session_id], |row| {
+            row.get::<_, String>(0)
+        })
+        .optional()
+        .context("failed to query project session id")?;
+    Ok(session_id)
 }
 
 /// Parses one JSON array of edited session file paths from SQLite aggregation output.
@@ -1071,6 +1178,8 @@ pub(super) fn smoke_test_sql(connection: &Connection) -> Result<()> {
             PROJECT_INDEX_AGGREGATES_SQL,
         ),
         ("project sessions query", PROJECT_SESSIONS_SQL),
+        ("resolve sessions query", RESOLVE_SESSIONS_SQL),
+        ("project session id query", PROJECT_SESSION_ID_SQL),
         ("session turns query", session_turns_sql()),
         ("grep turns query", TURN_MATCHES_SQL),
     ] {

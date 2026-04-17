@@ -262,9 +262,9 @@ mod tests {
     fn parses_rollout_file_session_ids() {
         assert_eq!(
             parse_rollout_file_session_id(
-                "rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"
+                "rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl"
             ),
-            Some("019d3415-0b9c-7dc3-88e0-e9cb7a789e3f".to_owned())
+            Some("22222222-2222-4222-8222-22222222223f".to_owned())
         );
         assert_eq!(parse_rollout_file_session_id("rollout-invalid.jsonl"), None);
     }
@@ -285,8 +285,8 @@ mod tests {
     fn rejects_mismatched_rollout_session_ids() {
         let error = reconcile_rollout_session_id(
             Path::new("rollout.jsonl"),
-            Some("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
-            Some("019d3415-0b9c-7dc3-88e0-e9cb7a789e40"),
+            Some("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl"),
+            Some("22222222-2222-4222-8222-222222222240"),
         )
         .unwrap_err();
 

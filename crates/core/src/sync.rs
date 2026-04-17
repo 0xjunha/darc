@@ -413,11 +413,11 @@ mod tests {
         config.projects[0].git_upstream = Some(remote.into());
         ws.write_config(&config)?;
 
-        let rollout_name = "rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl";
+        let rollout_name = "rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl";
         write_file(
             &codex_sessions.join(rollout_name),
             &format!(
-                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n{{\"type\":\"message\"}}\n",
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n{{\"type\":\"message\"}}\n",
                 related_subdir.display()
             ),
         )?;

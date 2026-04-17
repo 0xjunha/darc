@@ -10,21 +10,25 @@ use darc_paths::{
     SourceKind, parse_utc_timestamp, resolve_query_time_bound as resolve_shared_query_time_bound,
 };
 pub use darc_query::{
-    CoTouchedFileSummary, DailyTimeStat, FileSessionSummary, FileUsageStat, FilesQueryData,
-    FilesQueryMode, FilesQueryRequest, HardDebuggingTurn, ProjectInsights, ProjectSummary,
-    ProjectTimeStat, RootAvailability, RootInfo, SearchMode, SearchTurnHit, SearchTurnsQueryData,
-    SearchTurnsRequest, SessionBundleQueryData, SessionBundleView, SessionFileSummary,
-    SessionFilesQueryData, SessionKind, SessionRuntimeStat, SessionSummary, SessionsQueryData,
-    ShellCommandSummary, ToolUsageStat, TurnDetail, TurnDetailInsights, TurnDetailOptions,
-    TurnInsights, TurnMatchKind, TurnMatchesQueryData, TurnMatchesQueryRequest, TurnSearchRole,
-    TurnSummary, TurnsQueryData, TurnsQueryRequest, TurnsView, WorkspaceDailyTimeStat,
-    WorkspaceInsights, WorkspaceQueryData,
+    CoTouchedFileSummary, DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, DailyTimeStat, FileSessionSummary,
+    FileUsageStat, FilesQueryData, FilesQueryMode, FilesQueryRequest, HardDebuggingTurn,
+    ProjectInsights, ProjectSummary, ProjectTimeStat, ResolveSessionQueryData,
+    ResolveSessionQueryRequest, ResolvedSessionMatch, RootAvailability, RootInfo, SearchMode,
+    SearchTurnHit, SearchTurnsQueryData, SearchTurnsRequest, SessionBundleQueryData,
+    SessionBundleView, SessionFileSummary, SessionFilesQueryData, SessionKind, SessionRuntimeStat,
+    SessionSummary, SessionsQueryData, ShellCommandSummary, ToolUsageStat, TurnDetail,
+    TurnDetailInsights, TurnDetailOptions, TurnInsights, TurnMatchKind, TurnMatchesQueryData,
+    TurnMatchesQueryRequest, TurnSearchRole, TurnSummary, TurnsQueryData, TurnsQueryRequest,
+    TurnsView, WorkspaceDailyTimeStat, WorkspaceInsights, WorkspaceQueryData,
 };
 use darc_query::{
-    ProjectIndexAggregate, list_project_index_aggregates, query_project_files,
-    query_project_insights, query_project_session_bundle, query_project_session_files,
-    query_project_sessions, query_project_turn_matches as query_index_turn_matches,
-    query_project_turns as query_index_turns, query_search_turns as query_project_search_turns,
+    ProjectIndexAggregate, list_project_index_aggregates, lookup_project_session_id,
+    query_project_files, query_project_insights, query_project_session_bundle,
+    query_project_session_files, query_project_sessions,
+    query_project_turn_matches as query_index_turn_matches,
+    query_project_turns as query_index_turns,
+    query_resolve_sessions as query_index_resolve_sessions,
+    query_search_turns as query_project_search_turns,
     query_session_turn_details as query_project_session_turn_details, query_turn_detail,
     query_turn_insights, query_workspace_insights,
 };
@@ -35,6 +39,8 @@ use darc_wiki::{
     parse_session_reference,
 };
 use serde::Serialize;
+use serde_json::{Value as JsonValue, json};
+use thiserror::Error;
 
 use crate::{
     config::{ProjectConfig, SharedConfig, load_config},
@@ -156,6 +162,36 @@ pub fn query_files(
             project_root: Some(context.project.local_path.as_path()),
             ..request
         },
+    )
+}
+
+/// Resolves one full session id or UUID prefix across every indexed provider.
+pub fn query_resolve_sessions(
+    root: Option<PathBuf>,
+    request: ResolveSessionQueryRequest<'_>,
+) -> Result<ResolveSessionQueryData> {
+    let root = inspect_root(root);
+    ensure_database_exists(&root)?;
+    let query = validate_resolve_session_query(request.query)?;
+    query_index_resolve_sessions(
+        &root.database_path,
+        ResolveSessionQueryRequest { query, ..request },
+    )
+}
+
+/// Resolves one strict `darc query` session id against one project and optional provider filter.
+pub fn resolve_query_session_id(
+    root: Option<PathBuf>,
+    project_id: &str,
+    provider: Option<SourceKind>,
+    session_id: &str,
+) -> Result<String> {
+    let context = load_project_query_context(root, project_id)?;
+    validate_project_session_id(
+        &context.root.database_path,
+        &context.project.id,
+        provider,
+        session_id,
     )
 }
 
@@ -315,6 +351,152 @@ pub fn query_project_insight_report(
 ) -> Result<ProjectInsights> {
     let context = load_project_query_context(root, project_id)?;
     query_project_insights(&context.root.database_path, &context.project.id, limit)
+}
+
+/// Stores the stable structured query errors that map onto `darc.error.v1`.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum QueryProtocolError {
+    #[error("{message}")]
+    InvalidDataSessionId { input: String, message: String },
+    #[error("{message}")]
+    InvalidResolveSessionQuery { input: String, message: String },
+    #[error("{message}")]
+    UnknownDataSession {
+        input: String,
+        looks_like_prefix: bool,
+        message: String,
+    },
+    #[error("{message}")]
+    UnknownResolveSession {
+        input: String,
+        looks_like_prefix: bool,
+        message: String,
+    },
+    #[error("{message}")]
+    AmbiguousSession {
+        query: String,
+        matches: Vec<ResolvedSessionMatch>,
+        truncated: bool,
+        message: String,
+    },
+}
+
+impl QueryProtocolError {
+    /// Returns the stable machine-readable error code for the current query failure.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidDataSessionId { .. } | Self::InvalidResolveSessionQuery { .. } => {
+                "invalid_session_id"
+            }
+            Self::UnknownDataSession { .. } | Self::UnknownResolveSession { .. } => {
+                "unknown_session"
+            }
+            Self::AmbiguousSession { .. } => "ambiguous_session",
+        }
+    }
+
+    /// Returns the optional structured JSON detail block for the current query failure.
+    pub fn details(&self) -> JsonValue {
+        match self {
+            Self::InvalidDataSessionId { input, .. } => json!({ "session": input }),
+            Self::InvalidResolveSessionQuery { input, .. } => json!({ "query": input }),
+            Self::UnknownDataSession {
+                input,
+                looks_like_prefix,
+                ..
+            } => json!({ "session": input, "looks_like_prefix": looks_like_prefix }),
+            Self::UnknownResolveSession {
+                input,
+                looks_like_prefix,
+                ..
+            } => json!({ "query": input, "looks_like_prefix": looks_like_prefix }),
+            Self::AmbiguousSession {
+                query,
+                matches,
+                truncated,
+                ..
+            } => json!({
+                "query": query,
+                "matches": matches,
+                "truncated": truncated,
+            }),
+        }
+    }
+
+    /// Builds one structured invalid session-id error for a data command.
+    pub fn invalid_data_session_id(input: &str) -> Self {
+        Self::InvalidDataSessionId {
+            input: input.to_owned(),
+            message: format!("Session id `{input}` must be the full UUID."),
+        }
+    }
+
+    /// Builds one structured invalid session-id error for `resolve-session`.
+    pub fn invalid_resolve_session_query(input: &str) -> Self {
+        Self::InvalidResolveSessionQuery {
+            input: input.to_owned(),
+            message: format!("Session query `{input}` must be a full UUID or UUID prefix."),
+        }
+    }
+
+    /// Builds one structured unknown-session error for one strict data command.
+    pub fn unknown_data_session(input: &str, looks_like_prefix: bool) -> Self {
+        let message = if looks_like_prefix {
+            format!(
+                "No session found for id `{input}`. The session id must be the full UUID. Try `darc query resolve-session {input}` to expand a prefix."
+            )
+        } else {
+            format!("No session found for id `{input}`.")
+        };
+        Self::UnknownDataSession {
+            input: input.to_owned(),
+            looks_like_prefix,
+            message,
+        }
+    }
+
+    /// Builds one structured unknown-session error for `resolve-session`.
+    pub fn unknown_resolve_session(input: &str, looks_like_prefix: bool) -> Self {
+        let message = if looks_like_prefix {
+            format!("No session matched prefix `{input}`.")
+        } else {
+            format!("No session found for id `{input}`.")
+        };
+        Self::UnknownResolveSession {
+            input: input.to_owned(),
+            looks_like_prefix,
+            message,
+        }
+    }
+
+    /// Builds one structured ambiguity error for `resolve-session --pick-one`.
+    pub fn ambiguous_session(
+        query: &str,
+        matches: Vec<ResolvedSessionMatch>,
+        truncated: bool,
+    ) -> Self {
+        let provider_count = matches
+            .iter()
+            .map(|candidate| candidate.provider)
+            .collect::<BTreeSet<_>>()
+            .len();
+        let match_count = matches.len();
+        let message = if truncated {
+            format!(
+                "Prefix `{query}` matched at least {match_count} sessions across {provider_count} providers. Use a longer prefix or pass --provider."
+            )
+        } else {
+            format!(
+                "Prefix `{query}` matched {match_count} sessions across {provider_count} providers. Use a longer prefix or pass --provider."
+            )
+        };
+        Self::AmbiguousSession {
+            query: query.to_owned(),
+            matches,
+            truncated,
+            message,
+        }
+    }
 }
 
 /// Stores the registry payload for one project-scoped wiki query.
@@ -1164,6 +1346,99 @@ fn ensure_database_exists(root: &RootInfo) -> Result<()> {
                 root.database_path.display()
             ))
     )
+}
+
+/// Identifies whether one session-id input is a full UUID, a plausible prefix, or invalid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionIdShape {
+    FullUuid,
+    Prefix,
+    Invalid,
+}
+
+const UUID_TEXT_LEN: usize = 36;
+const MIN_STRICT_SESSION_PREFIX_LEN: usize = 8;
+
+/// Validates one resolver input and returns its trimmed canonical query text.
+fn validate_resolve_session_query(query: &str) -> Result<&str> {
+    let query = query.trim();
+    match classify_resolve_session_input(query) {
+        SessionIdShape::FullUuid | SessionIdShape::Prefix => Ok(query),
+        SessionIdShape::Invalid => {
+            Err(QueryProtocolError::invalid_resolve_session_query(query).into())
+        }
+    }
+}
+
+/// Validates one strict session id and resolves the canonical stored session id for the project.
+fn validate_project_session_id(
+    index_db_path: &Path,
+    project_id: &str,
+    provider: Option<SourceKind>,
+    session_id: &str,
+) -> Result<String> {
+    let session_id = session_id.trim();
+    match classify_strict_session_input(session_id) {
+        SessionIdShape::Prefix => {
+            return Err(QueryProtocolError::unknown_data_session(session_id, true).into());
+        }
+        SessionIdShape::Invalid => {
+            return Err(QueryProtocolError::invalid_data_session_id(session_id).into());
+        }
+        SessionIdShape::FullUuid => {}
+    }
+    lookup_project_session_id(index_db_path, project_id, provider, session_id)?
+        .ok_or_else(|| QueryProtocolError::unknown_data_session(session_id, false))
+        .map_err(Into::into)
+}
+
+/// Classifies one data-command session id using the strict full-UUID contract.
+fn classify_strict_session_input(input: &str) -> SessionIdShape {
+    if is_full_uuid_text(input) {
+        SessionIdShape::FullUuid
+    } else if input.len() >= MIN_STRICT_SESSION_PREFIX_LEN && is_uuid_prefix_text(input) {
+        SessionIdShape::Prefix
+    } else {
+        SessionIdShape::Invalid
+    }
+}
+
+/// Classifies one resolver input, allowing any non-empty UUID prefix.
+fn classify_resolve_session_input(input: &str) -> SessionIdShape {
+    if is_full_uuid_text(input) {
+        SessionIdShape::FullUuid
+    } else if is_uuid_prefix_text(input) {
+        SessionIdShape::Prefix
+    } else {
+        SessionIdShape::Invalid
+    }
+}
+
+/// Returns whether one string is a full canonical UUID text value.
+fn is_full_uuid_text(input: &str) -> bool {
+    input.len() == UUID_TEXT_LEN
+        && input
+            .chars()
+            .enumerate()
+            .all(|(index, ch)| is_uuid_character_at(index, ch))
+}
+
+/// Returns whether one string is a non-empty prefix of canonical UUID text.
+fn is_uuid_prefix_text(input: &str) -> bool {
+    !input.is_empty()
+        && input.len() < UUID_TEXT_LEN
+        && input
+            .chars()
+            .enumerate()
+            .all(|(index, ch)| is_uuid_character_at(index, ch))
+}
+
+/// Returns whether one character matches the canonical UUID grammar at one fixed position.
+fn is_uuid_character_at(index: usize, ch: char) -> bool {
+    match index {
+        8 | 13 | 18 | 23 => ch == '-',
+        _ => ch.is_ascii_hexdigit(),
+    }
 }
 
 /// Resolves one project-scoped wiki layout under the configured Darc root.

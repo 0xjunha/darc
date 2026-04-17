@@ -348,7 +348,7 @@ fn index_project_indexes_codex_turns_into_sqlite() -> Result<()> {
     let codex_root = sessions_root.join("codex");
     let index_db_path = darc_root.join(INDEX_DB_FILE_NAME);
     let rollout_path =
-        codex_root.join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl");
+        codex_root.join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl");
     fs::create_dir_all(&project_root)?;
     write_parse_config(&darc_root, &project_root, &sessions_root)?;
 
@@ -356,7 +356,7 @@ fn index_project_indexes_codex_turns_into_sqlite() -> Result<()> {
         &rollout_path,
         &format!(
             concat!(
-                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:02Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"First task\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:03Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"First reply\"}}]}}}}\n",
@@ -390,7 +390,7 @@ fn index_project_indexes_codex_turns_into_sqlite() -> Result<()> {
         FROM turns
         WHERE project_id = ?1 AND provider = 'codex' AND session_id = ?2 AND turn_ordinal = 1
         ",
-        ["repo-abc123", "019d3415-0b9c-7dc3-88e0-e9cb7a789e3f"],
+        ["repo-abc123", "22222222-2222-4222-8222-22222222223f"],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     let session_metadata: (String, String, String, i64, i64) = connection.query_row(
@@ -399,7 +399,7 @@ fn index_project_indexes_codex_turns_into_sqlite() -> Result<()> {
         FROM sessions
         WHERE project_id = ?1 AND provider = 'codex' AND session_id = ?2
         ",
-        ["repo-abc123", "019d3415-0b9c-7dc3-88e0-e9cb7a789e3f"],
+        ["repo-abc123", "22222222-2222-4222-8222-22222222223f"],
         |row| {
             Ok((
                 row.get(0)?,
@@ -430,7 +430,7 @@ fn index_project_materializes_tool_calls_and_file_accesses() -> Result<()> {
     let sessions_root = darc_root.join("projects/repo-abc123/sessions");
     let codex_root = sessions_root.join("codex");
     let rollout_path =
-        codex_root.join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl");
+        codex_root.join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl");
     fs::create_dir_all(&project_root)?;
     write_parse_config(&darc_root, &project_root, &sessions_root)?;
 
@@ -438,7 +438,7 @@ fn index_project_materializes_tool_calls_and_file_accesses() -> Result<()> {
         &rollout_path,
         &format!(
             concat!(
-                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Inspect files\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:02Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"function_call\",\"call_id\":\"call-1\",\"name\":\"Read\",\"arguments\":\"{{\\\"file_path\\\":\\\"README.md\\\"}}\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:03Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"function_call_output\",\"call_id\":\"call-1\",\"output\":\"# README\"}}}}\n",
@@ -461,7 +461,7 @@ fn index_project_materializes_tool_calls_and_file_accesses() -> Result<()> {
             ",
         )?
         .query_map(
-            ["repo-abc123", "019d3415-0b9c-7dc3-88e0-e9cb7a789e3f"],
+            ["repo-abc123", "22222222-2222-4222-8222-22222222223f"],
             |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
@@ -482,7 +482,7 @@ fn index_project_materializes_tool_calls_and_file_accesses() -> Result<()> {
             ",
         )?
         .query_map(
-            ["repo-abc123", "019d3415-0b9c-7dc3-88e0-e9cb7a789e3f"],
+            ["repo-abc123", "22222222-2222-4222-8222-22222222223f"],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -527,7 +527,7 @@ fn index_project_materializes_shell_and_patch_file_accesses() -> Result<()> {
     let sessions_root = darc_root.join("projects/repo-abc123/sessions");
     let codex_root = sessions_root.join("codex");
     let rollout_path =
-        codex_root.join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl");
+        codex_root.join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl");
     fs::create_dir_all(&project_root)?;
     write_parse_config(&darc_root, &project_root, &sessions_root)?;
 
@@ -535,7 +535,7 @@ fn index_project_materializes_shell_and_patch_file_accesses() -> Result<()> {
         &rollout_path,
         &format!(
             concat!(
-                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Inspect files\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:02Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"function_call\",\"call_id\":\"call-1\",\"name\":\"exec_command\",\"arguments\":\"{{\\\"cmd\\\":\\\"sed -n '1,200p' README.md && cat > notes.txt <<'EOF'\\\\nhello\\\\nEOF\\\",\\\"workdir\\\":\\\"{}\\\"}}\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:03Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"custom_tool_call\",\"call_id\":\"call-2\",\"name\":\"apply_patch\",\"input\":\"*** Begin Patch\\n*** Update File: src/main.rs\\n@@\\n-old\\n+new\\n*** Add File: src/new.rs\\n+fn main() {{}}\\n*** End Patch\\n\"}}}}\n",
@@ -558,7 +558,7 @@ fn index_project_materializes_shell_and_patch_file_accesses() -> Result<()> {
             ",
         )?
         .query_map(
-            ["repo-abc123", "019d3415-0b9c-7dc3-88e0-e9cb7a789e3f"],
+            ["repo-abc123", "22222222-2222-4222-8222-22222222223f"],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -605,7 +605,7 @@ fn index_project_indexes_codex_and_claude_rollouts_together() -> Result<()> {
     let sessions_root = darc_root.join("projects/repo-abc123/sessions");
     let codex_root = sessions_root.join("codex");
     let claude_root = sessions_root.join("claude");
-    let claude_session_id = "885a05b8-f731-4fde-bfdb-a24ce28dc9c3";
+    let claude_session_id = "33333333-3333-4333-8333-333333333333";
     let claude_parent = claude_root
         .join(claude_session_id)
         .join(format!("{claude_session_id}.jsonl"));
@@ -613,7 +613,7 @@ fn index_project_indexes_codex_and_claude_rollouts_together() -> Result<()> {
         .join(claude_session_id)
         .join("subagents/agent-a487e2adbf00a7a09.jsonl");
     let codex_rollout =
-        codex_root.join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl");
+        codex_root.join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl");
     fs::create_dir_all(&project_root)?;
     write_parse_config(&darc_root, &project_root, &sessions_root)?;
 
@@ -621,7 +621,7 @@ fn index_project_indexes_codex_and_claude_rollouts_together() -> Result<()> {
         &codex_rollout,
         &format!(
             concat!(
-                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Codex task\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:02Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Codex reply\"}}]}}}}\n"
             ),
@@ -697,7 +697,7 @@ fn index_project_indexes_codex_and_claude_rollouts_together() -> Result<()> {
         ",
         [
             "repo-abc123",
-            "885a05b8-f731-4fde-bfdb-a24ce28dc9c3/subagents/agent-a487e2adbf00a7a09",
+            "33333333-3333-4333-8333-333333333333/subagents/agent-a487e2adbf00a7a09",
         ],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )?;
@@ -722,7 +722,7 @@ fn index_project_rewrites_existing_indexed_turns() -> Result<()> {
     let sessions_root = darc_root.join("projects/repo-abc123/sessions");
     let codex_root = sessions_root.join("codex");
     let rollout_path =
-        codex_root.join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl");
+        codex_root.join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl");
     fs::create_dir_all(&project_root)?;
     write_parse_config(&darc_root, &project_root, &sessions_root)?;
 
@@ -730,7 +730,7 @@ fn index_project_rewrites_existing_indexed_turns() -> Result<()> {
         &rollout_path,
         &format!(
             concat!(
-                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:02Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Original task\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:03Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Original reply\"}}]}}}}\n"
@@ -744,7 +744,7 @@ fn index_project_rewrites_existing_indexed_turns() -> Result<()> {
         &rollout_path,
         &format!(
             concat!(
-                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:02Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Updated task\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:03Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Updated reply\"}}]}}}}\n",
@@ -765,7 +765,7 @@ fn index_project_rewrites_existing_indexed_turns() -> Result<()> {
         FROM turns
         WHERE project_id = ?1 AND provider = 'codex' AND session_id = ?2 AND turn_ordinal = 0
         ",
-        ["repo-abc123", "019d3415-0b9c-7dc3-88e0-e9cb7a789e3f"],
+        ["repo-abc123", "22222222-2222-4222-8222-22222222223f"],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
 
@@ -785,13 +785,13 @@ fn index_project_skips_unchanged_sessions_when_snapshot_matches() -> Result<()> 
     let sessions_root = darc_root.join("projects/repo-abc123/sessions");
     let codex_root = sessions_root.join("codex");
     let rollout_path =
-        codex_root.join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl");
+        codex_root.join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl");
     fs::create_dir_all(&project_root)?;
     write_parse_config(&darc_root, &project_root, &sessions_root)?;
 
     let original = format!(
         concat!(
-            "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
+            "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
             "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Original task\"}}}}\n",
             "{{\"timestamp\":\"2026-04-01T10:00:02Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Original reply\"}}]}}}}\n"
         ),
@@ -812,7 +812,7 @@ fn index_project_skips_unchanged_sessions_when_snapshot_matches() -> Result<()> 
         FROM turns
         WHERE project_id = ?1 AND provider = 'codex' AND session_id = ?2 AND turn_ordinal = 0
         ",
-        ["repo-abc123", "019d3415-0b9c-7dc3-88e0-e9cb7a789e3f"],
+        ["repo-abc123", "22222222-2222-4222-8222-22222222223f"],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
 
@@ -837,10 +837,10 @@ fn index_project_deduplicates_archived_rollouts_with_same_session_id() -> Result
     write_parse_config(&darc_root, &project_root, &sessions_root)?;
 
     write_file(
-        &codex_root.join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
+        &codex_root.join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl"),
         &format!(
             concat!(
-                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:02Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Stale task\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:03Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Stale reply\"}}]}}}}\n"
@@ -850,10 +850,10 @@ fn index_project_deduplicates_archived_rollouts_with_same_session_id() -> Result
     )?;
     std::thread::sleep(std::time::Duration::from_millis(5));
     write_file(
-        &codex_root.join("rollout-2026-04-01T11-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
+        &codex_root.join("rollout-2026-04-01T11-00-00-22222222-2222-4222-8222-22222222223f.jsonl"),
         &format!(
             concat!(
-                "{{\"timestamp\":\"2026-04-01T11:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T11:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T11:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T11:00:02Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Fresh task\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T11:00:03Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"commentary\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Checking\"}}]}}}}\n",
@@ -890,7 +890,7 @@ fn index_project_deduplicates_archived_rollouts_with_same_session_id() -> Result
     assert_eq!(indexed_turns, 1);
     assert_eq!(
         indexed_row.0,
-        "codex/rollout-2026-04-01T11-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"
+        "codex/rollout-2026-04-01T11-00-00-22222222-2222-4222-8222-22222222223f.jsonl"
     );
     assert_eq!(indexed_row.1, "Fresh task");
     assert!(report.skipped_rollouts.is_empty());
@@ -908,10 +908,10 @@ fn index_project_skips_mismatched_filename_and_payload_session_ids() -> Result<(
     write_parse_config(&darc_root, &project_root, &sessions_root)?;
 
     write_file(
-        &codex_root.join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
+        &codex_root.join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl"),
         &format!(
             concat!(
-                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e40\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-222222222240\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Task\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:02Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Reply\"}}]}}}}\n"
             ),
@@ -931,7 +931,7 @@ fn index_project_skips_mismatched_filename_and_payload_session_ids() -> Result<(
     assert_eq!(report.skipped_rollouts.len(), 1);
     assert_eq!(
         report.skipped_rollouts[0].logical_session_id.as_deref(),
-        Some("019d3415-0b9c-7dc3-88e0-e9cb7a789e3f")
+        Some("22222222-2222-4222-8222-22222222223f")
     );
     assert_eq!(
         report.skipped_rollouts[0].cli_version.as_deref(),
@@ -956,15 +956,15 @@ fn index_project_ignores_corrupt_losing_duplicate() -> Result<()> {
     write_parse_config(&darc_root, &project_root, &sessions_root)?;
 
     write_file(
-        &codex_root.join("rollout-2026-04-01T09-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
+        &codex_root.join("rollout-2026-04-01T09-00-00-22222222-2222-4222-8222-22222222223f.jsonl"),
         "{not-json\n",
     )?;
     std::thread::sleep(std::time::Duration::from_millis(5));
     write_file(
-        &codex_root.join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
+        &codex_root.join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl"),
         &format!(
             concat!(
-                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Fresh task\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:02Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Fresh reply\"}}]}}}}\n"
             ),
@@ -980,7 +980,7 @@ fn index_project_ignores_corrupt_losing_duplicate() -> Result<()> {
         FROM turns
         WHERE project_id = ?1 AND provider = 'codex' AND session_id = ?2 AND turn_ordinal = 0
         ",
-        ["repo-abc123", "019d3415-0b9c-7dc3-88e0-e9cb7a789e3f"],
+        ["repo-abc123", "22222222-2222-4222-8222-22222222223f"],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
 
@@ -1005,10 +1005,10 @@ fn index_project_falls_back_when_selected_duplicate_is_corrupt() -> Result<()> {
     write_parse_config(&darc_root, &project_root, &sessions_root)?;
 
     write_file(
-        &codex_root.join("rollout-2026-04-01T09-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
+        &codex_root.join("rollout-2026-04-01T09-00-00-22222222-2222-4222-8222-22222222223f.jsonl"),
         &format!(
             concat!(
-                "{{\"timestamp\":\"2026-04-01T09:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T09:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T09:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Stale task\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T09:00:02Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Stale reply\"}}]}}}}\n"
             ),
@@ -1017,7 +1017,7 @@ fn index_project_falls_back_when_selected_duplicate_is_corrupt() -> Result<()> {
     )?;
     std::thread::sleep(std::time::Duration::from_millis(5));
     write_file(
-        &codex_root.join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
+        &codex_root.join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl"),
         &format!("{{not-json\n{}\n", "x".repeat(4096)),
     )?;
 
@@ -1034,7 +1034,7 @@ fn index_project_falls_back_when_selected_duplicate_is_corrupt() -> Result<()> {
          AND t.turn_ordinal = 0
         WHERE s.project_id = ?1 AND s.provider = 'codex' AND s.session_id = ?2
         ",
-        ["repo-abc123", "019d3415-0b9c-7dc3-88e0-e9cb7a789e3f"],
+        ["repo-abc123", "22222222-2222-4222-8222-22222222223f"],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )?;
 
@@ -1044,14 +1044,14 @@ fn index_project_falls_back_when_selected_duplicate_is_corrupt() -> Result<()> {
     assert_eq!(report.turns_currently_indexed, 1);
     assert_eq!(
         indexed_row.0,
-        "codex/rollout-2026-04-01T09-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"
+        "codex/rollout-2026-04-01T09-00-00-22222222-2222-4222-8222-22222222223f.jsonl"
     );
     assert_eq!(indexed_row.1, "Stale task");
     assert_eq!(indexed_row.2, "Stale reply");
     assert_eq!(report.skipped_rollouts.len(), 1);
     assert_eq!(
         report.skipped_rollouts[0].logical_session_id.as_deref(),
-        Some("019d3415-0b9c-7dc3-88e0-e9cb7a789e3f")
+        Some("22222222-2222-4222-8222-22222222223f")
     );
     assert!(
         report.skipped_rollouts[0]
@@ -1072,12 +1072,12 @@ fn index_project_skips_session_when_all_duplicate_candidates_are_corrupt() -> Re
     write_parse_config(&darc_root, &project_root, &sessions_root)?;
 
     write_file(
-        &codex_root.join("rollout-2026-04-01T09-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
+        &codex_root.join("rollout-2026-04-01T09-00-00-22222222-2222-4222-8222-22222222223f.jsonl"),
         "{not-json\n",
     )?;
     std::thread::sleep(std::time::Duration::from_millis(5));
     write_file(
-        &codex_root.join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
+        &codex_root.join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl"),
         &format!("{{not-json\n{}\n", "x".repeat(4096)),
     )?;
 
@@ -1092,7 +1092,7 @@ fn index_project_skips_session_when_all_duplicate_candidates_are_corrupt() -> Re
     assert_eq!(indexed_sessions, 0);
     assert_eq!(report.skipped_rollouts.len(), 2);
     assert!(report.skipped_rollouts.iter().all(|skipped| {
-        skipped.logical_session_id.as_deref() == Some("019d3415-0b9c-7dc3-88e0-e9cb7a789e3f")
+        skipped.logical_session_id.as_deref() == Some("22222222-2222-4222-8222-22222222223f")
     }));
 
     Ok(())
@@ -1105,13 +1105,13 @@ fn index_project_preserves_previous_index_when_replacement_rollout_fails() -> Re
     let sessions_root = darc_root.join("projects/repo-abc123/sessions");
     let codex_root = sessions_root.join("codex");
     let rollout_path =
-        codex_root.join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl");
+        codex_root.join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl");
     fs::create_dir_all(&project_root)?;
     write_parse_config(&darc_root, &project_root, &sessions_root)?;
 
     let original = format!(
         concat!(
-            "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
+            "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
             "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Original task\"}}}}\n",
             "{{\"timestamp\":\"2026-04-01T10:00:02Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Original reply\"}}]}}}}\n"
         ),
@@ -1130,7 +1130,7 @@ fn index_project_preserves_previous_index_when_replacement_rollout_fails() -> Re
         FROM turns
         WHERE project_id = ?1 AND provider = 'codex' AND session_id = ?2 AND turn_ordinal = 0
         ",
-        ["repo-abc123", "019d3415-0b9c-7dc3-88e0-e9cb7a789e3f"],
+        ["repo-abc123", "22222222-2222-4222-8222-22222222223f"],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
 
@@ -1157,13 +1157,13 @@ fn index_project_preserves_previous_index_when_replacement_header_mismatches() -
     let sessions_root = darc_root.join("projects/repo-abc123/sessions");
     let codex_root = sessions_root.join("codex");
     let rollout_path =
-        codex_root.join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl");
+        codex_root.join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl");
     fs::create_dir_all(&project_root)?;
     write_parse_config(&darc_root, &project_root, &sessions_root)?;
 
     let original = format!(
         concat!(
-            "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
+            "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
             "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Original task\"}}}}\n",
             "{{\"timestamp\":\"2026-04-01T10:00:02Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Original reply\"}}]}}}}\n"
         ),
@@ -1189,7 +1189,7 @@ fn index_project_preserves_previous_index_when_replacement_header_mismatches() -
         FROM turns
         WHERE project_id = ?1 AND provider = 'codex' AND session_id = ?2 AND turn_ordinal = 0
         ",
-        ["repo-abc123", "019d3415-0b9c-7dc3-88e0-e9cb7a789e3f"],
+        ["repo-abc123", "22222222-2222-4222-8222-22222222223f"],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
 
@@ -1202,7 +1202,7 @@ fn index_project_preserves_previous_index_when_replacement_header_mismatches() -
     assert_eq!(report.skipped_rollouts.len(), 1);
     assert_eq!(
         report.skipped_rollouts[0].logical_session_id.as_deref(),
-        Some("019d3415-0b9c-7dc3-88e0-e9cb7a789e3f")
+        Some("22222222-2222-4222-8222-22222222223f")
     );
     assert!(
         report.skipped_rollouts[0]
@@ -1220,13 +1220,13 @@ fn index_project_skips_unchanged_fallback_candidate_after_corrupt_higher_duplica
     let sessions_root = darc_root.join("projects/repo-abc123/sessions");
     let codex_root = sessions_root.join("codex");
     let fallback_path =
-        codex_root.join("rollout-2026-04-01T09-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl");
+        codex_root.join("rollout-2026-04-01T09-00-00-22222222-2222-4222-8222-22222222223f.jsonl");
     fs::create_dir_all(&project_root)?;
     write_parse_config(&darc_root, &project_root, &sessions_root)?;
 
     let original = format!(
         concat!(
-            "{{\"timestamp\":\"2026-04-01T09:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
+            "{{\"timestamp\":\"2026-04-01T09:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
             "{{\"timestamp\":\"2026-04-01T09:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Original task\"}}}}\n",
             "{{\"timestamp\":\"2026-04-01T09:00:02Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Original reply\"}}]}}}}\n"
         ),
@@ -1235,7 +1235,7 @@ fn index_project_skips_unchanged_fallback_candidate_after_corrupt_higher_duplica
     write_file(&fallback_path, &original)?;
     touch_file_timestamp(&fallback_path, "202604010900.00")?;
     write_file(
-        &codex_root.join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
+        &codex_root.join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl"),
         &format!("{{not-json\n{}\n", "x".repeat(4096)),
     )?;
     index_project_codex_turns_from(&project_root, darc_root.clone())?;
@@ -1251,7 +1251,7 @@ fn index_project_skips_unchanged_fallback_candidate_after_corrupt_higher_duplica
         FROM turns
         WHERE project_id = ?1 AND provider = 'codex' AND session_id = ?2 AND turn_ordinal = 0
         ",
-        ["repo-abc123", "019d3415-0b9c-7dc3-88e0-e9cb7a789e3f"],
+        ["repo-abc123", "22222222-2222-4222-8222-22222222223f"],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
 
@@ -1276,20 +1276,20 @@ fn index_project_skips_unknown_schema_session_while_indexing_other_sessions() ->
     write_parse_config(&darc_root, &project_root, &sessions_root)?;
 
     write_file(
-        &codex_root.join("rollout-2026-04-01T09-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
+        &codex_root.join("rollout-2026-04-01T09-00-00-22222222-2222-4222-8222-22222222223f.jsonl"),
         &format!(
             concat!(
-                "{{\"timestamp\":\"2026-04-01T09:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.32.0\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T09:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.32.0\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T09:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Too new\"}}}}\n"
             ),
             project_root.display()
         ),
     )?;
     write_file(
-        &codex_root.join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e40.jsonl"),
+        &codex_root.join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-222222222240.jsonl"),
         &format!(
             concat!(
-                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e40\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-222222222240\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Good task\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:02Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Good reply\"}}]}}}}\n"
             ),
@@ -1306,7 +1306,7 @@ fn index_project_skips_unknown_schema_session_while_indexing_other_sessions() ->
         FROM turns
         WHERE project_id = ?1 AND provider = 'codex' AND session_id = ?2 AND turn_ordinal = 0
         ",
-        ["repo-abc123", "019d3415-0b9c-7dc3-88e0-e9cb7a789e40"],
+        ["repo-abc123", "22222222-2222-4222-8222-222222222240"],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
 
@@ -1320,7 +1320,7 @@ fn index_project_skips_unknown_schema_session_while_indexing_other_sessions() ->
     assert_eq!(report.skipped_rollouts.len(), 1);
     assert_eq!(
         report.skipped_rollouts[0].logical_session_id.as_deref(),
-        Some("019d3415-0b9c-7dc3-88e0-e9cb7a789e3f")
+        Some("22222222-2222-4222-8222-22222222223f")
     );
     assert_eq!(
         report.skipped_rollouts[0].cli_version.as_deref(),
@@ -1345,19 +1345,19 @@ fn index_project_skips_bad_duplicate_group_and_continues_other_sessions() -> Res
     write_parse_config(&darc_root, &project_root, &sessions_root)?;
 
     write_file(
-        &codex_root.join("rollout-2026-04-01T09-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
+        &codex_root.join("rollout-2026-04-01T09-00-00-22222222-2222-4222-8222-22222222223f.jsonl"),
         "{not-json\n",
     )?;
     std::thread::sleep(std::time::Duration::from_millis(5));
     write_file(
-        &codex_root.join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
+        &codex_root.join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl"),
         &format!("{{not-json\n{}\n", "x".repeat(4096)),
     )?;
     write_file(
-        &codex_root.join("rollout-2026-04-01T11-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e40.jsonl"),
+        &codex_root.join("rollout-2026-04-01T11-00-00-22222222-2222-4222-8222-222222222240.jsonl"),
         &format!(
             concat!(
-                "{{\"timestamp\":\"2026-04-01T11:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e40\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T11:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-222222222240\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T11:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Healthy task\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T11:00:02Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Healthy reply\"}}]}}}}\n"
             ),
@@ -1374,7 +1374,7 @@ fn index_project_skips_bad_duplicate_group_and_continues_other_sessions() -> Res
         FROM turns
         WHERE project_id = ?1 AND provider = 'codex' AND session_id = ?2 AND turn_ordinal = 0
         ",
-        ["repo-abc123", "019d3415-0b9c-7dc3-88e0-e9cb7a789e40"],
+        ["repo-abc123", "22222222-2222-4222-8222-222222222240"],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
 
@@ -1387,7 +1387,7 @@ fn index_project_skips_bad_duplicate_group_and_continues_other_sessions() -> Res
     assert_eq!(indexed_turn.1, "Healthy reply");
     assert_eq!(report.skipped_rollouts.len(), 2);
     assert!(report.skipped_rollouts.iter().all(|skipped| {
-        skipped.logical_session_id.as_deref() == Some("019d3415-0b9c-7dc3-88e0-e9cb7a789e3f")
+        skipped.logical_session_id.as_deref() == Some("22222222-2222-4222-8222-22222222223f")
     }));
 
     Ok(())
@@ -1399,7 +1399,7 @@ fn index_project_still_fails_on_claude_rollout_file_read_errors() -> Result<()> 
     let darc_root = unique_test_dir("parse-hard-claude-file-read-error");
     let project_root = darc_root.join("repo");
     let sessions_root = darc_root.join("projects/repo-abc123/sessions");
-    let claude_session_id = "885a05b8-f731-4fde-bfdb-a24ce28dc9c3";
+    let claude_session_id = "33333333-3333-4333-8333-333333333333";
     let rollout_path = sessions_root
         .join("claude")
         .join(claude_session_id)
@@ -1442,7 +1442,7 @@ fn index_project_still_fails_on_rollout_file_read_errors() -> Result<()> {
     let sessions_root = darc_root.join("projects/repo-abc123/sessions");
     let codex_root = sessions_root.join("codex");
     let rollout_path =
-        codex_root.join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl");
+        codex_root.join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl");
     fs::create_dir_all(&project_root)?;
     write_parse_config(&darc_root, &project_root, &sessions_root)?;
 
@@ -1450,7 +1450,7 @@ fn index_project_still_fails_on_rollout_file_read_errors() -> Result<()> {
         &rollout_path,
         &format!(
             concat!(
-                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Task\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:02Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Reply\"}}]}}}}\n"
             ),

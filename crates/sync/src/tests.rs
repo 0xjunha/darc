@@ -168,7 +168,7 @@ fn discover_claude_sessions_ignores_orphan_directories() -> Result<()> {
         fs::canonicalize(&project_root)?
     };
     let projects_root = root.join("claude/projects");
-    let session_id = "885a05b8-f731-4fde-bfdb-a24ce28dc9c3";
+    let session_id = "33333333-3333-4333-8333-333333333333";
     let project_dir = projects_root.join(encode_path_for_claude(&canonical_project_root));
     let mut warnings = Vec::new();
 
@@ -412,7 +412,7 @@ fn manifest_session_entry_serializes_provider_lowercase() -> Result<()> {
 #[test]
 fn prepare_and_execute_sync_copies_sessions_and_updates_manifest() -> Result<()> {
     let ws = TestWorkspace::new("sync-exec")?;
-    let claude_session_id = "885a05b8-f731-4fde-bfdb-a24ce28dc9c3";
+    let claude_session_id = "33333333-3333-4333-8333-333333333333";
     let codex_sessions = ws.codex_sessions_root.join("2026/03/31");
     let codex_archived = ws.codex_home.join("archived_sessions");
     fs::create_dir_all(&codex_sessions)?;
@@ -425,20 +425,20 @@ fn prepare_and_execute_sync_copies_sessions_and_updates_manifest() -> Result<()>
     write_file(&claude_session, "{\"type\":\"message\"}\n")?;
     write_file(&claude_aux, "{\"type\":\"subagent\"}\n")?;
 
-    let rollout_name = "rollout-2026-03-31T11-24-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl";
+    let rollout_name = "rollout-2026-03-31T11-24-00-22222222-2222-4222-8222-22222222223f.jsonl";
     let active_rollout = codex_sessions.join(rollout_name);
     let archived_rollout = codex_archived.join(rollout_name);
     write_file(
         &active_rollout,
         &format!(
-            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
             ws.canonical_project_root.display()
         ),
     )?;
     write_file(
         &archived_rollout,
         &format!(
-            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n{{\"type\":\"message\"}}\n",
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n{{\"type\":\"message\"}}\n",
             ws.canonical_project_root.display()
         ),
     )?;
@@ -469,7 +469,7 @@ fn prepare_and_execute_sync_copies_sessions_and_updates_manifest() -> Result<()>
     );
     let codex_entry = manifest
         .sessions
-        .get("019d3415-0b9c-7dc3-88e0-e9cb7a789e3f")
+        .get("22222222-2222-4222-8222-22222222223f")
         .context("missing Codex manifest entry")?;
     assert_eq!(codex_entry.provider, SourceKind::Codex);
     assert_eq!(
@@ -507,11 +507,11 @@ fn prepare_sync_copies_legacy_codex_rollout_without_cli_version() -> Result<()> 
     let codex_sessions = ws.codex_sessions_root.join("2026/04/01");
     fs::create_dir_all(&codex_sessions)?;
 
-    let rollout_name = "rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl";
+    let rollout_name = "rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl";
     write_file(
         &codex_sessions.join(rollout_name),
         &format!(
-            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\"}}}}\n{{\"type\":\"message\"}}\n",
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\"}}}}\n{{\"type\":\"message\"}}\n",
             ws.canonical_project_root.display()
         ),
     )?;
@@ -545,11 +545,11 @@ fn prepare_sync_learns_codex_checkout_with_same_upstream() -> Result<()> {
     fs::create_dir_all(&related_subdir)?;
     let canonical_related_root = fs::canonicalize(&related_root)?;
 
-    let rollout_name = "rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl";
+    let rollout_name = "rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl";
     write_file(
         &codex_sessions.join(rollout_name),
         &format!(
-            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n{{\"type\":\"message\"}}\n",
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n{{\"type\":\"message\"}}\n",
             related_subdir.display()
         ),
     )?;
@@ -575,9 +575,9 @@ fn prepare_sync_skips_mismatched_codex_session_ids() -> Result<()> {
 
     write_file(
         &codex_sessions
-            .join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
+            .join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl"),
         &format!(
-            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e40\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n{{\"type\":\"message\"}}\n",
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-222222222240\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n{{\"type\":\"message\"}}\n",
             ws.canonical_project_root.display()
         ),
     )?;
@@ -605,7 +605,7 @@ fn prepare_sync_accepts_payload_only_codex_session_id() -> Result<()> {
     write_file(
         &codex_sessions.join(rollout_name),
         &format!(
-            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n{{\"type\":\"message\"}}\n",
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n{{\"type\":\"message\"}}\n",
             ws.canonical_project_root.display()
         ),
     )?;
@@ -653,9 +653,9 @@ fn prepare_sync_skips_codex_session_in_other_projects_live_worktree() -> Result<
 
     write_file(
         &codex_sessions
-            .join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
+            .join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl"),
         &format!(
-            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n{{\"type\":\"message\"}}\n",
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n{{\"type\":\"message\"}}\n",
             canonical_worktree.display()
         ),
     )?;
@@ -687,9 +687,9 @@ fn prepare_sync_skips_codex_checkout_owned_by_other_project() -> Result<()> {
 
     write_file(
         &codex_sessions
-            .join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl"),
+            .join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl"),
         &format!(
-            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n{{\"type\":\"message\"}}\n",
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n{{\"type\":\"message\"}}\n",
             related_subdir.display()
         ),
     )?;

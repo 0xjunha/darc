@@ -40,6 +40,7 @@ For history investigation and proposal preparation, prefer the project-scoped re
 - `darc query session-files ...` to inspect one session's in-project file activity
 - `darc query session-bundle ...` to fetch one session summary, its turn detail, and its touched files in one call
 - `darc query sessions --touched-path ...` to narrow the session list to work that touched a path of interest
+- `darc query resolve-session ...` to expand a UUID prefix before calling any session-scoped query command that requires a full `--session-id`
 
 Before drafting or reviewing decision-trace proposals, check the existing wiki coverage first:
 
