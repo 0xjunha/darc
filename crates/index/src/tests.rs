@@ -599,6 +599,79 @@ fn index_project_materializes_shell_and_patch_file_accesses() -> Result<()> {
 }
 
 #[test]
+fn index_project_omits_directory_roots_from_shell_file_accesses() -> Result<()> {
+    let darc_root = unique_test_dir("parse-shell-directory-roots");
+    let project_root = darc_root.join("repo");
+    let sessions_root = darc_root.join("projects/repo-abc123/sessions");
+    let codex_root = sessions_root.join("codex");
+    let rollout_path =
+        codex_root.join("rollout-2026-04-01T10-00-00-019d3415-0b9c-7dc3-88e0-e9cb7a789e3f.jsonl");
+    fs::create_dir_all(&project_root)?;
+    write_parse_config(&darc_root, &project_root, &sessions_root)?;
+
+    write_file(
+        &rollout_path,
+        &format!(
+            concat!(
+                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"019d3415-0b9c-7dc3-88e0-e9cb7a789e3f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Inspect files\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:02Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"function_call\",\"call_id\":\"call-1\",\"name\":\"exec_command\",\"arguments\":\"{{\\\"cmd\\\":\\\"find crates -name '*.rs' && rg -n 'main' README.md crates && sed -n '1,40p' src/main.rs\\\",\\\"workdir\\\":\\\"{}\\\"}}\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:03Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"custom_tool_call\",\"call_id\":\"call-2\",\"name\":\"apply_patch\",\"input\":\"*** Begin Patch\\n*** Update File: src/main.rs\\n@@\\n-old\\n+new\\n*** End Patch\\n\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:04Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Done\"}}]}}}}\n"
+            ),
+            project_root.display(),
+            project_root.display()
+        ),
+    )?;
+
+    let report = index_project_codex_turns_from(&project_root, darc_root.clone())?;
+    let connection = Connection::open(&report.index_db_path)?;
+    let file_rows = connection
+        .prepare(
+            "
+            SELECT tool_name, access_type, path
+            FROM file_accesses
+            WHERE project_id = ?1 AND provider = 'codex' AND session_id = ?2
+            ORDER BY call_ordinal ASC, access_type ASC, path ASC
+            ",
+        )?
+        .query_map(
+            ["repo-abc123", "019d3415-0b9c-7dc3-88e0-e9cb7a789e3f"],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    assert_eq!(
+        file_rows,
+        vec![
+            (
+                "exec_command".to_owned(),
+                "read".to_owned(),
+                "README.md".to_owned()
+            ),
+            (
+                "exec_command".to_owned(),
+                "read".to_owned(),
+                "src/main.rs".to_owned()
+            ),
+            (
+                "apply_patch".to_owned(),
+                "edit".to_owned(),
+                "src/main.rs".to_owned()
+            ),
+        ]
+    );
+
+    Ok(())
+}
+
+#[test]
 fn index_project_indexes_codex_and_claude_rollouts_together() -> Result<()> {
     let darc_root = unique_test_dir("parse-multi-provider");
     let project_root = darc_root.join("repo");

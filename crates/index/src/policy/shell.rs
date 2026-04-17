@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use super::file_access::{
     CodeChangeSummary, ToolAccessKind, apply_patch_changed_paths, derive_apply_patch_file_accesses,
-    push_access, summarize_apply_patch_changes,
+    path_looks_directory_like, push_access, summarize_apply_patch_changes,
 };
 
 /// Stores one shell-like command decoded from one tool-call payload.
@@ -446,7 +446,7 @@ fn extract_ripgrep_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, Stri
         ToolAccessKind::Read
     };
     for token in path_tokens {
-        push_access(&mut accesses, access_type, token);
+        push_file_like_access(&mut accesses, access_type, token);
     }
     accesses
 }
@@ -476,7 +476,7 @@ fn extract_grep_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)
     }
 
     for token in non_option_tokens.into_iter().skip(1) {
-        push_access(&mut accesses, ToolAccessKind::Read, token);
+        push_file_like_access(&mut accesses, ToolAccessKind::Read, token);
     }
     accesses
 }
@@ -524,7 +524,7 @@ fn extract_find_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)
         if saw_expression {
             continue;
         }
-        push_access(&mut accesses, ToolAccessKind::List, token);
+        push_file_like_access(&mut accesses, ToolAccessKind::List, token);
     }
 
     accesses
@@ -551,6 +551,8 @@ fn extract_simple_path_accesses(
             skip_next = true;
         } else if token.starts_with('-') {
             // Ignore option flags.
+        } else if access_type == ToolAccessKind::List {
+            push_file_like_access(&mut accesses, access_type, token);
         } else {
             push_access(&mut accesses, access_type, token);
         }
@@ -720,9 +722,20 @@ fn extract_fd_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)> 
 
     let mut accesses = Vec::new();
     for path in paths.into_iter().skip(1) {
-        push_access(&mut accesses, ToolAccessKind::List, path);
+        push_file_like_access(&mut accesses, ToolAccessKind::List, path);
     }
     accesses
+}
+
+/// Appends one extracted access path when the operand still looks file-like.
+fn push_file_like_access(
+    accesses: &mut Vec<(ToolAccessKind, String)>,
+    access_type: ToolAccessKind,
+    path: &str,
+) {
+    if !path_looks_directory_like(path) {
+        push_access(accesses, access_type, path);
+    }
 }
 
 /// Extracts edit accesses from one in-place perl command.
