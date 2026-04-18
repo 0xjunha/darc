@@ -1,7 +1,5 @@
 use anyhow::{Context, Result, bail};
-use darc_agent::{
-    AgentId, RuntimeKind, codex_runtime_gate_message, codex_runtime_is_explicitly_enabled,
-};
+use darc_agent::{AgentId, RuntimeKind, codex_provider_auth_unsupported_message};
 use darc_paths::SourceKind;
 use darc_wiki::{ProjectLayout, is_valid_domain_id, load_registry, parse_session_reference};
 
@@ -16,8 +14,8 @@ pub(super) fn validate_digest_start_options(options: &DigestStartOptions) -> Res
         validate_session_ref(session_ref)?;
     }
     let agent = AgentId::parse(&options.agent_id).context("agent id is not supported")?;
-    if matches!(agent, AgentId::Codex) && !codex_runtime_is_explicitly_enabled() {
-        bail!(codex_runtime_gate_message());
+    if matches!(agent, AgentId::Codex) && options.use_provider_auth {
+        bail!(codex_provider_auth_unsupported_message());
     }
     RuntimeKind::parse(&options.runtime).context("runtime is not supported")?;
     if options.model.trim().is_empty() {

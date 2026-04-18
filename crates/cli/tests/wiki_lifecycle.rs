@@ -89,7 +89,6 @@ where
 {
     Command::new(darc_binary())
         .args(args)
-        .env("DARC_WIKI_UNSAFE_ENABLE_CODEX", "1")
         .envs(envs)
         .output()
         .context("failed to run compiled darc binary")
@@ -773,8 +772,8 @@ fn wiki_digest_start_rejects_unregistered_target_domain() -> Result<()> {
 }
 
 #[test]
-fn wiki_digest_start_rejects_codex_without_explicit_gate() -> Result<()> {
-    let root = create_wiki_fixture_root("cli-wiki-codex-gate")?;
+fn wiki_digest_start_rejects_codex_provider_auth_opt_in() -> Result<()> {
+    let root = create_wiki_fixture_root("cli-wiki-codex-provider-auth")?;
     let output = Command::new(darc_binary())
         .args([
             "wiki",
@@ -792,14 +791,17 @@ fn wiki_digest_start_rejects_codex_without_explicit_gate() -> Result<()> {
             "external-cli",
             "--model",
             "gpt-5.4",
+            "--use-provider-auth",
             "--json",
         ])
-        .env_remove("DARC_WIKI_UNSAFE_ENABLE_CODEX")
         .output()
-        .context("failed to run compiled darc binary without codex gate override")?;
+        .context("failed to run compiled darc binary with codex provider-auth opt-in")?;
 
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("DARC_WIKI_UNSAFE_ENABLE_CODEX=1"));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("does not expose a documented per-run API-key/provider-auth selector")
+    );
 
     remove_root(&root)?;
     Ok(())
@@ -1457,6 +1459,7 @@ fn wiki_digest_serializes_canonical_merge_for_overlapping_runs() -> Result<()> {
         let run = &run_value["data"]["run"];
         assert_eq!(run["run_id"], run_id.as_str());
         assert_eq!(run["status"], "succeeded");
+        assert_eq!(run["use_provider_auth"], false);
         assert_eq!(
             run["selected_sessions"],
             Value::Array(vec![Value::String("codex:session-1".to_owned())])
@@ -1469,6 +1472,7 @@ fn wiki_digest_serializes_canonical_merge_for_overlapping_runs() -> Result<()> {
         assert_eq!(run["result"]["validation"]["valid"], true);
         assert_eq!(run["result"]["runtime"]["exit_code"], 0);
         assert_eq!(run["result"]["runtime"]["proposal_captured"], true);
+        assert_eq!(run["result"]["runtime"]["use_provider_auth"], false);
         let digest_id = run["digest_id"]
             .as_str()
             .context("run digest id should be present")?
@@ -1748,6 +1752,7 @@ fn wiki_digest_fails_on_invalid_claude_proposal() -> Result<()> {
             "external-cli",
             "--model",
             "claude-sonnet-4-6",
+            "--use-provider-auth",
             "--json",
         ],
         [
@@ -1800,11 +1805,16 @@ fn wiki_digest_fails_on_invalid_claude_proposal() -> Result<()> {
     let query_value = parse_json(&query_output.stdout, "stdout")?;
     assert_eq!(query_value["schema"], "darc.query.wiki.run.v1");
     assert_eq!(query_value["data"]["run"]["run_id"], run_id);
+    assert_eq!(query_value["data"]["run"]["use_provider_auth"], true);
     assert_eq!(
         query_value["data"]["run"]["error_code"],
         "proposal_validation_failed"
     );
     assert_eq!(query_value["data"]["run"]["result"]["status"], "failed");
+    assert_eq!(
+        query_value["data"]["run"]["result"]["runtime"]["use_provider_auth"],
+        true
+    );
     assert_eq!(
         query_value["data"]["run"]["result"]["validation"]["valid"],
         false
@@ -1818,7 +1828,6 @@ fn wiki_digest_fails_on_invalid_claude_proposal() -> Result<()> {
     Ok(())
 }
 
-#[test]
 fn wiki_digest_fails_when_runtime_cannot_be_invoked() -> Result<()> {
     let root = create_wiki_fixture_root("cli-wiki-runtime-failure")?;
 

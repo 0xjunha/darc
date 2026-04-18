@@ -40,6 +40,7 @@ pub(super) fn build_runtime_request(
         runtime,
         model: state.model.clone().unwrap_or_default(),
         auth_profile: state.auth_profile.clone(),
+        use_provider_auth: state.use_provider_auth,
         prompt: prompt.prompt.clone(),
         schema_json: prompt.schema_json.clone(),
         darc_root: layout.context().darc_root.clone(),

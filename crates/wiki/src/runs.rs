@@ -73,6 +73,8 @@ pub struct RunState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_profile: Option<String>,
     #[serde(default)]
+    pub use_provider_auth: bool,
+    #[serde(default)]
     pub selected_sessions: Vec<String>,
     #[serde(default)]
     pub target_categories: Vec<String>,
@@ -303,6 +305,7 @@ mod tests {
             runtime: Some("external_cli".to_owned()),
             model: Some("gpt-5.4".to_owned()),
             auth_profile: Some("openai/default".to_owned()),
+            use_provider_auth: false,
             selected_sessions: vec!["codex:019d810f-570e".to_owned()],
             target_categories: vec!["architecture".to_owned()],
             target_domains: vec!["query-protocol".to_owned()],

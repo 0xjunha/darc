@@ -406,6 +406,7 @@ mod tests {
                 runtime: Some("external_cli".to_owned()),
                 model: Some("gpt-5.4".to_owned()),
                 auth_profile: None,
+                use_provider_auth: false,
                 selected_sessions: vec!["codex:session-1".to_owned()],
                 target_categories: vec!["product".to_owned()],
                 target_domains: vec!["query-protocol".to_owned()],

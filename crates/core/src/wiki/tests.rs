@@ -115,6 +115,7 @@ fn backend_round_trips_run_state_through_core_wiring() -> Result<()> {
         runtime: None,
         model: None,
         auth_profile: None,
+        use_provider_auth: false,
         selected_sessions: Vec::new(),
         target_categories: vec!["architecture".to_owned()],
         target_domains: Vec::new(),
@@ -184,6 +185,7 @@ fn stale_running_run_is_repaired_to_interrupted() -> Result<()> {
         runtime: Some("external_cli".to_owned()),
         model: Some("gpt-5.4".to_owned()),
         auth_profile: Some("openai/default".to_owned()),
+        use_provider_auth: false,
         selected_sessions: vec!["codex:session-1".to_owned()],
         target_categories: Vec::new(),
         target_domains: Vec::new(),
@@ -250,6 +252,7 @@ fn stale_running_run_with_live_pid_stays_running() -> Result<()> {
         runtime: Some("external_cli".to_owned()),
         model: Some("gpt-5.4".to_owned()),
         auth_profile: Some("openai/default".to_owned()),
+        use_provider_auth: false,
         selected_sessions: vec!["codex:session-1".to_owned()],
         target_categories: Vec::new(),
         target_domains: Vec::new(),
@@ -316,6 +319,7 @@ fn runtime_request_uses_project_root_as_workdir() -> Result<()> {
         runtime: Some("external_cli".to_owned()),
         model: Some("gpt-5.4".to_owned()),
         auth_profile: None,
+        use_provider_auth: false,
         selected_sessions: vec!["codex:session-1".to_owned()],
         target_categories: Vec::new(),
         target_domains: Vec::new(),
@@ -397,6 +401,7 @@ fn recent_preparing_context_run_stays_running_on_read_side() -> Result<()> {
         runtime: Some("external_cli".to_owned()),
         model: Some("gpt-5.4".to_owned()),
         auth_profile: Some("openai/default".to_owned()),
+        use_provider_auth: false,
         selected_sessions: vec!["codex:session-1".to_owned()],
         target_categories: Vec::new(),
         target_domains: Vec::new(),
@@ -467,6 +472,7 @@ fn legacy_reading_turns_phase_loads_as_preparing_context() -> Result<()> {
 
     let loaded = load_project_wiki_run(Some(root.clone()), project_id, &run_id)?;
     assert_eq!(loaded.phase, RunPhase::PreparingContext);
+    assert!(!loaded.use_provider_auth);
 
     store_run_state(&layout, &loaded)?;
     let rewritten = fs::read_to_string(layout.run_state_path(&run_id))?;
@@ -501,6 +507,7 @@ fn runtime_prepare_failure_still_writes_terminal_result() -> Result<()> {
             runtime: "external_cli".to_owned(),
             model: "gpt-5.4".to_owned(),
             auth_profile: None,
+            use_provider_auth: false,
             requested_by: None,
             request_source: None,
             target_categories: Vec::new(),
@@ -556,6 +563,7 @@ fn spawn_failure_writes_terminal_result() -> Result<()> {
             runtime: "external_cli".to_owned(),
             model: "gpt-5.4".to_owned(),
             auth_profile: None,
+            use_provider_auth: false,
             requested_by: None,
             request_source: None,
             target_categories: Vec::new(),
@@ -583,8 +591,8 @@ fn spawn_failure_writes_terminal_result() -> Result<()> {
 }
 
 #[test]
-fn codex_digest_start_requires_explicit_gate() -> Result<()> {
-    let root = unique_test_dir("core-wiki-codex-gate");
+fn codex_digest_start_rejects_provider_auth_opt_in() -> Result<()> {
+    let root = unique_test_dir("core-wiki-codex-provider-auth");
     let project_root = root.join("repo");
     let project_id = "repo-123";
     fs::create_dir_all(&project_root)?;
@@ -606,17 +614,18 @@ fn codex_digest_start_requires_explicit_gate() -> Result<()> {
             runtime: "external_cli".to_owned(),
             model: "gpt-5.4".to_owned(),
             auth_profile: None,
+            use_provider_auth: true,
             requested_by: None,
             request_source: None,
             target_categories: Vec::new(),
             target_domains: Vec::new(),
         },
     )
-    .expect_err("codex digest start should be gated by default");
+    .expect_err("codex provider-auth opt-in should be rejected");
     assert!(
         error
             .to_string()
-            .contains("DARC_WIKI_UNSAFE_ENABLE_CODEX=1")
+            .contains("does not expose a documented per-run API-key/provider-auth selector")
     );
 
     fs::remove_dir_all(&root)?;

@@ -91,6 +91,7 @@ pub struct RuntimeRequest {
     pub runtime: RuntimeKind,
     pub model: String,
     pub auth_profile: Option<String>,
+    pub use_provider_auth: bool,
     pub prompt: String,
     pub schema_json: String,
     pub darc_root: PathBuf,

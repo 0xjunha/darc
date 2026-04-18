@@ -910,11 +910,7 @@ struct WikiDigestStartArgs {
     )]
     session_ref: Vec<String>,
 
-    #[arg(
-        long = "agent",
-        value_enum,
-        help = "Select the agent runtime id (`codex` requires DARC_WIKI_UNSAFE_ENABLE_CODEX=1)"
-    )]
+    #[arg(long = "agent", value_enum, help = "Select the agent runtime id")]
     agent: WikiAgentArg,
 
     #[arg(long = "runtime", value_enum, help = "Select the runtime kind")]
@@ -925,9 +921,15 @@ struct WikiDigestStartArgs {
 
     #[arg(
         long = "auth-profile",
-        help = "Record auth profile metadata for this run only"
+        help = "Record auth profile metadata for this run only; this does not select credentials"
     )]
     auth_profile: Option<String>,
+
+    #[arg(
+        long = "use-provider-auth",
+        help = "Explicitly request provider/API-key auth for this run (Claude adds --bare; Codex rejects this mode today)"
+    )]
+    use_provider_auth: bool,
 
     #[arg(long = "target-category", help = "Prioritize this decision category")]
     target_category: Vec<String>,
@@ -1640,6 +1642,7 @@ fn run_wiki_digest_start(args: WikiDigestStartArgs) -> Result<()> {
             runtime: wiki_runtime_arg_to_id(args.runtime),
             model: args.model,
             auth_profile: args.auth_profile,
+            use_provider_auth: args.use_provider_auth,
             requested_by: None,
             request_source: None,
             target_categories: args.target_category,

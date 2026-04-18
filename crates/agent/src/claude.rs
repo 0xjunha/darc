@@ -1,4 +1,4 @@
-use std::{env, ffi::OsString, path::PathBuf};
+use std::{env, path::PathBuf};
 
 use crate::{
     Result,
@@ -40,32 +40,12 @@ fn build_claude_args(request: &RuntimeRequest, include_bare: bool) -> Vec<String
     args
 }
 
-/// Returns whether the current environment supports Claude bare mode without OAuth fallback.
-fn supports_claude_bare_mode() -> bool {
-    supports_claude_bare_mode_with(|name| env::var_os(name))
-}
-
-/// Returns whether one environment lookup exposes bare-mode-compatible Claude auth.
-fn supports_claude_bare_mode_with<F>(lookup_env: F) -> bool
-where
-    F: for<'a> Fn(&'a str) -> Option<OsString>,
-{
-    [
-        "ANTHROPIC_API_KEY",
-        "CLAUDE_CODE_USE_BEDROCK",
-        "CLAUDE_CODE_USE_VERTEX",
-        "CLAUDE_CODE_USE_FOUNDRY",
-    ]
-    .into_iter()
-    .any(|name| lookup_env(name).is_some())
-}
-
 /// Prepares one Claude CLI command for a digest proposal run.
 pub fn build_claude_external_cli_command(request: &RuntimeRequest) -> Result<RuntimeCommand> {
     let program = env::var_os(CLAUDE_BINARY_ENV_VAR)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("claude"));
-    let args = build_claude_args(request, supports_claude_bare_mode());
+    let args = build_claude_args(request, request.use_provider_auth);
     Ok(RuntimeCommand {
         program,
         args,
@@ -78,20 +58,18 @@ pub fn build_claude_external_cli_command(request: &RuntimeRequest) -> Result<Run
 
 #[cfg(test)]
 mod tests {
-    use std::{ffi::OsString, path::PathBuf};
+    use std::path::PathBuf;
 
-    use super::{
-        CLAUDE_ALLOWED_TOOLS, CLAUDE_TOOLS, build_claude_args, build_claude_external_cli_command,
-        supports_claude_bare_mode_with,
-    };
+    use super::{CLAUDE_ALLOWED_TOOLS, CLAUDE_TOOLS, build_claude_args, build_claude_external_cli_command};
     use crate::runtime::{AgentId, RuntimeKind, RuntimeRequest};
 
-    fn sample_request() -> RuntimeRequest {
+    fn sample_request(use_provider_auth: bool) -> RuntimeRequest {
         RuntimeRequest {
             agent: AgentId::Claude,
             runtime: RuntimeKind::ExternalCli,
             model: "claude-sonnet-4-6".to_owned(),
             auth_profile: None,
+            use_provider_auth,
             prompt: "prompt".to_owned(),
             schema_json: "{\"type\":\"object\"}".to_owned(),
             darc_root: PathBuf::from("/tmp/darc-root"),
@@ -103,7 +81,7 @@ mod tests {
 
     #[test]
     fn build_claude_args_without_bare_uses_tool_runtime_shape() {
-        let request = sample_request();
+        let request = sample_request(false);
         assert_eq!(
             build_claude_args(&request, false),
             vec![
@@ -133,8 +111,8 @@ mod tests {
     }
 
     #[test]
-    fn build_claude_args_with_bare_when_supported() {
-        let request = sample_request();
+    fn build_claude_args_with_bare_in_provider_mode() {
+        let request = sample_request(true);
         assert_eq!(
             build_claude_args(&request, true),
             vec![
@@ -165,25 +143,30 @@ mod tests {
     }
 
     #[test]
-    fn supports_claude_bare_mode_with_api_key() {
-        assert!(supports_claude_bare_mode_with(|name| {
-            (name == "ANTHROPIC_API_KEY").then(|| OsString::from("test-key"))
-        }));
-    }
-
-    #[test]
-    fn supports_claude_bare_mode_without_supported_auth_is_false() {
-        assert!(!supports_claude_bare_mode_with(|_| None));
-    }
-
-    #[test]
     fn build_claude_external_cli_command_uses_structured_output_capture() {
-        let command = build_claude_external_cli_command(&sample_request())
+        let command = build_claude_external_cli_command(&sample_request(false))
             .expect("claude runtime command should build");
         assert_eq!(command.display_name, "Claude Code CLI");
         assert_eq!(
             command.proposal_output,
             crate::runtime::ProposalOutputSource::StdoutJsonField("structured_output".to_owned())
+        );
+    }
+
+    #[test]
+    fn build_claude_external_cli_command_only_adds_bare_in_provider_mode() {
+        let default_command = build_claude_external_cli_command(&sample_request(false))
+            .expect("default claude runtime command should build");
+        assert!(
+            !default_command.args.iter().any(|arg| arg == "--bare"),
+            "default Claude digest runs should not force bare mode"
+        );
+
+        let provider_command = build_claude_external_cli_command(&sample_request(true))
+            .expect("provider-auth claude runtime command should build");
+        assert!(
+            provider_command.args.iter().any(|arg| arg == "--bare"),
+            "provider-auth Claude digest runs should force bare mode"
         );
     }
 }
