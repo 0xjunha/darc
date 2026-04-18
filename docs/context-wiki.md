@@ -8,7 +8,7 @@ Current MVP scope:
 - read-side wiki queries via `darc query wiki ... --json`
 - imperative digest lifecycle via `darc wiki digest start` and `darc wiki digest cancel`
 - imperative entry lifecycle via `darc wiki entry discard` and `darc wiki entry restore`
-- external CLI runtime for `claude`, plus a gated `codex` opt-in for manual testing
+- external CLI runtime for both `claude` and `codex`
 - structured `decision_trace` proposal validation
 - canonical merge into decision-trace entry markdown plus one digest report per successful run
 - durable run artifacts and logs for each digest run
@@ -16,6 +16,7 @@ Current MVP scope:
 Current gaps:
 
 - `auth_profile` is recorded as run metadata only and does not constrain runtime credentials
+- Darc preserves the host environment for external CLIs, so the underlying CLI still decides the final credential source inside its selected auth mode
 
 ## Read Side
 
@@ -77,10 +78,11 @@ Key flags:
 
 - `--session-ref <provider>:<session-id>` selects one archived session as a focus seed. Pass it more than once to build a multi-session digest.
 - selected seed sessions guide the runtime's initial investigation, but they are not a hard evidence boundary. The runtime may still inspect and cite non-seed sessions through `darc query ...` when they support the same decision trace.
-- `--agent <codex|claude>` selects the agent family. `codex` is disabled by default until documented MCP-isolation controls exist; set `DARC_WIKI_UNSAFE_ENABLE_CODEX=1` to opt in at your own risk.
+- `--agent <codex|claude>` selects the agent family. Both are allowed by default.
 - `--runtime external-cli` selects the currently supported runtime kind.
 - `--model <name>` is required and is forwarded to the external CLI.
 - `--auth-profile <name>` is optional metadata recorded in run artifacts. It does not currently select credentials, accounts, or billing budgets.
+- `--use-provider-auth` explicitly opts one digest run into the external CLI's API-key/provider-auth path when Darc can request one. For Claude this adds `--bare`. For Codex this currently fails fast because `codex exec` does not expose a documented per-run auth selector.
 - `--target-category <name>` prioritizes an existing registry category and must already exist in the project registry.
 - `--target-domain <slug>` prioritizes a project-scoped registry domain and must already exist in the project registry.
 - `--json` emits the `darc.wiki.digest.start.v1` envelope on stdout.
@@ -150,29 +152,32 @@ discarded idea as a new entry.
 The current MVP uses external CLIs already installed on the host machine.
 
 - `--agent claude` expects the `claude` CLI.
-- `--agent codex` expects the `codex` CLI, but the digest runtime is disabled by default until documented MCP-isolation controls exist. Set `DARC_WIKI_UNSAFE_ENABLE_CODEX=1` only when you intentionally want the ungated Codex path for manual testing.
+- `--agent codex` expects the `codex` CLI.
 - Set `DARC_WIKI_CODEX_BIN` to override the Codex executable path.
 - Set `DARC_WIKI_CLAUDE_BIN` to override the Claude executable path.
 - Digest workers invoke these CLIs in a background process and capture stdout/stderr into run-local log files.
 
 Current auth caveat:
 
-- Darc currently launches these CLIs with inherited host environment and ambient login state.
+- Darc currently launches these CLIs with inherited host environment and ambient login state, except that default Claude runs scrub provider-auth env toggles so they stay on the normal CLI login path.
 - `auth_profile` is metadata only today. It does not enforce profile selection or sandbox credentials.
-- Codex remains gated because `codex exec` does not yet expose documented MCP-isolation controls for this workflow.
+- Codex runs inherit the machine's current Codex config, environment, and MCP setup. Darc does not enforce extra Codex MCP isolation for this workflow.
 
 ### Auth And Billing Behavior
 
 - `darc wiki digest` does not provide its own token budget, billing account, or separate runtime identity.
-- Each digest run uses whatever auth context the underlying CLI is already using on the host machine.
+- Each digest run uses whatever auth context the underlying CLI uses on the host machine for the selected mode below.
 - `--auth-profile` is metadata only today. It does not switch accounts, credentials, or billing budgets.
+- `--use-provider-auth` is the explicit opt-in switch for API-key/provider-auth mode. Darc does not auto-enable it from ambient environment variables.
 - For `--agent claude`:
-  - when bare-compatible auth is available, Darc runs Claude with `--bare`
-  - bare-compatible auth currently means one of: `ANTHROPIC_API_KEY`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, or `CLAUDE_CODE_USE_FOUNDRY`
-  - otherwise, Darc falls back to the normal Claude Code CLI path without `--bare`, and usage follows the machine's current Claude CLI login/auth context
+  - by default, Darc uses the normal Claude Code CLI auth path without `--bare`
+  - when you pass `--use-provider-auth`, Darc adds `--bare`
+  - ambient `ANTHROPIC_API_KEY` or provider env vars no longer make Darc switch modes on their own
+  - in provider-auth mode, the final credentials still come from whatever `claude --bare` supports on that machine
 - For `--agent codex`:
-  - usage follows the current Codex CLI auth context on the machine
+  - by default, usage follows the current Codex CLI auth context on the machine
   - Darc does not currently select a separate Codex account or billing budget
+  - `--use-provider-auth` is rejected today because `codex exec` does not expose a documented per-run API-key/provider-auth selector
 
 ## Run Artifacts
 
@@ -233,5 +238,5 @@ Current validation rules include:
 
 - Context Wiki imperative workflows are experimental and may still change.
 - `darc query wiki ...` is the stable read-side contract; imperative `darc wiki ...` behavior is still MVP-stage.
-- The Codex digest runtime is not normal supported behavior yet; use the explicit unsafe opt-in only for controlled manual testing.
+- Codex digest runs inherit the machine's current Codex config, environment, and MCP setup; operators are responsible for any extra MCP isolation they want on the host.
 - Read-side wiki queries do not expose internal artifact paths; use `darc query wiki run ... --json` for run/result detail and inspect the run directory directly only when you need raw logs.

@@ -182,8 +182,8 @@ Darc includes an experimental backend-owned Context Wiki workflow under `~/.darc
   `darc query turns --grep ...`, `darc query files ...`, `darc query session-files ...`,
   `darc query session-bundle ...`, and `darc query sessions --touched-path ...` are the intended project-scoped
   primitives for narrowing evidence and reviewing one candidate session in full.
-- Use `darc wiki digest start` to snapshot digest request metadata, invoke an external Claude Code CLI or an
-  explicitly opt-in Codex CLI run from the project root, validate the returned structured proposal artifact, and
+- Use `darc wiki digest start` to snapshot digest request metadata, invoke an external Claude Code CLI or Codex CLI
+  run from the project root, validate the returned structured proposal artifact, and
   merge the validated result into canonical wiki artifacts.
 - Use `darc wiki digest cancel` to request cancellation for an in-flight run.
 - Use `darc wiki entry discard` and `darc wiki entry restore` to change entry lifecycle state without deleting the
