@@ -105,6 +105,7 @@ pub struct RuntimeRequest {
 pub struct RuntimeCommand {
     pub program: PathBuf,
     pub args: Vec<String>,
+    pub env_remove: Vec<String>,
     pub workdir: PathBuf,
     pub stdin: Vec<u8>,
     pub proposal_output: ProposalOutputSource,

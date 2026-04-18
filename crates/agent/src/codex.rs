@@ -43,6 +43,7 @@ pub fn build_codex_external_cli_command(request: &RuntimeRequest) -> Result<Runt
     Ok(RuntimeCommand {
         program,
         args,
+        env_remove: Vec::new(),
         workdir: request.workdir.clone(),
         stdin: request.prompt.as_bytes().to_vec(),
         proposal_output: ProposalOutputSource::File(request.proposal_path.clone()),

@@ -8,6 +8,12 @@ use crate::{
 const CLAUDE_TOOLS: &str = "Bash,Read";
 const CLAUDE_ALLOWED_TOOLS: &str =
     "Read,Bash(darc query:*),Bash(rg:*),Bash(git log:*),Bash(git show:*),Bash(git diff:*)";
+const CLAUDE_PROVIDER_AUTH_ENV_VARS: &[&str] = &[
+    "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+];
 
 /// Builds one Claude argv vector for a digest proposal run.
 fn build_claude_args(request: &RuntimeRequest, include_bare: bool) -> Vec<String> {
@@ -46,9 +52,18 @@ pub fn build_claude_external_cli_command(request: &RuntimeRequest) -> Result<Run
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("claude"));
     let args = build_claude_args(request, request.use_provider_auth);
+    let env_remove = if request.use_provider_auth {
+        Vec::new()
+    } else {
+        CLAUDE_PROVIDER_AUTH_ENV_VARS
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect()
+    };
     Ok(RuntimeCommand {
         program,
         args,
+        env_remove,
         workdir: request.workdir.clone(),
         stdin: request.prompt.as_bytes().to_vec(),
         proposal_output: ProposalOutputSource::StdoutJsonField("structured_output".to_owned()),
@@ -60,7 +75,10 @@ pub fn build_claude_external_cli_command(request: &RuntimeRequest) -> Result<Run
 mod tests {
     use std::path::PathBuf;
 
-    use super::{CLAUDE_ALLOWED_TOOLS, CLAUDE_TOOLS, build_claude_args, build_claude_external_cli_command};
+    use super::{
+        CLAUDE_ALLOWED_TOOLS, CLAUDE_PROVIDER_AUTH_ENV_VARS, CLAUDE_TOOLS, build_claude_args,
+        build_claude_external_cli_command,
+    };
     use crate::runtime::{AgentId, RuntimeKind, RuntimeRequest};
 
     fn sample_request(use_provider_auth: bool) -> RuntimeRequest {
@@ -151,6 +169,13 @@ mod tests {
             command.proposal_output,
             crate::runtime::ProposalOutputSource::StdoutJsonField("structured_output".to_owned())
         );
+        assert_eq!(
+            command.env_remove,
+            CLAUDE_PROVIDER_AUTH_ENV_VARS
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -167,6 +192,10 @@ mod tests {
         assert!(
             provider_command.args.iter().any(|arg| arg == "--bare"),
             "provider-auth Claude digest runs should force bare mode"
+        );
+        assert!(
+            provider_command.env_remove.is_empty(),
+            "provider-auth Claude digest runs should preserve provider auth env vars"
         );
     }
 }

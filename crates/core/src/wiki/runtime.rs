@@ -56,8 +56,12 @@ pub(super) fn execute_runtime_command(
     run_id: &RunId,
     command: RuntimeCommand,
 ) -> Result<RuntimeExecution> {
-    let mut child = Command::new(&command.program)
-        .args(&command.args)
+    let mut child_command = Command::new(&command.program);
+    child_command.args(&command.args);
+    for name in &command.env_remove {
+        child_command.env_remove(name);
+    }
+    let mut child = child_command
         .current_dir(&command.workdir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

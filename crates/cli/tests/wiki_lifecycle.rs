@@ -1828,6 +1828,126 @@ fn wiki_digest_fails_on_invalid_claude_proposal() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn wiki_digest_default_claude_run_scrubs_provider_auth_env() -> Result<()> {
+    let root = create_wiki_fixture_root("cli-wiki-claude-default-auth")?;
+    let claude = write_fake_cli(
+        &root,
+        "fake-claude-default-auth",
+        concat!(
+            "unexpected=\"\"\n",
+            "saw_bare=0\n",
+            "while [ \"$#\" -gt 0 ]; do\n",
+            "  case \"$1\" in\n",
+            "    --model|--input-format|--output-format|--json-schema|--permission-mode|--tools|--allowed-tools|--add-dir)\n",
+            "      shift 2\n",
+            "      ;;\n",
+            "    --print|--strict-mcp-config|--disable-slash-commands|--no-session-persistence|--no-chrome)\n",
+            "      shift\n",
+            "      ;;\n",
+            "    --bare)\n",
+            "      saw_bare=1\n",
+            "      shift\n",
+            "      ;;\n",
+            "    *)\n",
+            "      unexpected=\"$unexpected $1\"\n",
+            "      shift\n",
+            "      ;;\n",
+            "  esac\n",
+            "done\n",
+            "prompt=$(cat)\n",
+            "[ -z \"$unexpected\" ] || { echo \"unexpected args:$unexpected\" >&2; exit 64; }\n",
+            "[ \"$saw_bare\" -eq 0 ] || { echo \"unexpected bare mode\" >&2; exit 64; }\n",
+            "[ -z \"${ANTHROPIC_API_KEY:-}\" ] || { echo \"ANTHROPIC_API_KEY leaked\" >&2; exit 64; }\n",
+            "[ -z \"${CLAUDE_CODE_USE_BEDROCK:-}\" ] || { echo \"CLAUDE_CODE_USE_BEDROCK leaked\" >&2; exit 64; }\n",
+            "run_id=$(printf '%s\\n' \"$prompt\" | awk -F'`' '/Set `run_id` to / { print $4; exit }')\n",
+            "[ -n \"$run_id\" ] || { echo \"missing run_id in prompt\" >&2; exit 64; }\n",
+            "cat <<JSON\n",
+            "{\n",
+            "  \"result\": \"done\",\n",
+            "  \"structured_output\": {\n",
+            "    \"schema\": \"darc.wiki.digest.proposal.v1\",\n",
+            "    \"project_id\": \"repo-abc123\",\n",
+            "    \"run_id\": \"$run_id\",\n",
+            "    \"entries\": [],\n",
+            "    \"run_summary\": {\n",
+            "      \"title\": \"Default auth\",\n",
+            "      \"summary\": \"Claude default mode should scrub provider auth env vars.\",\n",
+            "      \"themes\": [\"auth\"],\n",
+            "      \"extracted_decision_count\": 0\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+            "JSON\n"
+        ),
+    )?;
+
+    let start_output = run_darc_with_env(
+        [
+            "wiki",
+            "digest",
+            "start",
+            "--root",
+            root.to_string_lossy().as_ref(),
+            "--project-id",
+            "repo-abc123",
+            "--session-ref",
+            "claude:session-2",
+            "--agent",
+            "claude",
+            "--runtime",
+            "external-cli",
+            "--model",
+            "claude-sonnet-4-6",
+            "--json",
+        ],
+        [
+            ("ANTHROPIC_API_KEY", std::ffi::OsStr::new("test-key")),
+            ("CLAUDE_CODE_USE_BEDROCK", std::ffi::OsStr::new("1")),
+            ("DARC_WIKI_CLAUDE_BIN", claude.as_os_str()),
+        ],
+    )?;
+    assert!(start_output.status.success());
+    let start_value = parse_json(&start_output.stdout, "stdout")?;
+    let run_id = start_value["data"]["run_id"]
+        .as_str()
+        .context("missing run id")?
+        .to_owned();
+
+    let run_output = wait_for_run_status(&root, &run_id, "succeeded")?;
+    let run = run_output["data"]["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|run| run["run_id"] == run_id)
+        .context("succeeded run should be visible")?;
+    assert_eq!(run["status"], "succeeded");
+
+    let query_output = run_darc([
+        "query",
+        "wiki",
+        "run",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--run-id",
+        &run_id,
+        "--json",
+    ])?;
+    assert!(query_output.status.success());
+    let query_value = parse_json(&query_output.stdout, "stdout")?;
+    assert_eq!(query_value["data"]["run"]["use_provider_auth"], false);
+    assert_eq!(
+        query_value["data"]["run"]["result"]["runtime"]["use_provider_auth"],
+        false
+    );
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
 fn wiki_digest_fails_when_runtime_cannot_be_invoked() -> Result<()> {
     let root = create_wiki_fixture_root("cli-wiki-runtime-failure")?;
 
