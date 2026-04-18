@@ -89,7 +89,6 @@ where
 {
     Command::new(darc_binary())
         .args(args)
-        .env("DARC_WIKI_UNSAFE_ENABLE_CODEX", "1")
         .envs(envs)
         .output()
         .context("failed to run compiled darc binary")
@@ -773,8 +772,8 @@ fn wiki_digest_start_rejects_unregistered_target_domain() -> Result<()> {
 }
 
 #[test]
-fn wiki_digest_start_rejects_codex_without_explicit_gate() -> Result<()> {
-    let root = create_wiki_fixture_root("cli-wiki-codex-gate")?;
+fn wiki_digest_start_rejects_codex_provider_auth_opt_in() -> Result<()> {
+    let root = create_wiki_fixture_root("cli-wiki-codex-provider-auth")?;
     let output = Command::new(darc_binary())
         .args([
             "wiki",
@@ -792,14 +791,17 @@ fn wiki_digest_start_rejects_codex_without_explicit_gate() -> Result<()> {
             "external-cli",
             "--model",
             "gpt-5.4",
+            "--use-provider-auth",
             "--json",
         ])
-        .env_remove("DARC_WIKI_UNSAFE_ENABLE_CODEX")
         .output()
-        .context("failed to run compiled darc binary without codex gate override")?;
+        .context("failed to run compiled darc binary with codex provider-auth opt-in")?;
 
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("DARC_WIKI_UNSAFE_ENABLE_CODEX=1"));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("does not expose a documented per-run API-key/provider-auth selector")
+    );
 
     remove_root(&root)?;
     Ok(())
@@ -1457,6 +1459,7 @@ fn wiki_digest_serializes_canonical_merge_for_overlapping_runs() -> Result<()> {
         let run = &run_value["data"]["run"];
         assert_eq!(run["run_id"], run_id.as_str());
         assert_eq!(run["status"], "succeeded");
+        assert_eq!(run["use_provider_auth"], false);
         assert_eq!(
             run["selected_sessions"],
             Value::Array(vec![Value::String("codex:session-1".to_owned())])
@@ -1469,6 +1472,7 @@ fn wiki_digest_serializes_canonical_merge_for_overlapping_runs() -> Result<()> {
         assert_eq!(run["result"]["validation"]["valid"], true);
         assert_eq!(run["result"]["runtime"]["exit_code"], 0);
         assert_eq!(run["result"]["runtime"]["proposal_captured"], true);
+        assert_eq!(run["result"]["runtime"]["use_provider_auth"], false);
         let digest_id = run["digest_id"]
             .as_str()
             .context("run digest id should be present")?
@@ -1748,6 +1752,7 @@ fn wiki_digest_fails_on_invalid_claude_proposal() -> Result<()> {
             "external-cli",
             "--model",
             "claude-sonnet-4-6",
+            "--use-provider-auth",
             "--json",
         ],
         [
@@ -1800,11 +1805,16 @@ fn wiki_digest_fails_on_invalid_claude_proposal() -> Result<()> {
     let query_value = parse_json(&query_output.stdout, "stdout")?;
     assert_eq!(query_value["schema"], "darc.query.wiki.run.v1");
     assert_eq!(query_value["data"]["run"]["run_id"], run_id);
+    assert_eq!(query_value["data"]["run"]["use_provider_auth"], true);
     assert_eq!(
         query_value["data"]["run"]["error_code"],
         "proposal_validation_failed"
     );
     assert_eq!(query_value["data"]["run"]["result"]["status"], "failed");
+    assert_eq!(
+        query_value["data"]["run"]["result"]["runtime"]["use_provider_auth"],
+        true
+    );
     assert_eq!(
         query_value["data"]["run"]["result"]["validation"]["valid"],
         false
@@ -1812,6 +1822,125 @@ fn wiki_digest_fails_on_invalid_claude_proposal() -> Result<()> {
     assert_eq!(
         query_value["data"]["run"]["result"]["validation"]["errors"][0]["path"],
         "entries[0].domains[0]"
+    );
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn wiki_digest_default_claude_run_scrubs_provider_auth_env() -> Result<()> {
+    let root = create_wiki_fixture_root("cli-wiki-claude-default-auth")?;
+    let claude = write_fake_cli(
+        &root,
+        "fake-claude-default-auth",
+        concat!(
+            "unexpected=\"\"\n",
+            "saw_bare=0\n",
+            "while [ \"$#\" -gt 0 ]; do\n",
+            "  case \"$1\" in\n",
+            "    --model|--input-format|--output-format|--json-schema|--permission-mode|--tools|--allowed-tools|--add-dir)\n",
+            "      shift 2\n",
+            "      ;;\n",
+            "    --print|--strict-mcp-config|--disable-slash-commands|--no-session-persistence|--no-chrome)\n",
+            "      shift\n",
+            "      ;;\n",
+            "    --bare)\n",
+            "      saw_bare=1\n",
+            "      shift\n",
+            "      ;;\n",
+            "    *)\n",
+            "      unexpected=\"$unexpected $1\"\n",
+            "      shift\n",
+            "      ;;\n",
+            "  esac\n",
+            "done\n",
+            "prompt=$(cat)\n",
+            "[ -z \"$unexpected\" ] || { echo \"unexpected args:$unexpected\" >&2; exit 64; }\n",
+            "[ \"$saw_bare\" -eq 0 ] || { echo \"unexpected bare mode\" >&2; exit 64; }\n",
+            "[ -z \"${ANTHROPIC_API_KEY:-}\" ] || { echo \"ANTHROPIC_API_KEY leaked\" >&2; exit 64; }\n",
+            "[ -z \"${CLAUDE_CODE_USE_BEDROCK:-}\" ] || { echo \"CLAUDE_CODE_USE_BEDROCK leaked\" >&2; exit 64; }\n",
+            "run_id=$(printf '%s\\n' \"$prompt\" | awk -F'`' '/Set `run_id` to / { print $4; exit }')\n",
+            "[ -n \"$run_id\" ] || { echo \"missing run_id in prompt\" >&2; exit 64; }\n",
+            "cat <<JSON\n",
+            "{\n",
+            "  \"result\": \"done\",\n",
+            "  \"structured_output\": {\n",
+            "    \"schema\": \"darc.wiki.digest.proposal.v1\",\n",
+            "    \"project_id\": \"repo-abc123\",\n",
+            "    \"run_id\": \"$run_id\",\n",
+            "    \"entries\": [],\n",
+            "    \"run_summary\": {\n",
+            "      \"title\": \"Default auth\",\n",
+            "      \"summary\": \"Claude default mode should scrub provider auth env vars.\",\n",
+            "      \"themes\": [\"auth\"],\n",
+            "      \"extracted_decision_count\": 0\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+            "JSON\n"
+        ),
+    )?;
+
+    let start_output = run_darc_with_env(
+        [
+            "wiki",
+            "digest",
+            "start",
+            "--root",
+            root.to_string_lossy().as_ref(),
+            "--project-id",
+            "repo-abc123",
+            "--session-ref",
+            "claude:session-2",
+            "--agent",
+            "claude",
+            "--runtime",
+            "external-cli",
+            "--model",
+            "claude-sonnet-4-6",
+            "--json",
+        ],
+        [
+            ("ANTHROPIC_API_KEY", std::ffi::OsStr::new("test-key")),
+            ("CLAUDE_CODE_USE_BEDROCK", std::ffi::OsStr::new("1")),
+            ("DARC_WIKI_CLAUDE_BIN", claude.as_os_str()),
+        ],
+    )?;
+    assert!(start_output.status.success());
+    let start_value = parse_json(&start_output.stdout, "stdout")?;
+    let run_id = start_value["data"]["run_id"]
+        .as_str()
+        .context("missing run id")?
+        .to_owned();
+
+    let run_output = wait_for_run_status(&root, &run_id, "succeeded")?;
+    let run = run_output["data"]["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|run| run["run_id"] == run_id)
+        .context("succeeded run should be visible")?;
+    assert_eq!(run["status"], "succeeded");
+
+    let query_output = run_darc([
+        "query",
+        "wiki",
+        "run",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--run-id",
+        &run_id,
+        "--json",
+    ])?;
+    assert!(query_output.status.success());
+    let query_value = parse_json(&query_output.stdout, "stdout")?;
+    assert_eq!(query_value["data"]["run"]["use_provider_auth"], false);
+    assert_eq!(
+        query_value["data"]["run"]["result"]["runtime"]["use_provider_auth"],
+        false
     );
 
     remove_root(&root)?;

@@ -240,6 +240,7 @@ Today:
 - `darc.query.wiki.digests.v1` returns `project_id` plus deterministic `digests`, with an optional `limit`
 - `darc.query.wiki.digest.v1` returns one canonical digest detail including frontmatter fields and Markdown body
 - `darc.query.wiki.run.v1` returns one run state plus parsed terminal result detail when `result.json` exists
+- `darc.query.wiki.run.v1` includes persisted request/runtime metadata such as `agent_id`, `runtime`, `model`, `auth_profile`, `use_provider_auth`, selected sessions, targets, and terminal result detail when available
 - `darc.query.wiki.runs.v1` echoes optional `since` and `until` filters and applies them to run `created_at`
 - `darc.query.wiki.runs.v1` returns `project_id` plus deterministic `runs`, with optional `status` and `limit`
 - empty lists are returned when no canonical entries, digests, or runs exist yet

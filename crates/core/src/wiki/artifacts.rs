@@ -175,6 +175,7 @@ fn build_result_artifact(
             runtime: state.runtime.clone(),
             model: state.model.clone(),
             auth_profile: state.auth_profile.clone(),
+            use_provider_auth: state.use_provider_auth,
             display_name: runtime.map(|runtime| runtime.display_name.clone()),
             exit_code: runtime.and_then(|runtime| runtime.exit_code),
             stdout_bytes: runtime.map_or(0, |runtime| runtime.stdout.len()),

@@ -91,6 +91,7 @@ pub struct RuntimeRequest {
     pub runtime: RuntimeKind,
     pub model: String,
     pub auth_profile: Option<String>,
+    pub use_provider_auth: bool,
     pub prompt: String,
     pub schema_json: String,
     pub darc_root: PathBuf,
@@ -104,6 +105,7 @@ pub struct RuntimeRequest {
 pub struct RuntimeCommand {
     pub program: PathBuf,
     pub args: Vec<String>,
+    pub env_remove: Vec<String>,
     pub workdir: PathBuf,
     pub stdin: Vec<u8>,
     pub proposal_output: ProposalOutputSource,
