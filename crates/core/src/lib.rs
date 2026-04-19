@@ -21,8 +21,10 @@ pub use index::{
 };
 pub use init::{DetectedRolloutSource, InitDraft, default_root_path, prepare_init, write_init};
 pub use project::{
-    LinkReport, RefreshAllReport, RefreshOptions, RefreshReport, RemoveReport, RenameReport,
-    link_project, refresh_all_projects, refresh_project, remove_project, rename_project,
+    LinkReport, RefreshAllBestEffortReport, RefreshAllReport, RefreshOptions,
+    RefreshProjectAttempt, RefreshProjectFailure, RefreshReport, RemoveReport, RenameReport,
+    link_project, refresh_all_projects, refresh_all_projects_best_effort, refresh_project,
+    remove_project, rename_project,
 };
 pub use sync::{SyncOptions, SyncPlan, SyncReport, execute_sync, prepare_sync};
 pub use wiki::{

@@ -10,7 +10,7 @@ use darc_index::{INDEX_DB_FILE_NAME, open_index_database};
 use rusqlite::params;
 
 use super::{
-    RefreshOptions, refresh_all_projects,
+    RefreshOptions, refresh_all_projects, refresh_all_projects_best_effort,
     registry::load_normalized_shared_config,
     remove_project,
     workflow::{link_project_from, refresh_project_from, rename_project_from},
@@ -70,6 +70,56 @@ fn write_codex_rollout(
             session_id = session_id,
             user_message = user_message,
             assistant_reply = assistant_reply,
+        ),
+    )
+}
+
+/// Writes one workspace fixture with a broken project followed by a healthy project.
+fn write_partial_refresh_workspace(root: &Path) -> Result<()> {
+    let broken_root = root.join("broken-repo");
+    let healthy_root = root.join("healthy-repo");
+    let codex_home = root.join(".codex");
+    let codex_sessions_root = codex_home.join("sessions");
+    fs::create_dir_all(&healthy_root)?;
+    write_codex_rollout(
+        &codex_sessions_root,
+        "rollout-2026-04-01T10-10-00-22222222-2222-4222-8222-222222222241.jsonl",
+        "22222222-2222-4222-8222-222222222241",
+        &healthy_root,
+        "Inspect healthy-repo",
+        "Indexed healthy-repo",
+    )?;
+
+    write_config(
+        root,
+        &SharedConfig::new(
+            root.to_path_buf(),
+            vec![
+                ProjectConfig {
+                    id: "broken-repo-123".into(),
+                    name: "broken-repo".into(),
+                    local_path: broken_root,
+                    git_upstream: None,
+                    sessions_root: root.join("projects/broken-repo-123/sessions"),
+                    known_paths: Vec::new(),
+                },
+                ProjectConfig {
+                    id: "healthy-repo-456".into(),
+                    name: "healthy-repo".into(),
+                    local_path: healthy_root,
+                    git_upstream: None,
+                    sessions_root: root.join("projects/healthy-repo-456/sessions"),
+                    known_paths: Vec::new(),
+                },
+            ],
+            SourcesConfig {
+                claude: None,
+                codex: Some(CodexSourceConfig {
+                    enabled: true,
+                    home: codex_home,
+                    sessions_root: codex_sessions_root,
+                }),
+            },
         ),
     )
 }
@@ -584,6 +634,61 @@ fn refresh_all_projects_refreshes_each_registered_project() -> Result<()> {
     )?;
     assert_eq!(repo_a_sessions, 1);
     assert_eq!(repo_b_sessions, 1);
+
+    Ok(())
+}
+
+#[test]
+fn refresh_all_projects_fails_fast_when_one_project_breaks() -> Result<()> {
+    let root = unique_test_dir(&format!("refresh-all-fail-fast-{}", timestamp_seed()));
+    write_partial_refresh_workspace(&root)?;
+
+    let error = refresh_all_projects(Some(root.clone()), RefreshOptions::default())
+        .expect_err("strict refresh-all should stop on the first failure");
+
+    assert!(format!("{error:#}").contains("failed to refresh project `broken-repo`"));
+    assert!(!root.join("projects/healthy-repo-456/sessions").exists());
+
+    Ok(())
+}
+
+#[test]
+fn refresh_all_projects_best_effort_continues_after_project_failure() -> Result<()> {
+    let root = unique_test_dir(&format!("refresh-all-partial-{}", timestamp_seed()));
+    write_partial_refresh_workspace(&root)?;
+
+    let report = refresh_all_projects_best_effort(Some(root.clone()), RefreshOptions::default())?;
+
+    assert_eq!(
+        report
+            .projects
+            .iter()
+            .map(|project| match project {
+                super::RefreshProjectAttempt::Refreshed(project) =>
+                    project.sync.project_name.as_str(),
+                super::RefreshProjectAttempt::Failed(failure) => failure.project_name.as_str(),
+            })
+            .collect::<Vec<_>>(),
+        vec!["broken-repo", "healthy-repo"]
+    );
+    let failure = report.projects[0]
+        .failure()
+        .context("expected broken project to fail")?;
+    assert_eq!(failure.project_name, "broken-repo");
+    assert!(format!("{:#}", failure.error).contains("failed to refresh project `broken-repo`"));
+    let healthy_report = report.projects[1]
+        .refreshed_report()
+        .context("expected healthy project to refresh")?;
+    assert_eq!(healthy_report.sync.project_name, "healthy-repo");
+    assert_eq!(healthy_report.index.sessions_currently_indexed, 1);
+    assert_eq!(report.refreshed_count(), 1);
+    assert_eq!(report.failed_count(), 1);
+    assert!(report.has_failures());
+
+    let connection = open_index_database(&root.join(INDEX_DB_FILE_NAME))?;
+    let indexed_sessions: i64 =
+        connection.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))?;
+    assert_eq!(indexed_sessions, 1);
 
     Ok(())
 }

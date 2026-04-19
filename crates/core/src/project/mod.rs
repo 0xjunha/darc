@@ -8,8 +8,10 @@ mod workflow;
 
 pub(crate) use registry::{registered_projects, write_shared_config};
 pub use types::{
-    LinkReport, RefreshAllReport, RefreshOptions, RefreshReport, RemoveReport, RenameReport,
+    LinkReport, RefreshAllBestEffortReport, RefreshAllReport, RefreshOptions,
+    RefreshProjectAttempt, RefreshProjectFailure, RefreshReport, RemoveReport, RenameReport,
 };
 pub use workflow::{
-    link_project, refresh_all_projects, refresh_project, remove_project, rename_project,
+    link_project, refresh_all_projects, refresh_all_projects_best_effort, refresh_project,
+    remove_project, rename_project,
 };

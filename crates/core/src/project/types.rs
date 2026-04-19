@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use anyhow::Error;
+
 use crate::{SourceKind, index::IndexReport, sync::SyncReport};
 
 /// Reports one completed config-only project link operation.
@@ -44,6 +46,68 @@ pub struct RefreshReport {
 #[derive(Debug, Clone)]
 pub struct RefreshAllReport {
     pub projects: Vec<RefreshReport>,
+}
+
+/// Stores one structured project refresh failure for best-effort workspace refreshes.
+#[derive(Debug)]
+pub struct RefreshProjectFailure {
+    pub project_name: String,
+    pub project_root: PathBuf,
+    pub error: Error,
+}
+
+/// Stores one attempted project refresh inside a best-effort workspace refresh.
+#[derive(Debug)]
+pub enum RefreshProjectAttempt {
+    Refreshed(Box<RefreshReport>),
+    Failed(RefreshProjectFailure),
+}
+
+impl RefreshProjectAttempt {
+    /// Returns the completed refresh report when this project refreshed successfully.
+    pub fn refreshed_report(&self) -> Option<&RefreshReport> {
+        match self {
+            Self::Refreshed(report) => Some(report.as_ref()),
+            Self::Failed(_) => None,
+        }
+    }
+
+    /// Returns the structured failure when this project refresh failed.
+    pub fn failure(&self) -> Option<&RefreshProjectFailure> {
+        match self {
+            Self::Refreshed(_) => None,
+            Self::Failed(failure) => Some(failure),
+        }
+    }
+}
+
+/// Reports one completed best-effort multi-project refresh workflow.
+#[derive(Debug)]
+pub struct RefreshAllBestEffortReport {
+    pub projects: Vec<RefreshProjectAttempt>,
+}
+
+impl RefreshAllBestEffortReport {
+    /// Returns how many projects refreshed successfully.
+    pub fn refreshed_count(&self) -> usize {
+        self.projects
+            .iter()
+            .filter(|project| project.refreshed_report().is_some())
+            .count()
+    }
+
+    /// Returns how many projects failed during refresh.
+    pub fn failed_count(&self) -> usize {
+        self.projects
+            .iter()
+            .filter(|project| project.failure().is_some())
+            .count()
+    }
+
+    /// Returns whether any project failed during refresh.
+    pub fn has_failures(&self) -> bool {
+        self.failed_count() > 0
+    }
 }
 
 /// Reports one completed rename workflow across config, archive sync, indexing, and cleanup.

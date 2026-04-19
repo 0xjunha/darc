@@ -10,7 +10,8 @@ use super::{
     registry::{registered_projects, write_shared_config},
     remove::{remove_project_by_id, remove_project_named},
     types::{
-        LinkReport, RefreshAllReport, RefreshOptions, RefreshReport, RemoveReport, RenameReport,
+        LinkReport, RefreshAllBestEffortReport, RefreshAllReport, RefreshOptions,
+        RefreshProjectAttempt, RefreshProjectFailure, RefreshReport, RemoveReport, RenameReport,
     },
 };
 use crate::{
@@ -77,6 +78,33 @@ pub fn refresh_all_projects(
     }
 
     Ok(RefreshAllReport { projects: reports })
+}
+
+/// Refreshes every registered project and records structured per-project failures.
+pub fn refresh_all_projects_best_effort(
+    root: Option<PathBuf>,
+    options: RefreshOptions,
+) -> Result<RefreshAllBestEffortReport> {
+    let root = root.unwrap_or_else(default_root_path);
+    let projects = registered_projects(&root)?;
+    if projects.is_empty() {
+        bail!("no configured darc projects found under {}", root.display());
+    }
+
+    let mut reports = Vec::with_capacity(projects.len());
+    for project in projects {
+        let attempt = match refresh_project_from(&project.local_path, root.clone(), &options) {
+            Ok(report) => RefreshProjectAttempt::Refreshed(Box::new(report)),
+            Err(error) => RefreshProjectAttempt::Failed(RefreshProjectFailure {
+                project_name: project.name.clone(),
+                project_root: project.local_path.clone(),
+                error: error.context(format!("failed to refresh project `{}`", project.name)),
+            }),
+        };
+        reports.push(attempt);
+    }
+
+    Ok(RefreshAllBestEffortReport { projects: reports })
 }
 
 /// Links one named project's historical paths into one explicit active project.
