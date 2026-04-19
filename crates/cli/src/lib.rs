@@ -20,13 +20,14 @@ use darc_core::query::{
     resolve_query_config_project, resolve_query_project, resolve_query_session_id_for_project,
 };
 use darc_core::{
-    DigestId, DigestStartOptions, EntryId, EntryStatus, IndexOptions, InitDraft, RefreshOptions,
+    DigestId, DigestStartOptions, EntryId, EntryStatus, IndexOptions, InitDraft,
+    RefreshAllBestEffortReport, RefreshOptions, RefreshProjectAttempt, RefreshProjectFailure,
     RefreshReport, RunId, RunStatus, SkippedRollout, SourceKind, SyncOptions,
     cancel_project_wiki_digest, default_root_path, discard_project_wiki_entry, execute_sync,
     fail_project_wiki_digest_start, index_project_sessions, link_project,
     mark_project_wiki_digest_started, prepare_init, prepare_project_wiki_digest_start,
-    prepare_sync, refresh_all_projects, refresh_project, remove_project, rename_project,
-    restore_project_wiki_entry, run_project_wiki_digest_worker, write_init,
+    prepare_sync, refresh_all_projects_best_effort, refresh_project, remove_project,
+    rename_project, restore_project_wiki_entry, run_project_wiki_digest_worker, write_init,
 };
 use darc_paths::{
     current_utc_timestamp, resolve_query_time_bound as resolve_shared_query_time_bound,
@@ -56,7 +57,7 @@ enum Commands {
     Init(InitArgs),
     #[command(
         about = "Sync then index archived sessions for the active project",
-        long_about = "Sync then index archived sessions for the active project.\n\nThis is the daily happy path after `darc init`.\nBy default it refreshes the project resolved from the current directory.\nUse `--provider` to limit both sync and index to selected providers.\nUse `--all` to refresh every registered project in the shared darc workspace."
+        long_about = "Sync then index archived sessions for the active project.\n\nThis is the daily happy path after `darc init`.\nBy default it refreshes the project resolved from the current directory.\nUse `--provider` to limit both sync and index to selected providers.\nUse `--all` to refresh every registered project in the shared darc workspace.\nWhen `--all` is set, darc continues past per-project failures, prints a workspace summary, and exits non-zero if any project failed."
     )]
     Refresh(RefreshArgs),
     #[command(
@@ -125,7 +126,7 @@ struct RefreshArgs {
 
     #[arg(
         long,
-        help = "Refresh every registered project instead of only the active one"
+        help = "Refresh every registered project, continue past per-project failures, and summarize the results"
     )]
     all: bool,
 }
@@ -2316,20 +2317,25 @@ fn run_refresh(args: RefreshArgs) -> Result<()> {
     };
 
     if args.all {
-        let report = refresh_all_projects(Some(args.root), options)?;
-        for (index, project) in report.projects.iter().enumerate() {
-            if index > 0 {
-                println!();
-            }
-            print_refresh_report(project);
-        }
-        println!("\nRefreshed {} project(s).", report.projects.len());
-        return Ok(());
+        let report = refresh_all_projects_best_effort(Some(args.root), options)?;
+        print_refresh_all_report(&report);
+        return refresh_all_exit_status(&report);
     }
 
     let report = refresh_project(Some(args.root), options)
         .map_err(add_init_hint_for_unconfigured_project)?;
     print_refresh_report(&report);
+    Ok(())
+}
+
+/// Converts one workspace refresh report into the final CLI exit result.
+fn refresh_all_exit_status(report: &RefreshAllBestEffortReport) -> Result<()> {
+    if report.has_failures() {
+        bail!(
+            "{} project(s) failed during workspace refresh",
+            report.failed_count()
+        );
+    }
     Ok(())
 }
 
@@ -2494,6 +2500,37 @@ fn print_refresh_report(report: &RefreshReport) {
     if report.sync.config_written {
         println!("Updated config.");
     }
+}
+
+/// Prints one multi-project refresh report with per-project results and totals.
+fn print_refresh_all_report(report: &RefreshAllBestEffortReport) {
+    for (index, project) in report.projects.iter().enumerate() {
+        if index > 0 {
+            println!();
+        }
+        print_refresh_all_project_report(project);
+    }
+    println!(
+        "\nRefresh summary: {} succeeded, {} failed.",
+        report.refreshed_count(),
+        report.failed_count()
+    );
+}
+
+/// Prints one project-scoped entry from a multi-project refresh report.
+fn print_refresh_all_project_report(project: &RefreshProjectAttempt) {
+    match project {
+        RefreshProjectAttempt::Refreshed(report) => print_refresh_report(report),
+        RefreshProjectAttempt::Failed(failure) => print_refresh_project_failure(failure),
+    }
+}
+
+/// Prints one structured project refresh failure from a best-effort workspace refresh.
+fn print_refresh_project_failure(failure: &RefreshProjectFailure) {
+    println!("Project: {}", failure.project_name);
+    println!("Project Root: {}", failure.project_root.display());
+    println!("Status: failed");
+    println!("Error: {:#}", failure.error);
 }
 
 /// Runs the hidden Codex rollout schema audit command with dedicated exit codes.

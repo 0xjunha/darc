@@ -1,7 +1,14 @@
-use std::time::{Duration, UNIX_EPOCH};
+use std::{
+    path::PathBuf,
+    time::{Duration, UNIX_EPOCH},
+};
 
 use anyhow::anyhow;
 use clap::{CommandFactory, Parser};
+use darc_core::{
+    IndexReport, RefreshAllBestEffortReport, RefreshProjectAttempt, RefreshProjectFailure,
+    RefreshReport, SourceKind, SyncReport,
+};
 use darc_rollout_audit::claude::{
     ClaudeSchemaAuditReport, ClaudeSchemaDrift, ClaudeSchemaDriftWindow, ClaudeSchemaSurveyMode,
     ClaudeSdkSchemaDrift,
@@ -51,6 +58,39 @@ fn compatible_claude_report() -> ClaudeSchemaAuditReport {
     }
 }
 
+fn sample_refresh_report(project_name: &str) -> RefreshReport {
+    let project_root = PathBuf::from(format!("/tmp/{project_name}"));
+    let sessions_root = project_root.join("sessions");
+    RefreshReport {
+        sync: SyncReport {
+            project_name: project_name.to_owned(),
+            project_root: project_root.clone(),
+            sessions_root: sessions_root.clone(),
+            sources: vec![SourceKind::Codex],
+            sessions_copied: 1,
+            sessions_unchanged: 0,
+            auxiliary_copied: 0,
+            auxiliary_unchanged: 0,
+            new_known_paths: Vec::new(),
+            warnings: Vec::new(),
+            manifest_written: false,
+            config_written: false,
+        },
+        index: IndexReport {
+            project_name: project_name.to_owned(),
+            project_root: project_root.clone(),
+            sessions_root,
+            index_db_path: project_root.join("index.sqlite"),
+            providers: vec![SourceKind::Codex],
+            sessions_discovered: 1,
+            sessions_skipped_this_run: 0,
+            sessions_currently_indexed: 1,
+            turns_currently_indexed: 2,
+            skipped_rollouts: Vec::new(),
+        },
+    }
+}
+
 #[test]
 fn parses_hidden_codex_schema_audit_command() {
     let cli = Cli::try_parse_from(["darc", "codex-schema-audit"]).unwrap();
@@ -97,6 +137,26 @@ fn refresh_command_accepts_provider_filters_and_all() {
         Commands::Refresh(super::RefreshArgs { provider, all, .. })
             if provider.len() == 1 && all
     ));
+}
+
+#[test]
+fn refresh_all_exit_status_errors_when_any_project_failed() {
+    let report = RefreshAllBestEffortReport {
+        projects: vec![
+            RefreshProjectAttempt::Refreshed(Box::new(sample_refresh_report("repo-a"))),
+            RefreshProjectAttempt::Failed(RefreshProjectFailure {
+                project_name: "repo-b".into(),
+                project_root: PathBuf::from("/tmp/repo-b"),
+                error: anyhow!("failed to refresh project `repo-b`: boom"),
+            }),
+        ],
+    };
+
+    let error = super::refresh_all_exit_status(&report).unwrap_err();
+    assert_eq!(
+        format!("{error:#}"),
+        "1 project(s) failed during workspace refresh"
+    );
 }
 
 #[test]
