@@ -43,6 +43,7 @@ use serde_json::{Value as JsonValue, json};
 use thiserror::Error;
 
 use crate::{
+    active_project::load_active_project,
     config::{ProjectConfig, SharedConfig, load_config},
     constants::CONFIG_FILE_NAME,
     default_root_path,
@@ -130,15 +131,36 @@ pub fn query_workspace(root: Option<PathBuf>) -> WorkspaceQueryData {
     }
 }
 
-/// Queries the session-list payload for one configured project.
-pub fn query_sessions(
+/// Stores one resolved project-scoped query target plus its root metadata.
+#[derive(Debug, Clone)]
+pub struct ResolvedQueryProject {
+    context: ProjectQueryContext,
+}
+
+/// Resolves one database-backed project-scoped query target from an explicit id or the current directory.
+pub fn resolve_query_project(
     root: Option<PathBuf>,
-    project_id: &str,
+    project_id: Option<&str>,
+) -> Result<ResolvedQueryProject> {
+    resolve_query_project_with_scope(root, project_id, QueryProjectScope::Database)
+}
+
+/// Resolves one config-backed project-scoped query target from an explicit id or the current directory.
+pub fn resolve_query_config_project(
+    root: Option<PathBuf>,
+    project_id: Option<&str>,
+) -> Result<ResolvedQueryProject> {
+    resolve_query_project_with_scope(root, project_id, QueryProjectScope::ConfigOnly)
+}
+
+/// Queries the session-list payload for one already-resolved configured project.
+pub fn query_sessions_for_project(
+    project: &ResolvedQueryProject,
     since: Option<&str>,
     until: Option<&str>,
     touched_path: Option<&str>,
 ) -> Result<SessionsQueryData> {
-    let context = load_project_query_context(root, project_id)?;
+    let context = &project.context;
     query_project_sessions(
         &context.root.database_path,
         &context.project.id,
@@ -149,12 +171,24 @@ pub fn query_sessions(
     )
 }
 
-/// Queries one file-pivot payload for one configured project.
-pub fn query_files(
+/// Queries the session-list payload for one configured project.
+pub fn query_sessions(
     root: Option<PathBuf>,
+    project_id: &str,
+    since: Option<&str>,
+    until: Option<&str>,
+    touched_path: Option<&str>,
+) -> Result<SessionsQueryData> {
+    let project = resolve_query_project(root, Some(project_id))?;
+    query_sessions_for_project(&project, since, until, touched_path)
+}
+
+/// Queries one file-pivot payload for one already-resolved configured project.
+pub fn query_files_for_project(
+    project: &ResolvedQueryProject,
     request: FilesQueryRequest<'_>,
 ) -> Result<FilesQueryData> {
-    let context = load_project_query_context(root, request.project_id)?;
+    let context = &project.context;
     query_project_files(
         &context.root.database_path,
         FilesQueryRequest {
@@ -163,6 +197,15 @@ pub fn query_files(
             ..request
         },
     )
+}
+
+/// Queries one file-pivot payload for one configured project.
+pub fn query_files(
+    root: Option<PathBuf>,
+    request: FilesQueryRequest<'_>,
+) -> Result<FilesQueryData> {
+    let project = resolve_query_project(root, Some(request.project_id))?;
+    query_files_for_project(&project, request)
 }
 
 /// Resolves one full session id or UUID prefix across every indexed provider.
@@ -186,12 +229,38 @@ pub fn resolve_query_session_id(
     provider: Option<SourceKind>,
     session_id: &str,
 ) -> Result<String> {
-    let context = load_project_query_context(root, project_id)?;
+    let project = resolve_query_project(root, Some(project_id))?;
+    resolve_query_session_id_for_project(&project, provider, session_id)
+}
+
+/// Resolves one strict `darc query` session id against one already-resolved project.
+pub fn resolve_query_session_id_for_project(
+    project: &ResolvedQueryProject,
+    provider: Option<SourceKind>,
+    session_id: &str,
+) -> Result<String> {
+    let context = &project.context;
     validate_project_session_id(
         &context.root.database_path,
         &context.project.id,
         provider,
         session_id,
+    )
+}
+
+/// Queries one session-scoped per-file access summary payload for one already-resolved configured project.
+pub fn query_session_files_for_project(
+    project: &ResolvedQueryProject,
+    provider: SourceKind,
+    session_id: &str,
+) -> Result<SessionFilesQueryData> {
+    let context = &project.context;
+    query_project_session_files(
+        &context.root.database_path,
+        &context.project.id,
+        provider,
+        session_id,
+        Some(context.project.local_path.as_path()),
     )
 }
 
@@ -202,13 +271,25 @@ pub fn query_session_files(
     provider: SourceKind,
     session_id: &str,
 ) -> Result<SessionFilesQueryData> {
-    let context = load_project_query_context(root, project_id)?;
-    query_project_session_files(
+    let project = resolve_query_project(root, Some(project_id))?;
+    query_session_files_for_project(&project, provider, session_id)
+}
+
+/// Queries one composite session bundle for one already-resolved configured provider session.
+pub fn query_session_bundle_for_project(
+    project: &ResolvedQueryProject,
+    provider: SourceKind,
+    session_id: &str,
+    view: SessionBundleView,
+) -> Result<SessionBundleQueryData> {
+    let context = &project.context;
+    query_project_session_bundle(
         &context.root.database_path,
         &context.project.id,
         provider,
         session_id,
         Some(context.project.local_path.as_path()),
+        view,
     )
 }
 
@@ -220,14 +301,22 @@ pub fn query_session_bundle(
     session_id: &str,
     view: SessionBundleView,
 ) -> Result<SessionBundleQueryData> {
-    let context = load_project_query_context(root, project_id)?;
-    query_project_session_bundle(
+    let project = resolve_query_project(root, Some(project_id))?;
+    query_session_bundle_for_project(&project, provider, session_id, view)
+}
+
+/// Queries the turn-list payload for one already-resolved configured provider session.
+pub fn query_turns_for_project(
+    project: &ResolvedQueryProject,
+    request: TurnsQueryRequest<'_>,
+) -> Result<TurnsQueryData> {
+    let context = &project.context;
+    query_index_turns(
         &context.root.database_path,
-        &context.project.id,
-        provider,
-        session_id,
-        Some(context.project.local_path.as_path()),
-        view,
+        TurnsQueryRequest {
+            project_id: &context.project.id,
+            ..request
+        },
     )
 }
 
@@ -236,11 +325,21 @@ pub fn query_turns(
     root: Option<PathBuf>,
     request: TurnsQueryRequest<'_>,
 ) -> Result<TurnsQueryData> {
-    let context = load_project_query_context(root, request.project_id)?;
-    query_index_turns(
+    let project = resolve_query_project(root, Some(request.project_id))?;
+    query_turns_for_project(&project, request)
+}
+
+/// Queries the grep-scoped turn-match payload for one already-resolved configured project.
+pub fn query_turn_matches_for_project(
+    project: &ResolvedQueryProject,
+    request: TurnMatchesQueryRequest<'_>,
+) -> Result<TurnMatchesQueryData> {
+    let context = &project.context;
+    query_index_turn_matches(
         &context.root.database_path,
-        TurnsQueryRequest {
+        TurnMatchesQueryRequest {
             project_id: &context.project.id,
+            project_root: Some(context.project.local_path.as_path()),
             ..request
         },
     )
@@ -251,14 +350,26 @@ pub fn query_turn_matches(
     root: Option<PathBuf>,
     request: TurnMatchesQueryRequest<'_>,
 ) -> Result<TurnMatchesQueryData> {
-    let context = load_project_query_context(root, request.project_id)?;
-    query_index_turn_matches(
+    let project = resolve_query_project(root, Some(request.project_id))?;
+    query_turn_matches_for_project(&project, request)
+}
+
+/// Queries one full turn-detail payload for one already-resolved configured provider session turn.
+pub fn query_turn_for_project(
+    project: &ResolvedQueryProject,
+    provider: SourceKind,
+    session_id: &str,
+    turn_ordinal: u64,
+    options: TurnDetailOptions,
+) -> Result<TurnDetail> {
+    let context = &project.context;
+    query_turn_detail(
         &context.root.database_path,
-        TurnMatchesQueryRequest {
-            project_id: &context.project.id,
-            project_root: Some(context.project.local_path.as_path()),
-            ..request
-        },
+        &context.project.id,
+        provider,
+        session_id,
+        turn_ordinal,
+        options,
     )
 }
 
@@ -271,15 +382,8 @@ pub fn query_turn(
     turn_ordinal: u64,
     options: TurnDetailOptions,
 ) -> Result<TurnDetail> {
-    let context = load_project_query_context(root, project_id)?;
-    query_turn_detail(
-        &context.root.database_path,
-        &context.project.id,
-        provider,
-        session_id,
-        turn_ordinal,
-        options,
-    )
+    let project = resolve_query_project(root, Some(project_id))?;
+    query_turn_for_project(&project, provider, session_id, turn_ordinal, options)
 }
 
 /// Queries every full turn-detail payload for one configured provider session.
@@ -300,15 +404,14 @@ pub fn query_session_turn_details(
     )
 }
 
-/// Queries the turn insights payload for one configured provider session turn.
-pub fn query_turn_insight_report(
-    root: Option<PathBuf>,
-    project_id: &str,
+/// Queries the turn insights payload for one already-resolved configured provider session turn.
+pub fn query_turn_insight_report_for_project(
+    project: &ResolvedQueryProject,
     provider: SourceKind,
     session_id: &str,
     turn_ordinal: u64,
 ) -> Result<TurnInsights> {
-    let context = load_project_query_context(root, project_id)?;
+    let context = &project.context;
     query_turn_insights(
         &context.root.database_path,
         &context.project.id,
@@ -318,12 +421,24 @@ pub fn query_turn_insight_report(
     )
 }
 
-/// Queries one paginated turn-search payload for one configured project.
-pub fn query_search_turns(
+/// Queries the turn insights payload for one configured provider session turn.
+pub fn query_turn_insight_report(
     root: Option<PathBuf>,
+    project_id: &str,
+    provider: SourceKind,
+    session_id: &str,
+    turn_ordinal: u64,
+) -> Result<TurnInsights> {
+    let project = resolve_query_project(root, Some(project_id))?;
+    query_turn_insight_report_for_project(&project, provider, session_id, turn_ordinal)
+}
+
+/// Queries one paginated turn-search payload for one already-resolved configured project.
+pub fn query_search_turns_for_project(
+    project: &ResolvedQueryProject,
     request: SearchTurnsRequest<'_>,
 ) -> Result<SearchTurnsQueryData> {
-    let context = load_project_query_context(root, request.project_id)?;
+    let context = &project.context;
     query_project_search_turns(
         &context.root.database_path,
         SearchTurnsRequest {
@@ -331,6 +446,15 @@ pub fn query_search_turns(
             ..request
         },
     )
+}
+
+/// Queries one paginated turn-search payload for one configured project.
+pub fn query_search_turns(
+    root: Option<PathBuf>,
+    request: SearchTurnsRequest<'_>,
+) -> Result<SearchTurnsQueryData> {
+    let project = resolve_query_project(root, Some(request.project_id))?;
+    query_search_turns_for_project(&project, request)
 }
 
 /// Queries the workspace insights payload for one darc root and host-local day window.
@@ -343,14 +467,23 @@ pub fn query_workspace_insight_report(
     query_workspace_insights(&root_info.database_path, window_days)
 }
 
+/// Queries the project insights payload for one already-resolved configured project.
+pub fn query_project_insight_report_for_project(
+    project: &ResolvedQueryProject,
+    limit: usize,
+) -> Result<ProjectInsights> {
+    let context = &project.context;
+    query_project_insights(&context.root.database_path, &context.project.id, limit)
+}
+
 /// Queries the project insights payload for one configured project.
 pub fn query_project_insight_report(
     root: Option<PathBuf>,
     project_id: &str,
     limit: usize,
 ) -> Result<ProjectInsights> {
-    let context = load_project_query_context(root, project_id)?;
-    query_project_insights(&context.root.database_path, &context.project.id, limit)
+    let project = resolve_query_project(root, Some(project_id))?;
+    query_project_insight_report_for_project(&project, limit)
 }
 
 /// Stores the stable structured query errors that map onto `darc.error.v1`.
@@ -913,30 +1046,37 @@ impl From<DigestValidationArtifact> for WikiRunValidationResultItem {
     }
 }
 
-/// Queries the wiki registry payload for one configured project.
-pub fn query_wiki_registry(
-    root: Option<PathBuf>,
-    project_id: &str,
+/// Queries the wiki registry payload for one already-resolved configured project.
+pub fn query_wiki_registry_for_project(
+    project: &ResolvedQueryProject,
 ) -> Result<WikiRegistryQueryData> {
-    let context = load_project_config_context(root, project_id)?;
-    let layout = load_project_wiki_layout(&context)?;
+    let context = &project.context;
+    let layout = load_project_wiki_layout(context)?;
     let registry = load_registry(&layout)?;
     Ok(WikiRegistryQueryData {
-        project_id: context.project.id,
+        project_id: context.project.id.clone(),
         schema_version: registry.schema_version,
         categories: registry.categories,
         domains: registry.domains,
     })
 }
 
-/// Queries the wiki entry-list payload for one configured project.
-pub fn query_wiki_entries(
+/// Queries the wiki registry payload for one configured project.
+pub fn query_wiki_registry(
     root: Option<PathBuf>,
     project_id: &str,
+) -> Result<WikiRegistryQueryData> {
+    let project = resolve_query_config_project(root, Some(project_id))?;
+    query_wiki_registry_for_project(&project)
+}
+
+/// Queries the wiki entry-list payload for one already-resolved configured project.
+pub fn query_wiki_entries_for_project(
+    project: &ResolvedQueryProject,
     options: &WikiEntriesQueryOptions,
 ) -> Result<WikiEntriesQueryData> {
-    let context = load_project_config_context(root, project_id)?;
-    let layout = load_project_wiki_layout(&context)?;
+    let context = &project.context;
+    let layout = load_project_wiki_layout(context)?;
     let grep = match options.grep.as_deref() {
         Some(grep) => {
             let grep = grep.trim();
@@ -988,8 +1128,36 @@ pub fn query_wiki_entries(
         .flatten()
         .collect();
     Ok(WikiEntriesQueryData {
-        project_id: context.project.id,
+        project_id: context.project.id.clone(),
         entries,
+    })
+}
+
+/// Queries the wiki entry-list payload for one configured project.
+pub fn query_wiki_entries(
+    root: Option<PathBuf>,
+    project_id: &str,
+    options: &WikiEntriesQueryOptions,
+) -> Result<WikiEntriesQueryData> {
+    let project = resolve_query_config_project(root, Some(project_id))?;
+    query_wiki_entries_for_project(&project, options)
+}
+
+/// Queries the wiki entry-detail payload for one already-resolved configured project and entry id.
+pub fn query_wiki_entry_for_project(
+    project: &ResolvedQueryProject,
+    entry_id: &EntryId,
+) -> Result<WikiEntryQueryData> {
+    let context = &project.context;
+    let layout = load_project_wiki_layout(context)?;
+    let entry = list_entries(&layout)?
+        .into_iter()
+        .find(|entry| &entry.entry_id == entry_id)
+        .with_context(|| format!("wiki entry `{entry_id}` was not found"))?;
+    let document = load_entry_detail(&entry.path)?;
+    Ok(WikiEntryQueryData {
+        project_id: context.project.id.clone(),
+        entry: WikiEntryDetailItem::from_document(document),
     })
 }
 
@@ -999,27 +1167,17 @@ pub fn query_wiki_entry(
     project_id: &str,
     entry_id: &EntryId,
 ) -> Result<WikiEntryQueryData> {
-    let context = load_project_config_context(root, project_id)?;
-    let layout = load_project_wiki_layout(&context)?;
-    let entry = list_entries(&layout)?
-        .into_iter()
-        .find(|entry| &entry.entry_id == entry_id)
-        .with_context(|| format!("wiki entry `{entry_id}` was not found"))?;
-    let document = load_entry_detail(&entry.path)?;
-    Ok(WikiEntryQueryData {
-        project_id: context.project.id,
-        entry: WikiEntryDetailItem::from_document(document),
-    })
+    let project = resolve_query_config_project(root, Some(project_id))?;
+    query_wiki_entry_for_project(&project, entry_id)
 }
 
-/// Queries the wiki digest-list payload for one configured project.
-pub fn query_wiki_digests(
-    root: Option<PathBuf>,
-    project_id: &str,
+/// Queries the wiki digest-list payload for one already-resolved configured project.
+pub fn query_wiki_digests_for_project(
+    project: &ResolvedQueryProject,
     options: &WikiDigestsQueryOptions,
 ) -> Result<WikiDigestsQueryData> {
-    let context = load_project_config_context(root, project_id)?;
-    let layout = load_project_wiki_layout(&context)?;
+    let context = &project.context;
+    let layout = load_project_wiki_layout(context)?;
     let bounds = QueryTimeBounds::new(options.since.as_deref(), options.until.as_deref())?;
     let digests = apply_limit(
         sort_items_by_created_at_desc(filter_by_created_at_bounds(list_digests(&layout)?, bounds))
@@ -1029,10 +1187,38 @@ pub fn query_wiki_digests(
         options.limit,
     );
     Ok(WikiDigestsQueryData {
-        project_id: context.project.id,
+        project_id: context.project.id.clone(),
         since: options.since.clone(),
         until: options.until.clone(),
         digests,
+    })
+}
+
+/// Queries the wiki digest-list payload for one configured project.
+pub fn query_wiki_digests(
+    root: Option<PathBuf>,
+    project_id: &str,
+    options: &WikiDigestsQueryOptions,
+) -> Result<WikiDigestsQueryData> {
+    let project = resolve_query_config_project(root, Some(project_id))?;
+    query_wiki_digests_for_project(&project, options)
+}
+
+/// Queries the wiki digest-detail payload for one already-resolved configured project and digest id.
+pub fn query_wiki_digest_for_project(
+    project: &ResolvedQueryProject,
+    digest_id: &DigestId,
+) -> Result<WikiDigestQueryData> {
+    let context = &project.context;
+    let layout = load_project_wiki_layout(context)?;
+    let digest = list_digests(&layout)?
+        .into_iter()
+        .find(|digest| &digest.digest_id == digest_id)
+        .with_context(|| format!("wiki digest `{digest_id}` was not found"))?;
+    let document = load_digest_detail(&digest.path)?;
+    Ok(WikiDigestQueryData {
+        project_id: context.project.id.clone(),
+        digest: WikiDigestDetailItem::from_document(document),
     })
 }
 
@@ -1042,27 +1228,17 @@ pub fn query_wiki_digest(
     project_id: &str,
     digest_id: &DigestId,
 ) -> Result<WikiDigestQueryData> {
-    let context = load_project_config_context(root, project_id)?;
-    let layout = load_project_wiki_layout(&context)?;
-    let digest = list_digests(&layout)?
-        .into_iter()
-        .find(|digest| &digest.digest_id == digest_id)
-        .with_context(|| format!("wiki digest `{digest_id}` was not found"))?;
-    let document = load_digest_detail(&digest.path)?;
-    Ok(WikiDigestQueryData {
-        project_id: context.project.id,
-        digest: WikiDigestDetailItem::from_document(document),
-    })
+    let project = resolve_query_config_project(root, Some(project_id))?;
+    query_wiki_digest_for_project(&project, digest_id)
 }
 
-/// Queries the wiki run-list payload for one configured project.
-pub fn query_wiki_runs(
-    root: Option<PathBuf>,
-    project_id: &str,
+/// Queries the wiki run-list payload for one already-resolved configured project.
+pub fn query_wiki_runs_for_project(
+    project: &ResolvedQueryProject,
     options: &WikiRunsQueryOptions,
 ) -> Result<WikiRunsQueryData> {
-    let context = load_project_config_context(root, project_id)?;
-    let layout = load_project_wiki_layout(&context)?;
+    let context = &project.context;
+    let layout = load_project_wiki_layout(context)?;
     let bounds = QueryTimeBounds::new(options.since.as_deref(), options.until.as_deref())?;
     let runs = apply_limit(
         sort_items_by_created_at_desc(filter_by_created_at_bounds(
@@ -1076,10 +1252,35 @@ pub fn query_wiki_runs(
         options.limit,
     );
     Ok(WikiRunsQueryData {
-        project_id: context.project.id,
+        project_id: context.project.id.clone(),
         since: options.since.clone(),
         until: options.until.clone(),
         runs,
+    })
+}
+
+/// Queries the wiki run-list payload for one configured project.
+pub fn query_wiki_runs(
+    root: Option<PathBuf>,
+    project_id: &str,
+    options: &WikiRunsQueryOptions,
+) -> Result<WikiRunsQueryData> {
+    let project = resolve_query_config_project(root, Some(project_id))?;
+    query_wiki_runs_for_project(&project, options)
+}
+
+/// Queries the wiki run-detail payload for one already-resolved configured project and run id.
+pub fn query_wiki_run_for_project(
+    project: &ResolvedQueryProject,
+    run_id: &RunId,
+) -> Result<WikiRunQueryData> {
+    let context = &project.context;
+    let layout = load_project_wiki_layout(context)?;
+    let run = load_project_wiki_run_from_layout(&layout, run_id)?;
+    let result = load_run_result_artifact(&layout.run_result_path(run_id))?;
+    Ok(WikiRunQueryData {
+        project_id: context.project.id.clone(),
+        run: WikiRunDetailItem::from_state(run, result),
     })
 }
 
@@ -1089,14 +1290,8 @@ pub fn query_wiki_run(
     project_id: &str,
     run_id: &RunId,
 ) -> Result<WikiRunQueryData> {
-    let context = load_project_config_context(root, project_id)?;
-    let layout = load_project_wiki_layout(&context)?;
-    let run = load_project_wiki_run_from_layout(&layout, run_id)?;
-    let result = load_run_result_artifact(&layout.run_result_path(run_id))?;
-    Ok(WikiRunQueryData {
-        project_id: context.project.id,
-        run: WikiRunDetailItem::from_state(run, result),
-    })
+    let project = resolve_query_config_project(root, Some(project_id))?;
+    query_wiki_run_for_project(&project, run_id)
 }
 
 /// Applies one optional list limit while preserving deterministic ordering.
@@ -1262,6 +1457,40 @@ fn load_project_query_context(
     let context = load_project_config_context(root, project_id)?;
     ensure_database_exists(&context.root)?;
     Ok(context)
+}
+
+/// Identifies whether one resolved project query needs only config or a usable database.
+#[derive(Debug, Clone, Copy)]
+enum QueryProjectScope {
+    ConfigOnly,
+    Database,
+}
+
+/// Resolves one project-scoped query context from an explicit id or the current directory.
+fn resolve_query_project_with_scope(
+    root: Option<PathBuf>,
+    project_id: Option<&str>,
+    scope: QueryProjectScope,
+) -> Result<ResolvedQueryProject> {
+    let context = match project_id {
+        Some(project_id) => load_project_config_context(root, project_id.trim())?,
+        None => {
+            let root = inspect_root(root);
+            let current_dir =
+                env::current_dir().context("unable to resolve the current working directory")?;
+            let active_project = load_active_project(&current_dir, &root.resolved_root_path)?;
+            ProjectQueryContext {
+                root,
+                project: active_project.project,
+            }
+        }
+    };
+
+    if matches!(scope, QueryProjectScope::Database) {
+        ensure_database_exists(&context.root)?;
+    }
+
+    Ok(ResolvedQueryProject { context })
 }
 
 /// Loads one configured project context for project-scoped config-only queries.
@@ -1617,6 +1846,7 @@ fn load_run_result_artifact(path: &Path) -> Result<Option<DigestResultArtifact>>
 }
 
 /// Stores the validated root and project context for one project-scoped query.
+#[derive(Debug, Clone)]
 struct ProjectQueryContext {
     root: RootInfo,
     project: ProjectConfig,

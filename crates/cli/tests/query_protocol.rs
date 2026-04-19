@@ -181,6 +181,19 @@ where
         .context("failed to run compiled darc binary")
 }
 
+/// Runs the compiled `darc` binary from one explicit current directory.
+fn run_darc_in_dir<I, S>(current_dir: &Path, args: I) -> Result<std::process::Output>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    Command::new(darc_binary())
+        .current_dir(current_dir)
+        .args(args)
+        .output()
+        .context("failed to run compiled darc binary")
+}
+
 /// Parses one UTF-8 JSON value from captured process output.
 fn parse_json(bytes: &[u8], stream: &str) -> Result<Value> {
     serde_json::from_slice(bytes).with_context(|| format!("failed to parse {stream} JSON"))
@@ -909,6 +922,60 @@ fn sessions_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["sessions"][0]["changed_file_count"], 1);
     assert_eq!(value["data"]["sessions"][0]["added_line_count"], 2);
     assert_eq!(value["data"]["sessions"][0]["removed_line_count"], 1);
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn sessions_query_defaults_project_id_from_current_directory() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-sessions-default-project")?;
+    let project_root = root.join("repo");
+    let output = run_darc_in_dir(
+        &project_root,
+        [
+            "query",
+            "sessions",
+            "--root",
+            root.to_string_lossy().as_ref(),
+            "--json",
+        ],
+    )?;
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.sessions.v1");
+    assert_eq!(value["data"]["project_id"], "repo-abc123");
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn sessions_query_without_project_id_rejects_unconfigured_current_directory() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-sessions-missing-active-project")?;
+    let output = run_darc_in_dir(
+        &root,
+        [
+            "query",
+            "sessions",
+            "--root",
+            root.to_string_lossy().as_ref(),
+            "--json",
+        ],
+    )?;
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let value = parse_json(&output.stderr, "stderr")?;
+    assert_eq!(value["schema"], "darc.error.v1");
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .expect("message should be a string")
+            .contains("current directory does not match any configured darc project")
+    );
 
     remove_root(&root)?;
     Ok(())

@@ -116,6 +116,8 @@ Darc's read-side query surface now covers project-scoped search, compact turn sk
 checks, and single-call session bundles.
 
 - `darc query search turns` handles keyword, file-name, and file-path search with optional provider/session filters.
+- project-scoped `darc query` commands accept optional `--project-id`; when omitted, Darc resolves the configured
+  project from the current directory.
 - `darc query turns` works in two modes: session-scoped lists (`--provider --session-id`, full UUID only) and
   grep-scoped matches (`--grep`) with role, context, time, touched-path, and compact `--view oneline` options.
 - `darc query files`, `darc query session-files`, and `darc query session-bundle` let clients pivot between matched

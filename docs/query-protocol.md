@@ -18,39 +18,39 @@ All query commands currently require `--json`.
 
 ### Context Wiki
 
-- `darc query wiki registry --root <path> --project-id <id> --json`
-- `darc query wiki entries --root <path> --project-id <id> [--category <id>] [--domain <id>] [--status <status>] [--grep <text>] [--evidence-ref <provider>:<session-id>#<turn-ordinal>] [--covers-session <provider>:<session-id>] --json`
-- `darc query wiki entry --root <path> --project-id <id> --entry-id <id> --json`
-- `darc query wiki digests --root <path> --project-id <id> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] --json`
-- `darc query wiki digest --root <path> --project-id <id> --digest-id <id> --json`
-- `darc query wiki runs --root <path> --project-id <id> [--status <status>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] --json`
-- `darc query wiki run --root <path> --project-id <id> --run-id <id> --json`
+- `darc query wiki registry --root <path> [--project-id <id>] --json`
+- `darc query wiki entries --root <path> [--project-id <id>] [--category <id>] [--domain <id>] [--status <status>] [--grep <text>] [--evidence-ref <provider>:<session-id>#<turn-ordinal>] [--covers-session <provider>:<session-id>] --json`
+- `darc query wiki entry --root <path> [--project-id <id>] --entry-id <id> --json`
+- `darc query wiki digests --root <path> [--project-id <id>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] --json`
+- `darc query wiki digest --root <path> [--project-id <id>] --digest-id <id> --json`
+- `darc query wiki runs --root <path> [--project-id <id>] [--status <status>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] --json`
+- `darc query wiki run --root <path> [--project-id <id>] --run-id <id> --json`
 
 ### Sessions, Turns, And Files
 
 - `darc query resolve-session <uuid-or-prefix> --root <path> [--provider <provider>] [--pick-one] --json`
-- `darc query sessions --root <path> --project-id <id> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--touched-path <glob>] --json`
-- `darc query files --root <path> --project-id <id> --path <glob> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] --json`
-- `darc query files --root <path> --project-id <id> --co-touched-with <path> [--limit <n>] --json`
-- `darc query session-files --root <path> --project-id <id> --provider <provider> --session-id <id> --json`
-- `darc query session-bundle --root <path> --project-id <id> --provider <provider> --session-id <id> [--view <full|narrative>] --json`
-- `darc query turns --root <path> --project-id <id> --provider <provider> --session-id <id> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--view <full|oneline>] --json`
-- `darc query turns --root <path> --project-id <id> --grep <text> [--provider <provider>] [--session-id <id>] [--role <user|assistant|both>] [--context <n>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--view <full|oneline>] [--touched-path <glob>] --json`
-- `darc query turn --root <path> --project-id <id> --provider <provider> --session-id <id> --turn-ordinal <n> [--view <full|narrative>] [--include-raw] [--include-insights] --json`
+- `darc query sessions --root <path> [--project-id <id>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--touched-path <glob>] --json`
+- `darc query files --root <path> [--project-id <id>] --path <glob> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] --json`
+- `darc query files --root <path> [--project-id <id>] --co-touched-with <path> [--limit <n>] --json`
+- `darc query session-files --root <path> [--project-id <id>] --provider <provider> --session-id <id> --json`
+- `darc query session-bundle --root <path> [--project-id <id>] --provider <provider> --session-id <id> [--view <full|narrative>] --json`
+- `darc query turns --root <path> [--project-id <id>] --provider <provider> --session-id <id> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--view <full|oneline>] --json`
+- `darc query turns --root <path> [--project-id <id>] --grep <text> [--provider <provider>] [--session-id <id>] [--role <user|assistant|both>] [--context <n>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--view <full|oneline>] [--touched-path <glob>] --json`
+- `darc query turn --root <path> [--project-id <id>] --provider <provider> --session-id <id> --turn-ordinal <n> [--view <full|narrative>] [--include-raw] [--include-insights] --json`
 
 ### Search
 
-- `darc query search turns --root <path> --project-id <id> --mode <keyword|file-name|file-path> --query <text> [--provider <provider>] [--session-id <id>] [--limit <n>] [--offset <n>] --json`
+- `darc query search turns --root <path> [--project-id <id>] --mode <keyword|file-name|file-path> --query <text> [--provider <provider>] [--session-id <id>] [--limit <n>] [--offset <n>] --json`
 
 ### Insights
 
 - `darc query insights workspace --root <path> --window <days>d --json`
-- `darc query insights project --root <path> --project-id <id> --limit <n> --json`
-- `darc query insights turn --root <path> --project-id <id> --provider <provider> --session-id <id> --turn-ordinal <n> --json`
+- `darc query insights project --root <path> [--project-id <id>] --limit <n> --json`
+- `darc query insights turn --root <path> [--project-id <id>] --provider <provider> --session-id <id> --turn-ordinal <n> --json`
 
 ## Argument rules
 
-- every project-scoped query requires `--project-id`
+- project-scoped queries accept optional `--project-id`; when omitted, Darc resolves the configured project from the current directory
 - `darc query resolve-session` accepts either one full UUID or one UUID prefix
 - `darc query turns` without `--grep` requires both `--provider` and `--session-id`
 - `--role`, `--context`, and `--touched-path` on `darc query turns` require `--grep`

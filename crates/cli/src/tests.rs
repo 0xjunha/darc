@@ -214,7 +214,7 @@ fn parses_query_wiki_registry_command() {
                     ..
                 }),
             }),
-        }) if project_id == "repo-abc123" && json
+        }) if project_id.as_deref() == Some("repo-abc123") && json
     ));
 }
 
@@ -231,6 +231,23 @@ fn query_wiki_registry_requires_json_flag() {
     .unwrap_err();
 
     assert!(error.to_string().contains("--json"));
+}
+
+#[test]
+fn parses_query_wiki_registry_without_project_id() {
+    let cli = Cli::try_parse_from(["darc", "query", "wiki", "registry", "--json"]).unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Query(super::QueryArgs {
+            command: QueryCommands::Wiki(super::QueryWikiArgs {
+                command: QueryWikiCommands::Registry(super::QueryWikiRegistryArgs {
+                    project_id,
+                    json,
+                    ..
+                }),
+            }),
+        }) if project_id.is_none() && json
+    ));
 }
 
 #[test]
@@ -275,7 +292,7 @@ fn parses_query_wiki_entries_with_filters() {
                     ..
                 }),
             }),
-        }) if project_id == "repo-abc123"
+        }) if project_id.as_deref() == Some("repo-abc123")
             && category.as_deref() == Some("product")
             && domain.as_deref() == Some("query")
             && matches!(status, Some(super::WikiEntryStatusArg::Active))
@@ -311,7 +328,7 @@ fn parses_query_wiki_entry_command() {
                     ..
                 }),
             }),
-        }) if project_id == "repo-abc123" && entry_id == "cw_01entry" && json
+        }) if project_id.as_deref() == Some("repo-abc123") && entry_id == "cw_01entry" && json
     ));
 }
 
@@ -340,7 +357,7 @@ fn parses_query_wiki_digest_command() {
                     ..
                 }),
             }),
-        }) if project_id == "repo-abc123" && digest_id == "dg_01digest" && json
+        }) if project_id.as_deref() == Some("repo-abc123") && digest_id == "dg_01digest" && json
     ));
 }
 
@@ -372,7 +389,7 @@ fn parses_query_wiki_digests_with_time_bounds() {
                     ..
                 }),
             }),
-        }) if project_id == "repo-abc123"
+        }) if project_id.as_deref() == Some("repo-abc123")
             && since.as_deref() == Some("30d")
             && until.as_deref() == Some("2026-04-07T00:00:00Z")
             && json
@@ -413,7 +430,7 @@ fn parses_query_wiki_runs_with_status_and_limit() {
                     ..
                 }),
             }),
-        }) if project_id == "repo-abc123"
+        }) if project_id.as_deref() == Some("repo-abc123")
             && matches!(status, Some(super::WikiRunStatusArg::Running))
             && since.as_deref() == Some("7d")
             && until.as_deref() == Some("2026-04-07T00:00:00Z")
@@ -456,7 +473,7 @@ fn parses_query_turn_command() {
                 json,
                 ..
             }),
-        }) if project_id == "repo-abc123"
+        }) if project_id.as_deref() == Some("repo-abc123")
             && session_id == "session-1"
             && turn_ordinal == 2
             && matches!(view, super::ViewArg::Narrative)
@@ -492,11 +509,26 @@ fn parses_query_sessions_with_time_bounds() {
                 json,
                 ..
             }),
-        }) if project_id == "repo-abc123"
+        }) if project_id.as_deref() == Some("repo-abc123")
             && since.as_deref() == Some("5d")
             && until.as_deref() == Some("2026-04-07T00:00:00Z")
             && touched_path.is_none()
             && json
+    ));
+}
+
+#[test]
+fn parses_query_sessions_without_project_id() {
+    let cli = Cli::try_parse_from(["darc", "query", "sessions", "--json"]).unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Query(super::QueryArgs {
+            command: QueryCommands::Sessions(super::QuerySessionsArgs {
+                project_id,
+                json,
+                ..
+            }),
+        }) if project_id.is_none() && json
     ));
 }
 
@@ -522,7 +554,7 @@ fn parses_query_sessions_touched_path_filter() {
                 json,
                 ..
             }),
-        }) if project_id == "repo-abc123"
+        }) if project_id.as_deref() == Some("repo-abc123")
             && touched_path.as_deref() == Some("crates/wiki/**")
             && json
     ));
@@ -558,7 +590,7 @@ fn parses_query_files_path_command() {
                 json,
                 ..
             }),
-        }) if project_id == "repo-abc123"
+        }) if project_id.as_deref() == Some("repo-abc123")
             && path.as_deref() == Some("crates/wiki/**/*.rs")
             && co_touched_with.is_none()
             && since.as_deref() == Some("30d")
@@ -594,7 +626,7 @@ fn parses_query_files_co_touched_command() {
                 json,
                 ..
             }),
-        }) if project_id == "repo-abc123"
+        }) if project_id.as_deref() == Some("repo-abc123")
             && path.is_none()
             && co_touched_with.as_deref() == Some("crates/wiki/src/proposal.rs")
             && limit == Some(10)
@@ -627,7 +659,7 @@ fn parses_query_session_files_command() {
                 json,
                 ..
             }),
-        }) if project_id == "repo-abc123"
+        }) if project_id.as_deref() == Some("repo-abc123")
             && matches!(provider, super::ProviderArg::Codex)
             && session_id == "session-1"
             && json
@@ -662,7 +694,7 @@ fn parses_query_session_bundle_command() {
                 json,
                 ..
             }),
-        }) if project_id == "repo-abc123"
+        }) if project_id.as_deref() == Some("repo-abc123")
             && matches!(provider, super::ProviderArg::Codex)
             && session_id == "session-1"
             && matches!(view, super::ViewArg::Narrative)
@@ -699,7 +731,7 @@ fn parses_query_turns_session_scope_command() {
                 json,
                 ..
             }),
-        }) if project_id == "repo-abc123"
+        }) if project_id.as_deref() == Some("repo-abc123")
             && matches!(provider, Some(super::ProviderArg::Codex))
             && session_id.as_deref() == Some("session-1")
             && grep.is_none()
@@ -750,7 +782,7 @@ fn parses_query_turns_grep_with_context_and_filters() {
                 json,
                 ..
             }),
-        }) if project_id == "repo-abc123"
+        }) if project_id.as_deref() == Some("repo-abc123")
             && grep.as_deref() == Some("staged init")
             && matches!(role, super::TurnSearchRoleArg::User)
             && context == 1
@@ -845,6 +877,7 @@ fn query_sessions_help_mentions_examples_for_time_bounds() {
     assert!(help.contains("--touched-path"));
     assert!(help.contains("5d"));
     assert!(help.contains("2026-04-07T00:00:00Z"));
+    assert!(help.contains("current directory"));
 }
 
 #[test]
