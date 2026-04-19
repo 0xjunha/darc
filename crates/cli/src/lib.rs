@@ -7,14 +7,17 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use darc_core::query::{
     DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, FilesQueryRequest, QueryProtocolError,
-    ResolveSessionQueryRequest, ResolvedSessionMatch, SearchMode, SearchTurnsRequest,
-    SessionBundleView, TurnDetailOptions, TurnMatchesQueryRequest, TurnSearchRole,
-    TurnsQueryRequest, TurnsView, WikiDigestsQueryOptions, WikiEntriesQueryOptions,
-    WikiRunsQueryOptions, query_files, query_project_insight_report, query_resolve_sessions,
-    query_search_turns, query_session_bundle, query_session_files, query_sessions, query_turn,
-    query_turn_insight_report, query_turn_matches, query_turns, query_wiki_digest,
-    query_wiki_digests, query_wiki_entries, query_wiki_entry, query_wiki_registry, query_wiki_run,
-    query_wiki_runs, query_workspace, query_workspace_insight_report, resolve_query_session_id,
+    ResolveSessionQueryRequest, ResolvedQueryProject, ResolvedSessionMatch, SearchMode,
+    SearchTurnsRequest, SessionBundleView, TurnDetailOptions, TurnMatchesQueryRequest,
+    TurnSearchRole, TurnsQueryRequest, TurnsView, WikiDigestsQueryOptions, WikiEntriesQueryOptions,
+    WikiRunsQueryOptions, query_files_for_project, query_project_insight_report_for_project,
+    query_resolve_sessions, query_search_turns_for_project, query_session_bundle_for_project,
+    query_session_files_for_project, query_sessions_for_project, query_turn_for_project,
+    query_turn_insight_report_for_project, query_turn_matches_for_project, query_turns_for_project,
+    query_wiki_digest_for_project, query_wiki_digests_for_project, query_wiki_entries_for_project,
+    query_wiki_entry_for_project, query_wiki_registry_for_project, query_wiki_run_for_project,
+    query_wiki_runs_for_project, query_workspace, query_workspace_insight_report,
+    resolve_query_config_project, resolve_query_project, resolve_query_session_id_for_project,
 };
 use darc_core::{
     DigestId, DigestStartOptions, EntryId, EntryStatus, IndexOptions, InitDraft, RefreshOptions,
@@ -260,8 +263,11 @@ struct QueryWikiRegistryArgs {
     #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
     root: PathBuf,
 
-    #[arg(long = "project-id", help = "Query this configured project id")]
-    project_id: String,
+    #[arg(
+        long = "project-id",
+        help = "Query this configured project id. Defaults to the project resolved from the current directory"
+    )]
+    project_id: Option<String>,
 
     #[arg(
         long,
@@ -277,8 +283,11 @@ struct QueryWikiEntriesArgs {
     #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
     root: PathBuf,
 
-    #[arg(long = "project-id", help = "Query this configured project id")]
-    project_id: String,
+    #[arg(
+        long = "project-id",
+        help = "Query this configured project id. Defaults to the project resolved from the current directory"
+    )]
+    project_id: Option<String>,
 
     #[arg(long, help = "Restrict entries to this canonical category id")]
     category: Option<String>,
@@ -321,8 +330,11 @@ struct QueryWikiEntryArgs {
     #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
     root: PathBuf,
 
-    #[arg(long = "project-id", help = "Query this configured project id")]
-    project_id: String,
+    #[arg(
+        long = "project-id",
+        help = "Query this configured project id. Defaults to the project resolved from the current directory"
+    )]
+    project_id: Option<String>,
 
     #[arg(long = "entry-id", help = "Query this wiki entry id")]
     entry_id: String,
@@ -341,8 +353,11 @@ struct QueryWikiDigestsArgs {
     #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
     root: PathBuf,
 
-    #[arg(long = "project-id", help = "Query this configured project id")]
-    project_id: String,
+    #[arg(
+        long = "project-id",
+        help = "Query this configured project id. Defaults to the project resolved from the current directory"
+    )]
+    project_id: Option<String>,
 
     #[arg(
         long,
@@ -373,8 +388,11 @@ struct QueryWikiDigestArgs {
     #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
     root: PathBuf,
 
-    #[arg(long = "project-id", help = "Query this configured project id")]
-    project_id: String,
+    #[arg(
+        long = "project-id",
+        help = "Query this configured project id. Defaults to the project resolved from the current directory"
+    )]
+    project_id: Option<String>,
 
     #[arg(long = "digest-id", help = "Query this wiki digest id")]
     digest_id: String,
@@ -393,8 +411,11 @@ struct QueryWikiRunsArgs {
     #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
     root: PathBuf,
 
-    #[arg(long = "project-id", help = "Query this configured project id")]
-    project_id: String,
+    #[arg(
+        long = "project-id",
+        help = "Query this configured project id. Defaults to the project resolved from the current directory"
+    )]
+    project_id: Option<String>,
 
     #[arg(long, value_enum, help = "Restrict runs to this lifecycle status")]
     status: Option<WikiRunStatusArg>,
@@ -428,8 +449,11 @@ struct QueryWikiRunArgs {
     #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
     root: PathBuf,
 
-    #[arg(long = "project-id", help = "Query this configured project id")]
-    project_id: String,
+    #[arg(
+        long = "project-id",
+        help = "Query this configured project id. Defaults to the project resolved from the current directory"
+    )]
+    project_id: Option<String>,
 
     #[arg(long = "run-id", help = "Query this wiki run id")]
     run_id: String,
@@ -474,8 +498,11 @@ struct QuerySessionsArgs {
     #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
     root: PathBuf,
 
-    #[arg(long = "project-id", help = "Query this configured project id")]
-    project_id: String,
+    #[arg(
+        long = "project-id",
+        help = "Query this configured project id. Defaults to the project resolved from the current directory"
+    )]
+    project_id: Option<String>,
 
     #[arg(
         long,
@@ -509,8 +536,11 @@ struct QueryTurnsArgs {
     #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
     root: PathBuf,
 
-    #[arg(long = "project-id", help = "Query this configured project id")]
-    project_id: String,
+    #[arg(
+        long = "project-id",
+        help = "Query this configured project id. Defaults to the project resolved from the current directory"
+    )]
+    project_id: Option<String>,
 
     #[arg(long, value_enum, help = "Restrict turns to this provider")]
     provider: Option<ProviderArg>,
@@ -576,8 +606,11 @@ struct QueryFilesArgs {
     #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
     root: PathBuf,
 
-    #[arg(long = "project-id", help = "Query this configured project id")]
-    project_id: String,
+    #[arg(
+        long = "project-id",
+        help = "Query this configured project id. Defaults to the project resolved from the current directory"
+    )]
+    project_id: Option<String>,
 
     #[arg(
         long,
@@ -623,8 +656,11 @@ struct QuerySessionFilesArgs {
     #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
     root: PathBuf,
 
-    #[arg(long = "project-id", help = "Query this configured project id")]
-    project_id: String,
+    #[arg(
+        long = "project-id",
+        help = "Query this configured project id. Defaults to the project resolved from the current directory"
+    )]
+    project_id: Option<String>,
 
     #[arg(long, value_enum, help = "Query this provider session")]
     provider: ProviderArg,
@@ -646,8 +682,11 @@ struct QuerySessionBundleArgs {
     #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
     root: PathBuf,
 
-    #[arg(long = "project-id", help = "Query this configured project id")]
-    project_id: String,
+    #[arg(
+        long = "project-id",
+        help = "Query this configured project id. Defaults to the project resolved from the current directory"
+    )]
+    project_id: Option<String>,
 
     #[arg(long, value_enum, help = "Query this provider session")]
     provider: ProviderArg,
@@ -677,8 +716,11 @@ struct QueryTurnArgs {
     #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
     root: PathBuf,
 
-    #[arg(long = "project-id", help = "Query this configured project id")]
-    project_id: String,
+    #[arg(
+        long = "project-id",
+        help = "Query this configured project id. Defaults to the project resolved from the current directory"
+    )]
+    project_id: Option<String>,
 
     #[arg(long, value_enum, help = "Query this provider")]
     provider: ProviderArg,
@@ -737,8 +779,11 @@ struct QuerySearchTurnsArgs {
     #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
     root: PathBuf,
 
-    #[arg(long = "project-id", help = "Query this configured project id")]
-    project_id: String,
+    #[arg(
+        long = "project-id",
+        help = "Query this configured project id. Defaults to the project resolved from the current directory"
+    )]
+    project_id: Option<String>,
 
     #[arg(long, value_enum, help = "Search in this mode")]
     mode: SearchModeArg,
@@ -812,8 +857,11 @@ struct QueryProjectInsightsArgs {
     #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
     root: PathBuf,
 
-    #[arg(long = "project-id", help = "Query this configured project id")]
-    project_id: String,
+    #[arg(
+        long = "project-id",
+        help = "Query this configured project id. Defaults to the project resolved from the current directory"
+    )]
+    project_id: Option<String>,
 
     #[arg(
         long,
@@ -836,8 +884,11 @@ struct QueryTurnInsightsArgs {
     #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
     root: PathBuf,
 
-    #[arg(long = "project-id", help = "Query this configured project id")]
-    project_id: String,
+    #[arg(
+        long = "project-id",
+        help = "Query this configured project id. Defaults to the project resolved from the current directory"
+    )]
+    project_id: Option<String>,
 
     #[arg(long, value_enum, help = "Query this provider")]
     provider: ProviderArg,
@@ -1251,16 +1302,17 @@ fn run_query_resolve_session(args: QueryResolveSessionArgs) -> Result<()> {
 /// Queries the project-scoped Context Wiki registry payload.
 fn run_query_wiki_registry(args: QueryWikiRegistryArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
-    let data = query_wiki_registry(Some(args.root), &args.project_id)?;
+    let project = resolve_config_query_project_target(&args.root, args.project_id.as_deref())?;
+    let data = query_wiki_registry_for_project(&project)?;
     print_json_envelope("darc.query.wiki.registry.v1", &data)
 }
 
 /// Queries the project-scoped Context Wiki entry list.
 fn run_query_wiki_entries(args: QueryWikiEntriesArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
-    let data = query_wiki_entries(
-        Some(args.root),
-        &args.project_id,
+    let project = resolve_config_query_project_target(&args.root, args.project_id.as_deref())?;
+    let data = query_wiki_entries_for_project(
+        &project,
         &WikiEntriesQueryOptions {
             category: args.category,
             domain: args.domain,
@@ -1276,14 +1328,16 @@ fn run_query_wiki_entries(args: QueryWikiEntriesArgs) -> Result<()> {
 /// Queries one project-scoped Context Wiki entry detail payload.
 fn run_query_wiki_entry(args: QueryWikiEntryArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
+    let project = resolve_config_query_project_target(&args.root, args.project_id.as_deref())?;
     let entry_id = EntryId::new(args.entry_id)?;
-    let data = query_wiki_entry(Some(args.root), &args.project_id, &entry_id)?;
+    let data = query_wiki_entry_for_project(&project, &entry_id)?;
     print_json_envelope("darc.query.wiki.entry.v1", &data)
 }
 
 /// Queries the project-scoped Context Wiki digest list.
 fn run_query_wiki_digests(args: QueryWikiDigestsArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
+    let project = resolve_config_query_project_target(&args.root, args.project_id.as_deref())?;
     let since = args
         .since
         .as_deref()
@@ -1294,9 +1348,8 @@ fn run_query_wiki_digests(args: QueryWikiDigestsArgs) -> Result<()> {
         .as_deref()
         .map(resolve_query_time_bound)
         .transpose()?;
-    let data = query_wiki_digests(
-        Some(args.root),
-        &args.project_id,
+    let data = query_wiki_digests_for_project(
+        &project,
         &WikiDigestsQueryOptions {
             limit: args.limit,
             since,
@@ -1309,14 +1362,16 @@ fn run_query_wiki_digests(args: QueryWikiDigestsArgs) -> Result<()> {
 /// Queries one project-scoped Context Wiki digest detail payload.
 fn run_query_wiki_digest(args: QueryWikiDigestArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
+    let project = resolve_config_query_project_target(&args.root, args.project_id.as_deref())?;
     let digest_id = DigestId::new(args.digest_id)?;
-    let data = query_wiki_digest(Some(args.root), &args.project_id, &digest_id)?;
+    let data = query_wiki_digest_for_project(&project, &digest_id)?;
     print_json_envelope("darc.query.wiki.digest.v1", &data)
 }
 
 /// Queries the project-scoped Context Wiki run list.
 fn run_query_wiki_runs(args: QueryWikiRunsArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
+    let project = resolve_config_query_project_target(&args.root, args.project_id.as_deref())?;
     let since = args
         .since
         .as_deref()
@@ -1327,9 +1382,8 @@ fn run_query_wiki_runs(args: QueryWikiRunsArgs) -> Result<()> {
         .as_deref()
         .map(resolve_query_time_bound)
         .transpose()?;
-    let data = query_wiki_runs(
-        Some(args.root),
-        &args.project_id,
+    let data = query_wiki_runs_for_project(
+        &project,
         &WikiRunsQueryOptions {
             status: args.status.map(wiki_run_status_arg_to_status),
             limit: args.limit,
@@ -1343,14 +1397,16 @@ fn run_query_wiki_runs(args: QueryWikiRunsArgs) -> Result<()> {
 /// Queries one project-scoped Context Wiki run detail payload.
 fn run_query_wiki_run(args: QueryWikiRunArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
+    let project = resolve_config_query_project_target(&args.root, args.project_id.as_deref())?;
     let run_id = RunId::new(args.run_id)?;
-    let data = query_wiki_run(Some(args.root), &args.project_id, &run_id)?;
+    let data = query_wiki_run_for_project(&project, &run_id)?;
     print_json_envelope("darc.query.wiki.run.v1", &data)
 }
 
 /// Queries the session list for one configured project.
 fn run_query_sessions(args: QuerySessionsArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
+    let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
     let since = args
         .since
         .as_deref()
@@ -1361,9 +1417,8 @@ fn run_query_sessions(args: QuerySessionsArgs) -> Result<()> {
         .as_deref()
         .map(resolve_query_time_bound)
         .transpose()?;
-    let data = query_sessions(
-        Some(args.root),
-        &args.project_id,
+    let data = query_sessions_for_project(
+        &project,
         since.as_deref(),
         until.as_deref(),
         args.touched_path.as_deref(),
@@ -1374,6 +1429,7 @@ fn run_query_sessions(args: QuerySessionsArgs) -> Result<()> {
 /// Queries file pivots for one configured project.
 fn run_query_files(args: QueryFilesArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
+    let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
     let since = args
         .since
         .as_deref()
@@ -1384,10 +1440,10 @@ fn run_query_files(args: QueryFilesArgs) -> Result<()> {
         .as_deref()
         .map(resolve_query_time_bound)
         .transpose()?;
-    let data = query_files(
-        Some(args.root),
+    let data = query_files_for_project(
+        &project,
         FilesQueryRequest {
-            project_id: &args.project_id,
+            project_id: "",
             project_root: None,
             path: args.path.as_deref(),
             co_touched_with: args.co_touched_with.as_deref(),
@@ -1402,15 +1458,14 @@ fn run_query_files(args: QueryFilesArgs) -> Result<()> {
 /// Queries one session-scoped per-file access summary payload.
 fn run_query_session_files(args: QuerySessionFilesArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
-    let session_id = resolve_query_session_id(
-        Some(args.root.clone()),
-        &args.project_id,
+    let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
+    let session_id = resolve_query_session_id_for_project(
+        &project,
         Some(provider_arg_to_source_kind(args.provider)),
         &args.session_id,
     )?;
-    let data = query_session_files(
-        Some(args.root),
-        &args.project_id,
+    let data = query_session_files_for_project(
+        &project,
         provider_arg_to_source_kind(args.provider),
         &session_id,
     )?;
@@ -1420,15 +1475,14 @@ fn run_query_session_files(args: QuerySessionFilesArgs) -> Result<()> {
 /// Queries one composite session bundle payload.
 fn run_query_session_bundle(args: QuerySessionBundleArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
-    let session_id = resolve_query_session_id(
-        Some(args.root.clone()),
-        &args.project_id,
+    let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
+    let session_id = resolve_query_session_id_for_project(
+        &project,
         Some(provider_arg_to_source_kind(args.provider)),
         &args.session_id,
     )?;
-    let data = query_session_bundle(
-        Some(args.root),
-        &args.project_id,
+    let data = query_session_bundle_for_project(
+        &project,
         provider_arg_to_source_kind(args.provider),
         &session_id,
         view_arg_to_session_bundle_view(args.view),
@@ -1449,23 +1503,23 @@ fn run_query_turns(args: QueryTurnsArgs) -> Result<()> {
         .as_deref()
         .map(resolve_query_time_bound)
         .transpose()?;
+    let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
     let resolved_session_id = args
         .session_id
         .as_deref()
         .map(|session_id| {
-            resolve_query_session_id(
-                Some(args.root.clone()),
-                &args.project_id,
+            resolve_query_session_id_for_project(
+                &project,
                 args.provider.map(provider_arg_to_source_kind),
                 session_id,
             )
         })
         .transpose()?;
     if let Some(grep) = args.grep.as_deref() {
-        let data = query_turn_matches(
-            Some(args.root),
+        let data = query_turn_matches_for_project(
+            &project,
             TurnMatchesQueryRequest {
-                project_id: &args.project_id,
+                project_id: "",
                 project_root: None,
                 provider: args.provider.map(provider_arg_to_source_kind),
                 session_id: resolved_session_id.as_deref(),
@@ -1497,10 +1551,10 @@ fn run_query_turns(args: QueryTurnsArgs) -> Result<()> {
     let session_id = resolved_session_id
         .as_deref()
         .context("query turns without --grep requires --session-id")?;
-    let data = query_turns(
-        Some(args.root),
+    let data = query_turns_for_project(
+        &project,
         TurnsQueryRequest {
-            project_id: &args.project_id,
+            project_id: "",
             provider: provider_arg_to_source_kind(provider),
             session_id,
             since: since.as_deref(),
@@ -1514,15 +1568,14 @@ fn run_query_turns(args: QueryTurnsArgs) -> Result<()> {
 /// Queries one full turn detail payload.
 fn run_query_turn(args: QueryTurnArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
-    let session_id = resolve_query_session_id(
-        Some(args.root.clone()),
-        &args.project_id,
+    let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
+    let session_id = resolve_query_session_id_for_project(
+        &project,
         Some(provider_arg_to_source_kind(args.provider)),
         &args.session_id,
     )?;
-    let data = query_turn(
-        Some(args.root),
-        &args.project_id,
+    let data = query_turn_for_project(
+        &project,
         provider_arg_to_source_kind(args.provider),
         &session_id,
         args.turn_ordinal,
@@ -1545,22 +1598,22 @@ fn run_query_search(args: QuerySearchArgs) -> Result<()> {
 /// Queries one paginated turn-search payload.
 fn run_query_search_turns(args: QuerySearchTurnsArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
+    let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
     let session_id = args
         .session_id
         .as_deref()
         .map(|session_id| {
-            resolve_query_session_id(
-                Some(args.root.clone()),
-                &args.project_id,
+            resolve_query_session_id_for_project(
+                &project,
                 args.provider.map(provider_arg_to_source_kind),
                 session_id,
             )
         })
         .transpose()?;
-    let data = query_search_turns(
-        Some(args.root),
+    let data = query_search_turns_for_project(
+        &project,
         SearchTurnsRequest {
-            project_id: &args.project_id,
+            project_id: "",
             mode: search_mode_arg_to_search_mode(args.mode),
             query: &args.query,
             provider: args.provider.map(provider_arg_to_source_kind),
@@ -1591,22 +1644,22 @@ fn run_query_workspace_insights(args: QueryWorkspaceInsightsArgs) -> Result<()> 
 /// Queries the project insights payload for one configured project.
 fn run_query_project_insights(args: QueryProjectInsightsArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
-    let data = query_project_insight_report(Some(args.root), &args.project_id, args.limit)?;
+    let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
+    let data = query_project_insight_report_for_project(&project, args.limit)?;
     print_json_envelope("darc.query.insights.project.v1", &data)
 }
 
 /// Queries the turn insights payload for one provider session turn.
 fn run_query_turn_insights(args: QueryTurnInsightsArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
-    let session_id = resolve_query_session_id(
-        Some(args.root.clone()),
-        &args.project_id,
+    let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
+    let session_id = resolve_query_session_id_for_project(
+        &project,
         Some(provider_arg_to_source_kind(args.provider)),
         &args.session_id,
     )?;
-    let data = query_turn_insight_report(
-        Some(args.root),
-        &args.project_id,
+    let data = query_turn_insight_report_for_project(
+        &project,
         provider_arg_to_source_kind(args.provider),
         &session_id,
         args.turn_ordinal,
@@ -1837,6 +1890,22 @@ fn ensure_json_requested(json: bool) -> Result<()> {
         return Ok(());
     }
     bail!("query commands currently require --json")
+}
+
+/// Resolves one project-scoped query target from an explicit id or the active project.
+fn resolve_database_query_project_target(
+    root: &std::path::Path,
+    project_id: Option<&str>,
+) -> Result<ResolvedQueryProject> {
+    resolve_query_project(Some(root.to_path_buf()), project_id)
+}
+
+/// Resolves one config-backed project-scoped query target for CLI handlers.
+fn resolve_config_query_project_target(
+    root: &std::path::Path,
+    project_id: Option<&str>,
+) -> Result<ResolvedQueryProject> {
+    resolve_query_config_project(Some(root.to_path_buf()), project_id)
 }
 
 /// Returns whether one string is a full canonical UUID text value.
