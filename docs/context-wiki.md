@@ -22,15 +22,16 @@ Current gaps:
 
 Use `darc query wiki ... --json` to inspect Context Wiki state without invoking a runtime.
 
-- `darc query wiki registry --root <path> --project-id <id> --json`
-- `darc query wiki entries --root <path> --project-id <id> [--category <id>] [--domain <id>] [--status <status>] [--grep <text>] [--evidence-ref <provider>:<session-id>#<turn-ordinal>] [--covers-session <provider>:<session-id>] --json`
-- `darc query wiki entry --root <path> --project-id <id> --entry-id <id> --json`
-- `darc query wiki digests --root <path> --project-id <id> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] --json`
-- `darc query wiki digest --root <path> --project-id <id> --digest-id <id> --json`
-- `darc query wiki runs --root <path> --project-id <id> [--status <status>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] --json`
-- `darc query wiki run --root <path> --project-id <id> --run-id <id> --json`
+- `darc query wiki registry --root <path> [--project-id <id>] --json`
+- `darc query wiki entries --root <path> [--project-id <id>] [--category <id>] [--domain <id>] [--status <status>] [--grep <text>] [--evidence-ref <provider>:<session-id>#<turn-ordinal>] [--covers-session <provider>:<session-id>] --json`
+- `darc query wiki entry --root <path> [--project-id <id>] --entry-id <id> --json`
+- `darc query wiki digests --root <path> [--project-id <id>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] --json`
+- `darc query wiki digest --root <path> [--project-id <id>] --digest-id <id> --json`
+- `darc query wiki runs --root <path> [--project-id <id>] [--status <status>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] --json`
+- `darc query wiki run --root <path> [--project-id <id>] --run-id <id> --json`
 
-The query protocol remains the machine-readable contract for desktop and other clients. See
+The query protocol remains the machine-readable contract for desktop and other clients. Project-scoped wiki queries can
+take `--project-id`, or omit it and let Darc resolve the configured project from the current directory. See
 [Query protocol](query-protocol.md).
 
 For history investigation and proposal preparation, prefer the project-scoped read surface over ad hoc SQLite reads:
