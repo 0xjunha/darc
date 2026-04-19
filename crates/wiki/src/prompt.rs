@@ -2,7 +2,7 @@ use std::path::Path;
 
 use crate::proposal::{DIGEST_PROPOSAL_OUTPUT_SCHEMA_JSON, DIGEST_PROPOSAL_SCHEMA};
 
-const DIGEST_RUNTIME_PROMPT_TEMPLATE: &str = include_str!("../templates/digest_runtime_prompt.md");
+const DIGEST_RUNTIME_PROMPT_TEMPLATE: &str = include_str!("../templates/digest_decision_traces.md");
 
 /// Stores the shared prompt contract for one digest runtime invocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,7 +85,7 @@ mod tests {
             &["query-protocol".to_owned(), "runtime".to_owned()],
         );
         assert!(prompt.prompt.contains(concat!(
-            "Run metadata\n",
+            "## Run Metadata\n",
             "project_id: repo-123\n",
             "run_id: cwrun_123\n",
             "selected_session_refs:\n",
@@ -125,7 +125,7 @@ mod tests {
             &[],
             &[],
         );
-        assert!(prompt.prompt.contains("Curated playbook"));
+        assert!(prompt.prompt.contains("## Curated Playbook"));
         assert!(prompt.prompt.contains(
             "darc query wiki registry --root '/tmp/darc root' --project-id <project_id> --json"
         ));
