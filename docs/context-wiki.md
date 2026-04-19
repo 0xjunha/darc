@@ -78,7 +78,7 @@ darc wiki digest start \
 Key flags:
 
 - `--session-ref <provider>:<session-id>` selects one archived session as a focus seed. Pass it more than once to build a multi-session digest.
-- selected seed sessions guide the runtime's initial investigation, but they are not a hard evidence boundary. The runtime may still inspect and cite non-seed sessions through `darc query ...` when they support the same decision trace.
+- selected seed sessions guide the runtime's initial investigation, but they are not a hard evidence boundary. The runtime may still inspect and cite non-seed sessions through `darc query ...` when they support the same decision trace, but each proposed entry must still include at least one evidence reference from the selected seed sessions.
 - `--agent <codex|claude>` selects the agent family. Both are allowed by default.
 - `--runtime external-cli` selects the currently supported runtime kind.
 - `--model <name>` is required and is forwarded to the external CLI.
@@ -233,6 +233,7 @@ Current validation rules include:
 - domains must come from registry domains
 - `--target-domain` only prioritizes existing registry domains for the run
 - evidence references must use `<provider>:<session-id>#<turn-ordinal>` and resolve to indexed turns for the current project
+- each proposed entry must include at least one evidence reference from the selected seed sessions; non-seed evidence may supplement but not replace that anchor
 - zero proposed entries is valid when the inspected evidence does not contain durable decisions worth preserving
 
 ## Current Limitations

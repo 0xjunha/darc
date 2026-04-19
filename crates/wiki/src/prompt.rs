@@ -44,12 +44,20 @@ pub fn build_digest_runtime_prompt(
                 "- Categories and domains must come from the registry the extractor reads at runtime.\n",
                 "- Treat `target_categories` and `target_domains` as prioritization hints only.\n",
                 "- Evidence references must use `<provider>:<session-id>#<turn-ordinal>`.\n",
+                "- Capture only decisions that were actually chosen and still shape the current codebase or project state.\n",
+                "- Do not record ideas that were only discussed, proposed, partially implemented, later discarded, or later reversed.\n",
+                "- It is fine if alternatives were only implied, as long as the chosen direction is clearly evidenced and made it into the current project shape.\n",
+                "- If you are not confident that a decision was final, leave it out.\n",
                 "- `selected_session_refs` are focus hints, not a hard scope boundary.\n",
-                "- The extractor may read and cite evidence from non-seed sessions.\n",
+                "- The extractor may inspect and cite non-seed sessions, but every proposed entry must stay anchored in at least one evidence reference from `selected_session_refs`.\n",
+                "- Use session evidence to identify decisions. Use repo, query, and git evidence to confirm finality and sharpen wording, but do not create a decision trace from repo or git evidence alone.\n",
+                "- If multiple sessions support the same final decision, produce one merged entry instead of duplicates.\n",
+                "- Prefer zero entries over weak, speculative, or routine entries.\n",
+                "- Use plain language. Prefer short sentences, common words, and concrete wording over jargon or inflated abstractions.\n",
                 "- Prefer `session-bundle --view narrative` for seed-session deep reads.\n",
                 "- Prefer `query turns --grep` plus `--context` for discovery before expanding to full session reads.\n",
                 "- Always check `wiki registry` and `wiki entries` before proposing duplicates.\n",
-                "- It is valid to return zero entries when the inspected evidence does not contain durable decisions.\n",
+                "- It is valid to return zero entries when the inspected evidence does not contain durable final decisions worth preserving.\n",
                 "- Always include `run_summary`, even when `entries` is empty.\n",
                 "- Set `run_summary.extracted_decision_count` to the number of entries you return.\n\n",
                 "Curated playbook\n",
@@ -185,9 +193,43 @@ mod tests {
         assert!(
             prompt
                 .prompt
-                .contains("The extractor may read and cite evidence from non-seed sessions.")
+                .contains(
+                    "The extractor may inspect and cite non-seed sessions, but every proposed entry must stay anchored in at least one evidence reference from `selected_session_refs`."
+                )
         );
         assert!(!prompt.prompt.contains("Context bundle:"));
         assert!(!prompt.prompt.contains("only source of truth"));
+    }
+
+    #[test]
+    fn build_digest_runtime_prompt_includes_finality_and_plain_language_rules() {
+        let prompt = build_digest_runtime_prompt(
+            Path::new("/tmp/darc-root"),
+            "repo-123",
+            "cwrun_123",
+            &["codex:session-1".to_owned()],
+            &[],
+            &[],
+        );
+        assert!(
+            prompt
+                .prompt
+                .contains("Capture only decisions that were actually chosen and still shape the current codebase or project state.")
+        );
+        assert!(
+            prompt
+                .prompt
+                .contains("Do not record ideas that were only discussed, proposed, partially implemented, later discarded, or later reversed.")
+        );
+        assert!(
+            prompt
+                .prompt
+                .contains("Use plain language. Prefer short sentences, common words, and concrete wording over jargon or inflated abstractions.")
+        );
+        assert!(
+            prompt
+                .prompt
+                .contains("Prefer zero entries over weak, speculative, or routine entries.")
+        );
     }
 }

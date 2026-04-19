@@ -72,6 +72,7 @@ pub const DIGEST_PROPOSAL_OUTPUT_SCHEMA_JSON: &str = r#"{
           "consequences": { "type": "string", "minLength": 1 },
           "evidence": {
             "type": "array",
+            "minItems": 1,
             "items": { "type": "string", "minLength": 1 }
           }
         }
@@ -161,6 +162,7 @@ pub struct DigestProposalRunSummary {
 pub struct ProposalValidationOptions<'a> {
     pub project_id: &'a str,
     pub run_id: &'a str,
+    pub selected_sessions: &'a [String],
     pub allowed_categories: &'a [String],
     pub allowed_domains: &'a [String],
 }
@@ -244,6 +246,11 @@ pub fn validate_digest_proposal<R: ProposalEvidenceResolver>(
     let mut errors = Vec::new();
     let allowed_categories = options
         .allowed_categories
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let selected_sessions = options
+        .selected_sessions
         .iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
@@ -418,6 +425,7 @@ pub fn validate_digest_proposal<R: ProposalEvidenceResolver>(
                 "entry evidence must contain at least one reference".to_owned(),
             );
         }
+        let mut has_selected_session_evidence = false;
         for (domain_index, domain) in entry.domains.iter().enumerate() {
             let path = format!("{base}.domains[{domain_index}]");
             validate_non_empty_string(
@@ -444,7 +452,16 @@ pub fn validate_digest_proposal<R: ProposalEvidenceResolver>(
             let path = format!("{base}.evidence[{evidence_index}]");
             match parse_evidence_reference(evidence) {
                 Some(reference) => match evidence_resolver.turn_exists(&reference) {
-                    Ok(true) => {}
+                    Ok(true) => {
+                        let session_ref = format!(
+                            "{}:{}",
+                            reference.session.provider.directory_name(),
+                            reference.session.session_id
+                        );
+                        if selected_sessions.contains(session_ref.as_str()) {
+                            has_selected_session_evidence = true;
+                        }
+                    }
                     Ok(false) => {
                         push_error(
                             &mut errors,
@@ -470,6 +487,14 @@ pub fn validate_digest_proposal<R: ProposalEvidenceResolver>(
                     ),
                 ),
             }
+        }
+        if !entry.evidence.is_empty() && !has_selected_session_evidence {
+            push_error(
+                &mut errors,
+                format!("{base}.evidence"),
+                "entry evidence must include at least one reference from the selected seed sessions"
+                    .to_owned(),
+            );
         }
     }
 
@@ -579,13 +604,19 @@ mod tests {
 
     fn validation_options<'a>(allowed_domains: &'a [String]) -> ProposalValidationOptions<'a> {
         const CATEGORIES: &[&str] = &["architecture", "data", "product", "process"];
+        const SELECTED_SESSIONS: &[&str] = &["codex:session-1"];
         let allowed_categories = CATEGORIES
             .iter()
             .map(|category| (*category).to_owned())
             .collect::<Vec<_>>();
+        let selected_sessions = SELECTED_SESSIONS
+            .iter()
+            .map(|session| (*session).to_owned())
+            .collect::<Vec<_>>();
         ProposalValidationOptions {
             project_id: "repo-abc123",
             run_id: "cwrun_01proposal",
+            selected_sessions: Box::leak(selected_sessions.into_boxed_slice()),
             allowed_categories: Box::leak(allowed_categories.into_boxed_slice()),
             allowed_domains,
         }
@@ -726,7 +757,7 @@ mod tests {
     }
 
     #[test]
-    fn validation_allows_existing_non_seed_turn_reference() {
+    fn validation_rejects_entries_without_selected_session_evidence() {
         let allowed_domains = vec!["query-protocol".to_owned()];
         let proposal = DigestProposal {
             schema: DIGEST_PROPOSAL_SCHEMA.to_owned(),
@@ -757,12 +788,61 @@ mod tests {
             },
         };
 
-        let summary = validate_with_existing_evidence_refs(
+        let errors = validate_with_existing_evidence_refs(
             &proposal,
             &allowed_domains,
             &["claude:session-99#7".to_owned()],
         )
-        .expect("non-seed indexed turn should pass validation");
+        .expect_err("entries without selected-session evidence should fail validation");
+        assert!(errors.errors().iter().any(|error| {
+            error.path == "entries[0].evidence" && error.message.contains("selected seed sessions")
+        }));
+    }
+
+    #[test]
+    fn validation_allows_non_seed_evidence_when_selected_session_evidence_is_present() {
+        let allowed_domains = vec!["query-protocol".to_owned()];
+        let proposal = DigestProposal {
+            schema: DIGEST_PROPOSAL_SCHEMA.to_owned(),
+            project_id: "repo-abc123".to_owned(),
+            run_id: "cwrun_01proposal".to_owned(),
+            entries: vec![DigestProposalEntry {
+                operation: ProposalEntryOperation::Create,
+                entry_type: EntryType::DecisionTrace,
+                title: "Keep query protocol stable".to_owned(),
+                category: "product".to_owned(),
+                domains: vec!["query-protocol".to_owned()],
+                decision_date: "2026-04-13".to_owned(),
+                context: "Context".to_owned(),
+                options: vec![DigestProposalOption {
+                    status: DigestProposalOptionStatus::Chosen,
+                    description: "Stay additive".to_owned(),
+                }],
+                final_decision: "Stay additive".to_owned(),
+                rationale: "Desktop depends on it".to_owned(),
+                consequences: "Protocol changes need migration".to_owned(),
+                evidence: vec![
+                    "codex:session-1#0".to_owned(),
+                    "claude:session-99#7".to_owned(),
+                ],
+            }],
+            run_summary: DigestProposalRunSummary {
+                title: "Summary".to_owned(),
+                summary: "Summary".to_owned(),
+                themes: Vec::new(),
+                extracted_decision_count: 1,
+            },
+        };
+
+        let summary = validate_with_existing_evidence_refs(
+            &proposal,
+            &allowed_domains,
+            &[
+                "codex:session-1#0".to_owned(),
+                "claude:session-99#7".to_owned(),
+            ],
+        )
+        .expect("mixed seed and non-seed evidence should pass validation");
         assert_eq!(summary.entry_count, 1);
     }
 
