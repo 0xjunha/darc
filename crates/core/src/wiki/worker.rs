@@ -104,7 +104,11 @@ impl<'a> DigestWorker<'a> {
 
         let registry =
             load_registry(&self.layout).context("failed to load project wiki registry")?;
-        let validated = match self.validate_proposal(&registry, &runtime_execution)? {
+        let validated = match self.validate_proposal(
+            &state.selected_sessions,
+            &registry,
+            &runtime_execution,
+        )? {
             Some(validated) => validated,
             None => return Ok(()),
         };
@@ -270,6 +274,7 @@ impl<'a> DigestWorker<'a> {
     /// Validates the captured proposal artifact against Darc's schema and indexed evidence rules.
     fn validate_proposal(
         &self,
+        selected_sessions: &[String],
         registry: &ProjectRegistry,
         runtime_execution: &RuntimeExecution,
     ) -> Result<Option<ValidatedProposal>> {
@@ -340,6 +345,7 @@ impl<'a> DigestWorker<'a> {
             &ProposalValidationOptions {
                 project_id: self.project_id,
                 run_id: self.run_id.as_str(),
+                selected_sessions,
                 allowed_categories: &registry.categories,
                 allowed_domains: &registry.domains,
             },
