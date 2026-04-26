@@ -3,12 +3,12 @@ use thiserror::Error;
 /// Represents one typed runtime preparation error from the leaf agent crate.
 #[derive(Debug, Error)]
 pub enum AgentError {
-    /// Reports one unsupported digest agent identifier.
-    #[error("unsupported digest agent `{value}`")]
+    /// Reports one unsupported agent identifier.
+    #[error("unsupported agent `{value}`")]
     UnsupportedAgent { value: String },
 
-    /// Reports one unsupported digest runtime identifier.
-    #[error("unsupported digest runtime `{value}`")]
+    /// Reports one unsupported runtime identifier.
+    #[error("unsupported runtime `{value}`")]
     UnsupportedRuntime { value: String },
 
     /// Reports one invalid runtime request field.

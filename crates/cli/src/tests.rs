@@ -18,10 +18,10 @@ use darc_rollout_audit::{claude::ClaudeSchemaAuditOutcome, codex::CodexSchemaAud
 use serde_json::Value;
 
 use super::{
-    Cli, Commands, QueryCommands, QueryInsightsCommands, QueryWikiCommands, WikiCommands,
-    WikiDigestCommands, claude_schema_audit_exit_code, codex_schema_audit_exit_code,
-    format_claude_schema_audit_report, format_codex_schema_audit_report, format_query_error,
-    parse_window_days, resolve_query_time_bound_at,
+    Cli, Commands, QueryCommands, QueryInsightsCommands, claude_schema_audit_exit_code,
+    codex_schema_audit_exit_code, format_claude_schema_audit_report,
+    format_codex_schema_audit_report, format_query_error, parse_window_days,
+    resolve_query_time_bound_at,
 };
 
 fn compatible_report() -> CodexSchemaAuditReport {
@@ -253,253 +253,6 @@ fn query_workspace_requires_json_flag() {
 }
 
 #[test]
-fn parses_query_wiki_registry_command() {
-    let cli = Cli::try_parse_from([
-        "darc",
-        "query",
-        "wiki",
-        "registry",
-        "--project-id",
-        "repo-abc123",
-        "--json",
-    ])
-    .unwrap();
-    assert!(matches!(
-        cli.command,
-        Commands::Query(super::QueryArgs {
-            command: QueryCommands::Wiki(super::QueryWikiArgs {
-                command: QueryWikiCommands::Registry(super::QueryWikiRegistryArgs {
-                    project_id,
-                    json,
-                    ..
-                }),
-            }),
-        }) if project_id.as_deref() == Some("repo-abc123") && json
-    ));
-}
-
-#[test]
-fn query_wiki_registry_requires_json_flag() {
-    let error = Cli::try_parse_from([
-        "darc",
-        "query",
-        "wiki",
-        "registry",
-        "--project-id",
-        "repo-abc123",
-    ])
-    .unwrap_err();
-
-    assert!(error.to_string().contains("--json"));
-}
-
-#[test]
-fn parses_query_wiki_registry_without_project_id() {
-    let cli = Cli::try_parse_from(["darc", "query", "wiki", "registry", "--json"]).unwrap();
-    assert!(matches!(
-        cli.command,
-        Commands::Query(super::QueryArgs {
-            command: QueryCommands::Wiki(super::QueryWikiArgs {
-                command: QueryWikiCommands::Registry(super::QueryWikiRegistryArgs {
-                    project_id,
-                    json,
-                    ..
-                }),
-            }),
-        }) if project_id.is_none() && json
-    ));
-}
-
-#[test]
-fn parses_query_wiki_entries_with_filters() {
-    let cli = Cli::try_parse_from([
-        "darc",
-        "query",
-        "wiki",
-        "entries",
-        "--project-id",
-        "repo-abc123",
-        "--category",
-        "product",
-        "--domain",
-        "query",
-        "--status",
-        "active",
-        "--grep",
-        "staged init",
-        "--evidence-ref",
-        "codex:session-1#4",
-        "--evidence-ref",
-        "claude:session-2#1",
-        "--covers-session",
-        "codex:session-1",
-        "--json",
-    ])
-    .unwrap();
-    assert!(matches!(
-        cli.command,
-        Commands::Query(super::QueryArgs {
-            command: QueryCommands::Wiki(super::QueryWikiArgs {
-                command: QueryWikiCommands::Entries(super::QueryWikiEntriesArgs {
-                    project_id,
-                    category,
-                    domain,
-                    status,
-                    grep,
-                    evidence_ref,
-                    covers_session,
-                    json,
-                    ..
-                }),
-            }),
-        }) if project_id.as_deref() == Some("repo-abc123")
-            && category.as_deref() == Some("product")
-            && domain.as_deref() == Some("query")
-            && matches!(status, Some(super::WikiEntryStatusArg::Active))
-            && grep.as_deref() == Some("staged init")
-            && evidence_ref == vec!["codex:session-1#4".to_owned(), "claude:session-2#1".to_owned()]
-            && covers_session == vec!["codex:session-1".to_owned()]
-            && json
-    ));
-}
-
-#[test]
-fn parses_query_wiki_entry_command() {
-    let cli = Cli::try_parse_from([
-        "darc",
-        "query",
-        "wiki",
-        "entry",
-        "--project-id",
-        "repo-abc123",
-        "--entry-id",
-        "cw_01entry",
-        "--json",
-    ])
-    .unwrap();
-    assert!(matches!(
-        cli.command,
-        Commands::Query(super::QueryArgs {
-            command: QueryCommands::Wiki(super::QueryWikiArgs {
-                command: QueryWikiCommands::Entry(super::QueryWikiEntryArgs {
-                    project_id,
-                    entry_id,
-                    json,
-                    ..
-                }),
-            }),
-        }) if project_id.as_deref() == Some("repo-abc123") && entry_id == "cw_01entry" && json
-    ));
-}
-
-#[test]
-fn parses_query_wiki_digest_command() {
-    let cli = Cli::try_parse_from([
-        "darc",
-        "query",
-        "wiki",
-        "digest",
-        "--project-id",
-        "repo-abc123",
-        "--digest-id",
-        "dg_01digest",
-        "--json",
-    ])
-    .unwrap();
-    assert!(matches!(
-        cli.command,
-        Commands::Query(super::QueryArgs {
-            command: QueryCommands::Wiki(super::QueryWikiArgs {
-                command: QueryWikiCommands::Digest(super::QueryWikiDigestArgs {
-                    project_id,
-                    digest_id,
-                    json,
-                    ..
-                }),
-            }),
-        }) if project_id.as_deref() == Some("repo-abc123") && digest_id == "dg_01digest" && json
-    ));
-}
-
-#[test]
-fn parses_query_wiki_digests_with_time_bounds() {
-    let cli = Cli::try_parse_from([
-        "darc",
-        "query",
-        "wiki",
-        "digests",
-        "--project-id",
-        "repo-abc123",
-        "--since",
-        "30d",
-        "--until",
-        "2026-04-07T00:00:00Z",
-        "--json",
-    ])
-    .unwrap();
-    assert!(matches!(
-        cli.command,
-        Commands::Query(super::QueryArgs {
-            command: QueryCommands::Wiki(super::QueryWikiArgs {
-                command: QueryWikiCommands::Digests(super::QueryWikiDigestsArgs {
-                    project_id,
-                    since,
-                    until,
-                    json,
-                    ..
-                }),
-            }),
-        }) if project_id.as_deref() == Some("repo-abc123")
-            && since.as_deref() == Some("30d")
-            && until.as_deref() == Some("2026-04-07T00:00:00Z")
-            && json
-    ));
-}
-
-#[test]
-fn parses_query_wiki_runs_with_status_and_limit() {
-    let cli = Cli::try_parse_from([
-        "darc",
-        "query",
-        "wiki",
-        "runs",
-        "--project-id",
-        "repo-abc123",
-        "--status",
-        "running",
-        "--since",
-        "7d",
-        "--until",
-        "2026-04-07T00:00:00Z",
-        "--limit",
-        "5",
-        "--json",
-    ])
-    .unwrap();
-    assert!(matches!(
-        cli.command,
-        Commands::Query(super::QueryArgs {
-            command: QueryCommands::Wiki(super::QueryWikiArgs {
-                command: QueryWikiCommands::Runs(super::QueryWikiRunsArgs {
-                    project_id,
-                    status,
-                    since,
-                    until,
-                    limit,
-                    json,
-                    ..
-                }),
-            }),
-        }) if project_id.as_deref() == Some("repo-abc123")
-            && matches!(status, Some(super::WikiRunStatusArg::Running))
-            && since.as_deref() == Some("7d")
-            && until.as_deref() == Some("2026-04-07T00:00:00Z")
-            && limit == Some(5)
-            && json
-    ));
-}
-
-#[test]
 fn parses_query_turn_command() {
     let cli = Cli::try_parse_from([
         "darc",
@@ -601,7 +354,7 @@ fn parses_query_sessions_touched_path_filter() {
         "--project-id",
         "repo-abc123",
         "--touched-path",
-        "crates/wiki/**",
+        "src/components/**",
         "--json",
     ])
     .unwrap();
@@ -615,7 +368,7 @@ fn parses_query_sessions_touched_path_filter() {
                 ..
             }),
         }) if project_id.as_deref() == Some("repo-abc123")
-            && touched_path.as_deref() == Some("crates/wiki/**")
+            && touched_path.as_deref() == Some("src/components/**")
             && json
     ));
 }
@@ -629,7 +382,7 @@ fn parses_query_files_path_command() {
         "--project-id",
         "repo-abc123",
         "--path",
-        "crates/wiki/**/*.rs",
+        "src/components/**/*.rs",
         "--since",
         "30d",
         "--until",
@@ -651,7 +404,7 @@ fn parses_query_files_path_command() {
                 ..
             }),
         }) if project_id.as_deref() == Some("repo-abc123")
-            && path.as_deref() == Some("crates/wiki/**/*.rs")
+            && path.as_deref() == Some("src/components/**/*.rs")
             && co_touched_with.is_none()
             && since.as_deref() == Some("30d")
             && until.as_deref() == Some("2026-04-07T00:00:00Z")
@@ -669,7 +422,7 @@ fn parses_query_files_co_touched_command() {
         "--project-id",
         "repo-abc123",
         "--co-touched-with",
-        "crates/wiki/src/proposal.rs",
+        "src/components/planner.rs",
         "--limit",
         "10",
         "--json",
@@ -688,7 +441,7 @@ fn parses_query_files_co_touched_command() {
             }),
         }) if project_id.as_deref() == Some("repo-abc123")
             && path.is_none()
-            && co_touched_with.as_deref() == Some("crates/wiki/src/proposal.rs")
+            && co_touched_with.as_deref() == Some("src/components/planner.rs")
             && limit == Some(10)
             && json
     ));
@@ -882,45 +635,6 @@ fn query_workspace_help_mentions_json_flag() {
 }
 
 #[test]
-fn query_wiki_help_mentions_registry_subcommand() {
-    let mut command = Cli::command();
-    let query = command
-        .find_subcommand_mut("query")
-        .expect("query subcommand should be present");
-    let help = query
-        .find_subcommand_mut("wiki")
-        .expect("wiki query subcommand should be present")
-        .render_long_help()
-        .to_string();
-
-    assert!(help.contains("registry"));
-    assert!(help.contains("entry"));
-    assert!(help.contains("entries"));
-    assert!(help.contains("digest"));
-    assert!(help.contains("digests"));
-    assert!(help.contains("runs"));
-}
-
-#[test]
-fn query_wiki_entries_help_mentions_q4_filters() {
-    let mut command = Cli::command();
-    let query = command
-        .find_subcommand_mut("query")
-        .expect("query subcommand should be present");
-    let help = query
-        .find_subcommand_mut("wiki")
-        .expect("wiki query subcommand should be present")
-        .find_subcommand_mut("entries")
-        .expect("wiki entries query subcommand should be present")
-        .render_long_help()
-        .to_string();
-
-    assert!(help.contains("--grep"));
-    assert!(help.contains("--evidence-ref"));
-    assert!(help.contains("--covers-session"));
-}
-
-#[test]
 fn query_sessions_help_mentions_examples_for_time_bounds() {
     let mut command = Cli::command();
     let query = command
@@ -1019,146 +733,6 @@ fn parses_query_workspace_insights_command() {
                 }),
             }),
         }) if window_days == 14 && json
-    ));
-}
-
-#[test]
-fn parses_wiki_digest_start_skeleton_command() {
-    let cli = Cli::try_parse_from([
-        "darc",
-        "wiki",
-        "digest",
-        "start",
-        "--project-id",
-        "repo-abc123",
-        "--session-ref",
-        "codex:session-1",
-        "--agent",
-        "codex",
-        "--runtime",
-        "external-cli",
-        "--model",
-        "gpt-5.4",
-        "--auth-profile",
-        "openai/default",
-        "--target-category",
-        "architecture",
-        "--target-domain",
-        "storage",
-        "--json",
-    ])
-    .unwrap();
-    assert!(matches!(
-        cli.command,
-        Commands::Wiki(super::WikiArgs {
-            command: WikiCommands::Digest(super::WikiDigestArgs {
-                command: WikiDigestCommands::Start(super::WikiDigestStartArgs {
-                    project_id,
-                    session_ref,
-                    auth_profile,
-                    target_category,
-                    target_domain,
-                    json,
-                    ..
-                }),
-            }),
-        }) if project_id == "repo-abc123"
-            && session_ref == vec!["codex:session-1".to_owned()]
-            && auth_profile.as_deref() == Some("openai/default")
-            && target_category == vec!["architecture".to_owned()]
-            && target_domain == vec!["storage".to_owned()]
-            && json
-    ));
-}
-
-#[test]
-fn parses_wiki_digest_cancel_command() {
-    let cli = Cli::try_parse_from([
-        "darc",
-        "wiki",
-        "digest",
-        "cancel",
-        "--project-id",
-        "repo-abc123",
-        "--run-id",
-        "cwrun_01abcd",
-        "--json",
-    ])
-    .unwrap();
-    assert!(matches!(
-        cli.command,
-        Commands::Wiki(super::WikiArgs {
-            command: WikiCommands::Digest(super::WikiDigestArgs {
-                command: WikiDigestCommands::Cancel(super::WikiDigestCancelArgs {
-                    project_id,
-                    run_id,
-                    json,
-                    ..
-                }),
-            }),
-        }) if project_id == "repo-abc123" && run_id == "cwrun_01abcd" && json
-    ));
-}
-
-#[test]
-fn parses_wiki_entry_discard_command() {
-    let cli = Cli::try_parse_from([
-        "darc",
-        "wiki",
-        "entry",
-        "discard",
-        "--project-id",
-        "repo-abc123",
-        "--entry-id",
-        "cw_01abcd",
-        "--json",
-    ])
-    .unwrap();
-    assert!(matches!(
-        cli.command,
-        Commands::Wiki(super::WikiArgs {
-            command: WikiCommands::Entry(super::WikiEntryArgs {
-                command: super::WikiEntryCommands::Discard(super::WikiEntryDiscardArgs {
-                    args: super::WikiEntryMutationArgs {
-                        project_id,
-                        entry_id,
-                        json,
-                        ..
-                    },
-                }),
-            }),
-        }) if project_id == "repo-abc123" && entry_id == "cw_01abcd" && json
-    ));
-}
-
-#[test]
-fn parses_wiki_entry_restore_command() {
-    let cli = Cli::try_parse_from([
-        "darc",
-        "wiki",
-        "entry",
-        "restore",
-        "--project-id",
-        "repo-abc123",
-        "--entry-id",
-        "cw_01abcd",
-        "--json",
-    ])
-    .unwrap();
-    assert!(matches!(
-        cli.command,
-        Commands::Wiki(super::WikiArgs {
-            command: WikiCommands::Entry(super::WikiEntryArgs {
-                command: super::WikiEntryCommands::Restore(super::WikiEntryRestoreArgs {
-                    args: super::WikiEntryMutationArgs {
-                        project_id,
-                        entry_id,
-                        json,
-                        ..
-                    },
-                }),
-            }),
-        }) if project_id == "repo-abc123" && entry_id == "cw_01abcd" && json
     ));
 }
 

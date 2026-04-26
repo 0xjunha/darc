@@ -2,7 +2,7 @@ use std::{env, path::PathBuf};
 
 use crate::{
     AgentError, Result,
-    runtime::{CODEX_BINARY_ENV_VAR, ProposalOutputSource, RuntimeCommand, RuntimeRequest},
+    runtime::{CODEX_BINARY_ENV_VAR, RuntimeCommand, RuntimeOutputSource, RuntimeRequest},
 };
 
 /// Returns the user-facing message for the unsupported Codex provider-auth mode.
@@ -10,7 +10,7 @@ pub fn codex_provider_auth_unsupported_message() -> &'static str {
     "Codex provider-auth opt-in is not supported because `codex exec` does not expose a documented per-run API-key/provider-auth selector. Omit `--use-provider-auth` and use the current Codex CLI auth context instead."
 }
 
-/// Builds one Codex exec argv vector for a digest proposal run.
+/// Builds one Codex exec argv vector for a structured runtime invocation.
 fn build_codex_exec_args(request: &RuntimeRequest) -> Vec<String> {
     vec![
         "exec".to_owned(),
@@ -25,11 +25,11 @@ fn build_codex_exec_args(request: &RuntimeRequest) -> Vec<String> {
         "--output-schema".to_owned(),
         request.schema_path.to_string_lossy().into_owned(),
         "--output-last-message".to_owned(),
-        request.proposal_path.to_string_lossy().into_owned(),
+        request.output_path.to_string_lossy().into_owned(),
     ]
 }
 
-/// Prepares one Codex CLI command for a digest proposal run.
+/// Prepares one Codex CLI command for a structured runtime invocation.
 pub fn build_codex_external_cli_command(request: &RuntimeRequest) -> Result<RuntimeCommand> {
     if request.use_provider_auth {
         return Err(AgentError::InvalidRequest {
@@ -46,7 +46,7 @@ pub fn build_codex_external_cli_command(request: &RuntimeRequest) -> Result<Runt
         env_remove: Vec::new(),
         workdir: request.workdir.clone(),
         stdin: request.prompt.as_bytes().to_vec(),
-        proposal_output: ProposalOutputSource::File(request.proposal_path.clone()),
+        output_source: RuntimeOutputSource::File(request.output_path.clone()),
         display_name: "Codex CLI".to_owned(),
     })
 }
@@ -72,8 +72,8 @@ mod tests {
             schema_json: "{\"type\":\"object\"}".to_owned(),
             darc_root: PathBuf::from("/tmp/darc-root"),
             workdir: PathBuf::from("/tmp/project-root"),
-            schema_path: PathBuf::from("/tmp/run/proposal.schema.json"),
-            proposal_path: PathBuf::from("/tmp/run/proposal.json"),
+            schema_path: PathBuf::from("/tmp/run/output.schema.json"),
+            output_path: PathBuf::from("/tmp/run/output.json"),
         }
     }
 
@@ -93,9 +93,9 @@ mod tests {
                 "--sandbox",
                 "read-only",
                 "--output-schema",
-                "/tmp/run/proposal.schema.json",
+                "/tmp/run/output.schema.json",
                 "--output-last-message",
-                "/tmp/run/proposal.json",
+                "/tmp/run/output.json",
             ]
         );
     }
@@ -106,8 +106,8 @@ mod tests {
             .expect("codex runtime command should build");
         assert_eq!(command.display_name, "Codex CLI");
         assert_eq!(
-            command.proposal_output,
-            crate::runtime::ProposalOutputSource::File(PathBuf::from("/tmp/run/proposal.json"))
+            command.output_source,
+            crate::runtime::RuntimeOutputSource::File(PathBuf::from("/tmp/run/output.json"))
         );
     }
 

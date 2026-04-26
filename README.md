@@ -14,11 +14,8 @@ The daily happy path is `darc refresh`, which runs `sync` and `index` together.
 - Registers local projects in a shared `~/.darc` workspace and resolves the active project from the current checkout.
 - Archives matching Claude and Codex session history into a per-project rollout archive.
 - Rebuilds a normalized SQLite index from archived rollouts for insights, reporting, and downstream tooling.
-- Exposes a stable machine-readable `darc query` protocol for workspace, session, turn, file-pivot, search, wiki,
-  and insights data.
-- Provides an experimental Context Wiki workflow with read-side wiki queries plus agent-backed digest runs that
-  validate structured proposal artifacts, merge canonical wiki artifacts, and persist durable run logs under
-  `~/.darc/context-wiki/`.
+- Exposes a stable machine-readable `darc query` protocol for workspace, session, turn, file-pivot, search, and
+  insights data.
 - Derives indexed insights at workspace, project, and turn scope without requiring clients to open `index.sqlite`
   directly.
 - Surfaces best-effort per-turn and per-session stats such as model, token usage, effective agent runtime, and
@@ -30,7 +27,7 @@ The daily happy path is `darc refresh`, which runs `sync` and `index` together.
 
 Darc is organized as a small workspace of focused crates with `darc-core` kept as a thin facade and orchestration layer.
 
-- `darc-agent`: external agent runtime command preparation for Context Wiki digest workers.
+- `darc-agent`: external agent runtime command preparation for future worker-backed derived context features.
 - `darc-cli`: CLI entrypoint and command surface.
 - `darc-core`: stable public API and top-level orchestration across Darc workflows.
 - `darc-index`: normalized session ingestion, SQLite schema/migrations, and indexing metrics.
@@ -42,9 +39,6 @@ Darc is organized as a small workspace of focused crates with `darc-core` kept a
 - `darc-sync`: archive discovery, sync planning, and file copy execution.
 - `darc-test-utils`: shared test fixtures and helpers for Git repositories, temporary directories, and seeded index
   data.
-- `darc-wiki`: canonical Context Wiki storage, proposal validation, canonical artifact merge, and durable
-  run-state models.
-
 #### Crate boundaries follow three rules:
 
 1. Keep each crate cohesive around one dominant capability.
@@ -87,10 +81,8 @@ darc refresh --all
   project with `--all`.
 - `darc sync` archives matching Claude and Codex sessions for the active project.
 - `darc index` indexes archived sessions into SQLite.
-- `darc query` exposes the machine-readable read protocol for workspace, session, turn, file-pivot, search, wiki, and
+- `darc query` exposes the machine-readable read protocol for workspace, session, turn, file-pivot, search, and
   insights data. Query commands currently require `--json`; see [Query protocol](docs/query-protocol.md).
-- `darc wiki` hosts the experimental imperative Context Wiki workflow, including digest start/cancel commands plus
-  entry discard/restore lifecycle commands.
 - `darc link`, `darc remove`, and `darc rename-from` manage renamed or merged projects.
 
 ## Session And Turn Stats
@@ -112,8 +104,8 @@ See [Query protocol](docs/query-protocol.md) for the exact payload contract and 
 
 ## Query Workflows
 
-Darc's read-side query surface now covers project-scoped search, compact turn skims, file/session pivots, wiki overlap
-checks, and single-call session bundles.
+Darc's read-side query surface now covers project-scoped search, compact turn skims, file/session pivots, and
+single-call session bundles.
 
 - `darc query search turns` handles keyword, file-name, and file-path search with optional provider/session filters.
 - project-scoped `darc query` commands accept optional `--project-id`; when omitted, Darc resolves the configured
@@ -123,9 +115,6 @@ checks, and single-call session bundles.
 - `darc query files`, `darc query session-files`, and `darc query session-bundle` let clients pivot between matched
   files, touched sessions, per-session file summaries, and one-call session detail bundles.
 - `darc query resolve-session` explicitly expands a UUID prefix before you call session-scoped data commands.
-- `darc query wiki entries` adds grep, evidence-reference, and session-coverage filters so digest prep can check
-  existing wiki coverage before proposing new entries.
-
 Examples:
 
 ```bash
@@ -149,7 +138,7 @@ darc query turns \
 ```bash
 darc query files \
   --project-id repo-abc123 \
-  --path "crates/wiki/**/*.rs" \
+  --path "src/components/**/*.rs" \
   --since 30d \
   --json
 ```
@@ -165,56 +154,13 @@ darc query session-bundle \
   --json
 ```
 
-```bash
-darc query wiki entries \
-  --project-id repo-abc123 \
-  --covers-session codex:session-1 \
-  --evidence-ref codex:session-1#4 \
-  --json
-```
-
 See [Query protocol](docs/query-protocol.md) for the full command matrix, payload contracts, and filter semantics.
-
-## Context Wiki
-
-Darc includes an experimental backend-owned Context Wiki workflow under `~/.darc/context-wiki/`.
-
-- Use `darc query wiki ... --json` for read-side access to registry, entries, digests, and runs.
-- Use the read-side `darc query` surface to investigate history before or alongside digest work. In particular,
-  `darc query turns --grep ...`, `darc query files ...`, `darc query session-files ...`,
-  `darc query session-bundle ...`, and `darc query sessions --touched-path ...` are the intended project-scoped
-  primitives for narrowing evidence and reviewing one candidate session in full.
-- Use `darc wiki digest start` to snapshot digest request metadata, invoke an external Claude Code CLI or Codex CLI
-  run from the project root, validate the returned structured proposal artifact, and
-  merge the validated result into canonical wiki artifacts.
-- Use `darc wiki digest cancel` to request cancellation for an in-flight run.
-- Use `darc wiki entry discard` and `darc wiki entry restore` to change entry lifecycle state without deleting the
-  canonical Markdown artifact.
-- Successful digest runs persist a digest report plus terminal run metadata and either create or update canonical
-  decision-trace entries, or record a zero-entry digest when no durable decisions were extracted.
-
-Example:
-
-```bash
-darc wiki digest start \
-  --project-id repo-abc123 \
-  --session-ref claude:session-1 \
-  --agent claude \
-  --runtime external-cli \
-  --model claude-sonnet-4-6 \
-  --target-domain query-protocol \
-  --json
-```
-
-See [Context Wiki](docs/context-wiki.md) for workflow details, runtime requirements, run artifacts, and current
-limitations.
 
 Run `darc --help` for the visible CLI surface. Hidden maintainer commands are documented separately.
 
 ## Documentation
 
 - [Documentation index](docs/README.md)
-- [Context Wiki](docs/context-wiki.md)
 - [Query protocol](docs/query-protocol.md)
 - [Project rename and linking](docs/project-rename.md)
 - [Schema audits](docs/schema-audits.md)
