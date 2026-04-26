@@ -16,16 +16,6 @@ All query commands currently require `--json`.
 
 - `darc query workspace --root <path> --json`
 
-### Context Wiki
-
-- `darc query wiki registry --root <path> [--project-id <id>] --json`
-- `darc query wiki entries --root <path> [--project-id <id>] [--category <id>] [--domain <id>] [--status <status>] [--grep <text>] [--evidence-ref <provider>:<session-id>#<turn-ordinal>] [--covers-session <provider>:<session-id>] --json`
-- `darc query wiki entry --root <path> [--project-id <id>] --entry-id <id> --json`
-- `darc query wiki digests --root <path> [--project-id <id>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] --json`
-- `darc query wiki digest --root <path> [--project-id <id>] --digest-id <id> --json`
-- `darc query wiki runs --root <path> [--project-id <id>] [--status <status>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] --json`
-- `darc query wiki run --root <path> [--project-id <id>] --run-id <id> --json`
-
 ### Sessions, Turns, And Files
 
 - `darc query resolve-session <uuid-or-prefix> --root <path> [--provider <provider>] [--pick-one] --json`
@@ -63,7 +53,7 @@ All query commands currently require `--json`.
 
 The protocol is intentionally composable. A few common read patterns are now first-class:
 
-- find decision-shaped turns by content:
+- find planning turns by content:
 
   ```bash
   darc query turns \
@@ -82,7 +72,7 @@ The protocol is intentionally composable. A few common read patterns are now fir
   darc query files \
     --root ~/.darc \
     --project-id repo-abc123 \
-    --path "crates/wiki/src/proposal.rs" \
+    --path "src/components/planner.rs" \
     --json
   ```
 
@@ -122,20 +112,6 @@ The protocol is intentionally composable. A few common read patterns are now fir
     --view oneline \
     --json
   ```
-
-- check whether the wiki already covers one session or cited turn before proposing a new entry:
-
-  ```bash
-  darc query wiki entries \
-    --root ~/.darc \
-    --project-id repo-abc123 \
-    --covers-session codex:session-1 \
-    --evidence-ref codex:session-1#4 \
-    --json
-  ```
-
-  When both overlap flags are present, entries matching either the cited turn or any cited turn
-  from the requested session are returned.
 
 ## Success envelope
 
@@ -197,13 +173,6 @@ Current schema ids:
 
 - `darc.query.workspace.v1`
 - `darc.query.resolve_session.v1`
-- `darc.query.wiki.registry.v1`
-- `darc.query.wiki.entries.v1`
-- `darc.query.wiki.entry.v1`
-- `darc.query.wiki.digests.v1`
-- `darc.query.wiki.digest.v1`
-- `darc.query.wiki.run.v1`
-- `darc.query.wiki.runs.v1`
 - `darc.query.sessions.v1`
 - `darc.query.files.v1`
 - `darc.query.session_files.v1`
@@ -218,33 +187,6 @@ Current schema ids:
 - `darc.error.v1`
 
 Clients should branch on `schema`, not on `darc_version`.
-
-## Context Wiki queries
-
-`darc query wiki ...` reads canonical Context Wiki artifacts stored under `~/.darc/context-wiki/`.
-
-This document covers the read-side query contract only. The experimental imperative digest workflow lives under
-`darc wiki ...`; see [Context Wiki](context-wiki.md).
-
-Today:
-
-- wiki queries require a configured project id in `config.toml`
-- wiki queries do not require `index.sqlite`
-- wiki queries are read-only and do not create the on-disk wiki layout
-- when no on-disk registry exists yet, `darc.query.wiki.registry.v1` returns the default category set and an empty domain list
-- `darc.query.wiki.registry.v1` returns `project_id`, `schema_version`, `categories`, and `domains`
-- `darc.query.wiki.entries.v1` returns `project_id` plus deterministic `entries`, with optional `category`, `domain`, `status`, `grep`, `evidence_ref`, and `covers_session` filters
-- `darc.query.wiki.entries.v1` entry rows include `matched_evidence` plus nullable `match_reason`; without grep, evidence-ref, or covers-session filters these default to `[]` and `null`
-- `darc.query.wiki.entry.v1` returns one canonical entry detail including metadata, evidence, and Markdown body
-- `darc.query.wiki.digests.v1` echoes optional `since` and `until` filters and applies them to digest `created_at`
-- `darc.query.wiki.digests.v1` returns `project_id` plus deterministic `digests`, with an optional `limit`
-- `darc.query.wiki.digest.v1` returns one canonical digest detail including frontmatter fields and Markdown body
-- `darc.query.wiki.run.v1` returns one run state plus parsed terminal result detail when `result.json` exists
-- `darc.query.wiki.run.v1` includes persisted request/runtime metadata such as `agent_id`, `runtime`, `model`, `auth_profile`, `use_provider_auth`, selected sessions, targets, and terminal result detail when available
-- `darc.query.wiki.runs.v1` echoes optional `since` and `until` filters and applies them to run `created_at`
-- `darc.query.wiki.runs.v1` returns `project_id` plus deterministic `runs`, with optional `status` and `limit`
-- empty lists are returned when no canonical entries, digests, or runs exist yet
-- wiki payloads do not expose internal storage paths
 
 `darc query turns` now supports two projections under the existing schemas:
 

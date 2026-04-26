@@ -9,39 +9,10 @@ Current crate ownership:
 - `crates/index`: archive ingestion, duplicate resolution, and SQLite indexing.
 - `crates/query`: read-side query, search, and insights.
 - `crates/sync`: Claude and Codex discovery plus archive copy planning.
-- `crates/wiki`: canonical Context Wiki storage, validation, merge, and run artifacts.
+- `crates/agent`: external agent CLI command preparation for future worker-backed features.
 - `crates/core`: facade and orchestration glue.
 
 ## Active Backlog
-
-### Context Wiki workflow and policy
-
-#### Separate extraction from registry curation
-
-Current state:
-
-- Proposal validation only accepts existing categories and domains.
-- Extractors cannot propose taxonomy changes; registry edits still require manual or backend-owned
-  changes.
-
-Needed:
-
-- Let extractors optionally propose category and domain additions in the proposal artifact.
-- Keep canonical registry mutation in a separate curator step.
-- Enforce slug validation, dedupe and similarity checks, and per-run proposal limits.
-- Keep category promotion stricter than domain promotion.
-
-#### Add Windows-capable stale-run liveness checks
-
-Current state:
-
-- `crates/core/src/wiki/state.rs` uses `kill(pid, 0)` on Unix.
-- The non-Unix fallback returns `false`, so stale-run repair will treat worker pids as dead on
-  Windows.
-
-Needed:
-
-- Implement a Windows process liveness path before claiming cross-platform stale-run parity.
 
 ### Sync and project identity
 

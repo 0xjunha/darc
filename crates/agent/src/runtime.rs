@@ -3,12 +3,12 @@ use std::path::PathBuf;
 use crate::{AgentError, Result, external_cli::build_external_cli_command};
 
 /// Names the environment variable used to override the Codex CLI binary path.
-pub const CODEX_BINARY_ENV_VAR: &str = "DARC_WIKI_CODEX_BIN";
+pub const CODEX_BINARY_ENV_VAR: &str = "DARC_AGENT_CODEX_BIN";
 
 /// Names the environment variable used to override the Claude CLI binary path.
-pub const CLAUDE_BINARY_ENV_VAR: &str = "DARC_WIKI_CLAUDE_BIN";
+pub const CLAUDE_BINARY_ENV_VAR: &str = "DARC_AGENT_CLAUDE_BIN";
 
-/// Identifies the supported digest agent families.
+/// Identifies the supported agent families.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentId {
     Claude,
@@ -44,7 +44,7 @@ impl AgentId {
     }
 }
 
-/// Identifies the supported digest runtime kinds.
+/// Identifies the supported runtime kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeKind {
     ExternalCli,
@@ -69,22 +69,22 @@ impl RuntimeKind {
     }
 }
 
-/// Identifies where the runtime emits its final proposal artifact.
+/// Identifies where the runtime emits its final structured artifact.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ProposalOutputSource {
+pub enum RuntimeOutputSource {
     Stdout,
     StdoutJsonField(String),
     File(PathBuf),
 }
 
-impl ProposalOutputSource {
-    /// Returns whether the runtime proposal artifact is derived from stdout capture.
+impl RuntimeOutputSource {
+    /// Returns whether the runtime artifact is derived from stdout capture.
     pub fn captures_stdout(&self) -> bool {
         matches!(self, Self::Stdout | Self::StdoutJsonField(_))
     }
 }
 
-/// Stores the digest runtime invocation inputs required across adapters.
+/// Stores the runtime invocation inputs required across adapters.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeRequest {
     pub agent: AgentId,
@@ -97,10 +97,10 @@ pub struct RuntimeRequest {
     pub darc_root: PathBuf,
     pub workdir: PathBuf,
     pub schema_path: PathBuf,
-    pub proposal_path: PathBuf,
+    pub output_path: PathBuf,
 }
 
-/// Stores the prepared external command and proposal capture strategy for one runtime.
+/// Stores the prepared external command and artifact capture strategy for one runtime.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeCommand {
     pub program: PathBuf,
@@ -108,7 +108,7 @@ pub struct RuntimeCommand {
     pub env_remove: Vec<String>,
     pub workdir: PathBuf,
     pub stdin: Vec<u8>,
-    pub proposal_output: ProposalOutputSource,
+    pub output_source: RuntimeOutputSource,
     pub display_name: String,
 }
 

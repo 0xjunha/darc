@@ -2,7 +2,7 @@ use std::{env, path::PathBuf};
 
 use crate::{
     Result,
-    runtime::{CLAUDE_BINARY_ENV_VAR, ProposalOutputSource, RuntimeCommand, RuntimeRequest},
+    runtime::{CLAUDE_BINARY_ENV_VAR, RuntimeCommand, RuntimeOutputSource, RuntimeRequest},
 };
 
 const CLAUDE_TOOLS: &str = "Bash,Read";
@@ -15,7 +15,7 @@ const CLAUDE_PROVIDER_AUTH_ENV_VARS: &[&str] = &[
     "CLAUDE_CODE_USE_FOUNDRY",
 ];
 
-/// Builds one Claude argv vector for a digest proposal run.
+/// Builds one Claude argv vector for a structured runtime invocation.
 fn build_claude_args(request: &RuntimeRequest, include_bare: bool) -> Vec<String> {
     let mut args = vec!["--print".to_owned()];
     if include_bare {
@@ -46,7 +46,7 @@ fn build_claude_args(request: &RuntimeRequest, include_bare: bool) -> Vec<String
     args
 }
 
-/// Prepares one Claude CLI command for a digest proposal run.
+/// Prepares one Claude CLI command for a structured runtime invocation.
 pub fn build_claude_external_cli_command(request: &RuntimeRequest) -> Result<RuntimeCommand> {
     let program = env::var_os(CLAUDE_BINARY_ENV_VAR)
         .map(PathBuf::from)
@@ -66,7 +66,7 @@ pub fn build_claude_external_cli_command(request: &RuntimeRequest) -> Result<Run
         env_remove,
         workdir: request.workdir.clone(),
         stdin: request.prompt.as_bytes().to_vec(),
-        proposal_output: ProposalOutputSource::StdoutJsonField("structured_output".to_owned()),
+        output_source: RuntimeOutputSource::StdoutJsonField("structured_output".to_owned()),
         display_name: "Claude Code CLI".to_owned(),
     })
 }
@@ -92,8 +92,8 @@ mod tests {
             schema_json: "{\"type\":\"object\"}".to_owned(),
             darc_root: PathBuf::from("/tmp/darc-root"),
             workdir: PathBuf::from("/tmp/project-root"),
-            schema_path: PathBuf::from("/tmp/run/proposal.schema.json"),
-            proposal_path: PathBuf::from("/tmp/run/proposal.json"),
+            schema_path: PathBuf::from("/tmp/run/output.schema.json"),
+            output_path: PathBuf::from("/tmp/run/output.json"),
         }
     }
 
@@ -166,8 +166,8 @@ mod tests {
             .expect("claude runtime command should build");
         assert_eq!(command.display_name, "Claude Code CLI");
         assert_eq!(
-            command.proposal_output,
-            crate::runtime::ProposalOutputSource::StdoutJsonField("structured_output".to_owned())
+            command.output_source,
+            crate::runtime::RuntimeOutputSource::StdoutJsonField("structured_output".to_owned())
         );
         assert_eq!(
             command.env_remove,
@@ -184,18 +184,18 @@ mod tests {
             .expect("default claude runtime command should build");
         assert!(
             !default_command.args.iter().any(|arg| arg == "--bare"),
-            "default Claude digest runs should not force bare mode"
+            "default Claude runs should not force bare mode"
         );
 
         let provider_command = build_claude_external_cli_command(&sample_request(true))
             .expect("provider-auth claude runtime command should build");
         assert!(
             provider_command.args.iter().any(|arg| arg == "--bare"),
-            "provider-auth Claude digest runs should force bare mode"
+            "provider-auth Claude runs should force bare mode"
         );
         assert!(
             provider_command.env_remove.is_empty(),
-            "provider-auth Claude digest runs should preserve provider auth env vars"
+            "provider-auth Claude runs should preserve provider auth env vars"
         );
     }
 }

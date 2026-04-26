@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests;
 
-use std::{path::PathBuf, process::Command};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -9,25 +9,20 @@ use darc_core::query::{
     DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, FilesQueryRequest, QueryProtocolError,
     ResolveSessionQueryRequest, ResolvedQueryProject, ResolvedSessionMatch, SearchMode,
     SearchTurnsRequest, SessionBundleView, TurnDetailOptions, TurnMatchesQueryRequest,
-    TurnSearchRole, TurnsQueryRequest, TurnsView, WikiDigestsQueryOptions, WikiEntriesQueryOptions,
-    WikiRunsQueryOptions, query_files_for_project, query_project_insight_report_for_project,
-    query_resolve_sessions, query_search_turns_for_project, query_session_bundle_for_project,
+    TurnSearchRole, TurnsQueryRequest, TurnsView, query_files_for_project,
+    query_project_insight_report_for_project, query_resolve_sessions,
+    query_search_turns_for_project, query_session_bundle_for_project,
     query_session_files_for_project, query_sessions_for_project, query_turn_for_project,
     query_turn_insight_report_for_project, query_turn_matches_for_project, query_turns_for_project,
-    query_wiki_digest_for_project, query_wiki_digests_for_project, query_wiki_entries_for_project,
-    query_wiki_entry_for_project, query_wiki_registry_for_project, query_wiki_run_for_project,
-    query_wiki_runs_for_project, query_workspace, query_workspace_insight_report,
-    resolve_query_config_project, resolve_query_project, resolve_query_session_id_for_project,
+    query_workspace, query_workspace_insight_report, resolve_query_project,
+    resolve_query_session_id_for_project,
 };
 use darc_core::{
-    DigestId, DigestStartOptions, EntryId, EntryStatus, IndexOptions, InitDraft,
-    RefreshAllBestEffortReport, RefreshOptions, RefreshProjectAttempt, RefreshProjectFailure,
-    RefreshReport, RunId, RunStatus, SkippedRollout, SourceKind, SyncOptions,
-    cancel_project_wiki_digest, default_root_path, discard_project_wiki_entry, execute_sync,
-    fail_project_wiki_digest_start, index_project_sessions, link_project,
-    mark_project_wiki_digest_started, prepare_init, prepare_project_wiki_digest_start,
+    IndexOptions, InitDraft, RefreshAllBestEffortReport, RefreshOptions, RefreshProjectAttempt,
+    RefreshProjectFailure, RefreshReport, SkippedRollout, SourceKind, SyncOptions,
+    default_root_path, execute_sync, index_project_sessions, link_project, prepare_init,
     prepare_sync, refresh_all_projects_best_effort, refresh_project, remove_project,
-    rename_project, restore_project_wiki_entry, run_project_wiki_digest_worker, write_init,
+    rename_project, write_init,
 };
 use darc_paths::{
     current_utc_timestamp, resolve_query_time_bound as resolve_shared_query_time_bound,
@@ -82,11 +77,6 @@ enum Commands {
     Index(IndexArgs),
     /// Query darc state through the machine-readable read protocol.
     Query(QueryArgs),
-    #[command(
-        about = "Manage Context Wiki workflows",
-        long_about = "Manage Context Wiki workflows.\n\nThis top-level command hosts imperative Context Wiki operations such as digest run lifecycle and entry state changes.\n`darc wiki digest ...` manages agent-backed digest runs, and `darc wiki entry ...` mutates canonical entry lifecycle state.\nUse `darc query wiki ... --json` for canonical read-side access."
-    )]
-    Wiki(WikiArgs),
     #[command(
         hide = true,
         about = "Audit Codex rollout schema compatibility against stable release tags",
@@ -196,8 +186,6 @@ struct QueryArgs {
 enum QueryCommands {
     /// Queries the workspace/sidebar payload for one darc root.
     Workspace(QueryWorkspaceArgs),
-    /// Queries canonical Context Wiki artifacts for one configured project.
-    Wiki(QueryWikiArgs),
     /// Resolves one full session id or UUID prefix into canonical matches.
     ResolveSession(QueryResolveSessionArgs),
     /// Queries the session list for one configured project.
@@ -223,241 +211,6 @@ enum QueryCommands {
 struct QueryWorkspaceArgs {
     #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
     root: PathBuf,
-
-    #[arg(
-        long,
-        required = true,
-        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
-    )]
-    json: bool,
-}
-
-/// Queries one Context Wiki registry, entries, digests, or runs payload.
-#[derive(Debug, Args)]
-struct QueryWikiArgs {
-    #[command(subcommand)]
-    command: QueryWikiCommands,
-}
-
-/// Represents the supported machine-readable Context Wiki query commands.
-#[derive(Debug, Subcommand)]
-enum QueryWikiCommands {
-    /// Queries the project-scoped Context Wiki registry payload.
-    Registry(QueryWikiRegistryArgs),
-    /// Queries the project-scoped Context Wiki entry list.
-    Entries(QueryWikiEntriesArgs),
-    /// Queries one project-scoped Context Wiki entry detail payload.
-    Entry(QueryWikiEntryArgs),
-    /// Queries the project-scoped Context Wiki digest list.
-    Digests(QueryWikiDigestsArgs),
-    /// Queries one project-scoped Context Wiki digest detail payload.
-    Digest(QueryWikiDigestArgs),
-    /// Queries one project-scoped Context Wiki run detail payload.
-    Run(QueryWikiRunArgs),
-    /// Queries the project-scoped Context Wiki run list.
-    Runs(QueryWikiRunsArgs),
-}
-
-/// Queries the project-scoped Context Wiki registry payload.
-#[derive(Debug, Args)]
-struct QueryWikiRegistryArgs {
-    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
-    root: PathBuf,
-
-    #[arg(
-        long = "project-id",
-        help = "Query this configured project id. Defaults to the project resolved from the current directory"
-    )]
-    project_id: Option<String>,
-
-    #[arg(
-        long,
-        required = true,
-        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
-    )]
-    json: bool,
-}
-
-/// Queries the project-scoped Context Wiki entry list.
-#[derive(Debug, Args)]
-struct QueryWikiEntriesArgs {
-    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
-    root: PathBuf,
-
-    #[arg(
-        long = "project-id",
-        help = "Query this configured project id. Defaults to the project resolved from the current directory"
-    )]
-    project_id: Option<String>,
-
-    #[arg(long, help = "Restrict entries to this canonical category id")]
-    category: Option<String>,
-
-    #[arg(long, help = "Restrict entries to those tagged with this domain id")]
-    domain: Option<String>,
-
-    #[arg(long, value_enum, help = "Restrict entries to this lifecycle status")]
-    status: Option<WikiEntryStatusArg>,
-
-    #[arg(
-        long,
-        help = "Restrict entries to case-insensitive substring matches across title, body, and domains"
-    )]
-    grep: Option<String>,
-
-    #[arg(
-        long = "evidence-ref",
-        help = "Restrict entries to those citing this `<provider>:<session-id>#<turn-ordinal>` evidence ref"
-    )]
-    evidence_ref: Vec<String>,
-
-    #[arg(
-        long = "covers-session",
-        help = "Restrict entries to those citing any turn from this `<provider>:<session-id>` session"
-    )]
-    covers_session: Vec<String>,
-
-    #[arg(
-        long,
-        required = true,
-        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
-    )]
-    json: bool,
-}
-
-/// Queries one project-scoped Context Wiki entry detail payload.
-#[derive(Debug, Args)]
-struct QueryWikiEntryArgs {
-    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
-    root: PathBuf,
-
-    #[arg(
-        long = "project-id",
-        help = "Query this configured project id. Defaults to the project resolved from the current directory"
-    )]
-    project_id: Option<String>,
-
-    #[arg(long = "entry-id", help = "Query this wiki entry id")]
-    entry_id: String,
-
-    #[arg(
-        long,
-        required = true,
-        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
-    )]
-    json: bool,
-}
-
-/// Queries the project-scoped Context Wiki digest list.
-#[derive(Debug, Args)]
-struct QueryWikiDigestsArgs {
-    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
-    root: PathBuf,
-
-    #[arg(
-        long = "project-id",
-        help = "Query this configured project id. Defaults to the project resolved from the current directory"
-    )]
-    project_id: Option<String>,
-
-    #[arg(
-        long,
-        help = "Inclusive created_at lower bound. Example: `5d` or `2026-04-07T00:00:00Z`"
-    )]
-    since: Option<String>,
-
-    #[arg(
-        long,
-        help = "Exclusive created_at upper bound. Example: `1d` or `2026-04-08T00:00:00Z`"
-    )]
-    until: Option<String>,
-
-    #[arg(long, help = "Maximum digests to return")]
-    limit: Option<usize>,
-
-    #[arg(
-        long,
-        required = true,
-        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
-    )]
-    json: bool,
-}
-
-/// Queries one project-scoped Context Wiki digest detail payload.
-#[derive(Debug, Args)]
-struct QueryWikiDigestArgs {
-    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
-    root: PathBuf,
-
-    #[arg(
-        long = "project-id",
-        help = "Query this configured project id. Defaults to the project resolved from the current directory"
-    )]
-    project_id: Option<String>,
-
-    #[arg(long = "digest-id", help = "Query this wiki digest id")]
-    digest_id: String,
-
-    #[arg(
-        long,
-        required = true,
-        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
-    )]
-    json: bool,
-}
-
-/// Queries the project-scoped Context Wiki run list.
-#[derive(Debug, Args)]
-struct QueryWikiRunsArgs {
-    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
-    root: PathBuf,
-
-    #[arg(
-        long = "project-id",
-        help = "Query this configured project id. Defaults to the project resolved from the current directory"
-    )]
-    project_id: Option<String>,
-
-    #[arg(long, value_enum, help = "Restrict runs to this lifecycle status")]
-    status: Option<WikiRunStatusArg>,
-
-    #[arg(
-        long,
-        help = "Inclusive created_at lower bound. Example: `5d` or `2026-04-07T00:00:00Z`"
-    )]
-    since: Option<String>,
-
-    #[arg(
-        long,
-        help = "Exclusive created_at upper bound. Example: `1d` or `2026-04-08T00:00:00Z`"
-    )]
-    until: Option<String>,
-
-    #[arg(long, help = "Maximum runs to return")]
-    limit: Option<usize>,
-
-    #[arg(
-        long,
-        required = true,
-        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
-    )]
-    json: bool,
-}
-
-/// Queries one project-scoped Context Wiki run detail payload.
-#[derive(Debug, Args)]
-struct QueryWikiRunArgs {
-    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
-    root: PathBuf,
-
-    #[arg(
-        long = "project-id",
-        help = "Query this configured project id. Defaults to the project resolved from the current directory"
-    )]
-    project_id: Option<String>,
-
-    #[arg(long = "run-id", help = "Query this wiki run id")]
-    run_id: String,
 
     #[arg(
         long,
@@ -908,184 +661,6 @@ struct QueryTurnInsightsArgs {
     json: bool,
 }
 
-/// Hosts the top-level imperative Context Wiki CLI surface.
-#[derive(Debug, Args)]
-struct WikiArgs {
-    #[command(subcommand)]
-    command: WikiCommands,
-}
-
-/// Represents the imperative Context Wiki command groups exposed by the CLI.
-#[derive(Debug, Subcommand)]
-enum WikiCommands {
-    /// Hosts digest-run lifecycle commands.
-    Digest(WikiDigestArgs),
-    /// Hosts entry mutation commands.
-    Entry(WikiEntryArgs),
-}
-
-/// Hosts digest-run lifecycle commands.
-#[derive(Debug, Args)]
-struct WikiDigestArgs {
-    #[command(subcommand)]
-    command: WikiDigestCommands,
-}
-
-/// Represents the supported digest-run lifecycle commands.
-#[derive(Debug, Subcommand)]
-enum WikiDigestCommands {
-    /// Starts one new digest run.
-    Start(WikiDigestStartArgs),
-    /// Cancels one existing digest run.
-    Cancel(WikiDigestCancelArgs),
-    #[command(hide = true)]
-    /// Runs one internal digest worker.
-    Worker(WikiDigestWorkerArgs),
-}
-
-/// Stores CLI arguments for `darc wiki digest start`.
-#[derive(Debug, Args)]
-struct WikiDigestStartArgs {
-    #[arg(long, default_value_os_t = default_root_path())]
-    root: PathBuf,
-
-    #[arg(
-        long = "project-id",
-        help = "Start a digest run for this configured project id"
-    )]
-    project_id: String,
-
-    #[arg(
-        long = "session-ref",
-        required = true,
-        help = "Select one archived session using `<provider>:<session-id>`"
-    )]
-    session_ref: Vec<String>,
-
-    #[arg(long = "agent", value_enum, help = "Select the agent runtime id")]
-    agent: WikiAgentArg,
-
-    #[arg(long = "runtime", value_enum, help = "Select the runtime kind")]
-    runtime: WikiRuntimeArg,
-
-    #[arg(long, help = "Record the target model name for this run")]
-    model: String,
-
-    #[arg(
-        long = "auth-profile",
-        help = "Record auth profile metadata for this run only; this does not select credentials"
-    )]
-    auth_profile: Option<String>,
-
-    #[arg(
-        long = "use-provider-auth",
-        help = "Explicitly request provider/API-key auth for this run (Claude adds --bare; Codex rejects this mode today)"
-    )]
-    use_provider_auth: bool,
-
-    #[arg(long = "target-category", help = "Prioritize this decision category")]
-    target_category: Vec<String>,
-
-    #[arg(long = "target-domain", help = "Prioritize this project-scoped domain")]
-    target_domain: Vec<String>,
-
-    #[arg(
-        long,
-        help = "Emit the stable machine-readable JSON envelope on stdout"
-    )]
-    json: bool,
-}
-
-/// Stores CLI arguments for `darc wiki digest cancel`.
-#[derive(Debug, Args)]
-struct WikiDigestCancelArgs {
-    #[arg(long, default_value_os_t = default_root_path())]
-    root: PathBuf,
-
-    #[arg(
-        long = "project-id",
-        help = "Cancel a digest run for this configured project id"
-    )]
-    project_id: String,
-
-    #[arg(long = "run-id", help = "Cancel this digest run id")]
-    run_id: String,
-
-    #[arg(
-        long,
-        help = "Emit the stable machine-readable JSON envelope on stdout"
-    )]
-    json: bool,
-}
-
-/// Stores CLI arguments for `darc wiki digest worker`.
-#[derive(Debug, Args)]
-struct WikiDigestWorkerArgs {
-    #[arg(long, default_value_os_t = default_root_path())]
-    root: PathBuf,
-
-    #[arg(
-        long = "project-id",
-        help = "Run the worker for this configured project id"
-    )]
-    project_id: String,
-
-    #[arg(long = "run-id", help = "Run the worker for this digest run id")]
-    run_id: String,
-}
-
-/// Hosts entry mutation commands.
-#[derive(Debug, Args)]
-struct WikiEntryArgs {
-    #[command(subcommand)]
-    command: WikiEntryCommands,
-}
-
-/// Represents the entry mutation commands exposed by the CLI.
-#[derive(Debug, Subcommand)]
-enum WikiEntryCommands {
-    /// Marks one entry as discarded.
-    Discard(WikiEntryDiscardArgs),
-    /// Restores one discarded entry.
-    Restore(WikiEntryRestoreArgs),
-}
-
-/// Stores CLI arguments for `darc wiki entry discard`.
-#[derive(Debug, Args)]
-struct WikiEntryDiscardArgs {
-    #[command(flatten)]
-    args: WikiEntryMutationArgs,
-}
-
-/// Stores CLI arguments for `darc wiki entry restore`.
-#[derive(Debug, Args)]
-struct WikiEntryRestoreArgs {
-    #[command(flatten)]
-    args: WikiEntryMutationArgs,
-}
-
-/// Stores the shared CLI arguments for `darc wiki entry` lifecycle mutations.
-#[derive(Debug, Args, Clone)]
-struct WikiEntryMutationArgs {
-    #[arg(long, default_value_os_t = default_root_path())]
-    root: PathBuf,
-
-    #[arg(
-        long = "project-id",
-        help = "Mutate one entry under this configured project id"
-    )]
-    project_id: String,
-
-    #[arg(long = "entry-id", help = "Mutate this wiki entry id")]
-    entry_id: String,
-
-    #[arg(
-        long,
-        help = "Emit the stable machine-readable JSON envelope on stdout"
-    )]
-    json: bool,
-}
-
 /// Audit Codex rollout schema compatibility against stable release tags.
 #[derive(Debug, Args)]
 struct CodexSchemaAuditArgs {
@@ -1117,39 +692,6 @@ struct ClaudeSchemaAuditArgs {
 enum ProviderArg {
     Claude,
     Codex,
-}
-
-/// Represents the supported agent ids for digest runs.
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum WikiAgentArg {
-    Claude,
-    Codex,
-}
-
-/// Represents the supported runtime kinds for digest runs.
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum WikiRuntimeArg {
-    ExternalCli,
-}
-
-/// Represents the supported entry-status filters for machine-readable wiki queries.
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum WikiEntryStatusArg {
-    Active,
-    Discarded,
-    Superseded,
-}
-
-/// Represents the supported run-status filters for machine-readable wiki queries.
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum WikiRunStatusArg {
-    Queued,
-    Running,
-    Succeeded,
-    Failed,
-    CancelRequested,
-    Canceled,
-    Interrupted,
 }
 
 /// Represents the supported search modes for machine-readable turn search.
@@ -1201,7 +743,6 @@ pub fn run() -> i32 {
         Commands::Sync(args) => standard_exit(run_sync(args)),
         Commands::Index(args) => standard_exit(run_index(args)),
         Commands::Query(args) => query_exit(run_query(args)),
-        Commands::Wiki(args) => standard_exit(run_wiki(args)),
         Commands::CodexSchemaAudit(args) => run_codex_schema_audit_command(args),
         Commands::ClaudeSchemaAudit(args) => run_claude_schema_audit_command(args),
     }
@@ -1234,7 +775,6 @@ fn query_exit(result: Result<()>) -> i32 {
 fn run_query(args: QueryArgs) -> Result<()> {
     match args.command {
         QueryCommands::Workspace(args) => run_query_workspace(args),
-        QueryCommands::Wiki(args) => run_query_wiki(args),
         QueryCommands::ResolveSession(args) => run_query_resolve_session(args),
         QueryCommands::Sessions(args) => run_query_sessions(args),
         QueryCommands::Files(args) => run_query_files(args),
@@ -1251,19 +791,6 @@ fn run_query(args: QueryArgs) -> Result<()> {
 fn run_query_workspace(args: QueryWorkspaceArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
     print_json_envelope("darc.query.workspace.v1", &query_workspace(Some(args.root)))
-}
-
-/// Dispatches the supported machine-readable Context Wiki query commands.
-fn run_query_wiki(args: QueryWikiArgs) -> Result<()> {
-    match args.command {
-        QueryWikiCommands::Registry(args) => run_query_wiki_registry(args),
-        QueryWikiCommands::Entries(args) => run_query_wiki_entries(args),
-        QueryWikiCommands::Entry(args) => run_query_wiki_entry(args),
-        QueryWikiCommands::Digests(args) => run_query_wiki_digests(args),
-        QueryWikiCommands::Digest(args) => run_query_wiki_digest(args),
-        QueryWikiCommands::Run(args) => run_query_wiki_run(args),
-        QueryWikiCommands::Runs(args) => run_query_wiki_runs(args),
-    }
 }
 
 /// Resolves one full session id or UUID prefix into canonical matches.
@@ -1298,110 +825,6 @@ fn run_query_resolve_session(args: QueryResolveSessionArgs) -> Result<()> {
             QueryProtocolError::ambiguous_session(&data.query, data.matches, data.truncated).into(),
         ),
     }
-}
-
-/// Queries the project-scoped Context Wiki registry payload.
-fn run_query_wiki_registry(args: QueryWikiRegistryArgs) -> Result<()> {
-    ensure_json_requested(args.json)?;
-    let project = resolve_config_query_project_target(&args.root, args.project_id.as_deref())?;
-    let data = query_wiki_registry_for_project(&project)?;
-    print_json_envelope("darc.query.wiki.registry.v1", &data)
-}
-
-/// Queries the project-scoped Context Wiki entry list.
-fn run_query_wiki_entries(args: QueryWikiEntriesArgs) -> Result<()> {
-    ensure_json_requested(args.json)?;
-    let project = resolve_config_query_project_target(&args.root, args.project_id.as_deref())?;
-    let data = query_wiki_entries_for_project(
-        &project,
-        &WikiEntriesQueryOptions {
-            category: args.category,
-            domain: args.domain,
-            status: args.status.map(wiki_entry_status_arg_to_status),
-            grep: args.grep,
-            evidence_refs: args.evidence_ref,
-            covers_sessions: args.covers_session,
-        },
-    )?;
-    print_json_envelope("darc.query.wiki.entries.v1", &data)
-}
-
-/// Queries one project-scoped Context Wiki entry detail payload.
-fn run_query_wiki_entry(args: QueryWikiEntryArgs) -> Result<()> {
-    ensure_json_requested(args.json)?;
-    let project = resolve_config_query_project_target(&args.root, args.project_id.as_deref())?;
-    let entry_id = EntryId::new(args.entry_id)?;
-    let data = query_wiki_entry_for_project(&project, &entry_id)?;
-    print_json_envelope("darc.query.wiki.entry.v1", &data)
-}
-
-/// Queries the project-scoped Context Wiki digest list.
-fn run_query_wiki_digests(args: QueryWikiDigestsArgs) -> Result<()> {
-    ensure_json_requested(args.json)?;
-    let project = resolve_config_query_project_target(&args.root, args.project_id.as_deref())?;
-    let since = args
-        .since
-        .as_deref()
-        .map(resolve_query_time_bound)
-        .transpose()?;
-    let until = args
-        .until
-        .as_deref()
-        .map(resolve_query_time_bound)
-        .transpose()?;
-    let data = query_wiki_digests_for_project(
-        &project,
-        &WikiDigestsQueryOptions {
-            limit: args.limit,
-            since,
-            until,
-        },
-    )?;
-    print_json_envelope("darc.query.wiki.digests.v1", &data)
-}
-
-/// Queries one project-scoped Context Wiki digest detail payload.
-fn run_query_wiki_digest(args: QueryWikiDigestArgs) -> Result<()> {
-    ensure_json_requested(args.json)?;
-    let project = resolve_config_query_project_target(&args.root, args.project_id.as_deref())?;
-    let digest_id = DigestId::new(args.digest_id)?;
-    let data = query_wiki_digest_for_project(&project, &digest_id)?;
-    print_json_envelope("darc.query.wiki.digest.v1", &data)
-}
-
-/// Queries the project-scoped Context Wiki run list.
-fn run_query_wiki_runs(args: QueryWikiRunsArgs) -> Result<()> {
-    ensure_json_requested(args.json)?;
-    let project = resolve_config_query_project_target(&args.root, args.project_id.as_deref())?;
-    let since = args
-        .since
-        .as_deref()
-        .map(resolve_query_time_bound)
-        .transpose()?;
-    let until = args
-        .until
-        .as_deref()
-        .map(resolve_query_time_bound)
-        .transpose()?;
-    let data = query_wiki_runs_for_project(
-        &project,
-        &WikiRunsQueryOptions {
-            status: args.status.map(wiki_run_status_arg_to_status),
-            limit: args.limit,
-            since,
-            until,
-        },
-    )?;
-    print_json_envelope("darc.query.wiki.runs.v1", &data)
-}
-
-/// Queries one project-scoped Context Wiki run detail payload.
-fn run_query_wiki_run(args: QueryWikiRunArgs) -> Result<()> {
-    ensure_json_requested(args.json)?;
-    let project = resolve_config_query_project_target(&args.root, args.project_id.as_deref())?;
-    let run_id = RunId::new(args.run_id)?;
-    let data = query_wiki_run_for_project(&project, &run_id)?;
-    print_json_envelope("darc.query.wiki.run.v1", &data)
 }
 
 /// Queries the session list for one configured project.
@@ -1668,161 +1091,6 @@ fn run_query_turn_insights(args: QueryTurnInsightsArgs) -> Result<()> {
     print_json_envelope("darc.query.insights.turn.v1", &data)
 }
 
-/// Dispatches the imperative Context Wiki command surface.
-fn run_wiki(args: WikiArgs) -> Result<()> {
-    match args.command {
-        WikiCommands::Digest(args) => match args.command {
-            WikiDigestCommands::Start(args) => run_wiki_digest_start(args),
-            WikiDigestCommands::Cancel(args) => run_wiki_digest_cancel(args),
-            WikiDigestCommands::Worker(args) => run_wiki_digest_worker(args),
-        },
-        WikiCommands::Entry(args) => match args.command {
-            WikiEntryCommands::Discard(args) => run_wiki_entry_discard(args),
-            WikiEntryCommands::Restore(args) => run_wiki_entry_restore(args),
-        },
-    }
-}
-
-/// Starts one new Context Wiki digest run.
-fn run_wiki_digest_start(args: WikiDigestStartArgs) -> Result<()> {
-    let worker_executable =
-        std::env::current_exe().context("failed to resolve the current darc executable path")?;
-    let prepared = prepare_project_wiki_digest_start(
-        Some(args.root.clone()),
-        &args.project_id,
-        &DigestStartOptions {
-            session_refs: args.session_ref,
-            agent_id: wiki_agent_arg_to_id(args.agent),
-            runtime: wiki_runtime_arg_to_id(args.runtime),
-            model: args.model,
-            auth_profile: args.auth_profile,
-            use_provider_auth: args.use_provider_auth,
-            requested_by: None,
-            request_source: None,
-            target_categories: args.target_category,
-            target_domains: args.target_domain,
-        },
-    )?;
-    let stdout = std::fs::OpenOptions::new()
-        .append(true)
-        .open(&prepared.stdout_log_path)
-        .with_context(|| format!("failed to open {}", prepared.stdout_log_path.display()))?;
-    let stderr = std::fs::OpenOptions::new()
-        .append(true)
-        .open(&prepared.stderr_log_path)
-        .with_context(|| format!("failed to open {}", prepared.stderr_log_path.display()))?;
-    let child = Command::new(&worker_executable)
-        .args([
-            "wiki",
-            "digest",
-            "worker",
-            "--root",
-            args.root.to_string_lossy().as_ref(),
-            "--project-id",
-            &args.project_id,
-            "--run-id",
-            prepared.run_id.as_str(),
-        ])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::from(stdout))
-        .stderr(std::process::Stdio::from(stderr))
-        .spawn();
-    let report = match child {
-        Ok(child) => mark_project_wiki_digest_started(
-            Some(args.root.clone()),
-            &args.project_id,
-            &prepared.run_id,
-            child.id(),
-        )?,
-        Err(error) => {
-            fail_project_wiki_digest_start(
-                Some(args.root.clone()),
-                &args.project_id,
-                &prepared.run_id,
-                &error.to_string(),
-            )?;
-            return Err(error).context("failed to spawn wiki digest worker");
-        }
-    };
-    if args.json {
-        return print_json_envelope("darc.wiki.digest.start.v1", &report);
-    }
-
-    println!("Project ID: {}", report.project_id);
-    println!("Run ID: {}", report.run_id);
-    println!("Status: {:?}", report.status);
-    println!("Phase: {:?}", report.phase);
-    println!("Worker PID: {}", report.pid);
-    Ok(())
-}
-
-/// Cancels one existing Context Wiki digest run.
-fn run_wiki_digest_cancel(args: WikiDigestCancelArgs) -> Result<()> {
-    let run_id = RunId::new(args.run_id)?;
-    let report = cancel_project_wiki_digest(Some(args.root), &args.project_id, &run_id)?;
-    if args.json {
-        return print_json_envelope("darc.wiki.digest.cancel.v1", &report);
-    }
-
-    println!("Project ID: {}", report.project_id);
-    println!("Run ID: {}", report.run_id);
-    println!("Status: {:?}", report.status);
-    println!("Phase: {:?}", report.phase);
-    println!("Cancel Requested: {}", report.cancel_requested);
-    if let Some(pid) = report.pid {
-        println!("Worker PID: {pid}");
-    }
-    Ok(())
-}
-
-/// Runs the hidden digest worker for one existing run.
-fn run_wiki_digest_worker(args: WikiDigestWorkerArgs) -> Result<()> {
-    let run_id = RunId::new(args.run_id)?;
-    run_project_wiki_digest_worker(Some(args.root), &args.project_id, &run_id)
-}
-
-/// Discards one existing canonical Context Wiki entry.
-fn run_wiki_entry_discard(args: WikiEntryDiscardArgs) -> Result<()> {
-    run_wiki_entry_mutation(
-        args.args,
-        "darc.wiki.entry.discard.v1",
-        discard_project_wiki_entry,
-    )
-}
-
-/// Restores one discarded canonical Context Wiki entry.
-fn run_wiki_entry_restore(args: WikiEntryRestoreArgs) -> Result<()> {
-    run_wiki_entry_mutation(
-        args.args,
-        "darc.wiki.entry.restore.v1",
-        restore_project_wiki_entry,
-    )
-}
-
-/// Runs one canonical wiki entry lifecycle mutation and emits the requested output shape.
-fn run_wiki_entry_mutation<F>(
-    args: WikiEntryMutationArgs,
-    schema: &'static str,
-    mutate: F,
-) -> Result<()>
-where
-    F: FnOnce(Option<PathBuf>, &str, &EntryId) -> Result<darc_core::EntryMutationReport>,
-{
-    let entry_id = EntryId::new(args.entry_id)?;
-    let report = mutate(Some(args.root), &args.project_id, &entry_id)?;
-    if args.json {
-        return print_json_envelope(schema, &report);
-    }
-
-    println!("Project ID: {}", report.project_id);
-    println!("Entry ID: {}", report.entry_id);
-    println!("Previous Status: {:?}", report.previous_status);
-    println!("Status: {:?}", report.status);
-    println!("Updated At: {}", report.updated_at);
-    println!("Changed: {}", report.changed);
-    Ok(())
-}
-
 /// Writes one machine-readable JSON envelope to stdout.
 fn print_json_envelope<T: Serialize>(schema: &'static str, data: &T) -> Result<()> {
     let payload = JsonEnvelope {
@@ -1901,14 +1169,6 @@ fn resolve_database_query_project_target(
     resolve_query_project(Some(root.to_path_buf()), project_id)
 }
 
-/// Resolves one config-backed project-scoped query target for CLI handlers.
-fn resolve_config_query_project_target(
-    root: &std::path::Path,
-    project_id: Option<&str>,
-) -> Result<ResolvedQueryProject> {
-    resolve_query_config_project(Some(root.to_path_buf()), project_id)
-}
-
 /// Returns whether one string is a full canonical UUID text value.
 fn is_full_uuid_text(input: &str) -> bool {
     input.len() == 36
@@ -1959,43 +1219,6 @@ fn provider_arg_to_source_kind(provider: ProviderArg) -> SourceKind {
     match provider {
         ProviderArg::Claude => SourceKind::Claude,
         ProviderArg::Codex => SourceKind::Codex,
-    }
-}
-
-/// Converts one parsed digest agent argument into the persisted run-state id.
-fn wiki_agent_arg_to_id(agent: WikiAgentArg) -> String {
-    match agent {
-        WikiAgentArg::Claude => "claude".to_owned(),
-        WikiAgentArg::Codex => "codex".to_owned(),
-    }
-}
-
-/// Converts one parsed digest runtime argument into the persisted run-state id.
-fn wiki_runtime_arg_to_id(runtime: WikiRuntimeArg) -> String {
-    match runtime {
-        WikiRuntimeArg::ExternalCli => "external_cli".to_owned(),
-    }
-}
-
-/// Converts one parsed entry-status argument into the shared wiki status enum.
-fn wiki_entry_status_arg_to_status(status: WikiEntryStatusArg) -> EntryStatus {
-    match status {
-        WikiEntryStatusArg::Active => EntryStatus::Active,
-        WikiEntryStatusArg::Discarded => EntryStatus::Discarded,
-        WikiEntryStatusArg::Superseded => EntryStatus::Superseded,
-    }
-}
-
-/// Converts one parsed run-status argument into the shared wiki status enum.
-fn wiki_run_status_arg_to_status(status: WikiRunStatusArg) -> RunStatus {
-    match status {
-        WikiRunStatusArg::Queued => RunStatus::Queued,
-        WikiRunStatusArg::Running => RunStatus::Running,
-        WikiRunStatusArg::Succeeded => RunStatus::Succeeded,
-        WikiRunStatusArg::Failed => RunStatus::Failed,
-        WikiRunStatusArg::CancelRequested => RunStatus::CancelRequested,
-        WikiRunStatusArg::Canceled => RunStatus::Canceled,
-        WikiRunStatusArg::Interrupted => RunStatus::Interrupted,
     }
 }
 
