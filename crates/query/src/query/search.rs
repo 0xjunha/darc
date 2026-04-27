@@ -2,7 +2,6 @@ use std::{collections::BTreeSet, ops::Range, path::Path};
 
 use anyhow::{Context, Result, bail};
 use darc_paths::SourceKind;
-use memchr::memmem;
 use regex::{Regex, RegexBuilder};
 use rusqlite::{Connection, params};
 
@@ -609,8 +608,7 @@ impl EvidenceMatcher<'_> {
     /// Returns the first matching byte range in one evidence string.
     fn find_match(&self, text: &str) -> Option<Range<usize>> {
         match self {
-            Self::Literal(query) => memmem::find(text.as_bytes(), query.as_bytes())
-                .map(|start| start..start + query.len()),
+            Self::Literal(query) => text.find(query).map(|start| start..start + query.len()),
             Self::Regex(regex) => regex.find(text).map(|matched| matched.range()),
         }
     }
