@@ -414,7 +414,8 @@ Today:
   `tool_arguments`, `tool_output`, `delegation_summary`, `delegation_metadata`, `hook_summary`,
   `attachment_metadata`, and `provider_response_item_metadata` evidence fields
 - metadata evidence rows are compact canonical metadata, not raw provider payload blobs
-- literal and regex search apply project, provider, session, `--since`, and `--until` filters before scanning evidence rows in process
+- literal search applies project, provider, session, `--since`, `--until`, and exact substring filters in SQLite before grouping matching evidence rows in process
+- regex search applies project, provider, session, `--since`, and `--until` filters in SQLite before scanning candidate evidence rows in process
 - literal and regex search return turn hits with nested `matches` entries containing `field` and a bounded `snippet`
 - regex search is not content-index backed and is capped by a candidate-row safety limit; narrow provider, session, or time filters for broad audits
 - `mode=file_name` searches the derived `file_accesses.file_name` basename field
