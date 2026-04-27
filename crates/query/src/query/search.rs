@@ -100,6 +100,7 @@ const TURN_EVIDENCE_ROWS_SQL: &str = "
 ";
 
 const EVIDENCE_SEARCH_TURN_BATCH_ROWS: usize = 1_000;
+const MAX_EVIDENCE_MATCHES_PER_TURN: usize = 20;
 const MAX_REGEX_QUERY_CHARS: usize = 1_024;
 const REGEX_SIZE_LIMIT_BYTES: usize = 1_000_000;
 const REGEX_DFA_SIZE_LIMIT_BYTES: usize = 1_000_000;
@@ -439,6 +440,7 @@ fn query_keyword_hits(
                         .or_else(|| Some(preview_text(&user_message))),
                     matched_paths: Vec::new(),
                     matches: Vec::new(),
+                    matches_truncated: false,
                 })
             },
         )
@@ -537,9 +539,14 @@ fn query_evidence_hit_for_turn(
         ])
         .context("failed to query turn evidence rows")?;
     let mut matches = Vec::<SearchTurnMatch>::new();
+    let mut matches_truncated = false;
     while let Some(row) = rows.next().context("failed to read turn evidence row")? {
         let evidence = read_evidence_text_row(row)?;
         if let Some(range) = matcher.find_match(&evidence.text) {
+            if matches.len() >= MAX_EVIDENCE_MATCHES_PER_TURN {
+                matches_truncated = true;
+                break;
+            }
             matches.push(SearchTurnMatch {
                 field: evidence.field,
                 snippet: evidence_snippet(&evidence.text, range),
@@ -561,6 +568,7 @@ fn query_evidence_hit_for_turn(
         snippet: None,
         matched_paths: Vec::new(),
         matches,
+        matches_truncated,
     }))
 }
 
@@ -846,6 +854,7 @@ fn finalize_file_search_hit(accumulator: FileSearchHitAccumulator) -> SearchTurn
         snippet: None,
         matched_paths: accumulator.matched_paths.into_iter().collect(),
         matches: Vec::new(),
+        matches_truncated: false,
     }
 }
 
