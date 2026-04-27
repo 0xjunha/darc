@@ -541,6 +541,12 @@ struct QuerySearchTurnsArgs {
     #[arg(long = "session-id", help = "Restrict search to this session id")]
     session_id: Option<String>,
 
+    #[arg(
+        long,
+        help = "Include tool output evidence in literal and regex search"
+    )]
+    include_tool_output: bool,
+
     #[arg(long, default_value_t = 50, help = "Maximum turn hits to return")]
     limit: usize,
 
@@ -991,12 +997,14 @@ fn run_query_search_turns(args: QuerySearchTurnsArgs) -> Result<()> {
             )
         })
         .transpose()?;
+    let mode = search_mode_arg_to_search_mode(args.mode);
     let data = query_search_turns_for_project(
         &project,
         SearchTurnsRequest {
             project_id: "",
-            mode: search_mode_arg_to_search_mode(args.mode),
+            mode,
             query: &args.query,
+            include_tool_output: args.include_tool_output,
             provider: args.provider.map(provider_arg_to_source_kind),
             session_id: session_id.as_deref(),
             since: since.as_deref(),

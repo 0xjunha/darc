@@ -29,7 +29,7 @@ All query commands currently require `--json`.
 
 ### Search
 
-- `darc query search turns --root <path> [--project-id <id>] --mode <keyword|literal|regex|file-name|file-path> --query <text> [--provider <provider>] [--session-id <id>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>] --json`
+- `darc query search turns --root <path> [--project-id <id>] --mode <keyword|literal|regex|file-name|file-path> --query <text> [--include-tool-output] [--provider <provider>] [--session-id <id>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>] --json`
 
 ### Insights
 
@@ -45,6 +45,7 @@ All query commands currently require `--json`.
 - `darc query files` requires exactly one of `--path` or `--co-touched-with`
 - `--since` and `--until` on `darc query files` require `--path`
 - `--limit` on `darc query files` requires `--co-touched-with`
+- `--include-tool-output` on `darc query search turns` is accepted only with `--mode literal` or `--mode regex`
 - session-scoped data commands require a full UUID `--session-id`; malformed ids return `invalid_session_id`, unknown UUIDs return `unknown_session`, and UUID-like prefixes fail explicitly instead of auto-resolving
 
 ## Common Workflows
@@ -63,7 +64,7 @@ The protocol is intentionally composable. A few common read patterns are now fir
     --json
   ```
 
-- verify exact evidence text without regex escaping:
+- verify exact evidence text without regex escaping; literal and regex searches skip bulky tool outputs by default:
 
   ```bash
   darc query search turns \
@@ -71,6 +72,18 @@ The protocol is intentionally composable. A few common read patterns are now fir
     --project-id repo-abc123 \
     --mode literal \
     --query "--output-last-message" \
+    --json
+  ```
+
+- search command output or logs explicitly for forensic work:
+
+  ```bash
+  darc query search turns \
+    --root ~/.darc \
+    --project-id repo-abc123 \
+    --mode regex \
+    --query "panic: .*" \
+    --include-tool-output \
     --json
   ```
 
@@ -410,9 +423,13 @@ Today:
 - keyword search does not currently index raw tool outputs or raw provider payload blobs
 - `mode=literal` treats `--query` as exact plain text and matches it against derived `turn_evidence` rows
 - `mode=regex` treats `--query` as a Rust regular expression and matches it against the same derived `turn_evidence` rows
+- literal and regex search exclude `tool_output` evidence by default because command and tool output is often large and noisy for context-building
+- pass `--include-tool-output` with literal or regex search to include command/tool output evidence for forensic searches such as exact errors, stack traces, logs, or command output
+- `--include-tool-output` is rejected for `keyword`, `file_name`, and `file_path` search because those modes do not inspect `turn_evidence.tool_output`
 - literal and regex search inspect `user_message`, `final_answer`, `commentary`, `reasoning_summary`, `tool_name`,
-  `tool_arguments`, `tool_output`, `delegation_summary`, `delegation_metadata`, `hook_summary`,
+  `tool_arguments`, `delegation_summary`, `delegation_metadata`, `hook_summary`,
   `attachment_metadata`, and `provider_response_item_metadata` evidence fields
+- with `--include-tool-output`, literal and regex search also inspect `tool_output`
 - metadata evidence rows are compact canonical metadata, not raw provider payload blobs
 - literal and regex search apply project, provider, session, `--since`, and `--until` filters in SQLite, then scan matching turns in result order
 - literal search uses SQLite exact substring predicates to discard nonmatching evidence rows before Darc builds match previews
@@ -423,7 +440,7 @@ Today:
 - literal and regex search are not content-index backed; narrow provider, session, or time filters for broad audits when latency matters
 - `mode=file_name` searches the derived `file_accesses.file_name` basename field
 - `mode=file_path` searches derived path fields from `file_accesses.repo_relative_path` and `file_accesses.path`
-- all search modes return turn identities, top-level turn metadata, nullable `since` / `until` request echoes, and optional `snippet` / `matched_paths` / `matches` fields plus `matches_truncated`
+- all search modes return turn identities, top-level turn metadata, nullable `since` / `until` request echoes, `include_tool_output`, and optional `snippet` / `matched_paths` / `matches` fields plus `matches_truncated`
 - `matched_paths` is empty for keyword search and populated for file-name or file-path hits
 - `matches` is empty for keyword and file search and populated for literal or regex hits
 - `matches_truncated` is always false for keyword and file search

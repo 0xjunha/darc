@@ -44,6 +44,7 @@ struct SyntheticEvidenceRows<'a> {
     turn_ordinal: i64,
     first_evidence_ordinal: usize,
     row_count: usize,
+    field: &'a str,
     text: &'a str,
 }
 
@@ -80,7 +81,7 @@ fn insert_turn_evidence_rows(
                 fixture.turn_ordinal,
                 i64::try_from(evidence_ordinal)
                     .context("test evidence ordinal should fit in SQLite INTEGER")?,
-                "tool_output",
+                fixture.field,
                 fixture.text,
             ])?;
         }
@@ -2198,6 +2199,25 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             )
         },
     )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            user_message: "Run a command with a shared exact marker",
+            step_count: 2,
+            tool_call_count: 1,
+            tool_output_count: 1,
+            duration_ms: 5_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                2,
+                "2026-04-06T10:10:00Z",
+                "completed",
+                r##"[{"type":"tool_call","timestamp":"2026-04-06T10:10:01Z","call_id":"call-3","name":"exec_command","arguments":"{\"cmd\":\"echo SHARED_EXACT_MARKER\"}"},{"type":"tool_call_output","timestamp":"2026-04-06T10:10:02Z","call_id":"call-3","output":"SHARED_EXACT_MARKER"}]"##,
+            )
+        },
+    )?;
 
     let result = query_search_turns(
         &index_path,
@@ -2205,6 +2225,7 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             project_id: "repo-a",
             mode: SearchMode::Keyword,
             query: "Inspect",
+            include_tool_output: false,
             provider: None,
             session_id: None,
             since: None,
@@ -2219,6 +2240,7 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             project_id: "repo-a",
             mode: SearchMode::Keyword,
             query: "SECRET_TOKEN",
+            include_tool_output: false,
             provider: None,
             session_id: None,
             since: None,
@@ -2245,6 +2267,7 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             project_id: "repo-a",
             mode: SearchMode::Literal,
             query: "SECRET_TOKEN=top-secret",
+            include_tool_output: false,
             provider: None,
             session_id: None,
             since: None,
@@ -2259,6 +2282,67 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             project_id: "repo-a",
             mode: SearchMode::Regex,
             query: "SECRET_[A-Z]+=top-secret",
+            include_tool_output: false,
+            provider: None,
+            session_id: None,
+            since: None,
+            until: None,
+            limit: 10,
+            offset: 0,
+        },
+    )?;
+    let literal_with_output = query_search_turns(
+        &index_path,
+        SearchTurnsRequest {
+            project_id: "repo-a",
+            mode: SearchMode::Literal,
+            query: "SECRET_TOKEN=top-secret",
+            include_tool_output: true,
+            provider: None,
+            session_id: None,
+            since: None,
+            until: None,
+            limit: 10,
+            offset: 0,
+        },
+    )?;
+    let regex_with_output = query_search_turns(
+        &index_path,
+        SearchTurnsRequest {
+            project_id: "repo-a",
+            mode: SearchMode::Regex,
+            query: "SECRET_[A-Z]+=top-secret",
+            include_tool_output: true,
+            provider: None,
+            session_id: None,
+            since: None,
+            until: None,
+            limit: 10,
+            offset: 0,
+        },
+    )?;
+    let shared_literal_result = query_search_turns(
+        &index_path,
+        SearchTurnsRequest {
+            project_id: "repo-a",
+            mode: SearchMode::Literal,
+            query: "SHARED_EXACT_MARKER",
+            include_tool_output: false,
+            provider: None,
+            session_id: None,
+            since: None,
+            until: None,
+            limit: 10,
+            offset: 0,
+        },
+    )?;
+    let shared_regex_result = query_search_turns(
+        &index_path,
+        SearchTurnsRequest {
+            project_id: "repo-a",
+            mode: SearchMode::Regex,
+            query: "SHARED_EXACT_[A-Z]+",
+            include_tool_output: false,
             provider: None,
             session_id: None,
             since: None,
@@ -2268,15 +2352,31 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
         },
     )?;
 
-    assert_eq!(literal_result.hits.len(), 1);
-    assert_eq!(literal_result.hits[0].turn_ordinal, 1);
-    assert_eq!(literal_result.hits[0].matches[0].field, "tool_output");
+    assert!(!literal_result.include_tool_output);
+    assert!(literal_result.hits.is_empty());
+    assert!(!regex_result.include_tool_output);
+    assert!(regex_result.hits.is_empty());
+    assert!(literal_with_output.include_tool_output);
+    assert_eq!(literal_with_output.hits.len(), 1);
+    assert_eq!(literal_with_output.hits[0].turn_ordinal, 1);
+    assert_eq!(literal_with_output.hits[0].matches[0].field, "tool_output");
     assert_eq!(
-        literal_result.hits[0].matches[0].snippet,
+        literal_with_output.hits[0].matches[0].snippet,
         "SECRET_TOKEN=top-secret"
     );
-    assert_eq!(regex_result.hits.len(), 1);
-    assert_eq!(regex_result.hits[0].matches[0].field, "tool_output");
+    assert!(regex_with_output.include_tool_output);
+    assert_eq!(regex_with_output.hits.len(), 1);
+    assert_eq!(regex_with_output.hits[0].matches[0].field, "tool_output");
+    assert_eq!(shared_literal_result.hits.len(), 1);
+    assert_eq!(
+        shared_literal_result.hits[0].matches[0].field,
+        "tool_arguments"
+    );
+    assert_eq!(shared_regex_result.hits.len(), 1);
+    assert_eq!(
+        shared_regex_result.hits[0].matches[0].field,
+        "tool_arguments"
+    );
 
     fs::remove_dir_all(
         index_path
@@ -2399,6 +2499,7 @@ fn search_turns_exact_modes_match_extended_evidence_fields() -> Result<()> {
                 project_id: "repo-a",
                 mode,
                 query,
+                include_tool_output: false,
                 provider: None,
                 session_id: None,
                 since: None,
@@ -2472,6 +2573,7 @@ fn search_turns_exact_modes_preserve_outer_whitespace() -> Result<()> {
                 project_id: "repo-a",
                 mode,
                 query: " error ",
+                include_tool_output: true,
                 provider: None,
                 session_id: None,
                 since: None,
@@ -2529,6 +2631,7 @@ fn search_turns_exact_modes_cap_nested_matches() -> Result<()> {
             turn_ordinal: 0,
             first_evidence_ordinal: 1,
             row_count: MATCHING_EVIDENCE_ROWS,
+            field: EvidenceField::Commentary.as_str(),
             text: "repeated-marker evidence",
         },
     )?;
@@ -2539,6 +2642,7 @@ fn search_turns_exact_modes_cap_nested_matches() -> Result<()> {
             project_id: "repo-a",
             mode: SearchMode::Literal,
             query: "repeated-marker",
+            include_tool_output: false,
             provider: None,
             session_id: None,
             since: None,
@@ -2595,6 +2699,7 @@ fn search_turns_literal_filters_evidence_before_preview_cap() -> Result<()> {
             turn_ordinal: 0,
             first_evidence_ordinal: 1,
             row_count: NON_MATCHING_EVIDENCE_ROWS,
+            field: EvidenceField::Commentary.as_str(),
             text: "nonmatching evidence",
         },
     )?;
@@ -2607,6 +2712,7 @@ fn search_turns_literal_filters_evidence_before_preview_cap() -> Result<()> {
             turn_ordinal: 0,
             first_evidence_ordinal: NON_MATCHING_EVIDENCE_ROWS + 1,
             row_count: 1,
+            field: EvidenceField::Commentary.as_str(),
             text: "late-literal-marker evidence",
         },
     )?;
@@ -2617,6 +2723,7 @@ fn search_turns_literal_filters_evidence_before_preview_cap() -> Result<()> {
             project_id: "repo-a",
             mode: SearchMode::Literal,
             query: "late-literal-marker",
+            include_tool_output: false,
             provider: None,
             session_id: None,
             since: None,
@@ -2628,7 +2735,10 @@ fn search_turns_literal_filters_evidence_before_preview_cap() -> Result<()> {
 
     assert_eq!(result.hits.len(), 1);
     assert_eq!(result.hits[0].matches.len(), 1);
-    assert_eq!(result.hits[0].matches[0].field, "tool_output");
+    assert_eq!(
+        result.hits[0].matches[0].field,
+        EvidenceField::Commentary.as_str()
+    );
     assert!(!result.hits[0].matches_truncated);
 
     fs::remove_dir_all(
@@ -2691,6 +2801,7 @@ fn search_turns_literal_streams_past_legacy_candidate_cap() -> Result<()> {
             turn_ordinal: 0,
             first_evidence_ordinal: 1,
             row_count: NON_MATCHING_EVIDENCE_ROWS,
+            field: EvidenceField::Commentary.as_str(),
             text: "nonmatching evidence",
         },
     )?;
@@ -2701,6 +2812,7 @@ fn search_turns_literal_streams_past_legacy_candidate_cap() -> Result<()> {
             project_id: "repo-a",
             mode: SearchMode::Literal,
             query: "rare-literal-needle",
+            include_tool_output: false,
             provider: None,
             session_id: None,
             since: None,
@@ -2772,6 +2884,7 @@ fn search_turns_regex_streams_past_legacy_candidate_cap() -> Result<()> {
             turn_ordinal: 0,
             first_evidence_ordinal: 1,
             row_count: NON_MATCHING_EVIDENCE_ROWS,
+            field: EvidenceField::Commentary.as_str(),
             text: "nonmatching evidence",
         },
     )?;
@@ -2782,6 +2895,7 @@ fn search_turns_regex_streams_past_legacy_candidate_cap() -> Result<()> {
             project_id: "repo-a",
             mode: SearchMode::Regex,
             query: "rare-regex-[a-z]+",
+            include_tool_output: false,
             provider: None,
             session_id: None,
             since: None,
@@ -2837,6 +2951,7 @@ fn search_turns_file_modes_match_derived_paths() -> Result<()> {
             project_id: "repo-a",
             mode: SearchMode::FileName,
             query: "main,old.rs",
+            include_tool_output: false,
             provider: None,
             session_id: None,
             since: None,
@@ -2851,6 +2966,7 @@ fn search_turns_file_modes_match_derived_paths() -> Result<()> {
             project_id: "repo-a",
             mode: SearchMode::FilePath,
             query: "src/main,old.rs",
+            include_tool_output: false,
             provider: None,
             session_id: None,
             since: None,
