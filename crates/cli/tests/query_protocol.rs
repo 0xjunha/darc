@@ -999,151 +999,18 @@ fn turns_query_oneline_view_emits_compact_rows() -> Result<()> {
 }
 
 #[test]
-fn turns_query_grep_emits_match_and_context_rows() -> Result<()> {
-    let root = create_query_fixture_root("cli-query-turns-grep")?;
-    let connection = open_index_database(&root.join("index.sqlite"))?;
-    let matched_path = root.join("repo/crates/index/src/index_db/schema.rs");
-    insert_indexed_turn(
-        &connection,
-        IndexedTurnFixture {
-            turn_id: Some("turn-2"),
-            completed_at: Some("2026-04-06T10:05:05Z"),
-            user_message: "Please switch to staged init for the index bootstrap",
-            step_count: 1,
-            tool_call_count: 1,
-            duration_ms: 5_000,
-            ..IndexedTurnFixture::new(
-                "repo-abc123",
-                SourceKind::Codex,
-                PRIMARY_SESSION_ID,
-                1,
-                "2026-04-06T10:05:00Z",
-                "completed",
-                &format!(
-                    r#"[{{"type":"tool_call","timestamp":"2026-04-06T10:05:01Z","call_id":"call-2","name":"Read","arguments":"{{\"path\":\"{}\"}}"}}]"#,
-                    matched_path.display()
-                ),
-            )
-        },
-    )?;
-    insert_indexed_turn(
-        &connection,
-        IndexedTurnFixture {
-            turn_id: Some("turn-3"),
-            completed_at: Some("2026-04-06T10:10:05Z"),
-            user_message: "Apply the follow-up update after that",
-            step_count: 1,
-            tool_call_count: 1,
-            duration_ms: 5_000,
-            ..IndexedTurnFixture::new(
-                "repo-abc123",
-                SourceKind::Codex,
-                PRIMARY_SESSION_ID,
-                2,
-                "2026-04-06T10:10:00Z",
-                "completed",
-                r##"[{"type":"tool_call","timestamp":"2026-04-06T10:10:01Z","call_id":"call-3","name":"Read","arguments":"{\"file_path\":\"Cargo.toml\"}"}]"##,
-            )
-        },
-    )?;
-    insert_indexed_session(
-        &connection,
-        IndexedSessionFixture::new(
-            "repo-abc123",
-            SourceKind::Codex,
-            SECONDARY_SESSION_ID,
-            "/tmp/repo",
-        ),
-    )?;
-    insert_indexed_turn(
-        &connection,
-        IndexedTurnFixture {
-            user_message: "Please switch to staged init for the docs too",
-            step_count: 1,
-            tool_call_count: 1,
-            duration_ms: 5_000,
-            ..IndexedTurnFixture::new(
-                "repo-abc123",
-                SourceKind::Codex,
-                SECONDARY_SESSION_ID,
-                0,
-                "2026-04-06T11:00:00Z",
-                "completed",
-                r##"[{"type":"tool_call","timestamp":"2026-04-06T11:00:01Z","call_id":"call-4","name":"Read","arguments":"{\"file_path\":\"docs/query-protocol.md\"}"}]"##,
-            )
-        },
-    )?;
-
-    let output = run_darc([
-        "query",
-        "turns",
-        "--root",
-        root.to_string_lossy().as_ref(),
-        "--project-id",
-        "repo-abc123",
-        "--grep",
-        "staged init",
-        "--role",
-        "user",
-        "--context",
-        "1",
-        "--since",
-        "2026-04-06T00:00:00Z",
-        "--until",
-        "2026-04-07T00:00:00Z",
-        "--view",
-        "oneline",
-        "--touched-path",
-        "crates/index/**",
-        "--json",
-    ])?;
-
-    assert!(output.status.success());
-    assert!(output.stderr.is_empty());
-    let value = parse_json(&output.stdout, "stdout")?;
-    assert_eq!(value["schema"], "darc.query.turn_matches.v1");
-    assert_eq!(value["data"]["provider"], Value::Null);
-    assert_eq!(value["data"]["session_id"], Value::Null);
-    assert_eq!(value["data"]["role"], "user");
-    assert_eq!(value["data"]["context"], 1);
-    assert_eq!(value["data"]["view"], "oneline");
-    assert_eq!(
-        value["data"]["turns"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|turn| turn["turn_ordinal"].as_u64().unwrap())
-            .collect::<Vec<_>>(),
-        vec![0, 1, 2]
-    );
-    assert_eq!(value["data"]["turns"][0]["match_kind"], "context");
-    assert_eq!(value["data"]["turns"][1]["match_kind"], "match");
-    assert_eq!(value["data"]["turns"][2]["match_kind"], "context");
-    assert_eq!(value["data"]["turns"][1]["tool_call_count"], 1);
-    assert_eq!(value["data"]["turns"][0]["match_snippet"], Value::Null);
-    assert!(
-        value["data"]["turns"][1]["match_snippet"]
-            .as_str()
-            .is_some_and(|snippet| snippet.contains("staged init"))
-    );
-
-    remove_root(&root)?;
-    Ok(())
-}
-
-#[test]
-fn turns_query_oneline_grep_reports_assistant_role_and_first_user_line() -> Result<()> {
-    let root = create_query_fixture_root("cli-query-turns-oneline-assistant")?;
+fn search_turns_query_emits_literal_evidence_matches() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-search-literal")?;
     let connection = open_index_database(&root.join("index.sqlite"))?;
     insert_indexed_turn(
         &connection,
         IndexedTurnFixture {
             turn_id: Some("turn-2"),
             completed_at: Some("2026-04-06T10:05:05Z"),
-            user_message: "First line only\nSecond line should not appear",
+            user_message: "Run the CLI command with an exact flag",
             final_answer_at: Some("2026-04-06T10:05:05Z"),
-            final_answer_text: Some("Use staged init in the assistant reply."),
-            step_count: 1,
+            final_answer_text: Some("Captured the output."),
+            step_count: 2,
             tool_call_count: 1,
             tool_output_count: 1,
             has_final_answer: true,
@@ -1155,7 +1022,7 @@ fn turns_query_oneline_grep_reports_assistant_role_and_first_user_line() -> Resu
                 1,
                 "2026-04-06T10:05:00Z",
                 "completed",
-                "[]",
+                r##"[{"type":"tool_call","timestamp":"2026-04-06T10:05:01Z","call_id":"call-2","name":"exec_command","arguments":"{\"cmd\":\"darc query search turns --mode literal --query --output-last-message\",\"workdir\":\"/tmp/repo\"}"},{"type":"tool_call_output","timestamp":"2026-04-06T10:05:02Z","call_id":"call-2","output":"DARC_CODEX_BIN=/tmp/darc"}]"##,
             )
         },
     )?;
@@ -1163,33 +1030,71 @@ fn turns_query_oneline_grep_reports_assistant_role_and_first_user_line() -> Resu
 
     let output = run_darc([
         "query",
+        "search",
         "turns",
         "--root",
         root.to_string_lossy().as_ref(),
         "--project-id",
         "repo-abc123",
-        "--grep",
-        "staged init",
-        "--role",
-        "assistant",
-        "--view",
-        "oneline",
+        "--mode",
+        "literal",
+        "--query",
+        "--output-last-message",
+        "--since",
+        "2026-04-06T00:00:00Z",
+        "--until",
+        "2026-04-07T00:00:00Z",
         "--json",
     ])?;
 
     assert!(output.status.success());
+    assert!(output.stderr.is_empty());
     let value = parse_json(&output.stdout, "stdout")?;
-    assert_eq!(value["schema"], "darc.query.turn_matches.v1");
-    assert_eq!(value["data"]["turns"][0]["role"], "assistant");
-    assert_eq!(value["data"]["turns"][0]["user_preview"], "First line only");
+    assert_eq!(value["schema"], "darc.query.search.turns.v1");
+    assert_eq!(value["data"]["mode"], "literal");
+    assert_eq!(value["data"]["since"], "2026-04-06T00:00:00Z");
+    assert_eq!(value["data"]["until"], "2026-04-07T00:00:00Z");
+    assert_eq!(value["data"]["hits"][0]["turn_ordinal"], 1);
+    assert_eq!(
+        value["data"]["hits"][0]["matches"][0]["field"],
+        "tool_arguments"
+    );
+    assert!(
+        value["data"]["hits"][0]["matches"][0]["snippet"]
+            .as_str()
+            .is_some_and(|snippet| snippet.contains("--output-last-message"))
+    );
+
+    let regex_output = run_darc([
+        "query",
+        "search",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--mode",
+        "regex",
+        "--query",
+        "DARC_[A-Z_]+_BIN",
+        "--json",
+    ])?;
+
+    assert!(regex_output.status.success());
+    let regex_value = parse_json(&regex_output.stdout, "stdout")?;
+    assert_eq!(regex_value["data"]["mode"], "regex");
+    assert_eq!(
+        regex_value["data"]["hits"][0]["matches"][0]["field"],
+        "tool_output"
+    );
 
     remove_root(&root)?;
     Ok(())
 }
 
 #[test]
-fn turns_query_grep_rejects_context_over_limit() -> Result<()> {
-    let root = create_query_fixture_root("cli-query-turns-grep-limit")?;
+fn turns_query_rejects_removed_grep_flag() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-turns-grep-removed")?;
     let output = run_darc([
         "query",
         "turns",
@@ -1205,13 +1110,7 @@ fn turns_query_grep_rejects_context_over_limit() -> Result<()> {
     ])?;
 
     assert!(!output.status.success());
-    let value = parse_json(&output.stderr, "stderr")?;
-    assert_eq!(value["schema"], "darc.error.v1");
-    assert!(
-        value["error"]["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("--context must be at most 50 turns"))
-    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unexpected argument '--grep'"));
 
     remove_root(&root)?;
     Ok(())
@@ -1666,8 +1565,8 @@ fn turn_insights_query_missing_turn_emits_error_envelope() -> Result<()> {
 }
 
 #[test]
-fn turns_query_grep_rejects_prefix_session_id() -> Result<()> {
-    let root = create_query_fixture_root("cli-query-turns-grep-prefix-id")?;
+fn turns_query_rejects_prefix_session_id() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-turns-prefix-id")?;
     let output = run_darc([
         "query",
         "turns",
@@ -1675,8 +1574,8 @@ fn turns_query_grep_rejects_prefix_session_id() -> Result<()> {
         root.to_string_lossy().as_ref(),
         "--project-id",
         "repo-abc123",
-        "--grep",
-        "Inspect",
+        "--provider",
+        "codex",
         "--session-id",
         PRIMARY_SESSION_PREFIX,
         "--json",

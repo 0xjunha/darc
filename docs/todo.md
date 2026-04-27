@@ -80,13 +80,14 @@ Current state:
 
 - `turn_search` indexes user message, final answer, commentary text, tool names, and delegation
   summaries.
-- It intentionally omits raw tool outputs and most argument payloads today.
+- Keyword search intentionally omits raw tool outputs and most argument payloads.
+- Exact literal/regex search uses the separate derived `turn_evidence` rows for user messages, final answers,
+  commentary, plaintext reasoning summaries, tool names, tool arguments, tool outputs, delegation summaries, and
+  compact metadata for delegations, hooks, attachments, and provider response items.
 
 Needed:
 
-- Document that policy as part of the query and search contract.
-- Decide whether any extra safe summaries should be indexed without reintroducing raw-output or
-  raw-payload leakage.
+- Keep exact-search scale tests representative as larger local archives are indexed.
 
 #### Add representative search-scale verification
 

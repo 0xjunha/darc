@@ -8,14 +8,12 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use darc_core::query::{
     DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, FilesQueryRequest, QueryProtocolError,
     ResolveSessionQueryRequest, ResolvedQueryProject, ResolvedSessionMatch, SearchMode,
-    SearchTurnsRequest, SessionBundleView, TurnDetailOptions, TurnMatchesQueryRequest,
-    TurnSearchRole, TurnsQueryRequest, TurnsView, query_files_for_project,
-    query_project_insight_report_for_project, query_resolve_sessions,
-    query_search_turns_for_project, query_session_bundle_for_project,
+    SearchTurnsRequest, SessionBundleView, TurnDetailOptions, TurnSearchRole, TurnsQueryRequest,
+    TurnsView, query_files_for_project, query_project_insight_report_for_project,
+    query_resolve_sessions, query_search_turns_for_project, query_session_bundle_for_project,
     query_session_files_for_project, query_sessions_for_project, query_turn_for_project,
-    query_turn_insight_report_for_project, query_turn_matches_for_project, query_turns_for_project,
-    query_workspace, query_workspace_insight_report, resolve_query_project,
-    resolve_query_session_id_for_project,
+    query_turn_insight_report_for_project, query_turns_for_project, query_workspace,
+    query_workspace_insight_report, resolve_query_project, resolve_query_session_id_for_project,
 };
 use darc_core::{
     IndexOptions, InitDraft, RefreshAllBestEffortReport, RefreshOptions, RefreshProjectAttempt,
@@ -196,7 +194,7 @@ enum QueryCommands {
     SessionFiles(QuerySessionFilesArgs),
     /// Queries one composite session bundle for one provider session.
     SessionBundle(QuerySessionBundleArgs),
-    /// Queries the turn list for one provider session or grep request.
+    /// Queries the turn list for one provider session.
     Turns(QueryTurnsArgs),
     /// Queries one full turn detail payload.
     Turn(QueryTurnArgs),
@@ -284,7 +282,7 @@ struct QuerySessionsArgs {
     json: bool,
 }
 
-/// Queries the turn list for one provider session or grep request.
+/// Queries the turn list for one provider session.
 #[derive(Debug, Args)]
 struct QueryTurnsArgs {
     #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
@@ -301,24 +299,6 @@ struct QueryTurnsArgs {
 
     #[arg(long = "session-id", help = "Restrict turns to this session id")]
     session_id: Option<String>,
-
-    #[arg(long, help = "Search turn text for this free-form query")]
-    grep: Option<String>,
-
-    #[arg(
-        long,
-        value_enum,
-        default_value_t = TurnSearchRoleArg::Both,
-        help = "Restrict grep matches to user prompts, assistant text, or both"
-    )]
-    role: TurnSearchRoleArg,
-
-    #[arg(
-        long,
-        default_value_t = 0,
-        help = "Include this many surrounding turns before and after each grep match"
-    )]
-    context: usize,
 
     #[arg(
         long,
@@ -339,12 +319,6 @@ struct QueryTurnsArgs {
         help = "Return full turn summaries or a compact one-line skim"
     )]
     view: TurnListViewArg,
-
-    #[arg(
-        long = "touched-path",
-        help = "Only keep grep matches from turns that touched a file path matching this glob"
-    )]
-    touched_path: Option<String>,
 
     #[arg(
         long,
@@ -542,8 +516,24 @@ struct QuerySearchTurnsArgs {
     #[arg(long, value_enum, help = "Search in this mode")]
     mode: SearchModeArg,
 
-    #[arg(long, help = "Search for this text or path fragment")]
+    #[arg(
+        long,
+        allow_hyphen_values = true,
+        help = "Search for this text or path fragment"
+    )]
     query: String,
+
+    #[arg(
+        long,
+        help = "Inclusive started_at lower bound. Example: `5d` or `2026-04-07T00:00:00Z`"
+    )]
+    since: Option<String>,
+
+    #[arg(
+        long,
+        help = "Exclusive started_at upper bound. Example: `1d` or `2026-04-08T00:00:00Z`"
+    )]
+    until: Option<String>,
 
     #[arg(long, value_enum, help = "Restrict search to this provider")]
     provider: Option<ProviderArg>,
@@ -698,16 +688,10 @@ enum ProviderArg {
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum SearchModeArg {
     Keyword,
+    Literal,
+    Regex,
     FileName,
     FilePath,
-}
-
-/// Represents the supported role filters for grep-style turn queries.
-#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
-enum TurnSearchRoleArg {
-    User,
-    Assistant,
-    Both,
 }
 
 /// Represents the supported turn-list projections for machine-readable turn queries.
@@ -914,7 +898,7 @@ fn run_query_session_bundle(args: QuerySessionBundleArgs) -> Result<()> {
     print_json_envelope("darc.query.session_bundle.v1", &data)
 }
 
-/// Queries the turn list for one provider session or grep request.
+/// Queries the turn list for one provider session.
 fn run_query_turns(args: QueryTurnsArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
     let since = args
@@ -928,59 +912,22 @@ fn run_query_turns(args: QueryTurnsArgs) -> Result<()> {
         .map(resolve_query_time_bound)
         .transpose()?;
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
-    let resolved_session_id = args
+    let provider = args.provider.context("query turns requires --provider")?;
+    let session_id = args
         .session_id
         .as_deref()
-        .map(|session_id| {
-            resolve_query_session_id_for_project(
-                &project,
-                args.provider.map(provider_arg_to_source_kind),
-                session_id,
-            )
-        })
-        .transpose()?;
-    if let Some(grep) = args.grep.as_deref() {
-        let data = query_turn_matches_for_project(
-            &project,
-            TurnMatchesQueryRequest {
-                project_id: "",
-                project_root: None,
-                provider: args.provider.map(provider_arg_to_source_kind),
-                session_id: resolved_session_id.as_deref(),
-                grep,
-                role: turn_search_role_arg_to_role(args.role),
-                context: args.context,
-                since: since.as_deref(),
-                until: until.as_deref(),
-                touched_path: args.touched_path.as_deref(),
-                view: turn_list_view_arg_to_view(args.view),
-            },
-        )?;
-        return print_turn_matches_query_envelope(&data);
-    }
-
-    if args.role != TurnSearchRoleArg::Both {
-        bail!("--role requires --grep");
-    }
-    if args.context != 0 {
-        bail!("--context requires --grep");
-    }
-    if args.touched_path.is_some() {
-        bail!("--touched-path requires --grep");
-    }
-
-    let provider = args
-        .provider
-        .context("query turns without --grep requires --provider")?;
-    let session_id = resolved_session_id
-        .as_deref()
-        .context("query turns without --grep requires --session-id")?;
+        .context("query turns requires --session-id")?;
+    let session_id = resolve_query_session_id_for_project(
+        &project,
+        Some(provider_arg_to_source_kind(provider)),
+        session_id,
+    )?;
     let data = query_turns_for_project(
         &project,
         TurnsQueryRequest {
             project_id: "",
             provider: provider_arg_to_source_kind(provider),
-            session_id,
+            session_id: &session_id,
             since: since.as_deref(),
             until: until.as_deref(),
             view: turn_list_view_arg_to_view(args.view),
@@ -1022,6 +969,16 @@ fn run_query_search(args: QuerySearchArgs) -> Result<()> {
 /// Queries one paginated turn-search payload.
 fn run_query_search_turns(args: QuerySearchTurnsArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
+    let since = args
+        .since
+        .as_deref()
+        .map(resolve_query_time_bound)
+        .transpose()?;
+    let until = args
+        .until
+        .as_deref()
+        .map(resolve_query_time_bound)
+        .transpose()?;
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
     let session_id = args
         .session_id
@@ -1042,6 +999,8 @@ fn run_query_search_turns(args: QuerySearchTurnsArgs) -> Result<()> {
             query: &args.query,
             provider: args.provider.map(provider_arg_to_source_kind),
             session_id: session_id.as_deref(),
+            since: since.as_deref(),
+            until: until.as_deref(),
             limit: args.limit,
             offset: args.offset,
         },
@@ -1114,17 +1073,6 @@ fn print_turns_query_envelope(data: &darc_core::query::TurnsQueryData) -> Result
         TurnsView::Oneline => print_json_envelope(
             "darc.query.turns.v1",
             &TurnsOnelineQueryData::from_turns_query(data),
-        ),
-    }
-}
-
-/// Writes one `darc.query.turn_matches.v1` envelope, compacting rows when `view` is `oneline`.
-fn print_turn_matches_query_envelope(data: &darc_core::query::TurnMatchesQueryData) -> Result<()> {
-    match data.view {
-        TurnsView::Full => print_json_envelope("darc.query.turn_matches.v1", data),
-        TurnsView::Oneline => print_json_envelope(
-            "darc.query.turn_matches.v1",
-            &TurnMatchesOnelineQueryData::from_turn_matches_query(data),
         ),
     }
 }
@@ -1234,17 +1182,10 @@ fn view_arg_to_session_bundle_view(view: ViewArg) -> SessionBundleView {
 fn search_mode_arg_to_search_mode(mode: SearchModeArg) -> SearchMode {
     match mode {
         SearchModeArg::Keyword => SearchMode::Keyword,
+        SearchModeArg::Literal => SearchMode::Literal,
+        SearchModeArg::Regex => SearchMode::Regex,
         SearchModeArg::FileName => SearchMode::FileName,
         SearchModeArg::FilePath => SearchMode::FilePath,
-    }
-}
-
-/// Converts one parsed grep-role argument into the shared turn-search role.
-fn turn_search_role_arg_to_role(role: TurnSearchRoleArg) -> TurnSearchRole {
-    match role {
-        TurnSearchRoleArg::User => TurnSearchRole::User,
-        TurnSearchRoleArg::Assistant => TurnSearchRole::Assistant,
-        TurnSearchRoleArg::Both => TurnSearchRole::Both,
     }
 }
 
@@ -1297,69 +1238,6 @@ impl TurnsOnelineQueryData {
                     user_preview: turn.oneline_user_preview.clone(),
                     step_count: turn.step_count,
                     tool_call_count: turn.tool_call_count,
-                })
-                .collect(),
-        }
-    }
-}
-
-/// Stores one compact row for grep-scoped `darc query turns --grep --view oneline`.
-#[derive(Debug, Clone, Serialize)]
-struct TurnMatchesOnelineTurnRow {
-    provider: SourceKind,
-    session_id: String,
-    turn_ordinal: u64,
-    role: TurnSearchRole,
-    user_preview: String,
-    step_count: u64,
-    tool_call_count: u64,
-    match_kind: Option<darc_core::query::TurnMatchKind>,
-    match_snippet: Option<String>,
-}
-
-/// Stores one compact top-level payload for grep-scoped turn skims.
-#[derive(Debug, Clone, Serialize)]
-struct TurnMatchesOnelineQueryData {
-    project_id: String,
-    provider: Option<SourceKind>,
-    session_id: Option<String>,
-    grep: String,
-    role: TurnSearchRole,
-    context: u64,
-    since: Option<String>,
-    until: Option<String>,
-    touched_path: Option<String>,
-    view: TurnsView,
-    turns: Vec<TurnMatchesOnelineTurnRow>,
-}
-
-impl TurnMatchesOnelineQueryData {
-    /// Builds one compact grep-turn payload from the full shared query result.
-    fn from_turn_matches_query(data: &darc_core::query::TurnMatchesQueryData) -> Self {
-        Self {
-            project_id: data.project_id.clone(),
-            provider: data.provider,
-            session_id: data.session_id.clone(),
-            grep: data.grep.clone(),
-            role: data.role,
-            context: data.context,
-            since: data.since.clone(),
-            until: data.until.clone(),
-            touched_path: data.touched_path.clone(),
-            view: data.view,
-            turns: data
-                .turns
-                .iter()
-                .map(|turn| TurnMatchesOnelineTurnRow {
-                    provider: turn.provider,
-                    session_id: turn.session_id.clone(),
-                    turn_ordinal: turn.turn_ordinal,
-                    role: turn.oneline_role,
-                    user_preview: turn.oneline_user_preview.clone(),
-                    step_count: turn.step_count,
-                    tool_call_count: turn.tool_call_count,
-                    match_kind: turn.match_kind,
-                    match_snippet: turn.match_snippet.clone(),
                 })
                 .collect(),
         }

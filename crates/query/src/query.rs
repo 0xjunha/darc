@@ -365,6 +365,8 @@ pub struct TurnMatchesQueryRequest<'a> {
 #[serde(rename_all = "snake_case")]
 pub enum SearchMode {
     Keyword,
+    Literal,
+    Regex,
     FileName,
     FilePath,
 }
@@ -377,6 +379,8 @@ pub struct SearchTurnsQueryData {
     pub query: String,
     pub provider: Option<SourceKind>,
     pub session_id: Option<String>,
+    pub since: Option<String>,
+    pub until: Option<String>,
     pub limit: u64,
     pub offset: u64,
     pub has_more: bool,
@@ -391,8 +395,17 @@ pub struct SearchTurnsRequest<'a> {
     pub query: &'a str,
     pub provider: Option<SourceKind>,
     pub session_id: Option<&'a str>,
+    pub since: Option<&'a str>,
+    pub until: Option<&'a str>,
     pub limit: usize,
     pub offset: usize,
+}
+
+/// Stores one field-level evidence match nested inside a turn search hit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SearchTurnMatch {
+    pub field: String,
+    pub snippet: String,
 }
 
 /// Stores one turn hit returned by the search protocol.
@@ -407,6 +420,7 @@ pub struct SearchTurnHit {
     pub user_preview: String,
     pub snippet: Option<String>,
     pub matched_paths: Vec<String>,
+    pub matches: Vec<SearchTurnMatch>,
 }
 
 /// Stores one full normalized turn detail payload for one session turn.

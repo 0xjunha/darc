@@ -5,6 +5,11 @@ use std::{
 
 use anyhow::{Context, Result};
 use darc_index::{
+    evidence::{
+        ATTACHMENT_METADATA_FIELD, COMMENTARY_FIELD, DELEGATION_METADATA_FIELD,
+        DELEGATION_SUMMARY_FIELD, HOOK_SUMMARY_FIELD, PROVIDER_RESPONSE_ITEM_METADATA_FIELD,
+        REASONING_SUMMARY_FIELD,
+    },
     open_index_database,
     policy::{
         ToolAccessKind, active_time_policy, classify_tool_access, derive_file_access_records,
@@ -2154,6 +2159,8 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             query: "Inspect",
             provider: None,
             session_id: None,
+            since: None,
+            until: None,
             limit: 10,
             offset: 0,
         },
@@ -2166,6 +2173,8 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             query: "SECRET_TOKEN",
             provider: None,
             session_id: None,
+            since: None,
+            until: None,
             limit: 10,
             offset: 0,
         },
@@ -2181,6 +2190,173 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             .is_some_and(|snippet| snippet.contains("Inspect"))
     );
     assert!(secret_result.hits.is_empty());
+
+    let literal_result = query_search_turns(
+        &index_path,
+        SearchTurnsRequest {
+            project_id: "repo-a",
+            mode: SearchMode::Literal,
+            query: "SECRET_TOKEN=top-secret",
+            provider: None,
+            session_id: None,
+            since: None,
+            until: None,
+            limit: 10,
+            offset: 0,
+        },
+    )?;
+    let regex_result = query_search_turns(
+        &index_path,
+        SearchTurnsRequest {
+            project_id: "repo-a",
+            mode: SearchMode::Regex,
+            query: "SECRET_[A-Z]+=top-secret",
+            provider: None,
+            session_id: None,
+            since: None,
+            until: None,
+            limit: 10,
+            offset: 0,
+        },
+    )?;
+
+    assert_eq!(literal_result.hits.len(), 1);
+    assert_eq!(literal_result.hits[0].turn_ordinal, 1);
+    assert_eq!(literal_result.hits[0].matches[0].field, "tool_output");
+    assert_eq!(
+        literal_result.hits[0].matches[0].snippet,
+        "SECRET_TOKEN=top-secret"
+    );
+    assert_eq!(regex_result.hits.len(), 1);
+    assert_eq!(regex_result.hits[0].matches[0].field, "tool_output");
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn search_turns_exact_modes_match_extended_evidence_fields() -> Result<()> {
+    let index_path = test_index_path("search-extended-evidence");
+    let connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
+    )?;
+    let steps_json = serde_json::to_string(&vec![
+        NormalizedTurnStep::Reasoning {
+            timestamp: "2026-04-06T10:00:01Z".to_owned(),
+            summary: vec!["Plaintext DARC_REASONING_BIN summary".to_owned()],
+            encrypted: false,
+        },
+        NormalizedTurnStep::Commentary {
+            timestamp: "2026-04-06T10:00:02Z".to_owned(),
+            text: "Commentary marker DARC_COMMENTARY_BIN".to_owned(),
+        },
+        NormalizedTurnStep::Attachment {
+            timestamp: "2026-04-06T10:00:03Z".to_owned(),
+            attachment_type: "deferred_tools_delta".to_owned(),
+            payload_json: "{\"added\":[\"Read\"]}".to_owned(),
+        },
+        NormalizedTurnStep::Delegation {
+            timestamp: "2026-04-06T10:00:04Z".to_owned(),
+            call_id: Some("call-del".to_owned()),
+            task_id: Some("task-alpha".to_owned()),
+            event: "completed".to_owned(),
+            agent_id: Some("agent-1".to_owned()),
+            agent_type: Some("general-purpose".to_owned()),
+            status: Some("completed".to_owned()),
+            summary: Some("Delegation summary PLANNER_MARKER".to_owned()),
+            payload_json: "{\"totalDurationMs\":12}".to_owned(),
+        },
+        NormalizedTurnStep::HookSummary {
+            timestamp: "2026-04-06T10:00:05Z".to_owned(),
+            call_id: Some("call-hook".to_owned()),
+            hook_count: 2,
+            prevented_continuation: false,
+            has_output: true,
+            level: Some("suggestion".to_owned()),
+            payload_json: "{\"command\":\"callback\"}".to_owned(),
+        },
+        NormalizedTurnStep::ProviderResponseItem {
+            timestamp: "2026-04-06T10:00:06Z".to_owned(),
+            item_type: "web_search_call".to_owned(),
+            payload_json: "{\"status\":\"completed\",\"action\":{\"type\":\"open_page\"}}"
+                .to_owned(),
+        },
+    ])?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            user_message: "Check extended evidence",
+            step_count: 6,
+            attachment_count: 1,
+            delegation_count: 1,
+            hook_summary_count: 1,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                0,
+                "2026-04-06T10:00:00Z",
+                "completed",
+                &steps_json,
+            )
+        },
+    )?;
+
+    for (mode, query, expected_field) in [
+        (
+            SearchMode::Regex,
+            "DARC_REASONING_[A-Z]+",
+            REASONING_SUMMARY_FIELD,
+        ),
+        (SearchMode::Literal, "DARC_COMMENTARY_BIN", COMMENTARY_FIELD),
+        (
+            SearchMode::Literal,
+            "deferred_tools_delta",
+            ATTACHMENT_METADATA_FIELD,
+        ),
+        (
+            SearchMode::Literal,
+            "PLANNER_MARKER",
+            DELEGATION_SUMMARY_FIELD,
+        ),
+        (
+            SearchMode::Literal,
+            "general-purpose",
+            DELEGATION_METADATA_FIELD,
+        ),
+        (SearchMode::Literal, "suggestion", HOOK_SUMMARY_FIELD),
+        (
+            SearchMode::Literal,
+            "open_page",
+            PROVIDER_RESPONSE_ITEM_METADATA_FIELD,
+        ),
+    ] {
+        let result = query_search_turns(
+            &index_path,
+            SearchTurnsRequest {
+                project_id: "repo-a",
+                mode,
+                query,
+                provider: None,
+                session_id: None,
+                since: None,
+                until: None,
+                limit: 10,
+                offset: 0,
+            },
+        )?;
+
+        assert_eq!(result.hits.len(), 1);
+        assert_eq!(result.hits[0].session_id, "session-1");
+        assert_eq!(result.hits[0].turn_ordinal, 0);
+        assert_eq!(result.hits[0].matches[0].field, expected_field);
+    }
 
     fs::remove_dir_all(
         index_path
@@ -2225,6 +2401,8 @@ fn search_turns_file_modes_match_derived_paths() -> Result<()> {
             query: "main,old.rs",
             provider: None,
             session_id: None,
+            since: None,
+            until: None,
             limit: 10,
             offset: 0,
         },
@@ -2237,6 +2415,8 @@ fn search_turns_file_modes_match_derived_paths() -> Result<()> {
             query: "src/main,old.rs",
             provider: None,
             session_id: None,
+            since: None,
+            until: None,
             limit: 10,
             offset: 0,
         },

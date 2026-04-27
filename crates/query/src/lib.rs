@@ -7,7 +7,7 @@ pub use query::{
     FileUsageStat, FilesQueryData, FilesQueryMode, FilesQueryRequest, HardDebuggingTurn,
     ProjectIndexAggregate, ProjectInsights, ProjectSummary, ProjectTimeStat,
     ResolveSessionQueryData, ResolveSessionQueryRequest, ResolvedSessionMatch, RootAvailability,
-    RootInfo, SearchMode, SearchTurnHit, SearchTurnsQueryData, SearchTurnsRequest,
+    RootInfo, SearchMode, SearchTurnHit, SearchTurnMatch, SearchTurnsQueryData, SearchTurnsRequest,
     SessionBundleQueryData, SessionBundleView, SessionFileSummary, SessionFilesQueryData,
     SessionKind, SessionRuntimeStat, SessionSummary, SessionsQueryData, ShellCommandSummary,
     ToolUsageStat, TurnDetail, TurnDetailInsights, TurnDetailOptions, TurnExistenceResolver,

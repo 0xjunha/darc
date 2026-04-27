@@ -107,11 +107,12 @@ See [Query protocol](docs/query-protocol.md) for the exact payload contract and 
 Darc's read-side query surface now covers project-scoped search, compact turn skims, file/session pivots, and
 single-call session bundles.
 
-- `darc query search turns` handles keyword, file-name, and file-path search with optional provider/session filters.
+- `darc query search turns` handles keyword, literal, regex, file-name, and file-path search with optional
+  provider/session/time filters.
 - project-scoped `darc query` commands accept optional `--project-id`; when omitted, Darc resolves the configured
   project from the current directory.
-- `darc query turns` works in two modes: session-scoped lists (`--provider --session-id`, full UUID only) and
-  grep-scoped matches (`--grep`) with role, context, time, touched-path, and compact `--view oneline` options.
+- `darc query turns` lists one known provider session (`--provider --session-id`, full UUID only); content discovery
+  lives under `darc query search turns`.
 - `darc query files`, `darc query session-files`, and `darc query session-bundle` let clients pivot between matched
   files, touched sessions, per-session file summaries, and one-call session detail bundles.
 - `darc query resolve-session` explicitly expands a UUID prefix before you call session-scoped data commands.
@@ -126,11 +127,10 @@ darc query search turns \
 ```
 
 ```bash
-darc query turns \
+darc query search turns \
   --project-id repo-abc123 \
-  --grep "staged init" \
-  --role user \
-  --context 1 \
+  --mode literal \
+  --query "--output-last-message" \
   --since 14d \
   --json
 ```

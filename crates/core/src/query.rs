@@ -12,12 +12,12 @@ pub use darc_query::{
     FileUsageStat, FilesQueryData, FilesQueryMode, FilesQueryRequest, HardDebuggingTurn,
     ProjectInsights, ProjectSummary, ProjectTimeStat, ResolveSessionQueryData,
     ResolveSessionQueryRequest, ResolvedSessionMatch, RootAvailability, RootInfo, SearchMode,
-    SearchTurnHit, SearchTurnsQueryData, SearchTurnsRequest, SessionBundleQueryData,
-    SessionBundleView, SessionFileSummary, SessionFilesQueryData, SessionKind, SessionRuntimeStat,
-    SessionSummary, SessionsQueryData, ShellCommandSummary, ToolUsageStat, TurnDetail,
-    TurnDetailInsights, TurnDetailOptions, TurnInsights, TurnMatchKind, TurnMatchesQueryData,
-    TurnMatchesQueryRequest, TurnSearchRole, TurnSummary, TurnsQueryData, TurnsQueryRequest,
-    TurnsView, WorkspaceDailyTimeStat, WorkspaceInsights, WorkspaceQueryData,
+    SearchTurnHit, SearchTurnMatch, SearchTurnsQueryData, SearchTurnsRequest,
+    SessionBundleQueryData, SessionBundleView, SessionFileSummary, SessionFilesQueryData,
+    SessionKind, SessionRuntimeStat, SessionSummary, SessionsQueryData, ShellCommandSummary,
+    ToolUsageStat, TurnDetail, TurnDetailInsights, TurnDetailOptions, TurnInsights, TurnMatchKind,
+    TurnMatchesQueryData, TurnMatchesQueryRequest, TurnSearchRole, TurnSummary, TurnsQueryData,
+    TurnsQueryRequest, TurnsView, WorkspaceDailyTimeStat, WorkspaceInsights, WorkspaceQueryData,
 };
 use darc_query::{
     ProjectIndexAggregate, list_project_index_aggregates, lookup_project_session_id,

@@ -25,12 +25,11 @@ All query commands currently require `--json`.
 - `darc query session-files --root <path> [--project-id <id>] --provider <provider> --session-id <id> --json`
 - `darc query session-bundle --root <path> [--project-id <id>] --provider <provider> --session-id <id> [--view <full|narrative>] --json`
 - `darc query turns --root <path> [--project-id <id>] --provider <provider> --session-id <id> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--view <full|oneline>] --json`
-- `darc query turns --root <path> [--project-id <id>] --grep <text> [--provider <provider>] [--session-id <id>] [--role <user|assistant|both>] [--context <n>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--view <full|oneline>] [--touched-path <glob>] --json`
 - `darc query turn --root <path> [--project-id <id>] --provider <provider> --session-id <id> --turn-ordinal <n> [--view <full|narrative>] [--include-raw] [--include-insights] --json`
 
 ### Search
 
-- `darc query search turns --root <path> [--project-id <id>] --mode <keyword|file-name|file-path> --query <text> [--provider <provider>] [--session-id <id>] [--limit <n>] [--offset <n>] --json`
+- `darc query search turns --root <path> [--project-id <id>] --mode <keyword|literal|regex|file-name|file-path> --query <text> [--provider <provider>] [--session-id <id>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>] --json`
 
 ### Insights
 
@@ -42,8 +41,7 @@ All query commands currently require `--json`.
 
 - project-scoped queries accept optional `--project-id`; when omitted, Darc resolves the configured project from the current directory
 - `darc query resolve-session` accepts either one full UUID or one UUID prefix
-- `darc query turns` without `--grep` requires both `--provider` and `--session-id`
-- `--role`, `--context`, and `--touched-path` on `darc query turns` require `--grep`
+- `darc query turns` requires both `--provider` and `--session-id`
 - `darc query files` requires exactly one of `--path` or `--co-touched-with`
 - `--since` and `--until` on `darc query files` require `--path`
 - `--limit` on `darc query files` requires `--co-touched-with`
@@ -56,13 +54,23 @@ The protocol is intentionally composable. A few common read patterns are now fir
 - find planning turns by content:
 
   ```bash
-  darc query turns \
+  darc query search turns \
     --root ~/.darc \
     --project-id repo-abc123 \
-    --grep "staged init" \
-    --role user \
-    --context 1 \
+    --mode keyword \
+    --query "staged init" \
     --since 14d \
+    --json
+  ```
+
+- verify exact evidence text without regex escaping:
+
+  ```bash
+  darc query search turns \
+    --root ~/.darc \
+    --project-id repo-abc123 \
+    --mode literal \
+    --query "--output-last-message" \
     --json
   ```
 
@@ -178,7 +186,6 @@ Current schema ids:
 - `darc.query.session_files.v1`
 - `darc.query.session_bundle.v1`
 - `darc.query.turns.v1`
-- `darc.query.turn_matches.v1`
 - `darc.query.turn.v1`
 - `darc.query.search.turns.v1`
 - `darc.query.insights.workspace.v1`
@@ -188,13 +195,12 @@ Current schema ids:
 
 Clients should branch on `schema`, not on `darc_version`.
 
-`darc query turns` now supports two projections under the existing schemas:
+`darc query turns` supports two projections:
 
 - `view: "full"` keeps the existing turn-summary shape and now also includes `tool_call_count`
 - `view: "oneline"` returns a smaller per-turn object with `turn_ordinal`, `role`, `user_preview`, `step_count`, and `tool_call_count`
 - `oneline.user_preview` is derived from the first `user_message` line and capped at 80 characters
 - session-scoped oneline rows currently emit `role: "user"` because the preview always comes from the first user message line
-- grep-scoped oneline rows echo the requested `role` filter on every returned row, including context rows
 
 ## Stability rules
 
@@ -306,7 +312,7 @@ Today:
 
 ### Session and turn lists
 
-`darc.query.sessions.v1`, `darc.query.turns.v1`, and `darc.query.turn_matches.v1` now surface the best-effort model, token, runtime, and observed patch-count fields needed for lightweight desktop list views.
+`darc.query.sessions.v1` and `darc.query.turns.v1` surface the best-effort model, token, runtime, and observed patch-count fields needed for lightweight desktop list views.
 
 Today:
 
@@ -322,18 +328,11 @@ Today:
 - `aborted_turn_count` counts indexed turns in that session where `status` is `aborted`
 - `edited_files` is the distinct `COALESCE(repo_relative_path, path)` list from session-scoped `file_accesses` rows with `access_type` of `edit` or `write`, excluding null or whitespace-only paths and ordered by display path ascending
 - `darc.query.turns.v1` remains the session-scoped `--provider --session-id` list mode and keeps non-null top-level `provider` and `session_id`
-- `darc.query.turn_matches.v1` is emitted by `darc query turns --grep ...`
-- `darc.query.turn_matches.v1` additionally surfaces top-level `provider`, `session_id`, `grep`, `role`, `context`, `since`, `until`, and `touched_path`, where `provider` and `session_id` are optional request filters
-- `darc.query.turn_matches.v1` uses SQLite FTS5 over `turn_search_fts`, with `role=user` scoped to `user_message_text`, `role=assistant` scoped to `final_answer_text` and `tool_text`, and `role=both` matching any indexed turn-search column
-- grep matching currently uses ordered FTS phrase search over the normalized indexed text, not unordered keyword-AND matching
-- grep mode applies `--since` and `--until` to matched turns using `turns.started_at`, with inclusive lower-bound and exclusive upper-bound semantics
-- `--context <n>` expands each grep hit to include up to `n` earlier and `n` later turns from the same session, ordered by session group then `turn_ordinal`
-- `--context` currently has a hard maximum of `50`
 - session-scoped data commands do not auto-resolve UUID prefixes; callers must expand prefixes explicitly with `darc query resolve-session`
-- `query files --path <glob>` and `--touched-path <glob>` on `query sessions` / `query turns --grep` currently use the Rust `glob` crate syntax, matched case-insensitively against one canonical project-scoped display path per access
+- `query files --path <glob>` and `--touched-path <glob>` on `query sessions` currently use the Rust `glob` crate syntax, matched case-insensitively against one canonical project-scoped display path per access
 - absolute query paths under the configured project root are normalized down to project-relative form before matching, so `/repo/README.md` and `README.md` hit the same indexed access
 - out-of-project paths are not exposed and do not participate in these path-matching filters
-- turn rows include `primary_model`, `total_token_count`, `token_usage`, `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, `removed_line_count`, plus additive `match_kind` and `match_snippet` fields
+- turn rows include `primary_model`, `total_token_count`, `token_usage`, `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, and `removed_line_count`
 - `primary_model`, `total_token_count`, `token_usage`, and `effective_agent_runtime_ms` may be `null` when the archived provider transcript did not report stable values, or until older projects are re-indexed after additive schema upgrades
 
 ### File pivots
@@ -358,7 +357,7 @@ Today:
 - `session_files` rows report canonical `path`, best-effort `repo_relative_path`, `read_count`, `write_count`, `first_turn_ordinal`, and `last_turn_ordinal`
 - `session_files` rows collapse equivalent absolute, repo-relative, and `./`-prefixed accesses for the same in-repo file onto one canonical display path before counting
 - `session_files` rows omit out-of-project accesses, exclude derived `list` accesses, and omit directory-only operands that Darc filtered during extraction
-- `query sessions --touched-path <glob>` reuses the same project-scoped glob semantics as the file-pivot and grep surfaces
+- `query sessions --touched-path <glob>` reuses the same project-scoped glob semantics as the file-pivot surfaces
 
 ### Session bundles
 
@@ -409,10 +408,20 @@ Today:
 - `mode=keyword` uses SQLite FTS5 over Darc-owned derived per-turn search text
 - keyword search currently indexes `user_message`, `final_answer_text`, and selected derived step text such as commentary, tool names, and delegation summaries
 - keyword search does not currently index raw tool outputs or raw provider payload blobs
+- `mode=literal` treats `--query` as exact plain text and matches it against derived `turn_evidence` rows
+- `mode=regex` treats `--query` as a Rust regular expression and matches it against the same derived `turn_evidence` rows
+- literal and regex search inspect `user_message`, `final_answer`, `commentary`, `reasoning_summary`, `tool_name`,
+  `tool_arguments`, `tool_output`, `delegation_summary`, `delegation_metadata`, `hook_summary`,
+  `attachment_metadata`, and `provider_response_item_metadata` evidence fields
+- metadata evidence rows are compact canonical metadata, not raw provider payload blobs
+- literal and regex search apply project, provider, session, `--since`, and `--until` filters before scanning evidence rows in process
+- literal and regex search return turn hits with nested `matches` entries containing `field` and a bounded `snippet`
+- regex search is not content-index backed and is capped by a candidate-row safety limit; narrow provider, session, or time filters for broad audits
 - `mode=file_name` searches the derived `file_accesses.file_name` basename field
 - `mode=file_path` searches derived path fields from `file_accesses.repo_relative_path` and `file_accesses.path`
-- all search modes return turn identities, top-level turn metadata, and optional `snippet` / `matched_paths` fields
+- all search modes return turn identities, top-level turn metadata, nullable `since` / `until` request echoes, and optional `snippet` / `matched_paths` / `matches` fields
 - `matched_paths` is empty for keyword search and populated for file-name or file-path hits
+- `matches` is empty for keyword and file search and populated for literal or regex hits
 - file-name and file-path search currently use case-insensitive exact/prefix/substring ranking before recency tie-breaks
 - keyword search currently uses FTS ranking before recency tie-breaks
 
