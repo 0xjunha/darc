@@ -5,12 +5,7 @@ use rusqlite::{Connection, params};
 use serde_json::{Map, Value};
 
 use crate::{
-    evidence::{
-        ATTACHMENT_METADATA_FIELD, COMMENTARY_FIELD, DELEGATION_METADATA_FIELD,
-        DELEGATION_SUMMARY_FIELD, FINAL_ANSWER_FIELD, HOOK_SUMMARY_FIELD,
-        PROVIDER_RESPONSE_ITEM_METADATA_FIELD, REASONING_SUMMARY_FIELD, TOOL_ARGUMENTS_FIELD,
-        TOOL_NAME_FIELD, TOOL_OUTPUT_FIELD, USER_MESSAGE_FIELD,
-    },
+    evidence::EvidenceField,
     index_db::schema::{
         DELETE_DERIVED_ANALYTICS_SQL, INSERT_FILE_ACCESS_SQL, INSERT_TOOL_CALL_SQL,
         INSERT_TURN_EVIDENCE_SQL, INSERT_TURN_SEARCH_SQL,
@@ -24,7 +19,7 @@ const MAX_FINAL_ANSWER_SEARCH_CHARS: usize = 2_048;
 
 /// Stores one canonical text fragment used for exact turn evidence search.
 struct TurnEvidenceRecord {
-    field: &'static str,
+    field: EvidenceField,
     text: String,
 }
 
@@ -134,7 +129,7 @@ pub(crate) fn insert_turn_derived_records(
                 i64::try_from(turn_ordinal).context("turn ordinal exceeds SQLite INTEGER range")?,
                 i64::try_from(evidence_ordinal)
                     .context("evidence ordinal exceeds SQLite INTEGER range")?,
-                record.field,
+                record.field.as_str(),
                 record.text.as_str(),
             ])
             .with_context(|| {
@@ -182,9 +177,9 @@ fn derive_turn_evidence_records(
     steps: &[NormalizedTurnStep],
 ) -> Vec<TurnEvidenceRecord> {
     let mut records = Vec::new();
-    push_evidence_record(&mut records, USER_MESSAGE_FIELD, user_message);
+    push_evidence_record(&mut records, EvidenceField::UserMessage, user_message);
     if let Some(final_answer_text) = final_answer_text {
-        push_evidence_record(&mut records, FINAL_ANSWER_FIELD, final_answer_text);
+        push_evidence_record(&mut records, EvidenceField::FinalAnswer, final_answer_text);
     }
 
     for step in steps {
@@ -192,25 +187,25 @@ fn derive_turn_evidence_records(
             NormalizedTurnStep::ToolCall {
                 name, arguments, ..
             } => {
-                push_evidence_record(&mut records, TOOL_NAME_FIELD, name);
-                push_evidence_record(&mut records, TOOL_ARGUMENTS_FIELD, arguments);
+                push_evidence_record(&mut records, EvidenceField::ToolName, name);
+                push_evidence_record(&mut records, EvidenceField::ToolArguments, arguments);
             }
             NormalizedTurnStep::ToolCallOutput { output, .. } => {
-                push_evidence_record(&mut records, TOOL_OUTPUT_FIELD, output);
+                push_evidence_record(&mut records, EvidenceField::ToolOutput, output);
             }
             NormalizedTurnStep::Reasoning { summary, .. } => {
                 for summary in summary {
-                    push_evidence_record(&mut records, REASONING_SUMMARY_FIELD, summary);
+                    push_evidence_record(&mut records, EvidenceField::ReasoningSummary, summary);
                 }
             }
             NormalizedTurnStep::Commentary { text, .. } => {
-                push_evidence_record(&mut records, COMMENTARY_FIELD, text);
+                push_evidence_record(&mut records, EvidenceField::Commentary, text);
             }
             NormalizedTurnStep::Attachment {
                 attachment_type, ..
             } => {
                 let metadata = attachment_metadata_text(attachment_type);
-                push_evidence_record(&mut records, ATTACHMENT_METADATA_FIELD, &metadata);
+                push_evidence_record(&mut records, EvidenceField::AttachmentMetadata, &metadata);
             }
             NormalizedTurnStep::Delegation {
                 call_id,
@@ -223,7 +218,7 @@ fn derive_turn_evidence_records(
                 ..
             } => {
                 if let Some(summary) = summary {
-                    push_evidence_record(&mut records, DELEGATION_SUMMARY_FIELD, summary);
+                    push_evidence_record(&mut records, EvidenceField::DelegationSummary, summary);
                 }
                 let metadata = delegation_metadata_text(
                     call_id.as_deref(),
@@ -233,7 +228,7 @@ fn derive_turn_evidence_records(
                     agent_type.as_deref(),
                     status.as_deref(),
                 );
-                push_evidence_record(&mut records, DELEGATION_METADATA_FIELD, &metadata);
+                push_evidence_record(&mut records, EvidenceField::DelegationMetadata, &metadata);
             }
             NormalizedTurnStep::HookSummary {
                 call_id,
@@ -250,7 +245,7 @@ fn derive_turn_evidence_records(
                     *has_output,
                     level.as_deref(),
                 );
-                push_evidence_record(&mut records, HOOK_SUMMARY_FIELD, &metadata);
+                push_evidence_record(&mut records, EvidenceField::HookSummary, &metadata);
             }
             NormalizedTurnStep::ProviderResponseItem {
                 item_type,
@@ -260,7 +255,7 @@ fn derive_turn_evidence_records(
                 let metadata = provider_response_item_metadata_text(item_type, payload_json);
                 push_evidence_record(
                     &mut records,
-                    PROVIDER_RESPONSE_ITEM_METADATA_FIELD,
+                    EvidenceField::ProviderResponseItemMetadata,
                     &metadata,
                 );
             }
@@ -271,7 +266,7 @@ fn derive_turn_evidence_records(
 }
 
 /// Pushes one non-empty evidence fragment with its stable field label.
-fn push_evidence_record(records: &mut Vec<TurnEvidenceRecord>, field: &'static str, text: &str) {
+fn push_evidence_record(records: &mut Vec<TurnEvidenceRecord>, field: EvidenceField, text: &str) {
     if text.trim().is_empty() {
         return;
     }

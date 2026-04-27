@@ -1,35 +1,48 @@
-/// Identifies one user-prompt evidence row.
-pub const USER_MESSAGE_FIELD: &str = "user_message";
+/// Identifies one stable evidence field label stored in `turn_evidence.field`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvidenceField {
+    /// User prompt text.
+    UserMessage,
+    /// Assistant final-answer text.
+    FinalAnswer,
+    /// Assistant commentary text.
+    Commentary,
+    /// Stored plaintext reasoning-summary text.
+    ReasoningSummary,
+    /// Tool call name.
+    ToolName,
+    /// Tool call arguments.
+    ToolArguments,
+    /// Tool call output.
+    ToolOutput,
+    /// Delegation summary text.
+    DelegationSummary,
+    /// Compact delegation metadata.
+    DelegationMetadata,
+    /// Compact hook-summary metadata.
+    HookSummary,
+    /// Compact attachment metadata.
+    AttachmentMetadata,
+    /// Compact provider-response-item metadata.
+    ProviderResponseItemMetadata,
+}
 
-/// Identifies one assistant-final-answer evidence row.
-pub const FINAL_ANSWER_FIELD: &str = "final_answer";
-
-/// Identifies one assistant-commentary evidence row.
-pub const COMMENTARY_FIELD: &str = "commentary";
-
-/// Identifies one stored plaintext reasoning-summary evidence row.
-pub const REASONING_SUMMARY_FIELD: &str = "reasoning_summary";
-
-/// Identifies one tool-name evidence row.
-pub const TOOL_NAME_FIELD: &str = "tool_name";
-
-/// Identifies one tool-arguments evidence row.
-pub const TOOL_ARGUMENTS_FIELD: &str = "tool_arguments";
-
-/// Identifies one tool-output evidence row.
-pub const TOOL_OUTPUT_FIELD: &str = "tool_output";
-
-/// Identifies one delegation-summary evidence row.
-pub const DELEGATION_SUMMARY_FIELD: &str = "delegation_summary";
-
-/// Identifies one compact delegation-metadata evidence row.
-pub const DELEGATION_METADATA_FIELD: &str = "delegation_metadata";
-
-/// Identifies one compact hook-summary evidence row.
-pub const HOOK_SUMMARY_FIELD: &str = "hook_summary";
-
-/// Identifies one compact attachment-metadata evidence row.
-pub const ATTACHMENT_METADATA_FIELD: &str = "attachment_metadata";
-
-/// Identifies one compact provider-response-item metadata evidence row.
-pub const PROVIDER_RESPONSE_ITEM_METADATA_FIELD: &str = "provider_response_item_metadata";
+impl EvidenceField {
+    /// Returns the stable SQLite and query-protocol label for this evidence field.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::UserMessage => "user_message",
+            Self::FinalAnswer => "final_answer",
+            Self::Commentary => "commentary",
+            Self::ReasoningSummary => "reasoning_summary",
+            Self::ToolName => "tool_name",
+            Self::ToolArguments => "tool_arguments",
+            Self::ToolOutput => "tool_output",
+            Self::DelegationSummary => "delegation_summary",
+            Self::DelegationMetadata => "delegation_metadata",
+            Self::HookSummary => "hook_summary",
+            Self::AttachmentMetadata => "attachment_metadata",
+            Self::ProviderResponseItemMetadata => "provider_response_item_metadata",
+        }
+    }
+}

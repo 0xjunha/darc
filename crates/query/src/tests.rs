@@ -5,11 +5,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use darc_index::{
-    evidence::{
-        ATTACHMENT_METADATA_FIELD, COMMENTARY_FIELD, DELEGATION_METADATA_FIELD,
-        DELEGATION_SUMMARY_FIELD, HOOK_SUMMARY_FIELD, PROVIDER_RESPONSE_ITEM_METADATA_FIELD,
-        REASONING_SUMMARY_FIELD,
-    },
+    evidence::EvidenceField,
     open_index_database,
     policy::{
         ToolAccessKind, active_time_policy, classify_tool_access, derive_file_access_records,
@@ -2311,29 +2307,37 @@ fn search_turns_exact_modes_match_extended_evidence_fields() -> Result<()> {
         (
             SearchMode::Regex,
             "DARC_REASONING_[A-Z]+",
-            REASONING_SUMMARY_FIELD,
+            EvidenceField::ReasoningSummary.as_str(),
         ),
-        (SearchMode::Literal, "DARC_COMMENTARY_BIN", COMMENTARY_FIELD),
+        (
+            SearchMode::Literal,
+            "DARC_COMMENTARY_BIN",
+            EvidenceField::Commentary.as_str(),
+        ),
         (
             SearchMode::Literal,
             "deferred_tools_delta",
-            ATTACHMENT_METADATA_FIELD,
+            EvidenceField::AttachmentMetadata.as_str(),
         ),
         (
             SearchMode::Literal,
             "PLANNER_MARKER",
-            DELEGATION_SUMMARY_FIELD,
+            EvidenceField::DelegationSummary.as_str(),
         ),
         (
             SearchMode::Literal,
             "general-purpose",
-            DELEGATION_METADATA_FIELD,
+            EvidenceField::DelegationMetadata.as_str(),
         ),
-        (SearchMode::Literal, "suggestion", HOOK_SUMMARY_FIELD),
+        (
+            SearchMode::Literal,
+            "suggestion",
+            EvidenceField::HookSummary.as_str(),
+        ),
         (
             SearchMode::Literal,
             "open_page",
-            PROVIDER_RESPONSE_ITEM_METADATA_FIELD,
+            EvidenceField::ProviderResponseItemMetadata.as_str(),
         ),
     ] {
         let result = query_search_turns(
