@@ -18,7 +18,7 @@ pub(crate) use insights::{build_project_insights, build_workspace_insights};
 pub use insights::{query_project_insights, query_workspace_insights};
 pub use projects::{
     list_project_index_aggregates, lookup_project_session_id, query_project_sessions,
-    query_project_turn_matches, query_project_turns, query_resolve_sessions,
+    query_project_turns, query_resolve_sessions,
 };
 use rusqlite::Connection;
 pub use search::query_search_turns;
@@ -272,28 +272,6 @@ pub struct TurnSummary {
     pub changed_file_count: u64,
     pub added_line_count: u64,
     pub removed_line_count: u64,
-    /// Caches the compact row role label for CLI `--view oneline` rendering.
-    #[serde(skip_serializing)]
-    pub oneline_role: TurnSearchRole,
-    pub match_kind: Option<TurnMatchKind>,
-    pub match_snippet: Option<String>,
-}
-
-/// Identifies which turn text fields one grep-style turn query searches.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TurnSearchRole {
-    User,
-    Assistant,
-    Both,
-}
-
-/// Identifies whether one returned turn row matched directly or is surrounding context.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TurnMatchKind {
-    Match,
-    Context,
 }
 
 /// Identifies which turn-list projection one machine client requested.
@@ -317,22 +295,6 @@ pub struct TurnsQueryData {
     pub turns: Vec<TurnSummary>,
 }
 
-/// Stores the grep-scoped turn-match payload for one project.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct TurnMatchesQueryData {
-    pub project_id: String,
-    pub provider: Option<SourceKind>,
-    pub session_id: Option<String>,
-    pub grep: String,
-    pub role: TurnSearchRole,
-    pub context: u64,
-    pub since: Option<String>,
-    pub until: Option<String>,
-    pub touched_path: Option<String>,
-    pub view: TurnsView,
-    pub turns: Vec<TurnSummary>,
-}
-
 /// Collects the supported filters for one machine-readable session-scoped turn-list query.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TurnsQueryRequest<'a> {
@@ -341,22 +303,6 @@ pub struct TurnsQueryRequest<'a> {
     pub session_id: &'a str,
     pub since: Option<&'a str>,
     pub until: Option<&'a str>,
-    pub view: TurnsView,
-}
-
-/// Collects the supported filters for one machine-readable grep-scoped turn query.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TurnMatchesQueryRequest<'a> {
-    pub project_id: &'a str,
-    pub project_root: Option<&'a Path>,
-    pub provider: Option<SourceKind>,
-    pub session_id: Option<&'a str>,
-    pub grep: &'a str,
-    pub role: TurnSearchRole,
-    pub context: usize,
-    pub since: Option<&'a str>,
-    pub until: Option<&'a str>,
-    pub touched_path: Option<&'a str>,
     pub view: TurnsView,
 }
 

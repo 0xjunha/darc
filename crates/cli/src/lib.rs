@@ -8,9 +8,9 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use darc_core::query::{
     DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, FilesQueryRequest, QueryProtocolError,
     ResolveSessionQueryRequest, ResolvedQueryProject, ResolvedSessionMatch, SearchMode,
-    SearchTurnsRequest, SessionBundleView, TurnDetailOptions, TurnSearchRole, TurnsQueryRequest,
-    TurnsView, query_files_for_project, query_project_insight_report_for_project,
-    query_resolve_sessions, query_search_turns_for_project, query_session_bundle_for_project,
+    SearchTurnsRequest, SessionBundleView, TurnDetailOptions, TurnsQueryRequest, TurnsView,
+    query_files_for_project, query_project_insight_report_for_project, query_resolve_sessions,
+    query_search_turns_for_project, query_session_bundle_for_project,
     query_session_files_for_project, query_sessions_for_project, query_turn_for_project,
     query_turn_insight_report_for_project, query_turns_for_project, query_workspace,
     query_workspace_insight_report, resolve_query_project, resolve_query_session_id_for_project,
@@ -1201,7 +1201,7 @@ fn turn_list_view_arg_to_view(view: TurnListViewArg) -> TurnsView {
 #[derive(Debug, Clone, Serialize)]
 struct TurnsOnelineTurnRow {
     turn_ordinal: u64,
-    role: TurnSearchRole,
+    role: &'static str,
     user_preview: String,
     step_count: u64,
     tool_call_count: u64,
@@ -1234,7 +1234,7 @@ impl TurnsOnelineQueryData {
                 .iter()
                 .map(|turn| TurnsOnelineTurnRow {
                     turn_ordinal: turn.turn_ordinal,
-                    role: turn.oneline_role,
+                    role: "user",
                     user_preview: turn.oneline_user_preview.clone(),
                     step_count: turn.step_count,
                     tool_call_count: turn.tool_call_count,

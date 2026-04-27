@@ -867,11 +867,6 @@ pub(crate) fn build_fts_query(query: &str) -> Result<String> {
         .join(" "))
 }
 
-/// Converts one free-form grep query into one ordered FTS phrase expression.
-pub(crate) fn build_fts_phrase_query(query: &str) -> Result<String> {
-    Ok(format!("\"{}\"", tokenize_fts_query(query)?.join(" ")))
-}
-
 /// Tokenizes one free-form text query into the normalized FTS terms Darc indexes.
 fn tokenize_fts_query(query: &str) -> Result<Vec<String>> {
     let tokens = query
