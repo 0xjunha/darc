@@ -2561,6 +2561,85 @@ fn search_turns_exact_modes_cap_nested_matches() -> Result<()> {
 }
 
 #[test]
+fn search_turns_literal_filters_evidence_before_preview_cap() -> Result<()> {
+    const NON_MATCHING_EVIDENCE_ROWS: usize = 50;
+
+    let index_path = test_index_path("search-literal-filtered-evidence");
+    let mut connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            user_message: "turn with one late literal evidence match",
+            step_count: 0,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                0,
+                "2026-04-06T10:00:00Z",
+                "completed",
+                "[]",
+            )
+        },
+    )?;
+    insert_turn_evidence_rows(
+        &mut connection,
+        SyntheticEvidenceRows {
+            project_id: "repo-a",
+            provider: SourceKind::Codex,
+            session_id: "session-1",
+            turn_ordinal: 0,
+            first_evidence_ordinal: 1,
+            row_count: NON_MATCHING_EVIDENCE_ROWS,
+            text: "nonmatching evidence",
+        },
+    )?;
+    insert_turn_evidence_rows(
+        &mut connection,
+        SyntheticEvidenceRows {
+            project_id: "repo-a",
+            provider: SourceKind::Codex,
+            session_id: "session-1",
+            turn_ordinal: 0,
+            first_evidence_ordinal: NON_MATCHING_EVIDENCE_ROWS + 1,
+            row_count: 1,
+            text: "late-literal-marker evidence",
+        },
+    )?;
+
+    let result = query_search_turns(
+        &index_path,
+        SearchTurnsRequest {
+            project_id: "repo-a",
+            mode: SearchMode::Literal,
+            query: "late-literal-marker",
+            provider: None,
+            session_id: None,
+            since: None,
+            until: None,
+            limit: 1,
+            offset: 0,
+        },
+    )?;
+
+    assert_eq!(result.hits.len(), 1);
+    assert_eq!(result.hits[0].matches.len(), 1);
+    assert_eq!(result.hits[0].matches[0].field, "tool_output");
+    assert!(!result.hits[0].matches_truncated);
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
 fn search_turns_literal_streams_past_legacy_candidate_cap() -> Result<()> {
     const NON_MATCHING_EVIDENCE_ROWS: usize = 50_001;
 

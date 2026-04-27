@@ -86,6 +86,57 @@ const EVIDENCE_SEARCH_TURNS_SQL: &str = "
     LIMIT ?10
 ";
 
+const LITERAL_EVIDENCE_SEARCH_TURNS_SQL: &str = "
+    SELECT
+        provider,
+        session_id,
+        turn_ordinal,
+        started_at,
+        completed_at,
+        status,
+        user_message
+    FROM turns
+    WHERE project_id = ?1
+        AND (?2 IS NULL OR provider = ?2)
+        AND (?3 IS NULL OR session_id = ?3)
+        AND (?4 IS NULL OR julianday(started_at) >= julianday(?4))
+        AND (?5 IS NULL OR julianday(started_at) < julianday(?5))
+        AND (
+            ?6 IS NULL
+            OR started_at < ?6
+            OR (
+                started_at = ?6
+                AND (
+                    provider > ?7
+                    OR (
+                        provider = ?7
+                        AND session_id > ?8
+                    )
+                    OR (
+                        provider = ?7
+                        AND session_id = ?8
+                        AND turn_ordinal > ?9
+                    )
+                )
+            )
+        )
+        AND EXISTS (
+            SELECT 1
+            FROM turn_evidence
+            WHERE turn_evidence.project_id = turns.project_id
+                AND turn_evidence.provider = turns.provider
+                AND turn_evidence.session_id = turns.session_id
+                AND turn_evidence.turn_ordinal = turns.turn_ordinal
+                AND instr(turn_evidence.text, ?10) > 0
+        )
+    ORDER BY
+        started_at DESC,
+        provider ASC,
+        session_id ASC,
+        turn_ordinal ASC
+    LIMIT ?11
+";
+
 const TURN_EVIDENCE_ROWS_SQL: &str = "
     SELECT
         field,
@@ -96,6 +147,20 @@ const TURN_EVIDENCE_ROWS_SQL: &str = "
         AND session_id = ?3
         AND turn_ordinal = ?4
     ORDER BY evidence_ordinal ASC
+";
+
+const LITERAL_TURN_EVIDENCE_ROWS_SQL: &str = "
+    SELECT
+        field,
+        text
+    FROM turn_evidence
+    WHERE project_id = ?1
+        AND provider = ?2
+        AND session_id = ?3
+        AND turn_ordinal = ?4
+        AND instr(text, ?5) > 0
+    ORDER BY evidence_ordinal ASC
+    LIMIT ?6
 ";
 
 const EVIDENCE_SEARCH_TURN_BATCH_ROWS: usize = 1_000;
@@ -217,8 +282,7 @@ struct EvidenceTextRow {
 }
 
 /// Stores the exact text-matching strategy for one evidence search request.
-enum EvidenceMatcher<'a> {
-    Literal(&'a str),
+enum EvidenceMatcher {
     Regex(Regex),
 }
 
@@ -451,62 +515,108 @@ fn query_evidence_hits(
     connection: &Connection,
     request: EvidenceSearchRequest<'_>,
 ) -> Result<Vec<SearchTurnHit>> {
-    let matcher = build_evidence_matcher(request.mode, request.query)?;
-    query_evidence_hits_by_turn(connection, request, &matcher)
+    match request.mode {
+        SearchMode::Literal => query_literal_evidence_hits_by_turn(connection, request),
+        SearchMode::Regex => {
+            let matcher = build_regex_matcher(request.query)?;
+            query_regex_evidence_hits_by_turn(connection, request, &matcher)
+        }
+        SearchMode::Keyword | SearchMode::FileName | SearchMode::FilePath => {
+            unreachable!("only exact evidence modes use evidence search")
+        }
+    }
 }
 
-/// Queries exact evidence matches by scanning turn evidence in turn result order.
-fn query_evidence_hits_by_turn(
+/// Queries regex evidence matches by scanning turn evidence in turn result order.
+fn query_regex_evidence_hits_by_turn(
     connection: &Connection,
     request: EvidenceSearchRequest<'_>,
-    matcher: &EvidenceMatcher<'_>,
+    matcher: &EvidenceMatcher,
 ) -> Result<Vec<SearchTurnHit>> {
     let scope = request.scope;
-    let page_end = request
-        .offset
-        .checked_add(request.limit)
-        .context("search pagination exceeds usize range")?;
-    let turn_limit = i64::try_from(EVIDENCE_SEARCH_TURN_BATCH_ROWS)
-        .context("evidence turn batch size exceeds SQLite INTEGER range")?;
     let mut turn_statement = connection
         .prepare(EVIDENCE_SEARCH_TURNS_SQL)
         .context("failed to prepare evidence turn search query")?;
     let mut evidence_statement = connection
         .prepare(TURN_EVIDENCE_ROWS_SQL)
         .context("failed to prepare turn evidence row query")?;
-    let mut hits = Vec::<SearchTurnHit>::new();
-    let mut cursor = None::<EvidenceTurnCursor>;
 
-    loop {
-        let cursor_started_at = cursor.as_ref().map(|value| value.started_at.clone());
-        let cursor_provider = cursor.as_ref().map(|value| value.provider.clone());
-        let cursor_session_id = cursor.as_ref().map(|value| value.session_id.clone());
-        let cursor_turn_ordinal = cursor.as_ref().map(|value| value.turn_ordinal);
-        let mut rows = turn_statement
-            .query(params![
-                scope.project_id,
-                scope.provider,
-                scope.session_id,
-                scope.since,
-                scope.until,
-                cursor_started_at.as_deref(),
-                cursor_provider.as_deref(),
-                cursor_session_id.as_deref(),
-                cursor_turn_ordinal,
-                turn_limit
-            ])
-            .context("failed to query evidence search turns")?;
-        let mut batch_rows = 0_usize;
-        while let Some(row) = rows.next().context("failed to read evidence search turn")? {
-            batch_rows = batch_rows.saturating_add(1);
-            let turn = read_evidence_search_turn(row)?;
-            cursor = Some(EvidenceTurnCursor::from_turn(&turn));
-            if let Some(hit) = query_evidence_hit_for_turn(
+    collect_evidence_hits_by_turn(
+        request,
+        |cursor, turn_limit| {
+            query_regex_evidence_turn_batch(&mut turn_statement, scope, cursor, turn_limit)
+        },
+        |turn| {
+            query_regex_evidence_hit_for_turn(
                 &mut evidence_statement,
                 scope.project_id,
                 turn,
                 matcher,
-            )? {
+            )
+        },
+    )
+}
+
+/// Queries literal evidence matches by letting SQLite discard nonmatching evidence rows.
+fn query_literal_evidence_hits_by_turn(
+    connection: &Connection,
+    request: EvidenceSearchRequest<'_>,
+) -> Result<Vec<SearchTurnHit>> {
+    let scope = request.scope;
+    let mut turn_statement = connection
+        .prepare(LITERAL_EVIDENCE_SEARCH_TURNS_SQL)
+        .context("failed to prepare literal evidence turn search query")?;
+    let mut evidence_statement = connection
+        .prepare(LITERAL_TURN_EVIDENCE_ROWS_SQL)
+        .context("failed to prepare literal turn evidence row query")?;
+
+    collect_evidence_hits_by_turn(
+        request,
+        |cursor, turn_limit| {
+            query_literal_evidence_turn_batch(
+                &mut turn_statement,
+                scope,
+                cursor,
+                request.query,
+                turn_limit,
+            )
+        },
+        |turn| {
+            query_literal_evidence_hit_for_turn(
+                &mut evidence_statement,
+                scope.project_id,
+                turn,
+                request.query,
+            )
+        },
+    )
+}
+
+/// Collects turn hits from a turn-batch query and a per-turn evidence matcher.
+fn collect_evidence_hits_by_turn<QueryTurns, QueryHit>(
+    request: EvidenceSearchRequest<'_>,
+    mut query_turns: QueryTurns,
+    mut query_hit: QueryHit,
+) -> Result<Vec<SearchTurnHit>>
+where
+    QueryTurns: FnMut(Option<&EvidenceTurnCursor>, i64) -> Result<Vec<EvidenceSearchTurn>>,
+    QueryHit: FnMut(EvidenceSearchTurn) -> Result<Option<SearchTurnHit>>,
+{
+    let page_end = request
+        .offset
+        .checked_add(request.limit)
+        .context("search pagination exceeds usize range")?;
+    let turn_limit = i64::try_from(EVIDENCE_SEARCH_TURN_BATCH_ROWS)
+        .context("evidence turn batch size exceeds SQLite INTEGER range")?;
+    let mut hits = Vec::<SearchTurnHit>::new();
+    let mut cursor = None::<EvidenceTurnCursor>;
+
+    loop {
+        let turns = query_turns(cursor.as_ref(), turn_limit)?;
+        let batch_rows = turns.len();
+        for turn in turns {
+            cursor = Some(EvidenceTurnCursor::from_turn(&turn));
+            if let Some(hit) = query_hit(turn)? {
                 hits.push(hit);
                 if hits.len() > page_end {
                     return Ok(hits);
@@ -522,12 +632,129 @@ fn query_evidence_hits_by_turn(
     Ok(hits)
 }
 
-/// Queries and matches all evidence rows for one candidate turn.
-fn query_evidence_hit_for_turn(
+/// Queries one regex candidate-turn batch without filtering evidence text in SQLite.
+fn query_regex_evidence_turn_batch(
+    statement: &mut rusqlite::Statement<'_>,
+    scope: SearchScope<'_>,
+    cursor: Option<&EvidenceTurnCursor>,
+    turn_limit: i64,
+) -> Result<Vec<EvidenceSearchTurn>> {
+    let cursor_started_at = cursor.map(|value| value.started_at.as_str());
+    let cursor_provider = cursor.map(|value| value.provider.as_str());
+    let cursor_session_id = cursor.map(|value| value.session_id.as_str());
+    let cursor_turn_ordinal = cursor.map(|value| value.turn_ordinal);
+    let mut rows = statement
+        .query(params![
+            scope.project_id,
+            scope.provider,
+            scope.session_id,
+            scope.since,
+            scope.until,
+            cursor_started_at,
+            cursor_provider,
+            cursor_session_id,
+            cursor_turn_ordinal,
+            turn_limit
+        ])
+        .context("failed to query evidence search turns")?;
+    let mut turns = Vec::new();
+    while let Some(row) = rows.next().context("failed to read evidence search turn")? {
+        turns.push(read_evidence_search_turn(row)?);
+    }
+    Ok(turns)
+}
+
+/// Queries one literal candidate-turn batch with SQLite text prefiltering.
+fn query_literal_evidence_turn_batch(
+    statement: &mut rusqlite::Statement<'_>,
+    scope: SearchScope<'_>,
+    cursor: Option<&EvidenceTurnCursor>,
+    query: &str,
+    turn_limit: i64,
+) -> Result<Vec<EvidenceSearchTurn>> {
+    let cursor_started_at = cursor.map(|value| value.started_at.as_str());
+    let cursor_provider = cursor.map(|value| value.provider.as_str());
+    let cursor_session_id = cursor.map(|value| value.session_id.as_str());
+    let cursor_turn_ordinal = cursor.map(|value| value.turn_ordinal);
+    let mut rows = statement
+        .query(params![
+            scope.project_id,
+            scope.provider,
+            scope.session_id,
+            scope.since,
+            scope.until,
+            cursor_started_at,
+            cursor_provider,
+            cursor_session_id,
+            cursor_turn_ordinal,
+            query,
+            turn_limit
+        ])
+        .context("failed to query literal evidence search turns")?;
+    let mut turns = Vec::new();
+    while let Some(row) = rows
+        .next()
+        .context("failed to read literal evidence search turn")?
+    {
+        turns.push(read_evidence_search_turn(row)?);
+    }
+    Ok(turns)
+}
+
+/// Queries matching literal evidence rows for one already-matched turn.
+fn query_literal_evidence_hit_for_turn(
     statement: &mut rusqlite::Statement<'_>,
     project_id: &str,
     turn: EvidenceSearchTurn,
-    matcher: &EvidenceMatcher<'_>,
+    query: &str,
+) -> Result<Option<SearchTurnHit>> {
+    let match_limit = i64::try_from(MAX_EVIDENCE_MATCHES_PER_TURN.saturating_add(1))
+        .context("evidence match preview limit exceeds SQLite INTEGER range")?;
+    let mut rows = statement
+        .query(params![
+            project_id,
+            turn.provider_key.as_str(),
+            turn.session_id.as_str(),
+            turn.turn_ordinal_key,
+            query,
+            match_limit
+        ])
+        .context("failed to query literal turn evidence rows")?;
+    let mut matches = Vec::<SearchTurnMatch>::new();
+    let mut matches_truncated = false;
+    while let Some(row) = rows
+        .next()
+        .context("failed to read literal turn evidence row")?
+    {
+        let evidence = read_evidence_text_row(row)?;
+        if let Some(range) = literal_match_range(&evidence.text, query) {
+            if matches.len() >= MAX_EVIDENCE_MATCHES_PER_TURN {
+                matches_truncated = true;
+                break;
+            }
+            matches.push(SearchTurnMatch {
+                field: evidence.field,
+                snippet: evidence_snippet(&evidence.text, range),
+            });
+        }
+    }
+    if matches.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(build_evidence_search_hit(
+        turn,
+        matches,
+        matches_truncated,
+    )))
+}
+
+/// Queries and matches all evidence rows for one regex candidate turn.
+fn query_regex_evidence_hit_for_turn(
+    statement: &mut rusqlite::Statement<'_>,
+    project_id: &str,
+    turn: EvidenceSearchTurn,
+    matcher: &EvidenceMatcher,
 ) -> Result<Option<SearchTurnHit>> {
     let mut rows = statement
         .query(params![
@@ -556,7 +783,20 @@ fn query_evidence_hit_for_turn(
         return Ok(None);
     }
 
-    Ok(Some(SearchTurnHit {
+    Ok(Some(build_evidence_search_hit(
+        turn,
+        matches,
+        matches_truncated,
+    )))
+}
+
+/// Builds one exact evidence-search hit from matched evidence previews.
+fn build_evidence_search_hit(
+    turn: EvidenceSearchTurn,
+    matches: Vec<SearchTurnMatch>,
+    matches_truncated: bool,
+) -> SearchTurnHit {
+    SearchTurnHit {
         provider: turn.provider,
         session_id: turn.session_id,
         turn_ordinal: turn.turn_ordinal,
@@ -568,7 +808,7 @@ fn query_evidence_hit_for_turn(
         matched_paths: Vec::new(),
         matches,
         matches_truncated,
-    }))
+    }
 }
 
 impl EvidenceTurnCursor {
@@ -583,35 +823,31 @@ impl EvidenceTurnCursor {
     }
 }
 
-/// Builds the literal or regex matcher used by exact evidence search.
-fn build_evidence_matcher<'a>(mode: SearchMode, query: &'a str) -> Result<EvidenceMatcher<'a>> {
-    match mode {
-        SearchMode::Literal => Ok(EvidenceMatcher::Literal(query)),
-        SearchMode::Regex => {
-            if query.chars().count() > MAX_REGEX_QUERY_CHARS {
-                bail!("regex query must be at most {MAX_REGEX_QUERY_CHARS} characters");
-            }
-            let regex = RegexBuilder::new(query)
-                .size_limit(REGEX_SIZE_LIMIT_BYTES)
-                .dfa_size_limit(REGEX_DFA_SIZE_LIMIT_BYTES)
-                .build()
-                .context("invalid regex search query")?;
-            Ok(EvidenceMatcher::Regex(regex))
-        }
-        SearchMode::Keyword | SearchMode::FileName | SearchMode::FilePath => {
-            unreachable!("only exact evidence modes use evidence matchers")
+/// Builds the regex matcher used by exact evidence search.
+fn build_regex_matcher(query: &str) -> Result<EvidenceMatcher> {
+    if query.chars().count() > MAX_REGEX_QUERY_CHARS {
+        bail!("regex query must be at most {MAX_REGEX_QUERY_CHARS} characters");
+    }
+    let regex = RegexBuilder::new(query)
+        .size_limit(REGEX_SIZE_LIMIT_BYTES)
+        .dfa_size_limit(REGEX_DFA_SIZE_LIMIT_BYTES)
+        .build()
+        .context("invalid regex search query")?;
+    Ok(EvidenceMatcher::Regex(regex))
+}
+
+impl EvidenceMatcher {
+    /// Returns the first matching byte range in one evidence string.
+    fn find_match(&self, text: &str) -> Option<Range<usize>> {
+        match self {
+            Self::Regex(regex) => regex.find(text).map(|matched| matched.range()),
         }
     }
 }
 
-impl EvidenceMatcher<'_> {
-    /// Returns the first matching byte range in one evidence string.
-    fn find_match(&self, text: &str) -> Option<Range<usize>> {
-        match self {
-            Self::Literal(query) => text.find(query).map(|start| start..start + query.len()),
-            Self::Regex(regex) => regex.find(text).map(|matched| matched.range()),
-        }
-    }
+/// Returns the first literal matching byte range in one evidence string.
+fn literal_match_range(text: &str, query: &str) -> Option<Range<usize>> {
+    text.find(query).map(|start| start..start + query.len())
 }
 
 /// Reads one candidate turn for turn-ordered evidence search.
@@ -1012,8 +1248,14 @@ pub(super) fn smoke_test_sql(connection: &Connection) -> Result<()> {
         .prepare(EVIDENCE_SEARCH_TURNS_SQL)
         .context("failed to prepare evidence turn search query")?;
     connection
+        .prepare(LITERAL_EVIDENCE_SEARCH_TURNS_SQL)
+        .context("failed to prepare literal evidence turn search query")?;
+    connection
         .prepare(TURN_EVIDENCE_ROWS_SQL)
         .context("failed to prepare turn evidence row query")?;
+    connection
+        .prepare(LITERAL_TURN_EVIDENCE_ROWS_SQL)
+        .context("failed to prepare literal turn evidence row query")?;
     for kind in [FileSearchKind::Name, FileSearchKind::Path] {
         for stage in [
             FileSearchStage::Exact,

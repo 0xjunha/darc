@@ -414,7 +414,9 @@ Today:
   `tool_arguments`, `tool_output`, `delegation_summary`, `delegation_metadata`, `hook_summary`,
   `attachment_metadata`, and `provider_response_item_metadata` evidence fields
 - metadata evidence rows are compact canonical metadata, not raw provider payload blobs
-- literal and regex search apply project, provider, session, `--since`, and `--until` filters in SQLite, then scan matching turns in result order and match derived evidence rows in process
+- literal and regex search apply project, provider, session, `--since`, and `--until` filters in SQLite, then scan matching turns in result order
+- literal search uses SQLite exact substring predicates to discard nonmatching evidence rows before Darc builds match previews
+- regex search scans derived evidence rows in process because SQLite does not evaluate Darc's Rust regular expressions
 - literal and regex search stop after finding `offset + limit + 1` matching turn hits or after exhausting the filtered turn corpus, so rare or absent exact queries may scan the full filtered project scope
 - literal and regex search return turn hits with nested `matches` entries containing `field` and a bounded `snippet`
 - each literal or regex turn hit returns at most 20 nested `matches`; `matches_truncated=true` means additional matching evidence rows in that turn were omitted from the preview
