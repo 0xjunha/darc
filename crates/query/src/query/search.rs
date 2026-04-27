@@ -1,11 +1,12 @@
-use std::{collections::BTreeSet, path::Path};
+use std::{collections::BTreeSet, ops::Range, path::Path};
 
 use anyhow::{Context, Result, bail};
 use darc_paths::SourceKind;
+use regex::{Regex, RegexBuilder};
 use rusqlite::{Connection, params};
 
 use super::{
-    SearchMode, SearchTurnHit, SearchTurnsQueryData, SearchTurnsRequest,
+    SearchMode, SearchTurnHit, SearchTurnMatch, SearchTurnsQueryData, SearchTurnsRequest,
     open_existing_index_database, parse_provider, parse_turn_status, preview_text,
     sql_count_to_u64,
 };
@@ -31,15 +32,56 @@ const KEYWORD_SEARCH_SQL: &str = "
     WHERE turn_search.project_id = ?1
         AND (?2 IS NULL OR turn_search.provider = ?2)
         AND (?3 IS NULL OR turn_search.session_id = ?3)
-        AND turn_search_fts MATCH ?4
+        AND (?4 IS NULL OR julianday(turns.started_at) >= julianday(?4))
+        AND (?5 IS NULL OR julianday(turns.started_at) < julianday(?5))
+        AND turn_search_fts MATCH ?6
     ORDER BY
         bm25(turn_search_fts) ASC,
         turns.started_at DESC,
         turn_search.provider ASC,
         turn_search.session_id ASC,
         turn_search.turn_ordinal ASC
-    LIMIT ?5 OFFSET ?6
+    LIMIT ?7 OFFSET ?8
 ";
+
+const EVIDENCE_SEARCH_SQL: &str = "
+    SELECT
+        turn_evidence.provider,
+        turn_evidence.session_id,
+        turn_evidence.turn_ordinal,
+        turns.started_at,
+        turns.completed_at,
+        turns.status,
+        turns.user_message,
+        turn_evidence.evidence_ordinal,
+        turn_evidence.field,
+        turn_evidence.text
+    FROM turn_evidence
+    INNER JOIN turns
+        ON turns.project_id = turn_evidence.project_id
+        AND turns.provider = turn_evidence.provider
+        AND turns.session_id = turn_evidence.session_id
+        AND turns.turn_ordinal = turn_evidence.turn_ordinal
+    WHERE turn_evidence.project_id = ?1
+        AND (?2 IS NULL OR turn_evidence.provider = ?2)
+        AND (?3 IS NULL OR turn_evidence.session_id = ?3)
+        AND (?4 IS NULL OR julianday(turns.started_at) >= julianday(?4))
+        AND (?5 IS NULL OR julianday(turns.started_at) < julianday(?5))
+        AND (?6 IS NULL OR instr(turn_evidence.text, ?6) > 0)
+    ORDER BY
+        turns.started_at DESC,
+        turn_evidence.provider ASC,
+        turn_evidence.session_id ASC,
+        turn_evidence.turn_ordinal ASC,
+        turn_evidence.evidence_ordinal ASC
+    LIMIT ?7
+";
+
+const MAX_EVIDENCE_CANDIDATE_ROWS: usize = 50_000;
+const MAX_REGEX_QUERY_CHARS: usize = 1_024;
+const REGEX_SIZE_LIMIT_BYTES: usize = 1_000_000;
+const REGEX_DFA_SIZE_LIMIT_BYTES: usize = 1_000_000;
+const SEARCH_SNIPPET_CONTEXT_CHARS: usize = 80;
 
 /// Identifies one file-search mode that shares the staged query pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,12 +126,68 @@ struct FileSearchHitAccumulator {
 
 type SearchTurnKey = (SourceKind, String, u64);
 
-/// Stores one concrete staged file-search request.
+/// Stores shared filters applied by every turn-search mode.
 #[derive(Debug, Clone, Copy)]
-struct FileSearchStageRequest<'a> {
+struct SearchScope<'a> {
     project_id: &'a str,
     provider: Option<&'a str>,
     session_id: Option<&'a str>,
+    since: Option<&'a str>,
+    until: Option<&'a str>,
+}
+
+/// Stores one keyword search request after CLI/project resolution.
+#[derive(Debug, Clone, Copy)]
+struct KeywordSearchRequest<'a> {
+    scope: SearchScope<'a>,
+    query: &'a str,
+    limit: usize,
+    offset: usize,
+}
+
+/// Stores one exact evidence search request after CLI/project resolution.
+#[derive(Debug, Clone, Copy)]
+struct EvidenceSearchRequest<'a> {
+    scope: SearchScope<'a>,
+    mode: SearchMode,
+    query: &'a str,
+    limit: usize,
+    offset: usize,
+}
+
+/// Stores one file search request after CLI/project resolution.
+#[derive(Debug, Clone, Copy)]
+struct FileSearchRequest<'a> {
+    scope: SearchScope<'a>,
+    query: &'a str,
+    kind: FileSearchKind,
+    desired_hit_count: usize,
+}
+
+/// Stores one candidate evidence row before in-process matching.
+#[derive(Debug, Clone)]
+struct EvidenceSearchRow {
+    provider: SourceKind,
+    session_id: String,
+    turn_ordinal: u64,
+    started_at: String,
+    completed_at: Option<String>,
+    status: darc_rollout::model::NormalizedTurnStatus,
+    user_preview: String,
+    field: String,
+    text: String,
+}
+
+/// Stores the exact text-matching strategy for one evidence search request.
+enum EvidenceMatcher<'a> {
+    Literal(&'a str),
+    Regex(Regex),
+}
+
+/// Stores one concrete staged file-search request.
+#[derive(Debug, Clone, Copy)]
+struct FileSearchStageRequest<'a> {
+    scope: SearchScope<'a>,
     kind: FileSearchKind,
     stage: FileSearchStage,
     pattern: &'a str,
@@ -112,15 +210,21 @@ fn build_search_turns(
 ) -> Result<SearchTurnsQueryData> {
     let project_id = request.project_id;
     let mode = request.mode;
-    let query = request.query.trim();
+    let query = search_query_for_mode(mode, request.query)?;
     let response_provider = request.provider;
     let provider_filter = response_provider.map(SourceKind::directory_name);
     let session_id = request.session_id;
+    let since = request.since;
+    let until = request.until;
     let limit = request.limit;
     let offset = request.offset;
-    if query.is_empty() {
-        bail!("search query must not be empty");
-    }
+    let scope = SearchScope {
+        project_id,
+        provider: provider_filter,
+        session_id,
+        since,
+        until,
+    };
 
     let hits = match mode {
         SearchMode::Keyword => {
@@ -129,12 +233,12 @@ fn build_search_turns(
                 .context("search limit exceeds usize range")?;
             let has_more_hits = query_keyword_hits(
                 connection,
-                project_id,
-                provider_filter,
-                session_id,
-                query,
-                limit_plus_one,
-                offset,
+                KeywordSearchRequest {
+                    scope,
+                    query,
+                    limit: limit_plus_one,
+                    offset,
+                },
             )?;
             let has_more = has_more_hits.len() > limit;
             let hits = has_more_hits.into_iter().take(limit).collect::<Vec<_>>();
@@ -144,12 +248,24 @@ fn build_search_turns(
                 query: query.to_owned(),
                 provider: response_provider,
                 session_id: session_id.map(str::to_owned),
+                since: since.map(str::to_owned),
+                until: until.map(str::to_owned),
                 limit: u64::try_from(limit).context("search limit exceeds u64 range")?,
                 offset: u64::try_from(offset).context("search offset exceeds u64 range")?,
                 has_more,
                 hits,
             });
         }
+        SearchMode::Literal | SearchMode::Regex => query_evidence_hits(
+            connection,
+            EvidenceSearchRequest {
+                scope,
+                mode,
+                query,
+                limit,
+                offset,
+            },
+        )?,
         SearchMode::FileName | SearchMode::FilePath => {
             let desired_hit_count = offset
                 .checked_add(limit)
@@ -157,16 +273,18 @@ fn build_search_turns(
                 .context("search pagination exceeds usize range")?;
             query_file_hits(
                 connection,
-                project_id,
-                provider_filter,
-                session_id,
-                query,
-                match mode {
-                    SearchMode::FileName => FileSearchKind::Name,
-                    SearchMode::FilePath => FileSearchKind::Path,
-                    SearchMode::Keyword => unreachable!("handled above"),
+                FileSearchRequest {
+                    scope,
+                    query,
+                    kind: match mode {
+                        SearchMode::FileName => FileSearchKind::Name,
+                        SearchMode::FilePath => FileSearchKind::Path,
+                        SearchMode::Keyword | SearchMode::Literal | SearchMode::Regex => {
+                            unreachable!("handled above")
+                        }
+                    },
+                    desired_hit_count,
                 },
-                desired_hit_count,
             )?
         }
     };
@@ -187,6 +305,8 @@ fn build_search_turns(
         query: query.to_owned(),
         provider: response_provider,
         session_id: session_id.map(str::to_owned),
+        since: since.map(str::to_owned),
+        until: until.map(str::to_owned),
         limit: u64::try_from(limit).context("search limit exceeds u64 range")?,
         offset: u64::try_from(offset).context("search offset exceeds u64 range")?,
         has_more,
@@ -194,25 +314,51 @@ fn build_search_turns(
     })
 }
 
+/// Returns the query text with mode-specific exactness rules applied.
+fn search_query_for_mode(mode: SearchMode, query: &str) -> Result<&str> {
+    match mode {
+        SearchMode::Literal | SearchMode::Regex => {
+            if query.is_empty() {
+                bail!("search query must not be empty");
+            }
+            Ok(query)
+        }
+        SearchMode::Keyword | SearchMode::FileName | SearchMode::FilePath => {
+            let query = query.trim();
+            if query.is_empty() {
+                bail!("search query must not be empty");
+            }
+            Ok(query)
+        }
+    }
+}
+
 /// Queries keyword search hits ordered by FTS relevance and latest activity.
 fn query_keyword_hits(
     connection: &Connection,
-    project_id: &str,
-    provider: Option<&str>,
-    session_id: Option<&str>,
-    query: &str,
-    limit: usize,
-    offset: usize,
+    request: KeywordSearchRequest<'_>,
 ) -> Result<Vec<SearchTurnHit>> {
-    let fts_query = build_fts_query(query)?;
-    let limit = i64::try_from(limit).context("search limit exceeds SQLite INTEGER range")?;
-    let offset = i64::try_from(offset).context("search offset exceeds SQLite INTEGER range")?;
+    let scope = request.scope;
+    let fts_query = build_fts_query(request.query)?;
+    let limit =
+        i64::try_from(request.limit).context("search limit exceeds SQLite INTEGER range")?;
+    let offset =
+        i64::try_from(request.offset).context("search offset exceeds SQLite INTEGER range")?;
     let mut statement = connection
         .prepare(KEYWORD_SEARCH_SQL)
         .context("failed to prepare keyword search query")?;
     let rows = statement
         .query_map(
-            params![project_id, provider, session_id, fts_query, limit, offset],
+            params![
+                scope.project_id,
+                scope.provider,
+                scope.session_id,
+                scope.since,
+                scope.until,
+                fts_query,
+                limit,
+                offset
+            ],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -254,22 +400,183 @@ fn query_keyword_hits(
                         .filter(|value| !value.trim().is_empty())
                         .or_else(|| Some(preview_text(&user_message))),
                     matched_paths: Vec::new(),
+                    matches: Vec::new(),
                 })
             },
         )
         .collect()
 }
 
+/// Queries exact evidence search hits and groups matching rows back into turns.
+fn query_evidence_hits(
+    connection: &Connection,
+    request: EvidenceSearchRequest<'_>,
+) -> Result<Vec<SearchTurnHit>> {
+    let scope = request.scope;
+    let matcher = build_evidence_matcher(request.mode, request.query)?;
+    let page_end = request
+        .offset
+        .checked_add(request.limit)
+        .context("search pagination exceeds usize range")?;
+    let row_limit = i64::try_from(
+        MAX_EVIDENCE_CANDIDATE_ROWS
+            .checked_add(1)
+            .context("evidence row safety limit exceeds usize range")?,
+    )
+    .context("evidence row safety limit exceeds SQLite INTEGER range")?;
+    let literal_filter = matches!(request.mode, SearchMode::Literal).then_some(request.query);
+    let mut statement = connection
+        .prepare(EVIDENCE_SEARCH_SQL)
+        .context("failed to prepare evidence search query")?;
+    let mut rows = statement
+        .query(params![
+            scope.project_id,
+            scope.provider,
+            scope.session_id,
+            scope.since,
+            scope.until,
+            literal_filter,
+            row_limit
+        ])
+        .context("failed to query evidence search rows")?;
+
+    let mut hits = Vec::<SearchTurnHit>::new();
+    let mut current_key = None::<SearchTurnKey>;
+    let mut scanned_rows = 0_usize;
+    let mut hit_limit_satisfied = false;
+    while let Some(row) = rows.next().context("failed to read evidence search row")? {
+        scanned_rows = scanned_rows.saturating_add(1);
+        if scanned_rows > MAX_EVIDENCE_CANDIDATE_ROWS {
+            break;
+        }
+
+        let row = read_evidence_search_row(row)?;
+        if let Some(range) = matcher.find_match(&row.text) {
+            let key = (row.provider, row.session_id.clone(), row.turn_ordinal);
+            if current_key.as_ref() == Some(&key) {
+                hits.last_mut()
+                    .context("missing current evidence search hit")?
+                    .matches
+                    .push(SearchTurnMatch {
+                        field: row.field,
+                        snippet: evidence_snippet(&row.text, range),
+                    });
+            } else {
+                hits.push(SearchTurnHit {
+                    provider: row.provider,
+                    session_id: row.session_id,
+                    turn_ordinal: row.turn_ordinal,
+                    started_at: row.started_at,
+                    completed_at: row.completed_at,
+                    status: row.status,
+                    user_preview: row.user_preview,
+                    snippet: None,
+                    matched_paths: Vec::new(),
+                    matches: vec![SearchTurnMatch {
+                        field: row.field,
+                        snippet: evidence_snippet(&row.text, range),
+                    }],
+                });
+                current_key = Some(key);
+            }
+        }
+
+        if hits.len() > page_end {
+            hit_limit_satisfied = true;
+            break;
+        }
+    }
+
+    if scanned_rows > MAX_EVIDENCE_CANDIDATE_ROWS && !hit_limit_satisfied {
+        bail!(
+            "evidence search candidate set exceeded {MAX_EVIDENCE_CANDIDATE_ROWS} rows; narrow provider, session, or time filters"
+        );
+    }
+
+    Ok(hits)
+}
+
+/// Builds the literal or regex matcher used by exact evidence search.
+fn build_evidence_matcher<'a>(mode: SearchMode, query: &'a str) -> Result<EvidenceMatcher<'a>> {
+    match mode {
+        SearchMode::Literal => Ok(EvidenceMatcher::Literal(query)),
+        SearchMode::Regex => {
+            if query.chars().count() > MAX_REGEX_QUERY_CHARS {
+                bail!("regex query must be at most {MAX_REGEX_QUERY_CHARS} characters");
+            }
+            let regex = RegexBuilder::new(query)
+                .size_limit(REGEX_SIZE_LIMIT_BYTES)
+                .dfa_size_limit(REGEX_DFA_SIZE_LIMIT_BYTES)
+                .build()
+                .context("invalid regex search query")?;
+            Ok(EvidenceMatcher::Regex(regex))
+        }
+        SearchMode::Keyword | SearchMode::FileName | SearchMode::FilePath => {
+            unreachable!("only exact evidence modes use evidence matchers")
+        }
+    }
+}
+
+impl EvidenceMatcher<'_> {
+    /// Returns the first matching byte range in one evidence string.
+    fn find_match(&self, text: &str) -> Option<Range<usize>> {
+        match self {
+            Self::Literal(query) => text.find(query).map(|start| start..start + query.len()),
+            Self::Regex(regex) => regex.find(text).map(|matched| matched.range()),
+        }
+    }
+}
+
+/// Reads one exact evidence candidate row from SQLite.
+fn read_evidence_search_row(row: &rusqlite::Row<'_>) -> Result<EvidenceSearchRow> {
+    Ok(EvidenceSearchRow {
+        provider: parse_provider(&row.get::<_, String>(0)?)?,
+        session_id: row.get(1)?,
+        turn_ordinal: sql_count_to_u64(row.get::<_, i64>(2)?)?,
+        started_at: row.get(3)?,
+        completed_at: row.get(4)?,
+        status: parse_turn_status(&row.get::<_, String>(5)?)?,
+        user_preview: preview_text(&row.get::<_, String>(6)?),
+        field: row.get(8)?,
+        text: row.get(9)?,
+    })
+}
+
+/// Builds one bounded evidence snippet around a matched byte range.
+fn evidence_snippet(text: &str, matched: Range<usize>) -> String {
+    let start_char = text[..matched.start].chars().count();
+    let end_char = text[..matched.end].chars().count();
+    let snippet_start = start_char.saturating_sub(SEARCH_SNIPPET_CONTEXT_CHARS);
+    let snippet_end = end_char.saturating_add(SEARCH_SNIPPET_CONTEXT_CHARS);
+    let total_chars = text.chars().count();
+
+    let mut snippet = String::new();
+    if snippet_start > 0 {
+        snippet.push('…');
+    }
+    for (index, ch) in text.chars().enumerate() {
+        if index < snippet_start {
+            continue;
+        }
+        if index >= snippet_end {
+            break;
+        }
+        snippet.push(ch);
+    }
+    if snippet_end < total_chars {
+        snippet.push('…');
+    }
+    snippet
+}
+
 /// Queries staged file-search hits so exact and prefix matches can use dedicated indexes first.
 fn query_file_hits(
     connection: &Connection,
-    project_id: &str,
-    provider: Option<&str>,
-    session_id: Option<&str>,
-    query: &str,
-    kind: FileSearchKind,
-    desired_hit_count: usize,
+    request: FileSearchRequest<'_>,
 ) -> Result<Vec<SearchTurnHit>> {
+    let scope = request.scope;
+    let query = request.query;
+    let desired_hit_count = request.desired_hit_count;
     if desired_hit_count == 0 {
         return Ok(Vec::new());
     }
@@ -289,10 +596,8 @@ fn query_file_hits(
         let stage_hits = query_file_hits_stage(
             connection,
             FileSearchStageRequest {
-                project_id,
-                provider,
-                session_id,
-                kind,
+                scope,
+                kind: request.kind,
                 stage,
                 pattern: &pattern,
                 limit: remaining,
@@ -318,9 +623,7 @@ fn query_file_hits_stage(
     connection: &Connection,
     request: FileSearchStageRequest<'_>,
 ) -> Result<Vec<SearchTurnHit>> {
-    let project_id = request.project_id;
-    let provider = request.provider;
-    let session_id = request.session_id;
+    let scope = request.scope;
     let kind = request.kind;
     let stage = request.stage;
     let pattern = request.pattern;
@@ -336,7 +639,15 @@ fn query_file_hits_stage(
         .with_context(|| format!("failed to prepare {kind:?} {stage:?} search query"))?;
     let rows = statement
         .query_map(
-            params![project_id, provider, session_id, pattern, limit],
+            params![
+                scope.project_id,
+                scope.provider,
+                scope.session_id,
+                pattern,
+                scope.since,
+                scope.until,
+                limit
+            ],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -443,6 +754,7 @@ fn finalize_file_search_hit(accumulator: FileSearchHitAccumulator) -> SearchTurn
         user_preview: accumulator.user_preview,
         snippet: None,
         matched_paths: accumulator.matched_paths.into_iter().collect(),
+        matches: Vec::new(),
     }
 }
 
@@ -474,6 +786,8 @@ fn build_file_search_stage_sql(kind: FileSearchKind, stage: FileSearchStage) -> 
                 AND (?3 IS NULL OR file_accesses.session_id = ?3)
                 AND {guard}
                 AND {predicate}
+                AND (?5 IS NULL OR julianday(turns.started_at) >= julianday(?5))
+                AND (?6 IS NULL OR julianday(turns.started_at) < julianday(?6))
             GROUP BY
                 turns.provider,
                 turns.session_id,
@@ -487,7 +801,7 @@ fn build_file_search_stage_sql(kind: FileSearchKind, stage: FileSearchStage) -> 
                 turns.provider ASC,
                 turns.session_id ASC,
                 turns.turn_ordinal ASC
-            LIMIT ?5
+            LIMIT ?7
         )
         SELECT
             matched_turns.provider,
@@ -553,11 +867,6 @@ pub(crate) fn build_fts_query(query: &str) -> Result<String> {
         .join(" "))
 }
 
-/// Converts one free-form grep query into one ordered FTS phrase expression.
-pub(crate) fn build_fts_phrase_query(query: &str) -> Result<String> {
-    Ok(format!("\"{}\"", tokenize_fts_query(query)?.join(" ")))
-}
-
 /// Tokenizes one free-form text query into the normalized FTS terms Darc indexes.
 fn tokenize_fts_query(query: &str) -> Result<Vec<String>> {
     let tokens = query
@@ -601,6 +910,9 @@ pub(super) fn smoke_test_sql(connection: &Connection) -> Result<()> {
     connection
         .prepare(KEYWORD_SEARCH_SQL)
         .context("failed to prepare keyword search query")?;
+    connection
+        .prepare(EVIDENCE_SEARCH_SQL)
+        .context("failed to prepare evidence search query")?;
     for kind in [FileSearchKind::Name, FileSearchKind::Path] {
         for stage in [
             FileSearchStage::Exact,

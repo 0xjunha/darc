@@ -40,6 +40,7 @@ flate2 = { version = "1.1.5", default-features = false, features = ["rust_backen
 glob = { version = "0.3.3", default-features = false }
 reqwest = { version = "0.12.24", default-features = false, features = ["blocking", "rustls-tls"] }
 rusqlite = { version = "0.39.0", default-features = false, features = ["bundled"] }
+regex = { version = "1.12.3", default-features = false, features = ["std", "perf"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 sha2 = "0.10.9"

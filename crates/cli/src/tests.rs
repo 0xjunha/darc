@@ -537,9 +537,6 @@ fn parses_query_turns_session_scope_command() {
                 project_id,
                 provider,
                 session_id,
-                grep,
-                role,
-                context,
                 view,
                 json,
                 ..
@@ -547,62 +544,50 @@ fn parses_query_turns_session_scope_command() {
         }) if project_id.as_deref() == Some("repo-abc123")
             && matches!(provider, Some(super::ProviderArg::Codex))
             && session_id.as_deref() == Some("session-1")
-            && grep.is_none()
-            && matches!(role, super::TurnSearchRoleArg::Both)
-            && context == 0
             && matches!(view, super::TurnListViewArg::Full)
             && json
     ));
 }
 
 #[test]
-fn parses_query_turns_grep_with_context_and_filters() {
+fn parses_query_search_turns_literal_with_filters() {
     let cli = Cli::try_parse_from([
         "darc",
         "query",
+        "search",
         "turns",
         "--project-id",
         "repo-abc123",
-        "--grep",
-        "staged init",
-        "--role",
-        "user",
-        "--context",
-        "1",
+        "--mode",
+        "literal",
+        "--query",
+        "--output-last-message",
         "--since",
         "5d",
         "--until",
         "2026-04-07T00:00:00Z",
-        "--view",
-        "oneline",
-        "--touched-path",
-        "crates/index/**",
         "--json",
     ])
     .unwrap();
     assert!(matches!(
         cli.command,
         Commands::Query(super::QueryArgs {
-            command: QueryCommands::Turns(super::QueryTurnsArgs {
+            command: QueryCommands::Search(super::QuerySearchArgs {
+                command: super::QuerySearchCommands::Turns(super::QuerySearchTurnsArgs {
                 project_id,
-                grep,
-                role,
-                context,
+                mode,
+                query,
                 since,
                 until,
-                view,
-                touched_path,
                 json,
                 ..
+                }),
             }),
         }) if project_id.as_deref() == Some("repo-abc123")
-            && grep.as_deref() == Some("staged init")
-            && matches!(role, super::TurnSearchRoleArg::User)
-            && context == 1
+            && matches!(mode, super::SearchModeArg::Literal)
+            && query == "--output-last-message"
             && since.as_deref() == Some("5d")
             && until.as_deref() == Some("2026-04-07T00:00:00Z")
-            && matches!(view, super::TurnListViewArg::Oneline)
-            && touched_path.as_deref() == Some("crates/index/**")
             && json
     ));
 }
@@ -672,7 +657,7 @@ fn query_turn_help_mentions_narrative_view_behavior() {
 }
 
 #[test]
-fn query_turns_help_mentions_grep_context_and_touched_path() {
+fn query_turns_help_omits_removed_grep_surface() {
     let mut command = Cli::command();
     let query = command
         .find_subcommand_mut("query")
@@ -683,14 +668,11 @@ fn query_turns_help_mentions_grep_context_and_touched_path() {
         .render_long_help()
         .to_string();
 
-    assert!(help.contains("--grep"));
-    assert!(help.contains("--role"));
-    assert!(help.contains("--context"));
+    assert!(!help.contains("--grep"));
     assert!(help.contains("--view"));
     assert!(help.contains("oneline"));
     assert!(help.contains("--since"));
     assert!(help.contains("--until"));
-    assert!(help.contains("--touched-path"));
 }
 
 #[test]

@@ -2,17 +2,26 @@ use anyhow::{Context, Result};
 use darc_paths::SourceKind;
 use darc_rollout::model::NormalizedTurnStep;
 use rusqlite::{Connection, params};
+use serde_json::{Map, Value};
 
 use crate::{
+    evidence::EvidenceField,
     index_db::schema::{
         DELETE_DERIVED_ANALYTICS_SQL, INSERT_FILE_ACCESS_SQL, INSERT_TOOL_CALL_SQL,
-        INSERT_TURN_SEARCH_SQL, SELECT_DERIVED_ANALYTICS_REBUILD_ROWS_SQL,
+        INSERT_TURN_EVIDENCE_SQL, INSERT_TURN_SEARCH_SQL,
+        SELECT_DERIVED_ANALYTICS_REBUILD_ROWS_SQL,
     },
     policy::{build_turn_search_text, derive_file_access_records, extract_tool_call_records},
 };
 
 const MAX_USER_MESSAGE_SEARCH_CHARS: usize = 2_048;
 const MAX_FINAL_ANSWER_SEARCH_CHARS: usize = 2_048;
+
+/// Stores one canonical text fragment used for exact turn evidence search.
+struct TurnEvidenceRecord {
+    field: EvidenceField,
+    text: String,
+}
 
 /// Stores the canonical turn identity and text needed to derive search analytics rows.
 pub(crate) struct TurnDerivedContext<'a> {
@@ -24,7 +33,7 @@ pub(crate) struct TurnDerivedContext<'a> {
     pub(crate) final_answer_text: Option<&'a str>,
 }
 
-/// Inserts one turn's derived tool-call and file-access records into SQLite.
+/// Inserts one turn's derived analytics and search records into SQLite.
 pub(crate) fn insert_turn_derived_records(
     connection: &Connection,
     context: &TurnDerivedContext<'_>,
@@ -102,6 +111,35 @@ pub(crate) fn insert_turn_derived_records(
                 )
             })?;
     }
+    drop(file_access_statement);
+
+    let mut evidence_statement = connection
+        .prepare(INSERT_TURN_EVIDENCE_SQL)
+        .context("failed to prepare turn_evidence insert statement")?;
+    for (evidence_ordinal, record) in
+        derive_turn_evidence_records(user_message, final_answer_text, steps)
+            .into_iter()
+            .enumerate()
+    {
+        evidence_statement
+            .execute(params![
+                project_id,
+                provider.directory_name(),
+                session_id,
+                i64::try_from(turn_ordinal).context("turn ordinal exceeds SQLite INTEGER range")?,
+                i64::try_from(evidence_ordinal)
+                    .context("evidence ordinal exceeds SQLite INTEGER range")?,
+                record.field.as_str(),
+                record.text.as_str(),
+            ])
+            .with_context(|| {
+                format!(
+                    "failed to insert derived turn evidence row for {}/{session_id}#{turn_ordinal}",
+                    provider.directory_name(),
+                )
+            })?;
+    }
+    drop(evidence_statement);
 
     let tool_text = build_turn_search_text(steps);
     let user_message_text = normalize_search_text(user_message, MAX_USER_MESSAGE_SEARCH_CHARS);
@@ -132,7 +170,217 @@ pub(crate) fn insert_turn_derived_records(
     Ok(())
 }
 
-/// Rebuilds every derived tool-call and file-access row from stored turn steps.
+/// Derives the ordered exact-search evidence rows for one normalized turn.
+fn derive_turn_evidence_records(
+    user_message: &str,
+    final_answer_text: Option<&str>,
+    steps: &[NormalizedTurnStep],
+) -> Vec<TurnEvidenceRecord> {
+    let mut records = Vec::new();
+    push_evidence_record(&mut records, EvidenceField::UserMessage, user_message);
+    if let Some(final_answer_text) = final_answer_text {
+        push_evidence_record(&mut records, EvidenceField::FinalAnswer, final_answer_text);
+    }
+
+    for step in steps {
+        match step {
+            NormalizedTurnStep::ToolCall {
+                name, arguments, ..
+            } => {
+                push_evidence_record(&mut records, EvidenceField::ToolName, name);
+                push_evidence_record(&mut records, EvidenceField::ToolArguments, arguments);
+            }
+            NormalizedTurnStep::ToolCallOutput { output, .. } => {
+                push_evidence_record(&mut records, EvidenceField::ToolOutput, output);
+            }
+            NormalizedTurnStep::Reasoning { summary, .. } => {
+                for summary in summary {
+                    push_evidence_record(&mut records, EvidenceField::ReasoningSummary, summary);
+                }
+            }
+            NormalizedTurnStep::Commentary { text, .. } => {
+                push_evidence_record(&mut records, EvidenceField::Commentary, text);
+            }
+            NormalizedTurnStep::Attachment {
+                attachment_type, ..
+            } => {
+                let metadata = attachment_metadata_text(attachment_type);
+                push_evidence_record(&mut records, EvidenceField::AttachmentMetadata, &metadata);
+            }
+            NormalizedTurnStep::Delegation {
+                call_id,
+                task_id,
+                event,
+                agent_id,
+                agent_type,
+                status,
+                summary,
+                ..
+            } => {
+                if let Some(summary) = summary {
+                    push_evidence_record(&mut records, EvidenceField::DelegationSummary, summary);
+                }
+                let metadata = delegation_metadata_text(
+                    call_id.as_deref(),
+                    task_id.as_deref(),
+                    event,
+                    agent_id.as_deref(),
+                    agent_type.as_deref(),
+                    status.as_deref(),
+                );
+                push_evidence_record(&mut records, EvidenceField::DelegationMetadata, &metadata);
+            }
+            NormalizedTurnStep::HookSummary {
+                call_id,
+                hook_count,
+                prevented_continuation,
+                has_output,
+                level,
+                ..
+            } => {
+                let metadata = hook_summary_text(
+                    call_id.as_deref(),
+                    *hook_count,
+                    *prevented_continuation,
+                    *has_output,
+                    level.as_deref(),
+                );
+                push_evidence_record(&mut records, EvidenceField::HookSummary, &metadata);
+            }
+            NormalizedTurnStep::ProviderResponseItem {
+                item_type,
+                payload_json,
+                ..
+            } => {
+                let metadata = provider_response_item_metadata_text(item_type, payload_json);
+                push_evidence_record(
+                    &mut records,
+                    EvidenceField::ProviderResponseItemMetadata,
+                    &metadata,
+                );
+            }
+        }
+    }
+
+    records
+}
+
+/// Pushes one non-empty evidence fragment with its stable field label.
+fn push_evidence_record(records: &mut Vec<TurnEvidenceRecord>, field: EvidenceField, text: &str) {
+    if text.trim().is_empty() {
+        return;
+    }
+    records.push(TurnEvidenceRecord {
+        field,
+        text: text.to_owned(),
+    });
+}
+
+/// Builds compact metadata for one attachment evidence row.
+fn attachment_metadata_text(attachment_type: &str) -> String {
+    let mut metadata = Map::new();
+    insert_string_metadata(&mut metadata, "attachment_type", attachment_type);
+    Value::Object(metadata).to_string()
+}
+
+/// Builds compact metadata for one delegation evidence row.
+fn delegation_metadata_text(
+    call_id: Option<&str>,
+    task_id: Option<&str>,
+    event: &str,
+    agent_id: Option<&str>,
+    agent_type: Option<&str>,
+    status: Option<&str>,
+) -> String {
+    let mut metadata = Map::new();
+    insert_optional_string_metadata(&mut metadata, "call_id", call_id);
+    insert_optional_string_metadata(&mut metadata, "task_id", task_id);
+    insert_string_metadata(&mut metadata, "event", event);
+    insert_optional_string_metadata(&mut metadata, "agent_id", agent_id);
+    insert_optional_string_metadata(&mut metadata, "agent_type", agent_type);
+    insert_optional_string_metadata(&mut metadata, "status", status);
+    Value::Object(metadata).to_string()
+}
+
+/// Builds compact metadata for one hook-summary evidence row.
+fn hook_summary_text(
+    call_id: Option<&str>,
+    hook_count: u32,
+    prevented_continuation: bool,
+    has_output: bool,
+    level: Option<&str>,
+) -> String {
+    let mut metadata = Map::new();
+    insert_optional_string_metadata(&mut metadata, "call_id", call_id);
+    metadata.insert("hook_count".to_owned(), Value::from(hook_count));
+    metadata.insert(
+        "prevented_continuation".to_owned(),
+        Value::from(prevented_continuation),
+    );
+    metadata.insert("has_output".to_owned(), Value::from(has_output));
+    insert_optional_string_metadata(&mut metadata, "level", level);
+    Value::Object(metadata).to_string()
+}
+
+/// Builds compact metadata for one provider-response item evidence row.
+fn provider_response_item_metadata_text(item_type: &str, payload_json: &str) -> String {
+    let mut metadata = Map::new();
+    insert_string_metadata(&mut metadata, "item_type", item_type);
+
+    if let Ok(Value::Object(payload)) = serde_json::from_str::<Value>(payload_json) {
+        insert_json_scalar_metadata(&mut metadata, "id", payload.get("id"));
+        insert_json_scalar_metadata(&mut metadata, "call_id", payload.get("call_id"));
+        insert_json_scalar_metadata(&mut metadata, "payload_type", payload.get("type"));
+        insert_json_scalar_metadata(&mut metadata, "status", payload.get("status"));
+        insert_json_scalar_metadata(&mut metadata, "name", payload.get("name"));
+        insert_json_scalar_metadata(&mut metadata, "role", payload.get("role"));
+        insert_json_scalar_metadata(&mut metadata, "model", payload.get("model"));
+        if let Some(Value::Object(action)) = payload.get("action") {
+            insert_json_scalar_metadata(&mut metadata, "action_type", action.get("type"));
+        }
+    }
+
+    Value::Object(metadata).to_string()
+}
+
+/// Inserts one non-empty string metadata value.
+fn insert_string_metadata(metadata: &mut Map<String, Value>, key: &str, value: &str) {
+    if value.trim().is_empty() {
+        return;
+    }
+    metadata.insert(key.to_owned(), Value::String(value.to_owned()));
+}
+
+/// Inserts one optional non-empty string metadata value.
+fn insert_optional_string_metadata(
+    metadata: &mut Map<String, Value>,
+    key: &str,
+    value: Option<&str>,
+) {
+    if let Some(value) = value {
+        insert_string_metadata(metadata, key, value);
+    }
+}
+
+/// Inserts one scalar JSON metadata value while skipping arrays and objects.
+fn insert_json_scalar_metadata(
+    metadata: &mut Map<String, Value>,
+    key: &str,
+    value: Option<&Value>,
+) {
+    match value {
+        Some(Value::String(value)) => insert_string_metadata(metadata, key, value),
+        Some(Value::Bool(value)) => {
+            metadata.insert(key.to_owned(), Value::Bool(*value));
+        }
+        Some(Value::Number(value)) => {
+            metadata.insert(key.to_owned(), Value::Number(value.clone()));
+        }
+        Some(Value::Null | Value::Array(_) | Value::Object(_)) | None => {}
+    }
+}
+
+/// Rebuilds every derived analytics and search row from stored turn steps.
 pub(crate) fn rebuild_derived_analytics_tables(connection: &Connection) -> Result<()> {
     connection
         .execute_batch(DELETE_DERIVED_ANALYTICS_SQL)

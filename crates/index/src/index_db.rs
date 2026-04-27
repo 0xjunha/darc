@@ -18,7 +18,7 @@ use self::{
 };
 
 /// Tracks one-shot SQLite migrations for derived analytics tables.
-const INDEX_DB_SCHEMA_VERSION: i32 = 8;
+const INDEX_DB_SCHEMA_VERSION: i32 = 10;
 
 /// Opens the index database and creates the current schema when missing.
 pub fn open_index_database(path: &Path) -> Result<Connection> {
@@ -441,6 +441,20 @@ mod tests {
             [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
+        let evidence_rows: Vec<(String, String)> = {
+            let mut statement = reopened.prepare(
+                "
+                SELECT field, text
+                FROM turn_evidence
+                WHERE project_id = 'project' AND provider = 'claude' AND session_id = 'session'
+                    AND turn_ordinal = 0
+                ORDER BY evidence_ordinal ASC
+                ",
+            )?;
+            statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
         let user_version: i32 = reopened.query_row("PRAGMA user_version", [], |row| row.get(0))?;
 
         assert_eq!(metrics, (4, 1, 1, 1, 1, 0, 1, 5_000));
@@ -457,6 +471,24 @@ mod tests {
             file_access_row,
             ("Read".to_owned(), "read".to_owned(), "README.md".to_owned())
         );
+        assert!(evidence_rows.contains(&("user_message".to_owned(), "Inspect README".to_owned())));
+        assert!(evidence_rows.contains(&("final_answer".to_owned(), "# Audit Fixture".to_owned())));
+        assert!(evidence_rows.contains(&("tool_name".to_owned(), "Read".to_owned())));
+        assert!(evidence_rows.contains(&(
+            "tool_arguments".to_owned(),
+            "{\"file_path\":\"README.md\"}".to_owned()
+        )));
+        assert!(evidence_rows.contains(&("tool_output".to_owned(), "# Audit Fixture".to_owned())));
+        assert!(evidence_rows.contains(&("delegation_summary".to_owned(), "done".to_owned())));
+        assert!(evidence_rows.iter().any(|(field, text)| {
+            field == "delegation_metadata"
+                && text.contains("\"agent_type\":\"general-purpose\"")
+                && text.contains("\"status\":\"completed\"")
+        }));
+        assert!(evidence_rows.iter().any(|(field, text)| {
+            field == "attachment_metadata"
+                && text.contains("\"attachment_type\":\"deferred_tools_delta\"")
+        }));
         assert_eq!(user_version, INDEX_DB_SCHEMA_VERSION);
 
         Ok(())
@@ -573,6 +605,7 @@ mod tests {
         )?;
         connection.execute_batch(
             "
+            DROP TABLE turn_evidence;
             DROP TABLE file_accesses;
             DROP TABLE tool_calls;
             ",
@@ -600,6 +633,16 @@ mod tests {
             [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
+        let evidence_count: i64 = reopened.query_row(
+            "
+            SELECT COUNT(*)
+            FROM turn_evidence
+            WHERE project_id = 'project' AND provider = 'codex' AND session_id = 'session'
+                AND turn_ordinal = 0
+            ",
+            [],
+            |row| row.get(0),
+        )?;
         let user_version: i32 = reopened.query_row("PRAGMA user_version", [], |row| row.get(0))?;
 
         assert_eq!(
@@ -615,6 +658,7 @@ mod tests {
             file_access_row,
             ("Read".to_owned(), "read".to_owned(), "README.md".to_owned())
         );
+        assert_eq!(evidence_count, 4);
         assert_eq!(user_version, INDEX_DB_SCHEMA_VERSION);
 
         Ok(())
