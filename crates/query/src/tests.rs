@@ -36,6 +36,59 @@ fn test_index_path(prefix: &str) -> PathBuf {
     unique_test_dir(prefix).join("index.sqlite")
 }
 
+/// Stores synthetic evidence-row bulk insert inputs for query tests.
+struct SyntheticEvidenceRows<'a> {
+    project_id: &'a str,
+    provider: SourceKind,
+    session_id: &'a str,
+    turn_ordinal: i64,
+    first_evidence_ordinal: usize,
+    row_count: usize,
+    text: &'a str,
+}
+
+/// Inserts many synthetic evidence rows for one indexed turn inside one transaction.
+fn insert_turn_evidence_rows(
+    connection: &mut rusqlite::Connection,
+    fixture: SyntheticEvidenceRows<'_>,
+) -> Result<()> {
+    let evidence_ordinal_end = fixture
+        .first_evidence_ordinal
+        .checked_add(fixture.row_count)
+        .context("test evidence ordinal range should fit in usize")?;
+    let transaction = connection.transaction()?;
+    {
+        let mut statement = transaction.prepare(
+            "
+            INSERT INTO turn_evidence (
+                project_id,
+                provider,
+                session_id,
+                turn_ordinal,
+                evidence_ordinal,
+                field,
+                text
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            ",
+        )?;
+        for evidence_ordinal in fixture.first_evidence_ordinal..evidence_ordinal_end {
+            statement.execute(rusqlite::params![
+                fixture.project_id,
+                fixture.provider.directory_name(),
+                fixture.session_id,
+                fixture.turn_ordinal,
+                i64::try_from(evidence_ordinal)
+                    .context("test evidence ordinal should fit in SQLite INTEGER")?,
+                "tool_output",
+                fixture.text,
+            ])?;
+        }
+    }
+    transaction.commit()?;
+    Ok(())
+}
+
 /// Resolves one UTC timestamp into the host-local civil day used by SQLite localtime.
 fn sqlite_local_date(connection: &rusqlite::Connection, timestamp: &str) -> Result<String> {
     connection
@@ -2442,10 +2495,155 @@ fn search_turns_exact_modes_preserve_outer_whitespace() -> Result<()> {
 }
 
 #[test]
-fn search_turns_literal_prefilters_evidence_rows_in_sql() -> Result<()> {
+fn search_turns_exact_modes_cap_nested_matches() -> Result<()> {
+    const MATCHING_EVIDENCE_ROWS: usize = 21;
+
+    let index_path = test_index_path("search-exact-match-cap");
+    let mut connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            user_message: "many matching evidence rows",
+            step_count: 0,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                0,
+                "2026-04-06T10:00:00Z",
+                "completed",
+                "[]",
+            )
+        },
+    )?;
+    insert_turn_evidence_rows(
+        &mut connection,
+        SyntheticEvidenceRows {
+            project_id: "repo-a",
+            provider: SourceKind::Codex,
+            session_id: "session-1",
+            turn_ordinal: 0,
+            first_evidence_ordinal: 1,
+            row_count: MATCHING_EVIDENCE_ROWS,
+            text: "repeated-marker evidence",
+        },
+    )?;
+
+    let result = query_search_turns(
+        &index_path,
+        SearchTurnsRequest {
+            project_id: "repo-a",
+            mode: SearchMode::Literal,
+            query: "repeated-marker",
+            provider: None,
+            session_id: None,
+            since: None,
+            until: None,
+            limit: 1,
+            offset: 0,
+        },
+    )?;
+
+    assert_eq!(result.hits.len(), 1);
+    assert_eq!(result.hits[0].matches.len(), 20);
+    assert!(result.hits[0].matches_truncated);
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn search_turns_literal_filters_evidence_before_preview_cap() -> Result<()> {
+    const NON_MATCHING_EVIDENCE_ROWS: usize = 50;
+
+    let index_path = test_index_path("search-literal-filtered-evidence");
+    let mut connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            user_message: "turn with one late literal evidence match",
+            step_count: 0,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                0,
+                "2026-04-06T10:00:00Z",
+                "completed",
+                "[]",
+            )
+        },
+    )?;
+    insert_turn_evidence_rows(
+        &mut connection,
+        SyntheticEvidenceRows {
+            project_id: "repo-a",
+            provider: SourceKind::Codex,
+            session_id: "session-1",
+            turn_ordinal: 0,
+            first_evidence_ordinal: 1,
+            row_count: NON_MATCHING_EVIDENCE_ROWS,
+            text: "nonmatching evidence",
+        },
+    )?;
+    insert_turn_evidence_rows(
+        &mut connection,
+        SyntheticEvidenceRows {
+            project_id: "repo-a",
+            provider: SourceKind::Codex,
+            session_id: "session-1",
+            turn_ordinal: 0,
+            first_evidence_ordinal: NON_MATCHING_EVIDENCE_ROWS + 1,
+            row_count: 1,
+            text: "late-literal-marker evidence",
+        },
+    )?;
+
+    let result = query_search_turns(
+        &index_path,
+        SearchTurnsRequest {
+            project_id: "repo-a",
+            mode: SearchMode::Literal,
+            query: "late-literal-marker",
+            provider: None,
+            session_id: None,
+            since: None,
+            until: None,
+            limit: 1,
+            offset: 0,
+        },
+    )?;
+
+    assert_eq!(result.hits.len(), 1);
+    assert_eq!(result.hits[0].matches.len(), 1);
+    assert_eq!(result.hits[0].matches[0].field, "tool_output");
+    assert!(!result.hits[0].matches_truncated);
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn search_turns_literal_streams_past_legacy_candidate_cap() -> Result<()> {
     const NON_MATCHING_EVIDENCE_ROWS: usize = 50_001;
 
-    let index_path = test_index_path("search-literal-prefilter");
+    let index_path = test_index_path("search-literal-streaming");
     let mut connection = open_index_database(&index_path)?;
     insert_indexed_session(
         &connection,
@@ -2484,36 +2682,18 @@ fn search_turns_literal_prefilters_evidence_rows_in_sql() -> Result<()> {
         },
     )?;
 
-    let transaction = connection.transaction()?;
-    {
-        let mut statement = transaction.prepare(
-            "
-            INSERT INTO turn_evidence (
-                project_id,
-                provider,
-                session_id,
-                turn_ordinal,
-                evidence_ordinal,
-                field,
-                text
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-            ",
-        )?;
-        for evidence_ordinal in 1..=NON_MATCHING_EVIDENCE_ROWS {
-            statement.execute(rusqlite::params![
-                "repo-a",
-                "codex",
-                "session-1",
-                0_i64,
-                i64::try_from(evidence_ordinal)
-                    .context("test evidence ordinal should fit in SQLite INTEGER")?,
-                "tool_output",
-                "nonmatching evidence",
-            ])?;
-        }
-    }
-    transaction.commit()?;
+    insert_turn_evidence_rows(
+        &mut connection,
+        SyntheticEvidenceRows {
+            project_id: "repo-a",
+            provider: SourceKind::Codex,
+            session_id: "session-1",
+            turn_ordinal: 0,
+            first_evidence_ordinal: 1,
+            row_count: NON_MATCHING_EVIDENCE_ROWS,
+            text: "nonmatching evidence",
+        },
+    )?;
 
     let result = query_search_turns(
         &index_path,
@@ -2532,6 +2712,89 @@ fn search_turns_literal_prefilters_evidence_rows_in_sql() -> Result<()> {
 
     assert_eq!(result.hits.len(), 1);
     assert_eq!(result.hits[0].turn_ordinal, 1);
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn search_turns_regex_streams_past_legacy_candidate_cap() -> Result<()> {
+    const NON_MATCHING_EVIDENCE_ROWS: usize = 50_001;
+
+    let index_path = test_index_path("search-regex-streaming");
+    let mut connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            user_message: "recent nonmatching turn",
+            step_count: 0,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                0,
+                "2026-04-06T11:00:00Z",
+                "completed",
+                "[]",
+            )
+        },
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            user_message: "older rare-regex-needle turn",
+            step_count: 0,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                1,
+                "2026-04-06T10:00:00Z",
+                "completed",
+                "[]",
+            )
+        },
+    )?;
+    insert_turn_evidence_rows(
+        &mut connection,
+        SyntheticEvidenceRows {
+            project_id: "repo-a",
+            provider: SourceKind::Codex,
+            session_id: "session-1",
+            turn_ordinal: 0,
+            first_evidence_ordinal: 1,
+            row_count: NON_MATCHING_EVIDENCE_ROWS,
+            text: "nonmatching evidence",
+        },
+    )?;
+
+    let result = query_search_turns(
+        &index_path,
+        SearchTurnsRequest {
+            project_id: "repo-a",
+            mode: SearchMode::Regex,
+            query: "rare-regex-[a-z]+",
+            provider: None,
+            session_id: None,
+            since: None,
+            until: None,
+            limit: 10,
+            offset: 0,
+        },
+    )?;
+
+    assert_eq!(result.hits.len(), 1);
+    assert_eq!(result.hits[0].turn_ordinal, 1);
+    assert_eq!(result.hits[0].matches[0].field, "user_message");
+    assert!(!result.has_more);
 
     fs::remove_dir_all(
         index_path

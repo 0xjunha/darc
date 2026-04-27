@@ -367,6 +367,7 @@ pub struct SearchTurnHit {
     pub snippet: Option<String>,
     pub matched_paths: Vec<String>,
     pub matches: Vec<SearchTurnMatch>,
+    pub matches_truncated: bool,
 }
 
 /// Stores one full normalized turn detail payload for one session turn.

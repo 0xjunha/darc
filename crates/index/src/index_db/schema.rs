@@ -243,6 +243,10 @@ pub(crate) const SUPPLEMENTAL_SCHEMA_OBJECTS: &[SchemaObject] = &[
     },
     SchemaObject {
         kind: SchemaObjectKind::Index,
+        name: "turns_project_search_order_idx",
+    },
+    SchemaObject {
+        kind: SchemaObjectKind::Index,
         name: "tool_calls_project_tool_idx",
     },
     SchemaObject {
@@ -422,6 +426,8 @@ const CREATE_SUPPLEMENTAL_SCHEMA_SQL: &str = "
         ON turns (started_at);
     CREATE INDEX IF NOT EXISTS turns_project_started_idx
         ON turns (project_id, started_at);
+    CREATE INDEX IF NOT EXISTS turns_project_search_order_idx
+        ON turns (project_id, started_at DESC, provider, session_id, turn_ordinal);
 
     CREATE INDEX IF NOT EXISTS tool_calls_project_tool_idx
         ON tool_calls (project_id, tool_name);
