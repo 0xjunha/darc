@@ -566,6 +566,7 @@ fn parses_query_search_turns_literal_with_filters() {
         "5d",
         "--until",
         "2026-04-07T00:00:00Z",
+        "--include-tool-output",
         "--json",
     ])
     .unwrap();
@@ -579,6 +580,7 @@ fn parses_query_search_turns_literal_with_filters() {
                 query,
                 since,
                 until,
+                include_tool_output,
                 json,
                 ..
                 }),
@@ -588,6 +590,7 @@ fn parses_query_search_turns_literal_with_filters() {
             && query == "--output-last-message"
             && since.as_deref() == Some("5d")
             && until.as_deref() == Some("2026-04-07T00:00:00Z")
+            && include_tool_output
             && json
     ));
 }
@@ -673,6 +676,25 @@ fn query_turns_help_omits_removed_grep_surface() {
     assert!(help.contains("oneline"));
     assert!(help.contains("--since"));
     assert!(help.contains("--until"));
+}
+
+#[test]
+fn query_search_turns_help_mentions_tool_output_opt_in() {
+    let mut command = Cli::command();
+    let query = command
+        .find_subcommand_mut("query")
+        .expect("query subcommand should be present");
+    let search = query
+        .find_subcommand_mut("search")
+        .expect("search query subcommand should be present");
+    let help = search
+        .find_subcommand_mut("turns")
+        .expect("turn search subcommand should be present")
+        .render_long_help()
+        .to_string();
+
+    assert!(help.contains("--include-tool-output"));
+    assert!(help.contains("literal and regex"));
 }
 
 #[test]

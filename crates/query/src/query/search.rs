@@ -78,12 +78,24 @@ const EVIDENCE_SEARCH_TURNS_SQL: &str = "
                 )
             )
         )
+        AND (
+            ?10
+            OR EXISTS (
+                SELECT 1
+                FROM turn_evidence
+                WHERE turn_evidence.project_id = turns.project_id
+                    AND turn_evidence.provider = turns.provider
+                    AND turn_evidence.session_id = turns.session_id
+                    AND turn_evidence.turn_ordinal = turns.turn_ordinal
+                    AND turn_evidence.field <> 'tool_output'
+            )
+        )
     ORDER BY
         started_at DESC,
         provider ASC,
         session_id ASC,
         turn_ordinal ASC
-    LIMIT ?10
+    LIMIT ?11
 ";
 
 const LITERAL_EVIDENCE_SEARCH_TURNS_SQL: &str = "
@@ -127,14 +139,15 @@ const LITERAL_EVIDENCE_SEARCH_TURNS_SQL: &str = "
                 AND turn_evidence.provider = turns.provider
                 AND turn_evidence.session_id = turns.session_id
                 AND turn_evidence.turn_ordinal = turns.turn_ordinal
-                AND instr(turn_evidence.text, ?10) > 0
+                AND (?10 OR turn_evidence.field <> 'tool_output')
+                AND instr(turn_evidence.text, ?11) > 0
         )
     ORDER BY
         started_at DESC,
         provider ASC,
         session_id ASC,
         turn_ordinal ASC
-    LIMIT ?11
+    LIMIT ?12
 ";
 
 const TURN_EVIDENCE_ROWS_SQL: &str = "
@@ -146,6 +159,7 @@ const TURN_EVIDENCE_ROWS_SQL: &str = "
         AND provider = ?2
         AND session_id = ?3
         AND turn_ordinal = ?4
+        AND (?5 OR field <> 'tool_output')
     ORDER BY evidence_ordinal ASC
 ";
 
@@ -158,9 +172,10 @@ const LITERAL_TURN_EVIDENCE_ROWS_SQL: &str = "
         AND provider = ?2
         AND session_id = ?3
         AND turn_ordinal = ?4
-        AND instr(text, ?5) > 0
+        AND (?5 OR field <> 'tool_output')
+        AND instr(text, ?6) > 0
     ORDER BY evidence_ordinal ASC
-    LIMIT ?6
+    LIMIT ?7
 ";
 
 const EVIDENCE_SEARCH_TURN_BATCH_ROWS: usize = 1_000;
@@ -247,6 +262,7 @@ struct EvidenceSearchRequest<'a> {
     scope: SearchScope<'a>,
     mode: SearchMode,
     query: &'a str,
+    include_tool_output: bool,
     limit: usize,
     offset: usize,
 }
@@ -312,6 +328,7 @@ fn build_search_turns(
 ) -> Result<SearchTurnsQueryData> {
     let project_id = request.project_id;
     let mode = request.mode;
+    validate_tool_output_inclusion(mode, request.include_tool_output)?;
     let query = search_query_for_mode(mode, request.query)?;
     let response_provider = request.provider;
     let provider_filter = response_provider.map(SourceKind::directory_name);
@@ -348,6 +365,7 @@ fn build_search_turns(
                 project_id: project_id.to_owned(),
                 mode,
                 query: query.to_owned(),
+                include_tool_output: request.include_tool_output,
                 provider: response_provider,
                 session_id: session_id.map(str::to_owned),
                 since: since.map(str::to_owned),
@@ -364,6 +382,7 @@ fn build_search_turns(
                 scope,
                 mode,
                 query,
+                include_tool_output: request.include_tool_output,
                 limit,
                 offset,
             },
@@ -405,6 +424,7 @@ fn build_search_turns(
         project_id: project_id.to_owned(),
         mode,
         query: query.to_owned(),
+        include_tool_output: request.include_tool_output,
         provider: response_provider,
         session_id: session_id.map(str::to_owned),
         since: since.map(str::to_owned),
@@ -414,6 +434,14 @@ fn build_search_turns(
         has_more,
         hits,
     })
+}
+
+/// Rejects tool-output inclusion for search modes that never inspect turn evidence rows.
+fn validate_tool_output_inclusion(mode: SearchMode, include_tool_output: bool) -> Result<()> {
+    if include_tool_output && !matches!(mode, SearchMode::Literal | SearchMode::Regex) {
+        bail!("--include-tool-output is only supported with --mode literal or --mode regex");
+    }
+    Ok(())
 }
 
 /// Returns the query text with mode-specific exactness rules applied.
@@ -544,7 +572,13 @@ fn query_regex_evidence_hits_by_turn(
     collect_evidence_hits_by_turn(
         request,
         |cursor, turn_limit| {
-            query_regex_evidence_turn_batch(&mut turn_statement, scope, cursor, turn_limit)
+            query_regex_evidence_turn_batch(
+                &mut turn_statement,
+                scope,
+                cursor,
+                request.include_tool_output,
+                turn_limit,
+            )
         },
         |turn| {
             query_regex_evidence_hit_for_turn(
@@ -552,6 +586,7 @@ fn query_regex_evidence_hits_by_turn(
                 scope.project_id,
                 turn,
                 matcher,
+                request.include_tool_output,
             )
         },
     )
@@ -578,6 +613,7 @@ fn query_literal_evidence_hits_by_turn(
                 scope,
                 cursor,
                 request.query,
+                request.include_tool_output,
                 turn_limit,
             )
         },
@@ -587,6 +623,7 @@ fn query_literal_evidence_hits_by_turn(
                 scope.project_id,
                 turn,
                 request.query,
+                request.include_tool_output,
             )
         },
     )
@@ -637,6 +674,7 @@ fn query_regex_evidence_turn_batch(
     statement: &mut rusqlite::Statement<'_>,
     scope: SearchScope<'_>,
     cursor: Option<&EvidenceTurnCursor>,
+    include_tool_output: bool,
     turn_limit: i64,
 ) -> Result<Vec<EvidenceSearchTurn>> {
     let cursor_started_at = cursor.map(|value| value.started_at.as_str());
@@ -654,6 +692,7 @@ fn query_regex_evidence_turn_batch(
             cursor_provider,
             cursor_session_id,
             cursor_turn_ordinal,
+            include_tool_output,
             turn_limit
         ])
         .context("failed to query evidence search turns")?;
@@ -670,6 +709,7 @@ fn query_literal_evidence_turn_batch(
     scope: SearchScope<'_>,
     cursor: Option<&EvidenceTurnCursor>,
     query: &str,
+    include_tool_output: bool,
     turn_limit: i64,
 ) -> Result<Vec<EvidenceSearchTurn>> {
     let cursor_started_at = cursor.map(|value| value.started_at.as_str());
@@ -687,6 +727,7 @@ fn query_literal_evidence_turn_batch(
             cursor_provider,
             cursor_session_id,
             cursor_turn_ordinal,
+            include_tool_output,
             query,
             turn_limit
         ])
@@ -707,6 +748,7 @@ fn query_literal_evidence_hit_for_turn(
     project_id: &str,
     turn: EvidenceSearchTurn,
     query: &str,
+    include_tool_output: bool,
 ) -> Result<Option<SearchTurnHit>> {
     let match_limit = i64::try_from(MAX_EVIDENCE_MATCHES_PER_TURN.saturating_add(1))
         .context("evidence match preview limit exceeds SQLite INTEGER range")?;
@@ -716,6 +758,7 @@ fn query_literal_evidence_hit_for_turn(
             turn.provider_key.as_str(),
             turn.session_id.as_str(),
             turn.turn_ordinal_key,
+            include_tool_output,
             query,
             match_limit
         ])
@@ -755,13 +798,15 @@ fn query_regex_evidence_hit_for_turn(
     project_id: &str,
     turn: EvidenceSearchTurn,
     matcher: &EvidenceMatcher,
+    include_tool_output: bool,
 ) -> Result<Option<SearchTurnHit>> {
     let mut rows = statement
         .query(params![
             project_id,
             turn.provider_key.as_str(),
             turn.session_id.as_str(),
-            turn.turn_ordinal_key
+            turn.turn_ordinal_key,
+            include_tool_output
         ])
         .context("failed to query turn evidence rows")?;
     let mut matches = Vec::<SearchTurnMatch>::new();

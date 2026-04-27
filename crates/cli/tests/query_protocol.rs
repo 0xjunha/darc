@@ -1052,6 +1052,7 @@ fn search_turns_query_emits_literal_evidence_matches() -> Result<()> {
     let value = parse_json(&output.stdout, "stdout")?;
     assert_eq!(value["schema"], "darc.query.search.turns.v1");
     assert_eq!(value["data"]["mode"], "literal");
+    assert_eq!(value["data"]["include_tool_output"], false);
     assert_eq!(value["data"]["since"], "2026-04-06T00:00:00Z");
     assert_eq!(value["data"]["until"], "2026-04-07T00:00:00Z");
     assert_eq!(value["data"]["hits"][0]["turn_ordinal"], 1);
@@ -1063,6 +1064,50 @@ fn search_turns_query_emits_literal_evidence_matches() -> Result<()> {
         value["data"]["hits"][0]["matches"][0]["snippet"]
             .as_str()
             .is_some_and(|snippet| snippet.contains("--output-last-message"))
+    );
+
+    let literal_hidden_output = run_darc([
+        "query",
+        "search",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--mode",
+        "literal",
+        "--query",
+        "DARC_CODEX_BIN=/tmp/darc",
+        "--json",
+    ])?;
+
+    assert!(literal_hidden_output.status.success());
+    let hidden_value = parse_json(&literal_hidden_output.stdout, "stdout")?;
+    assert_eq!(hidden_value["data"]["include_tool_output"], false);
+    assert_eq!(hidden_value["data"]["hits"], Value::Array(vec![]));
+
+    let literal_output = run_darc([
+        "query",
+        "search",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--mode",
+        "literal",
+        "--query",
+        "DARC_CODEX_BIN=/tmp/darc",
+        "--include-tool-output",
+        "--json",
+    ])?;
+
+    assert!(literal_output.status.success());
+    let literal_output_value = parse_json(&literal_output.stdout, "stdout")?;
+    assert_eq!(literal_output_value["data"]["include_tool_output"], true);
+    assert_eq!(
+        literal_output_value["data"]["hits"][0]["matches"][0]["field"],
+        "tool_output"
     );
 
     let regex_output = run_darc([
@@ -1077,12 +1122,14 @@ fn search_turns_query_emits_literal_evidence_matches() -> Result<()> {
         "regex",
         "--query",
         "DARC_[A-Z_]+_BIN",
+        "--include-tool-output",
         "--json",
     ])?;
 
     assert!(regex_output.status.success());
     let regex_value = parse_json(&regex_output.stdout, "stdout")?;
     assert_eq!(regex_value["data"]["mode"], "regex");
+    assert_eq!(regex_value["data"]["include_tool_output"], true);
     assert_eq!(
         regex_value["data"]["hits"][0]["matches"][0]["field"],
         "tool_output"
@@ -1616,6 +1663,36 @@ fn search_turns_query_rejects_unknown_session_id_filter() -> Result<()> {
     assert_eq!(value["schema"], "darc.error.v1");
     assert_eq!(value["error"]["code"], "unknown_session");
     assert_eq!(value["error"]["details"]["session"], UNKNOWN_SESSION_ID);
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn search_turns_query_rejects_tool_output_flag_for_keyword_mode() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-search-tool-output-keyword")?;
+    let output = run_darc([
+        "query",
+        "search",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--mode",
+        "keyword",
+        "--query",
+        "Inspect",
+        "--include-tool-output",
+        "--json",
+    ])?;
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains(
+            "--include-tool-output is only supported with --mode literal or --mode regex"
+        )
+    );
 
     remove_root(&root)?;
     Ok(())

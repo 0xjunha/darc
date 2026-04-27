@@ -108,7 +108,8 @@ Darc's read-side query surface now covers project-scoped search, compact turn sk
 single-call session bundles.
 
 - `darc query search turns` handles keyword, literal, regex, file-name, and file-path search with optional
-  provider/session/time filters.
+  provider/session/time filters. Literal and regex search skip bulky tool outputs by default; add
+  `--include-tool-output` for forensic searches over command output, logs, or stack traces.
 - project-scoped `darc query` commands accept optional `--project-id`; when omitted, Darc resolves the configured
   project from the current directory.
 - `darc query turns` lists one known provider session (`--provider --session-id`, full UUID only); content discovery
@@ -132,6 +133,15 @@ darc query search turns \
   --mode literal \
   --query "--output-last-message" \
   --since 14d \
+  --json
+```
+
+```bash
+darc query search turns \
+  --project-id repo-abc123 \
+  --mode regex \
+  --query "panic: .*" \
+  --include-tool-output \
   --json
 ```
 
