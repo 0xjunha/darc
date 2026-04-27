@@ -283,6 +283,7 @@ dependencies = [
  "darc-rollout",
  "darc-test-utils",
  "glob",
+ "memchr",
  "regex",
  "rusqlite",
  "serde",

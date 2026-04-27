@@ -12,6 +12,7 @@ darc-paths = { workspace = true }
 darc-rollout = { workspace = true }
 anyhow = { workspace = true }
 glob = { workspace = true }
+memchr = { workspace = true }
 regex = { workspace = true }
 rusqlite = { workspace = true }
 serde = { workspace = true }
