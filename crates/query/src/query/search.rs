@@ -67,13 +67,14 @@ const EVIDENCE_SEARCH_SQL: &str = "
         AND (?3 IS NULL OR turn_evidence.session_id = ?3)
         AND (?4 IS NULL OR julianday(turns.started_at) >= julianday(?4))
         AND (?5 IS NULL OR julianday(turns.started_at) < julianday(?5))
+        AND (?6 IS NULL OR instr(turn_evidence.text, ?6) > 0)
     ORDER BY
         turns.started_at DESC,
         turn_evidence.provider ASC,
         turn_evidence.session_id ASC,
         turn_evidence.turn_ordinal ASC,
         turn_evidence.evidence_ordinal ASC
-    LIMIT ?6
+    LIMIT ?7
 ";
 
 const MAX_EVIDENCE_CANDIDATE_ROWS: usize = 50_000;
@@ -209,7 +210,7 @@ fn build_search_turns(
 ) -> Result<SearchTurnsQueryData> {
     let project_id = request.project_id;
     let mode = request.mode;
-    let query = request.query.trim();
+    let query = search_query_for_mode(mode, request.query)?;
     let response_provider = request.provider;
     let provider_filter = response_provider.map(SourceKind::directory_name);
     let session_id = request.session_id;
@@ -217,9 +218,6 @@ fn build_search_turns(
     let until = request.until;
     let limit = request.limit;
     let offset = request.offset;
-    if query.is_empty() {
-        bail!("search query must not be empty");
-    }
     let scope = SearchScope {
         project_id,
         provider: provider_filter,
@@ -316,6 +314,25 @@ fn build_search_turns(
     })
 }
 
+/// Returns the query text with mode-specific exactness rules applied.
+fn search_query_for_mode(mode: SearchMode, query: &str) -> Result<&str> {
+    match mode {
+        SearchMode::Literal | SearchMode::Regex => {
+            if query.is_empty() {
+                bail!("search query must not be empty");
+            }
+            Ok(query)
+        }
+        SearchMode::Keyword | SearchMode::FileName | SearchMode::FilePath => {
+            let query = query.trim();
+            if query.is_empty() {
+                bail!("search query must not be empty");
+            }
+            Ok(query)
+        }
+    }
+}
+
 /// Queries keyword search hits ordered by FTS relevance and latest activity.
 fn query_keyword_hits(
     connection: &Connection,
@@ -407,6 +424,7 @@ fn query_evidence_hits(
             .context("evidence row safety limit exceeds usize range")?,
     )
     .context("evidence row safety limit exceeds SQLite INTEGER range")?;
+    let literal_filter = matches!(request.mode, SearchMode::Literal).then_some(request.query);
     let mut statement = connection
         .prepare(EVIDENCE_SEARCH_SQL)
         .context("failed to prepare evidence search query")?;
@@ -417,6 +435,7 @@ fn query_evidence_hits(
             scope.session_id,
             scope.since,
             scope.until,
+            literal_filter,
             row_limit
         ])
         .context("failed to query evidence search rows")?;
