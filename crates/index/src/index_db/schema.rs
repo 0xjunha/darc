@@ -7,6 +7,7 @@ pub(crate) enum SchemaTable {
     Turns,
     ToolCalls,
     FileAccesses,
+    TurnEvidence,
     TurnSearch,
     TurnSearchFts,
     CodexSessions,
@@ -20,6 +21,7 @@ impl SchemaTable {
             Self::Turns => "turns",
             Self::ToolCalls => "tool_calls",
             Self::FileAccesses => "file_accesses",
+            Self::TurnEvidence => "turn_evidence",
             Self::TurnSearch => "turn_search",
             Self::TurnSearchFts => "turn_search_fts",
             Self::CodexSessions => "codex_sessions",
@@ -180,6 +182,7 @@ pub(crate) const COMPAT_COLUMN_SETS: &[CompatColumnSet] = &[
 pub(crate) const DERIVED_ANALYTICS_TABLES: &[SchemaTable] = &[
     SchemaTable::ToolCalls,
     SchemaTable::FileAccesses,
+    SchemaTable::TurnEvidence,
     SchemaTable::TurnSearch,
     SchemaTable::TurnSearchFts,
 ];
@@ -269,6 +272,14 @@ pub(crate) const SUPPLEMENTAL_SCHEMA_OBJECTS: &[SchemaObject] = &[
     SchemaObject {
         kind: SchemaObjectKind::Index,
         name: "sessions_project_provider_schema_idx",
+    },
+    SchemaObject {
+        kind: SchemaObjectKind::Table,
+        name: "turn_evidence",
+    },
+    SchemaObject {
+        kind: SchemaObjectKind::Index,
+        name: "turn_evidence_project_turn_idx",
     },
     SchemaObject {
         kind: SchemaObjectKind::Table,
@@ -431,6 +442,29 @@ const CREATE_SUPPLEMENTAL_SCHEMA_SQL: &str = "
         ON file_accesses (project_id, provider, session_id, turn_ordinal);
     CREATE INDEX IF NOT EXISTS sessions_project_provider_schema_idx
         ON sessions (project_id, provider, schema_id, determinism);
+
+    CREATE TABLE IF NOT EXISTS turn_evidence (
+        project_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        turn_ordinal INTEGER NOT NULL,
+        evidence_ordinal INTEGER NOT NULL,
+        field TEXT NOT NULL,
+        text TEXT NOT NULL,
+        PRIMARY KEY (
+            project_id,
+            provider,
+            session_id,
+            turn_ordinal,
+            evidence_ordinal
+        ),
+        FOREIGN KEY (project_id, provider, session_id, turn_ordinal)
+            REFERENCES turns(project_id, provider, session_id, turn_ordinal)
+            ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS turn_evidence_project_turn_idx
+        ON turn_evidence (project_id, provider, session_id, turn_ordinal, evidence_ordinal);
 
     CREATE TABLE IF NOT EXISTS turn_search (
         project_id TEXT NOT NULL,
@@ -609,6 +643,19 @@ pub(crate) const INSERT_FILE_ACCESS_SQL: &str = "
     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
 ";
 
+/// Stores the canonical turn-evidence insert statement shared across writers and helpers.
+pub(crate) const INSERT_TURN_EVIDENCE_SQL: &str = "
+    INSERT INTO turn_evidence (
+        project_id,
+        provider,
+        session_id,
+        turn_ordinal,
+        evidence_ordinal,
+        field,
+        text
+    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+";
+
 /// Stores the canonical turn-search insert statement shared across writers and helpers.
 pub(crate) const INSERT_TURN_SEARCH_SQL: &str = "
     INSERT INTO turn_search (
@@ -624,6 +671,7 @@ pub(crate) const INSERT_TURN_SEARCH_SQL: &str = "
 
 /// Stores the derived-analytics clear batch used before full rebuilds.
 pub(crate) const DELETE_DERIVED_ANALYTICS_SQL: &str = "
+    DELETE FROM turn_evidence;
     DELETE FROM turn_search;
     DELETE FROM file_accesses;
     DELETE FROM tool_calls;
@@ -717,6 +765,7 @@ pub(super) fn smoke_test_sql(connection: &Connection) -> Result<()> {
         ("turn insert", INSERT_TURN_SQL),
         ("tool call insert", INSERT_TOOL_CALL_SQL),
         ("file access insert", INSERT_FILE_ACCESS_SQL),
+        ("turn evidence insert", INSERT_TURN_EVIDENCE_SQL),
         ("turn search insert", INSERT_TURN_SEARCH_SQL),
         (
             "derived analytics rebuild select",

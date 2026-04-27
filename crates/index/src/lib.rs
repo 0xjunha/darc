@@ -1,5 +1,6 @@
 mod derived_data;
 mod engine;
+pub mod evidence;
 mod index_db;
 pub mod policy;
 #[cfg(any(test, feature = "test-support"))]
