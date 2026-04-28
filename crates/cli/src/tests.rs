@@ -140,6 +140,19 @@ fn refresh_command_accepts_provider_filters_and_all() {
 }
 
 #[test]
+fn status_command_accepts_workspace_and_check_flags() {
+    let cli = Cli::try_parse_from(["darc", "status", "--workspace", "--check"]).unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Status(super::StatusArgs {
+            workspace: true,
+            check: true,
+            ..
+        })
+    ));
+}
+
+#[test]
 fn refresh_all_exit_status_errors_when_any_project_failed() {
     let report = RefreshAllBestEffortReport {
         projects: vec![

@@ -1,7 +1,10 @@
 #[cfg(test)]
 mod tests;
 
-use std::path::PathBuf;
+use std::{
+    io::{self, IsTerminal},
+    path::PathBuf,
+};
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -19,10 +22,11 @@ use darc_core::query::{
 };
 use darc_core::{
     IndexOptions, InitDraft, RefreshAllBestEffortReport, RefreshOptions, RefreshProjectAttempt,
-    RefreshProjectFailure, RefreshReport, SkippedRollout, SourceKind, SyncOptions,
-    default_root_path, execute_sync, index_project_sessions, link_project, prepare_init,
-    prepare_sync, refresh_all_projects_best_effort, refresh_project, remove_project,
-    rename_project, write_init,
+    RefreshProjectFailure, RefreshReport, SkippedRollout, SourceKind, StatusProject, StatusSource,
+    StatusSyncCheck, StatusSyncPlan, SyncOptions, WorkspaceStatusReport, default_root_path,
+    execute_sync, index_project_sessions, link_project, prepare_init, prepare_sync,
+    refresh_all_projects_best_effort, refresh_project, remove_project, rename_project,
+    status_project, status_workspace, write_init,
 };
 use darc_paths::{
     current_utc_timestamp, resolve_query_time_bound as resolve_shared_query_time_bound,
@@ -55,6 +59,11 @@ enum Commands {
         long_about = "Sync then index archived sessions for the active project.\n\nThis is the daily happy path after `darc init`.\nBy default it refreshes the project resolved from the current directory.\nUse `--provider` to limit both sync and index to selected providers.\nUse `--all` to refresh every registered project in the shared darc workspace.\nWhen `--all` is set, darc continues past per-project failures, prints a workspace summary, and exits non-zero if any project failed."
     )]
     Refresh(RefreshArgs),
+    #[command(
+        about = "Show Darc status for the active project or workspace",
+        long_about = "Show Darc status for the active project or workspace.\n\nBy default this resolves the project from the current directory and prints root, config, source, archive, index, and sync-manifest status.\nUse `--workspace` to summarize every configured project in the shared Darc workspace.\nUse `--check` to run sync planning without writing manifests, config, archives, or SQLite."
+    )]
+    Status(StatusArgs),
     #[command(
         about = "Link one configured project's historical paths into the current project",
         long_about = "Link one configured project's historical paths into the current project.\n\nRun this command from the target project directory.\nThe PROJECT argument is the old or source project name already stored in ~/.darc/config.toml.\n\nExample:\n- You renamed `/path/to/old-project` to `/path/to/new-project`.\n- Darc still has a configured project named `old-project`.\n- Run `cd /path/to/new-project && darc link old-project`.\n\nThis command is non-destructive.\nIt updates config so the current project knows the source project's old local_path and known_paths.\nIt does not run `darc refresh` or remove the source project."
@@ -119,6 +128,25 @@ struct RefreshArgs {
         help = "Refresh every registered project, continue past per-project failures, and summarize the results"
     )]
     all: bool,
+}
+
+/// Shows Darc status for the active project or workspace.
+#[derive(Debug, Args)]
+struct StatusArgs {
+    #[arg(long, default_value_os_t = default_root_path())]
+    root: PathBuf,
+
+    #[arg(
+        long,
+        help = "Show status for the shared Darc workspace instead of the active project"
+    )]
+    workspace: bool,
+
+    #[arg(
+        long,
+        help = "Run sync planning without writing manifests, config, archives, or SQLite"
+    )]
+    check: bool,
 }
 
 /// Sync matching Claude and Codex sessions into the project archive.
@@ -748,6 +776,7 @@ pub fn run() -> i32 {
     match cli.command {
         Commands::Init(args) => standard_exit(run_init(args)),
         Commands::Refresh(args) => standard_exit(run_refresh(args)),
+        Commands::Status(args) => standard_exit(run_status(args)),
         Commands::Link(args) => standard_exit(run_link(args)),
         Commands::Remove(args) => standard_exit(run_remove(args)),
         Commands::RenameFrom(args) => standard_exit(run_rename_from(args)),
@@ -1584,6 +1613,387 @@ fn refresh_all_exit_status(report: &RefreshAllBestEffortReport) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Shows Darc status for the active project or shared workspace.
+fn run_status(args: StatusArgs) -> Result<()> {
+    if args.workspace {
+        let report = status_workspace(Some(args.root), args.check)?;
+        print_workspace_status(&report);
+        return status_check_exit(report.has_failed_check(), "workspace status check failed");
+    }
+
+    let report = status_project(Some(args.root), args.check)
+        .map_err(add_init_hint_for_unconfigured_project)?;
+    print_project_status(&report);
+    status_check_exit(report.has_failed_check(), "status check failed")
+}
+
+/// Converts an optional status sync-check failure into the final CLI exit result.
+fn status_check_exit(has_failed_check: bool, message: &'static str) -> Result<()> {
+    if has_failed_check {
+        bail!("{message}");
+    }
+    Ok(())
+}
+
+/// Prints one active-project status report.
+fn print_project_status(report: &darc_core::ProjectStatusReport) {
+    print_status_header(&report.root, None);
+    println!();
+    print_sources(&report.sources);
+    println!();
+    print_active_project_identity(&report.project);
+    println!();
+    print_project_index_status(&report.project, 0);
+    if report.project.sync_check.is_some() {
+        println!();
+        print_sync_check(report.project.sync_check.as_ref(), "Sync Check", 0);
+    }
+    if !report.project.issues.is_empty() {
+        println!();
+        print_project_issues(&report.project, 0);
+    }
+    println!();
+    print_overall_status(format_overall_status(
+        &report.root.issues,
+        &report.sources,
+        std::slice::from_ref(&report.project),
+    ));
+}
+
+/// Prints one workspace status report.
+fn print_workspace_status(report: &WorkspaceStatusReport) {
+    print_status_header(&report.root, Some(report.projects.len()));
+    println!();
+    print_sources(&report.sources);
+    println!();
+    print_workspace_summary(report);
+    println!();
+    print_workspace_projects(&report.projects);
+    println!();
+    print_overall_status(format_overall_status(
+        &report.root.issues,
+        &report.sources,
+        &report.projects,
+    ));
+}
+
+/// Prints a plain section heading.
+fn print_section(title: &str) {
+    if io::stdout().is_terminal() {
+        println!("\x1b[1m{title}\x1b[0m");
+    } else {
+        println!("{title}");
+    }
+}
+
+/// Prints one indented label/value field.
+fn print_field(indent: usize, label: &str, value: impl std::fmt::Display) {
+    println!("{}{}: {}", " ".repeat(indent), label, value);
+}
+
+/// Prints one indented continuation line.
+fn print_line(indent: usize, value: impl std::fmt::Display) {
+    println!("{}{}", " ".repeat(indent), value);
+}
+
+/// Returns a count phrase for one singular/plural noun pair.
+fn count_label(count: usize, singular: &str, plural: &str) -> String {
+    let noun = if count == 1 { singular } else { plural };
+    format!("{count} {noun}")
+}
+
+/// Returns one archive availability label.
+fn archive_status(project: &StatusProject) -> &'static str {
+    if project.archive_exists {
+        "ok"
+    } else {
+        "missing"
+    }
+}
+
+/// Returns one configured-source state label.
+fn source_state(source: &StatusSource) -> &'static str {
+    if !source.configured {
+        "not configured"
+    } else if source.enabled {
+        "enabled"
+    } else {
+        "disabled"
+    }
+}
+
+/// Returns one configured-source path availability label.
+fn source_path_state(source: &StatusSource) -> &'static str {
+    if source.path_exists { "ok" } else { "missing" }
+}
+
+/// Returns one configured-source path label.
+fn source_path(source: &StatusSource) -> String {
+    source
+        .path
+        .as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "none".to_owned())
+}
+
+/// Returns one formatted source path with availability.
+fn source_path_with_state(source: &StatusSource) -> String {
+    format!("{} ({})", source_path(source), source_path_state(source))
+}
+
+/// Returns one formatted indexed count summary.
+fn indexed_summary(project: &StatusProject) -> String {
+    format!(
+        "{} sessions, {} turns",
+        project.session_count, project.turn_count
+    )
+}
+
+/// Prints the common root/config/database status header.
+fn print_status_header(root: &darc_core::query::RootInfo, project_count: Option<usize>) {
+    print_section("Darc");
+    print_field(2, "Version", env!("CARGO_PKG_VERSION"));
+    print_field(2, "Root", root.resolved_root_path.display());
+    let config_status = if !root.available.config_exists {
+        "missing".to_owned()
+    } else {
+        match project_count {
+            Some(count) => format!("ok ({})", count_label(count, "project", "projects")),
+            None => "ok".to_owned(),
+        }
+    };
+    print_field(2, "Config", config_status);
+    print_field(
+        2,
+        "Index DB",
+        if root.available.database_exists {
+            "ok"
+        } else {
+            "missing"
+        },
+    );
+}
+
+/// Prints all supported source availability rows.
+fn print_sources(sources: &[StatusSource]) {
+    print_section("Sources");
+    for source in sources {
+        print_line(2, source.kind.title());
+        print_field(4, "State", source_state(source));
+        if source.configured {
+            print_field(4, "Path", source_path_with_state(source));
+        }
+    }
+}
+
+/// Prints the active project identity and storage block.
+fn print_active_project_identity(project: &StatusProject) {
+    print_section("Active Project");
+    print_field(2, "Name", &project.name);
+    print_field(2, "ID", &project.id);
+    print_field(
+        2,
+        "Root",
+        project
+            .resolved_project_root
+            .as_ref()
+            .unwrap_or(&project.local_path)
+            .display(),
+    );
+    print_field(2, "Archive", archive_status(project));
+    print_field(2, "Archive path", project.sessions_root.display());
+    print_field(2, "Known paths", project.known_path_count);
+    if let Some(upstream) = &project.git_upstream {
+        print_field(2, "Upstream", upstream);
+    }
+}
+
+/// Prints one indexed-data status block.
+fn print_project_index_status(project: &StatusProject, indent: usize) {
+    let heading = if indent == 0 {
+        "Indexed Data"
+    } else {
+        "Indexed"
+    };
+    print_line(indent, heading);
+    print_field(indent + 2, "Sessions", project.session_count);
+    print_field(indent + 2, "Turns", project.turn_count);
+    print_field(
+        indent + 2,
+        "Last activity",
+        project.last_activity_at.as_deref().unwrap_or("none"),
+    );
+    print_field(
+        indent + 2,
+        "Last sync",
+        project.last_sync_at.as_deref().unwrap_or("unknown"),
+    );
+}
+
+/// Prints the workspace aggregate status block.
+fn print_workspace_summary(report: &WorkspaceStatusReport) {
+    print_section("Workspace Summary");
+    print_field(2, "Projects", report.projects.len());
+    print_field(2, "Indexed sessions", report.total_session_count());
+    print_field(2, "Indexed turns", report.total_turn_count());
+    print_field(
+        2,
+        "Last activity",
+        report.latest_activity_at().unwrap_or("none"),
+    );
+}
+
+/// Prints every workspace project as a readable multi-line block.
+fn print_workspace_projects(projects: &[StatusProject]) {
+    print_section("Projects");
+    if projects.is_empty() {
+        print_line(2, "none");
+        return;
+    }
+
+    for (index, project) in projects.iter().enumerate() {
+        if index > 0 {
+            println!();
+        }
+        print_workspace_project_status(project);
+    }
+}
+
+/// Prints one compact workspace project row.
+fn print_workspace_project_status(project: &StatusProject) {
+    print_line(2, &project.name);
+    print_field(4, "ID", &project.id);
+    print_field(4, "Path", project.local_path.display());
+    print_field(4, "Archive", archive_status(project));
+    print_field(4, "Archive path", project.sessions_root.display());
+    print_field(4, "Indexed", indexed_summary(project));
+    print_field(
+        4,
+        "Last activity",
+        project.last_activity_at.as_deref().unwrap_or("none"),
+    );
+    print_field(
+        4,
+        "Last sync",
+        project.last_sync_at.as_deref().unwrap_or("unknown"),
+    );
+    if project.sync_check.is_some() {
+        print_sync_check(project.sync_check.as_ref(), "Sync Check", 4);
+    }
+    if !project.issues.is_empty() {
+        print_project_issues(project, 4);
+    }
+}
+
+/// Prints one optional sync dry-run block.
+fn print_sync_check(check: Option<&StatusSyncCheck>, label: &str, indent: usize) {
+    let Some(check) = check else {
+        return;
+    };
+
+    match check {
+        StatusSyncCheck::Planned(plan) => print_sync_plan(plan, label, indent),
+        StatusSyncCheck::Failed(failure) => {
+            print_line(indent, format!("{label}: failed"));
+            print_field(indent + 2, "Error", &failure.message);
+        }
+    }
+}
+
+/// Prints one successful sync dry-run summary.
+fn print_sync_plan(plan: &StatusSyncPlan, label: &str, indent: usize) {
+    print_line(indent, label);
+    print_field(indent + 2, "Providers", format_sources(&plan.sources));
+    print_field(
+        indent + 2,
+        "Sessions",
+        format!(
+            "{} pending, {} unchanged",
+            plan.sessions_to_copy, plan.sessions_unchanged
+        ),
+    );
+    print_field(
+        indent + 2,
+        "Auxiliary",
+        format!(
+            "{} pending, {} unchanged",
+            plan.auxiliary_to_copy, plan.auxiliary_unchanged
+        ),
+    );
+    print_field(
+        indent + 2,
+        "Known paths",
+        format!("{} new", plan.new_known_path_count),
+    );
+    print_field(
+        indent + 2,
+        "Manifest",
+        if plan.manifest_written {
+            "would update"
+        } else {
+            "up to date"
+        },
+    );
+    print_field(
+        indent + 2,
+        "Config",
+        if plan.config_written {
+            "would update"
+        } else {
+            "up to date"
+        },
+    );
+    if !plan.warnings.is_empty() {
+        print_line(indent + 2, "Warnings");
+        for warning in &plan.warnings {
+            print_line(indent + 4, format!("- {warning}"));
+        }
+    }
+}
+
+/// Prints project-local issues when present.
+fn print_project_issues(project: &StatusProject, indent: usize) {
+    if project.issues.is_empty() {
+        return;
+    }
+    print_line(indent, "Issues");
+    for issue in &project.issues {
+        print_line(indent + 2, format!("- {issue}"));
+    }
+}
+
+/// Prints the final overall status block.
+fn print_overall_status(status: &'static str) {
+    print_section("Status");
+    print_field(2, "Overall", status);
+}
+
+/// Returns the overall human status label for one report.
+fn format_overall_status(
+    root_issues: &[String],
+    sources: &[StatusSource],
+    projects: &[StatusProject],
+) -> &'static str {
+    if root_issues.is_empty()
+        && !sources.iter().any(source_needs_attention)
+        && !projects.iter().any(project_needs_attention)
+    {
+        "ok"
+    } else {
+        "needs attention"
+    }
+}
+
+/// Returns whether one source row deserves attention.
+fn source_needs_attention(source: &StatusSource) -> bool {
+    source.configured && source.enabled && !source.path_exists
+}
+
+/// Returns whether one project row deserves attention.
+fn project_needs_attention(project: &StatusProject) -> bool {
+    !project.issues.is_empty() || project.has_failed_check()
 }
 
 /// Prepares and optionally executes the project-scoped sync workflow.
