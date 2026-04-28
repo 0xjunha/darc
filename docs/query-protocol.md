@@ -19,10 +19,10 @@ Query commands emit JSON envelopes on stdout by default.
 ### Sessions, Turns, And Files
 
 - `darc query resolve-session <uuid-or-prefix> [--root <path>] [--project-id <id>] [--provider <provider>] [--pick-one]`
-- `darc query sessions [--root <path>] [--project-id <id>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--touched-path <glob>] [--limit <n>] [--offset <n>]`
-- `darc query files [--root <path>] [--project-id <id>] <path-or-glob> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>]`
-- `darc query files [--root <path>] [--project-id <id>] --path <path-or-glob> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>]`
-- `darc query files [--root <path>] [--project-id <id>] --co-touched-with <path> [--limit <n>] [--offset <n>]`
+- `darc query sessions [--root <path>] [--project-id <id>] [--provider <provider>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--touched-path <glob>] [--limit <n>] [--offset <n>]`
+- `darc query files [--root <path>] [--project-id <id>] [--provider <provider>] <path-or-glob> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>]`
+- `darc query files [--root <path>] [--project-id <id>] [--provider <provider>] --path <path-or-glob> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>]`
+- `darc query files [--root <path>] [--project-id <id>] [--provider <provider>] --co-touched-with <path> [--limit <n>] [--offset <n>]`
 - `darc query session-files [--root <path>] [--project-id <id>] [--provider <provider>] <session-id>`
 - `darc query session-files [--root <path>] [--project-id <id>] [--provider <provider>] --session-id <session-id>`
 - `darc query session-bundle [--root <path>] [--project-id <id>] [--provider <provider>] <session-id> [--view <full|narrative>] [--turn-limit <n>] [--turn-offset <n>]`
@@ -37,7 +37,7 @@ Query commands emit JSON envelopes on stdout by default.
 ### Insights
 
 - `darc query insights workspace [--root <path>] [--window <days>d]`
-- `darc query insights project [--root <path>] [--project-id <id>] [--turn-limit <n>]`
+- `darc query insights project [--root <path>] [--project-id <id>] [--provider <provider>] [--turn-limit <n>]`
 - `darc query insights turn [--root <path>] [--project-id <id>] [--provider <provider>] <session-id> <turn-ordinal>`
 - `darc query insights turn [--root <path>] [--project-id <id>] [--provider <provider>] --session-id <session-id> --turn-ordinal <n>`
 
@@ -340,7 +340,7 @@ Today:
 
 - session rows include `primary_model`, `total_token_count`, `token_usage`, `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, `removed_line_count`, `first_turn_at`, `first_user_prompt`, `aborted_turn_count`, and `edited_files`
 - session totals are rollups across the indexed turns in that session
-- top-level session-list payloads additionally echo the resolved `since`, `until`, and `touched_path` request filters as nullable fields, plus non-null `limit`, `offset`, and `has_more` pagination fields
+- top-level session-list payloads additionally echo the resolved `provider`, `since`, `until`, and `touched_path` request filters as nullable fields, plus non-null `limit`, `offset`, and `has_more` pagination fields
 - top-level turn-list payloads echo nullable `since` and `until` filters plus non-null `limit`, `offset`, and `has_more` pagination fields
 - optional `--since` and `--until` filters apply to `latest_turn_at`, using inclusive lower-bound and exclusive upper-bound semantics
 - optional `--touched-path` requires at least one session-scoped, project-scoped file access of any access type whose canonical display path matches the provided glob; Darc scans session candidates in `latest_turn_at` order after the `--since` / `--until` bounds and then applies touched-path pagination
@@ -364,7 +364,7 @@ Today:
 
 Today:
 
-- `darc.query.files.v1` includes `project_id`, `mode`, nullable `path`, nullable `co_touched_with`, nullable `since`, nullable `until`, non-null `limit`, non-null `offset`, non-null `has_more`, plus `sessions` and `files` arrays
+- `darc.query.files.v1` includes `project_id`, `mode`, nullable `provider`, nullable `path`, nullable `co_touched_with`, nullable `since`, nullable `until`, non-null `limit`, non-null `offset`, non-null `has_more`, plus `sessions` and `files` arrays
 - `mode=path` populates `sessions` and leaves `files` empty
 - `mode=co_touched_with` populates `files` and leaves `sessions` empty
 - `mode=path` applies `--since` and `--until` to touched turns using `turns.started_at`, with inclusive lower-bound and exclusive upper-bound semantics
@@ -464,6 +464,8 @@ Today:
 - keyword search currently uses FTS ranking before recency tie-breaks
 
 ### Hard debugging
+
+`darc.query.insights.project.v1` echoes nullable `provider`; when present, `daily_time`, tool/file rankings, failures, total time, and `hard_debuggings` are computed from that provider's recent turns only.
 
 `hard_debuggings` is currently provisional.
 

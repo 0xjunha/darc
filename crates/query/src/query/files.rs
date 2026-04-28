@@ -376,6 +376,7 @@ fn build_files_query(
                 connection,
                 request.project_id,
                 request.project_root,
+                request.provider,
                 path,
                 request.since,
                 request.until,
@@ -385,6 +386,7 @@ fn build_files_query(
             Ok(FilesQueryData {
                 project_id: request.project_id.to_owned(),
                 mode: FilesQueryMode::Path,
+                provider: request.provider,
                 path: Some(path.to_owned()),
                 co_touched_with: None,
                 since: request.since.map(str::to_owned),
@@ -407,12 +409,14 @@ fn build_files_query(
                 connection,
                 request.project_id,
                 request.project_root,
+                request.provider,
                 seed_path,
             )?;
             let (files, has_more) = paginate_ranked_rows(files, request.limit, request.offset)?;
             Ok(FilesQueryData {
                 project_id: request.project_id.to_owned(),
                 mode: FilesQueryMode::CoTouchedWith,
+                provider: request.provider,
                 path: None,
                 co_touched_with: Some(seed_path.to_owned()),
                 since: None,
@@ -475,6 +479,7 @@ fn query_file_session_matches(
     connection: &Connection,
     project_id: &str,
     project_root: Option<&Path>,
+    provider: Option<SourceKind>,
     path: &str,
     since: Option<&str>,
     until: Option<&str>,
@@ -487,7 +492,7 @@ fn query_file_session_matches(
         connection,
         project_id,
         SessionFileQueryFilters {
-            provider: None,
+            provider,
             session_id: None,
             since,
             until,
@@ -575,6 +580,7 @@ fn query_co_touched_files(
     connection: &Connection,
     project_id: &str,
     project_root: Option<&Path>,
+    provider: Option<SourceKind>,
     seed_path: &str,
 ) -> Result<Vec<CoTouchedFileSummary>> {
     let seed_path = normalize_project_scoped_query_path(project_root, seed_path);
@@ -586,7 +592,7 @@ fn query_co_touched_files(
         connection,
         project_id,
         SessionFileQueryFilters {
-            provider: None,
+            provider,
             session_id: None,
             since: None,
             until: None,

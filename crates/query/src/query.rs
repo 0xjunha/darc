@@ -147,6 +147,7 @@ pub struct SessionSummary {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SessionsQueryData {
     pub project_id: String,
+    pub provider: Option<SourceKind>,
     pub since: Option<String>,
     pub until: Option<String>,
     pub touched_path: Option<String>,
@@ -161,6 +162,7 @@ pub struct SessionsQueryData {
 pub struct SessionsQueryRequest<'a> {
     pub project_id: &'a str,
     pub project_root: Option<&'a Path>,
+    pub provider: Option<SourceKind>,
     pub since: Option<&'a str>,
     pub until: Option<&'a str>,
     pub touched_path: Option<&'a str>,
@@ -229,6 +231,7 @@ pub struct CoTouchedFileSummary {
 pub struct FilesQueryData {
     pub project_id: String,
     pub mode: FilesQueryMode,
+    pub provider: Option<SourceKind>,
     pub path: Option<String>,
     pub co_touched_with: Option<String>,
     pub since: Option<String>,
@@ -245,6 +248,7 @@ pub struct FilesQueryData {
 pub struct FilesQueryRequest<'a> {
     pub project_id: &'a str,
     pub project_root: Option<&'a Path>,
+    pub provider: Option<SourceKind>,
     pub path: Option<&'a str>,
     pub co_touched_with: Option<&'a str>,
     pub since: Option<&'a str>,
@@ -637,6 +641,7 @@ pub struct WorkspaceInsights {
 /// Stores the project insights payload for one indexed project.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ProjectInsights {
+    pub provider: Option<SourceKind>,
     pub daily_time: Vec<DailyTimeStat>,
     pub most_common_tools: Vec<ToolUsageStat>,
     pub most_read_files: Vec<FileUsageStat>,
@@ -957,6 +962,7 @@ enum ToolUsageScope<'a> {
     },
     RecentProject {
         project_id: &'a str,
+        provider: Option<SourceKind>,
         limit: usize,
     },
 }
@@ -972,6 +978,7 @@ enum FileUsageScope<'a> {
     },
     RecentProject {
         project_id: &'a str,
+        provider: Option<SourceKind>,
         limit: usize,
     },
 }

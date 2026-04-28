@@ -278,6 +278,9 @@ struct QuerySessionsArgs {
     )]
     project_id: Option<String>,
 
+    #[arg(long, value_enum, help = "Restrict sessions to this provider")]
+    provider: Option<ProviderArg>,
+
     #[arg(
         long,
         help = "Inclusive latest_turn_at lower bound. Example: `5d` or `2026-04-07T00:00:00Z`"
@@ -366,6 +369,9 @@ struct QueryFilesArgs {
         help = "Query this configured project id. Defaults to the project resolved from the current directory"
     )]
     project_id: Option<String>,
+
+    #[arg(long, value_enum, help = "Restrict file pivots to this provider")]
+    provider: Option<ProviderArg>,
 
     #[arg(
         long,
@@ -674,6 +680,9 @@ struct QueryProjectInsightsArgs {
     )]
     project_id: Option<String>,
 
+    #[arg(long, value_enum, help = "Restrict project insights to this provider")]
+    provider: Option<ProviderArg>,
+
     #[arg(
         long = "turn-limit",
         alias = "limit",
@@ -896,6 +905,7 @@ fn run_query_sessions(args: QuerySessionsArgs) -> Result<()> {
         .transpose()?;
     let data = query_sessions_for_project(
         &project,
+        args.provider.map(provider_arg_to_source_kind),
         since.as_deref(),
         until.as_deref(),
         args.touched_path.as_deref(),
@@ -936,6 +946,7 @@ fn run_query_files(args: QueryFilesArgs) -> Result<()> {
         FilesQueryRequest {
             project_id: "",
             project_root: None,
+            provider: args.provider.map(provider_arg_to_source_kind),
             path,
             co_touched_with: args.co_touched_with.as_deref(),
             since: since.as_deref(),
@@ -1150,7 +1161,11 @@ fn run_query_workspace_insights(args: QueryWorkspaceInsightsArgs) -> Result<()> 
 /// Queries the project insights payload for one configured project.
 fn run_query_project_insights(args: QueryProjectInsightsArgs) -> Result<()> {
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
-    let data = query_project_insight_report_for_project(&project, args.turn_limit)?;
+    let data = query_project_insight_report_for_project(
+        &project,
+        args.provider.map(provider_arg_to_source_kind),
+        args.turn_limit,
+    )?;
     print_json_envelope("darc.query.insights.project.v1", &data)
 }
 

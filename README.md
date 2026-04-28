@@ -114,7 +114,8 @@ single-call session bundles.
   search skip bulky tool outputs by default; add `--include-tool-output` for forensic searches over command output,
   logs, or stack traces, and use `--field` / `--exclude-field` to narrow exact evidence fields.
 - project-scoped `darc query` commands accept optional `--project-id`; when omitted, Darc resolves the configured
-  project from the current directory.
+  project from the current directory. Project pivots such as `sessions`, `files`, and `insights project` also accept
+  `--provider` when a corpus mixes Codex and Claude history.
 - `darc query turns` lists one known session by full UUID, inferring the provider unless the id is cross-provider
   ambiguous; content discovery lives under `darc query search turns`.
 - `darc query files <path>`, `darc query session-files <session-id>`, and

@@ -1607,6 +1607,8 @@ fn project_insights_query_emits_success_envelope() -> Result<()> {
         root.to_string_lossy().as_ref(),
         "--project-id",
         "repo-abc123",
+        "--provider",
+        "codex",
         "--turn-limit",
         "1000",
     ])?;
@@ -1615,6 +1617,7 @@ fn project_insights_query_emits_success_envelope() -> Result<()> {
     assert!(output.stderr.is_empty());
     let value = parse_json(&output.stdout, "stdout")?;
     assert_eq!(value["schema"], "darc.query.insights.project.v1");
+    assert_eq!(value["data"]["provider"], "codex");
     assert_eq!(value["data"]["most_common_tools"][0]["name"], "Read");
     assert_eq!(value["data"]["total_time_ms"], 5000);
     assert_eq!(

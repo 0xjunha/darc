@@ -148,6 +148,7 @@ pub fn resolve_query_config_project(
 /// Queries the session-list payload for one already-resolved configured project.
 pub fn query_sessions_for_project(
     project: &ResolvedQueryProject,
+    provider: Option<SourceKind>,
     since: Option<&str>,
     until: Option<&str>,
     touched_path: Option<&str>,
@@ -160,6 +161,7 @@ pub fn query_sessions_for_project(
         SessionsQueryRequest {
             project_id: &context.project.id,
             project_root: Some(context.project.local_path.as_path()),
+            provider,
             since,
             until,
             touched_path,
@@ -172,15 +174,18 @@ pub fn query_sessions_for_project(
 /// Queries the session-list payload for one configured project.
 pub fn query_sessions(
     root: Option<PathBuf>,
-    project_id: &str,
-    since: Option<&str>,
-    until: Option<&str>,
-    touched_path: Option<&str>,
-    limit: usize,
-    offset: usize,
+    request: SessionsQueryRequest<'_>,
 ) -> Result<SessionsQueryData> {
-    let project = resolve_query_project(root, Some(project_id))?;
-    query_sessions_for_project(&project, since, until, touched_path, limit, offset)
+    let project = resolve_query_project(root, Some(request.project_id))?;
+    query_sessions_for_project(
+        &project,
+        request.provider,
+        request.since,
+        request.until,
+        request.touched_path,
+        request.limit,
+        request.offset,
+    )
 }
 
 /// Queries one file-pivot payload for one already-resolved configured project.
@@ -194,6 +199,7 @@ pub fn query_files_for_project(
         FilesQueryRequest {
             project_id: &context.project.id,
             project_root: Some(context.project.local_path.as_path()),
+            provider: request.provider,
             ..request
         },
     )
@@ -471,20 +477,27 @@ pub fn query_workspace_insight_report(
 /// Queries the project insights payload for one already-resolved configured project.
 pub fn query_project_insight_report_for_project(
     project: &ResolvedQueryProject,
+    provider: Option<SourceKind>,
     limit: usize,
 ) -> Result<ProjectInsights> {
     let context = &project.context;
-    query_project_insights(&context.root.database_path, &context.project.id, limit)
+    query_project_insights(
+        &context.root.database_path,
+        &context.project.id,
+        provider,
+        limit,
+    )
 }
 
 /// Queries the project insights payload for one configured project.
 pub fn query_project_insight_report(
     root: Option<PathBuf>,
     project_id: &str,
+    provider: Option<SourceKind>,
     limit: usize,
 ) -> Result<ProjectInsights> {
     let project = resolve_query_project(root, Some(project_id))?;
-    query_project_insight_report_for_project(&project, limit)
+    query_project_insight_report_for_project(&project, provider, limit)
 }
 
 /// Stores the stable structured query errors that map onto `darc.error.v1`.

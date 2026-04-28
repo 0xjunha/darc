@@ -577,6 +577,7 @@ fn session_summaries_leave_partial_token_and_runtime_totals_null() -> Result<()>
         SessionsQueryRequest {
             project_id: "repo-a",
             project_root: None,
+            provider: None,
             since: None,
             until: None,
             touched_path: None,
@@ -640,6 +641,7 @@ fn session_summaries_filter_by_latest_turn_bounds() -> Result<()> {
         SessionsQueryRequest {
             project_id: "repo-a",
             project_root: None,
+            provider: None,
             since: None,
             until: None,
             touched_path: None,
@@ -652,6 +654,7 @@ fn session_summaries_filter_by_latest_turn_bounds() -> Result<()> {
         SessionsQueryRequest {
             project_id: "repo-a",
             project_root: None,
+            provider: None,
             since: Some("2026-04-06T00:00:00Z"),
             until: None,
             touched_path: None,
@@ -664,6 +667,7 @@ fn session_summaries_filter_by_latest_turn_bounds() -> Result<()> {
         SessionsQueryRequest {
             project_id: "repo-a",
             project_root: None,
+            provider: None,
             since: None,
             until: Some("2026-04-06T00:00:00Z"),
             touched_path: None,
@@ -676,6 +680,7 @@ fn session_summaries_filter_by_latest_turn_bounds() -> Result<()> {
         SessionsQueryRequest {
             project_id: "repo-a",
             project_root: None,
+            provider: None,
             since: Some("2026-04-05T12:00:00Z"),
             until: Some("2026-04-06T12:00:00Z"),
             touched_path: None,
@@ -709,6 +714,68 @@ fn session_summaries_filter_by_latest_turn_bounds() -> Result<()> {
             .collect::<Vec<_>>(),
         vec!["session-late"]
     );
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn session_summaries_filter_by_provider() -> Result<()> {
+    let index_path = test_index_path("session-provider-filter");
+    let connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-codex", "/tmp/repo-a"),
+    )?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new(
+            "repo-a",
+            SourceKind::Claude,
+            "session-claude",
+            "/tmp/repo-a",
+        ),
+    )?;
+    for (provider, session_id) in [
+        (SourceKind::Codex, "session-codex"),
+        (SourceKind::Claude, "session-claude"),
+    ] {
+        insert_indexed_turn(
+            &connection,
+            IndexedTurnFixture::new(
+                "repo-a",
+                provider,
+                session_id,
+                0,
+                "2026-04-06T10:00:00Z",
+                "completed",
+                "[]",
+            ),
+        )?;
+    }
+
+    let sessions = query_project_sessions(
+        &index_path,
+        SessionsQueryRequest {
+            project_id: "repo-a",
+            project_root: None,
+            provider: Some(SourceKind::Codex),
+            since: None,
+            until: None,
+            touched_path: None,
+            limit: 50,
+            offset: 0,
+        },
+    )?;
+
+    assert_eq!(sessions.provider, Some(SourceKind::Codex));
+    assert_eq!(sessions.sessions.len(), 1);
+    assert_eq!(sessions.sessions[0].provider, SourceKind::Codex);
+    assert_eq!(sessions.sessions[0].session_id, "session-codex");
 
     fs::remove_dir_all(
         index_path
@@ -801,6 +868,7 @@ fn session_summaries_filter_by_touched_path_glob() -> Result<()> {
         SessionsQueryRequest {
             project_id: "repo-a",
             project_root: Some(Path::new("/tmp/repo-a")),
+            provider: None,
             since: None,
             until: None,
             touched_path: Some("src/components/**"),
@@ -904,6 +972,7 @@ fn session_summaries_touched_path_uses_latest_turn_time_bounds() -> Result<()> {
         SessionsQueryRequest {
             project_id: "repo-a",
             project_root: Some(Path::new("/tmp/repo-a")),
+            provider: None,
             since: Some("2026-04-07T00:00:00Z"),
             until: None,
             touched_path: Some("src/components/**"),
@@ -961,6 +1030,7 @@ fn session_summaries_accept_absolute_project_root_touched_paths() -> Result<()> 
         SessionsQueryRequest {
             project_id: "repo-a",
             project_root: Some(Path::new("/tmp/repo-a")),
+            provider: None,
             since: None,
             until: None,
             touched_path: Some("/tmp/repo-a/README.md"),
@@ -1039,6 +1109,7 @@ fn session_summaries_paginate_after_touched_path_filter() -> Result<()> {
         SessionsQueryRequest {
             project_id: "repo-a",
             project_root: Some(Path::new("/tmp/repo-a")),
+            provider: None,
             since: None,
             until: None,
             touched_path: Some("src/**/*.rs"),
@@ -1051,6 +1122,7 @@ fn session_summaries_paginate_after_touched_path_filter() -> Result<()> {
         SessionsQueryRequest {
             project_id: "repo-a",
             project_root: Some(Path::new("/tmp/repo-a")),
+            provider: None,
             since: None,
             until: None,
             touched_path: Some("src/**/*.rs"),
@@ -1180,6 +1252,7 @@ fn query_files_path_mode_ranks_sessions_and_respects_time_bounds() -> Result<()>
         FilesQueryRequest {
             project_id: "repo-a",
             project_root: Some(Path::new("/tmp/repo-a")),
+            provider: None,
             path: Some("./src/components/planner.rs"),
             co_touched_with: None,
             since: None,
@@ -1193,10 +1266,25 @@ fn query_files_path_mode_ranks_sessions_and_respects_time_bounds() -> Result<()>
         FilesQueryRequest {
             project_id: "repo-a",
             project_root: Some(Path::new("/tmp/repo-a")),
+            provider: None,
             path: Some("/tmp/repo-a/src/components/**/*.rs"),
             co_touched_with: None,
             since: Some("2026-04-05T00:00:00Z"),
             until: Some("2026-04-07T00:00:00Z"),
+            limit: 50,
+            offset: 0,
+        },
+    )?;
+    let codex_exact = query_project_files(
+        &index_path,
+        FilesQueryRequest {
+            project_id: "repo-a",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            provider: Some(SourceKind::Codex),
+            path: Some("./src/components/planner.rs"),
+            co_touched_with: None,
+            since: None,
+            until: None,
             limit: 50,
             offset: 0,
         },
@@ -1221,11 +1309,24 @@ fn query_files_path_mode_ranks_sessions_and_respects_time_bounds() -> Result<()>
     assert_eq!(exact.limit, 50);
     assert_eq!(exact.offset, 0);
     assert!(!exact.has_more);
+    assert_eq!(codex_exact.provider, Some(SourceKind::Codex));
+    assert_eq!(
+        codex_exact
+            .sessions
+            .iter()
+            .map(|session| (session.provider, session.session_id.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            (SourceKind::Codex, "session-1"),
+            (SourceKind::Codex, "session-old"),
+        ]
+    );
     let paged = query_project_files(
         &index_path,
         FilesQueryRequest {
             project_id: "repo-a",
             project_root: Some(Path::new("/tmp/repo-a")),
+            provider: None,
             path: Some("./src/components/planner.rs"),
             co_touched_with: None,
             since: None,
@@ -1334,6 +1435,7 @@ fn query_files_co_touched_mode_counts_sessions_and_sorts_ties() -> Result<()> {
         FilesQueryRequest {
             project_id: "repo-a",
             project_root: Some(Path::new("/tmp/repo-a")),
+            provider: None,
             path: None,
             co_touched_with: Some("/tmp/repo-a/src/components/planner.rs"),
             since: None,
@@ -1363,6 +1465,7 @@ fn query_files_co_touched_mode_counts_sessions_and_sorts_ties() -> Result<()> {
         FilesQueryRequest {
             project_id: "repo-a",
             project_root: Some(Path::new("/tmp/repo-a")),
+            provider: None,
             path: None,
             co_touched_with: Some("/tmp/repo-a/src/components/planner.rs"),
             since: None,
@@ -1610,6 +1713,7 @@ fn query_session_files_exclude_out_of_project_and_list_only_paths() -> Result<()
         FilesQueryRequest {
             project_id: "repo-a",
             project_root: Some(Path::new("/tmp/repo-a")),
+            provider: None,
             path: None,
             co_touched_with: Some("README.md"),
             since: None,
@@ -2212,8 +2316,9 @@ fn project_insights_collect_tool_and_file_stats() -> Result<()> {
         },
     )?;
 
-    let insights: ProjectInsights = build_project_insights(&connection, "repo-a", 1000)?;
+    let insights: ProjectInsights = build_project_insights(&connection, "repo-a", None, 1000)?;
 
+    assert_eq!(insights.provider, None);
     assert_eq!(insights.failure_count, 1);
     assert_eq!(insights.total_time_ms, 5_000);
     assert_eq!(insights.most_common_tools[0].name, "Edit");
@@ -2231,6 +2336,35 @@ fn project_insights_collect_tool_and_file_stats() -> Result<()> {
         insights.hard_debuggings[0],
         HardDebuggingTurn { step_count: 55, .. }
     ));
+
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Claude, "session-2", "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            duration_ms: 7_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Claude,
+                "session-2",
+                0,
+                "2026-04-06T11:00:00Z",
+                "completed",
+                r#"[{"type":"tool_call","timestamp":"2026-04-06T11:00:01Z","call_id":"call-3","name":"Write","arguments":"{\"path\":\"CLAUDE.md\"}"}]"#,
+            )
+        },
+    )?;
+    let codex_insights: ProjectInsights =
+        build_project_insights(&connection, "repo-a", Some(SourceKind::Codex), 1000)?;
+    let claude_insights: ProjectInsights =
+        build_project_insights(&connection, "repo-a", Some(SourceKind::Claude), 1000)?;
+    assert_eq!(codex_insights.provider, Some(SourceKind::Codex));
+    assert_eq!(codex_insights.total_time_ms, 5_000);
+    assert_eq!(claude_insights.provider, Some(SourceKind::Claude));
+    assert_eq!(claude_insights.total_time_ms, 7_000);
+    assert_eq!(claude_insights.most_common_tools[0].name, "Write");
 
     fs::remove_dir_all(
         index_path
