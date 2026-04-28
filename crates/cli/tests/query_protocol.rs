@@ -484,8 +484,6 @@ fn session_bundle_query_emits_success_envelope() -> Result<()> {
         "--project-id",
         "repo-abc123",
         PRIMARY_SESSION_ID,
-        "--view",
-        "narrative",
     ])?;
 
     assert!(output.status.success());
@@ -1262,6 +1260,10 @@ fn turn_query_emits_success_envelope_and_raw_field() -> Result<()> {
     assert_eq!(value["schema"], "darc.query.turn.v1");
     assert_eq!(value["data"]["session_id"], PRIMARY_SESSION_ID);
     assert_eq!(value["data"]["steps"][0]["type"], "tool_call");
+    assert_eq!(
+        value["data"]["steps"][0]["arguments"],
+        "{\"file_path\":\"README.md\"}"
+    );
     assert!(value["data"]["raw_steps_json"].is_string());
     assert!(value["data"]["insights"].is_null());
 
@@ -1357,7 +1359,6 @@ fn turn_query_narrative_view_strips_bulky_fields() -> Result<()> {
         "0",
         "--view",
         "narrative",
-        "--include-raw",
     ])?;
 
     assert!(output.status.success());
@@ -1811,6 +1812,41 @@ fn search_turns_query_rejects_tool_output_flag_for_keyword_mode() -> Result<()> 
         String::from_utf8_lossy(&output.stderr).contains(
             "--include-tool-output is only supported with --mode literal or --mode regex"
         )
+    );
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn turn_query_rejects_explicit_narrative_raw_conflict() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-turn-narrative-raw-conflict")?;
+    let output = run_darc([
+        "query",
+        "turn",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--provider",
+        "codex",
+        "--session-id",
+        PRIMARY_SESSION_ID,
+        "--turn-ordinal",
+        "0",
+        "--view",
+        "narrative",
+        "--include-raw",
+    ])?;
+
+    assert!(!output.status.success());
+    let value = parse_json(&output.stderr, "stderr")?;
+    assert_eq!(value["schema"], "darc.error.v1");
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .expect("error message should be a string")
+            .contains("--include-raw requires --view full")
     );
 
     remove_root(&root)?;

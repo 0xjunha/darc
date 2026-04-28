@@ -301,7 +301,7 @@ fn parses_query_turn_command() {
             && positional_args == ["session-1", "2"]
             && session_id.is_none()
             && turn_ordinal.is_none()
-            && matches!(view, super::ViewArg::Narrative)
+            && matches!(view, Some(super::ViewArg::Narrative))
             && include_raw
             && include_insights
     ));
