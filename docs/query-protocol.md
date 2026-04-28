@@ -10,32 +10,32 @@ Use it instead of:
 
 ## Commands
 
-All query commands currently require `--json`.
+Query commands emit JSON envelopes on stdout by default.
 
 ### Workspace
 
-- `darc query workspace --root <path> --json`
+- `darc query workspace --root <path>`
 
 ### Sessions, Turns, And Files
 
-- `darc query resolve-session <uuid-or-prefix> --root <path> [--project-id <id>] [--provider <provider>] [--pick-one] --json`
-- `darc query sessions --root <path> [--project-id <id>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--touched-path <glob>] [--limit <n>] [--offset <n>] --json`
-- `darc query files --root <path> [--project-id <id>] --path <glob> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>] --json`
-- `darc query files --root <path> [--project-id <id>] --co-touched-with <path> [--limit <n>] [--offset <n>] --json`
-- `darc query session-files --root <path> [--project-id <id>] --provider <provider> --session-id <id> --json`
-- `darc query session-bundle --root <path> [--project-id <id>] --provider <provider> --session-id <id> [--view <full|narrative>] [--turn-limit <n>] [--turn-offset <n>] --json`
-- `darc query turns --root <path> [--project-id <id>] --provider <provider> --session-id <id> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--view <full|oneline>] [--limit <n>] [--offset <n>] --json`
-- `darc query turn --root <path> [--project-id <id>] --provider <provider> --session-id <id> --turn-ordinal <n> [--view <full|narrative>] [--include-raw] [--include-insights] --json`
+- `darc query resolve-session <uuid-or-prefix> --root <path> [--project-id <id>] [--provider <provider>] [--pick-one]`
+- `darc query sessions --root <path> [--project-id <id>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--touched-path <glob>] [--limit <n>] [--offset <n>]`
+- `darc query files --root <path> [--project-id <id>] --path <glob> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>]`
+- `darc query files --root <path> [--project-id <id>] --co-touched-with <path> [--limit <n>] [--offset <n>]`
+- `darc query session-files --root <path> [--project-id <id>] --provider <provider> --session-id <id>`
+- `darc query session-bundle --root <path> [--project-id <id>] --provider <provider> --session-id <id> [--view <full|narrative>] [--turn-limit <n>] [--turn-offset <n>]`
+- `darc query turns --root <path> [--project-id <id>] --provider <provider> --session-id <id> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--view <full|oneline>] [--limit <n>] [--offset <n>]`
+- `darc query turn --root <path> [--project-id <id>] --provider <provider> --session-id <id> --turn-ordinal <n> [--view <full|narrative>] [--include-raw] [--include-insights]`
 
 ### Search
 
-- `darc query search turns --root <path> [--project-id <id>] --mode <keyword|literal|regex|file-name|file-path|path-fragment> --query <text|glob|fragment> [--include-tool-output] [--provider <provider>] [--session-id <id>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>] --json`
+- `darc query search turns --root <path> [--project-id <id>] --mode <keyword|literal|regex|file-name|file-path|path-fragment> --query <text|glob|fragment> [--include-tool-output] [--provider <provider>] [--session-id <id>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>]`
 
 ### Insights
 
-- `darc query insights workspace --root <path> --window <days>d --json`
-- `darc query insights project --root <path> [--project-id <id>] [--turn-limit <n>] --json`
-- `darc query insights turn --root <path> [--project-id <id>] --provider <provider> --session-id <id> --turn-ordinal <n> --json`
+- `darc query insights workspace --root <path> --window <days>d`
+- `darc query insights project --root <path> [--project-id <id>] [--turn-limit <n>]`
+- `darc query insights turn --root <path> [--project-id <id>] --provider <provider> --session-id <id> --turn-ordinal <n>`
 
 ## Argument rules
 
@@ -62,8 +62,7 @@ The protocol is intentionally composable. A few common read patterns are now fir
     --project-id repo-abc123 \
     --mode keyword \
     --query "staged init" \
-    --since 14d \
-    --json
+    --since 14d
   ```
 
 - verify exact evidence text without regex escaping; literal and regex searches skip bulky tool outputs by default:
@@ -73,8 +72,7 @@ The protocol is intentionally composable. A few common read patterns are now fir
     --root ~/.darc \
     --project-id repo-abc123 \
     --mode literal \
-    --query "--output-last-message" \
-    --json
+    --query "--output-last-message"
   ```
 
 - search command output or logs explicitly for forensic work:
@@ -85,8 +83,7 @@ The protocol is intentionally composable. A few common read patterns are now fir
     --project-id repo-abc123 \
     --mode regex \
     --query "panic: .*" \
-    --include-tool-output \
-    --json
+    --include-tool-output
   ```
 
 - pivot from a file path to the sessions that touched it:
@@ -96,8 +93,7 @@ The protocol is intentionally composable. A few common read patterns are now fir
     --root ~/.darc \
     --project-id repo-abc123 \
     --path "src/components/planner.rs" \
-    --limit 20 \
-    --json
+    --limit 20
   ```
 
 - inspect all in-project files touched by one session:
@@ -107,14 +103,13 @@ The protocol is intentionally composable. A few common read patterns are now fir
     --root ~/.darc \
     --project-id repo-abc123 \
     --provider codex \
-    --session-id 11111111-1111-4111-8111-111111111111 \
-    --json
+    --session-id 11111111-1111-4111-8111-111111111111
   ```
 
 - fetch one session summary, narrative turn detail, and touched files in one call:
 
   ```bash
-  ID=$(darc query resolve-session 11111111 --pick-one --json | jq -r '.data.match.session_id')
+  ID=$(darc query resolve-session 11111111 --pick-one | jq -r '.data.match.session_id')
 
   darc query session-bundle \
     --root ~/.darc \
@@ -122,8 +117,7 @@ The protocol is intentionally composable. A few common read patterns are now fir
     --provider codex \
     --session-id "$ID" \
     --view narrative \
-    --turn-limit 20 \
-    --json
+    --turn-limit 20
   ```
 
 - skim one long session as one compact row per turn:
@@ -135,8 +129,7 @@ The protocol is intentionally composable. A few common read patterns are now fir
     --provider codex \
     --session-id 11111111-1111-4111-8111-111111111111 \
     --view oneline \
-    --limit 50 \
-    --json
+    --limit 50
   ```
 
 ## Success envelope
@@ -320,7 +313,7 @@ Clients should treat these analytics as Darc-owned derived data and should not r
 
 ### Combined turn queries
 
-`darc query turn --include-insights --json` embeds one derived `insights` block inside `darc.query.turn.v1`.
+`darc query turn --include-insights` embeds one derived `insights` block inside `darc.query.turn.v1`.
 
 Today:
 
@@ -392,7 +385,7 @@ Today:
 - `turns` reuses the exact `darc.query.turn.v1` turn-detail row shape without wrapping each row in its own envelope
 - `turn_limit`, `turn_offset`, and `turns_has_more` describe the embedded turn-detail page
 - `session_files` reuses the exact `darc.query.session_files.v1` payload shape
-- `view=narrative` applies the same step projection rules as `darc query turn --view narrative --json`
+- `view=narrative` applies the same step projection rules as `darc query turn --view narrative`
 - `view=full` keeps the full normalized turn-step payload with `raw_steps_json` still forced to `null`
 
 ### Session resolution
@@ -412,7 +405,7 @@ Today:
 
 ### Narrative turn detail
 
-`darc query turn --view narrative --json` keeps the same `darc.query.turn.v1` schema but projects each step down to the conversational structure without the bulky tool arguments, tool outputs, or raw payload blobs.
+`darc query turn --view narrative` keeps the same `darc.query.turn.v1` schema but projects each step down to the conversational structure without the bulky tool arguments, tool outputs, or raw payload blobs.
 
 Today:
 
@@ -476,8 +469,8 @@ Raw/debug payload fields are optional and command-specific.
 
 Today:
 
-- `darc query turn --include-raw --json` includes `raw_steps_json`
-- `darc query turn --include-insights --json` includes `insights`
+- `darc query turn --include-raw` includes `raw_steps_json`
+- `darc query turn --include-insights` includes `insights`
 - without `--include-raw`, `raw_steps_json` is currently still present in the response and set to `null`
 - without `--include-insights`, `insights` is currently still present in the response and set to `null`
 

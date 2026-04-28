@@ -82,7 +82,7 @@ darc refresh --all
 - `darc sync` archives matching Claude and Codex sessions for the active project.
 - `darc index` indexes archived sessions into SQLite.
 - `darc query` exposes the machine-readable read protocol for workspace, session, turn, file-pivot, search, and
-  insights data. Query commands currently require `--json`; see [Query protocol](docs/query-protocol.md).
+  insights data. Query commands emit JSON by default; see [Query protocol](docs/query-protocol.md).
 - `darc link`, `darc remove`, and `darc rename-from` manage renamed or merged projects.
 
 ## Session And Turn Stats
@@ -124,8 +124,7 @@ Examples:
 darc query search turns \
   --project-id repo-abc123 \
   --mode keyword \
-  --query "panic unwrap" \
-  --json
+  --query "panic unwrap"
 ```
 
 ```bash
@@ -133,8 +132,7 @@ darc query search turns \
   --project-id repo-abc123 \
   --mode literal \
   --query "--output-last-message" \
-  --since 14d \
-  --json
+  --since 14d
 ```
 
 ```bash
@@ -142,28 +140,25 @@ darc query search turns \
   --project-id repo-abc123 \
   --mode regex \
   --query "panic: .*" \
-  --include-tool-output \
-  --json
+  --include-tool-output
 ```
 
 ```bash
 darc query files \
   --project-id repo-abc123 \
   --path "src/components/**/*.rs" \
-  --since 30d \
-  --json
+  --since 30d
 ```
 
 ```bash
-ID=$(darc query resolve-session 11111111 --pick-one --json | jq -r '.data.match.session_id')
+ID=$(darc query resolve-session 11111111 --pick-one | jq -r '.data.match.session_id')
 
 darc query session-bundle \
   --project-id repo-abc123 \
   --provider codex \
   --session-id "$ID" \
   --view narrative \
-  --turn-limit 20 \
-  --json
+  --turn-limit 20
 ```
 
 See [Query protocol](docs/query-protocol.md) for the full command matrix, payload contracts, and filter semantics.

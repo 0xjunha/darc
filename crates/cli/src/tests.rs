@@ -206,12 +206,12 @@ fn parses_rename_command() {
 
 #[test]
 fn parses_query_workspace_command() {
-    let cli = Cli::try_parse_from(["darc", "query", "workspace", "--json"]).unwrap();
+    let cli = Cli::try_parse_from(["darc", "query", "workspace"]).unwrap();
     assert!(matches!(
         cli.command,
         Commands::Query(super::QueryArgs {
-            command: QueryCommands::Workspace(super::QueryWorkspaceArgs { json, .. }),
-        }) if json
+            command: QueryCommands::Workspace(super::QueryWorkspaceArgs { .. }),
+        })
     ));
 }
 
@@ -227,7 +227,6 @@ fn parses_query_resolve_session_command() {
         "--provider",
         "codex",
         "--pick-one",
-        "--json",
     ])
     .unwrap();
     assert!(matches!(
@@ -238,22 +237,20 @@ fn parses_query_resolve_session_command() {
                 project_id,
                 provider,
                 pick_one,
-                json,
                 ..
             }),
         }) if input == "11111111"
             && project_id.as_deref() == Some("repo-abc123")
             && matches!(provider, Some(super::ProviderArg::Codex))
             && pick_one
-            && json
     ));
 }
 
 #[test]
-fn query_workspace_requires_json_flag() {
-    let error = Cli::try_parse_from(["darc", "query", "workspace"]).unwrap_err();
+fn query_workspace_rejects_removed_json_flag() {
+    let error = Cli::try_parse_from(["darc", "query", "workspace", "--json"]).unwrap_err();
 
-    assert!(error.to_string().contains("--json"));
+    assert!(error.to_string().contains("unexpected argument '--json'"));
 }
 
 #[test]
@@ -274,7 +271,6 @@ fn parses_query_turn_command() {
         "narrative",
         "--include-raw",
         "--include-insights",
-        "--json",
     ])
     .unwrap();
     assert!(matches!(
@@ -287,7 +283,6 @@ fn parses_query_turn_command() {
                 view,
                 include_raw,
                 include_insights,
-                json,
                 ..
             }),
         }) if project_id.as_deref() == Some("repo-abc123")
@@ -296,7 +291,6 @@ fn parses_query_turn_command() {
             && matches!(view, super::ViewArg::Narrative)
             && include_raw
             && include_insights
-            && json
     ));
 }
 
@@ -312,7 +306,6 @@ fn parses_query_sessions_with_time_bounds() {
         "5d",
         "--until",
         "2026-04-07T00:00:00Z",
-        "--json",
     ])
     .unwrap();
     assert!(matches!(
@@ -323,29 +316,26 @@ fn parses_query_sessions_with_time_bounds() {
                 since,
                 until,
                 touched_path,
-                json,
                 ..
             }),
         }) if project_id.as_deref() == Some("repo-abc123")
             && since.as_deref() == Some("5d")
             && until.as_deref() == Some("2026-04-07T00:00:00Z")
             && touched_path.is_none()
-            && json
     ));
 }
 
 #[test]
 fn parses_query_sessions_without_project_id() {
-    let cli = Cli::try_parse_from(["darc", "query", "sessions", "--json"]).unwrap();
+    let cli = Cli::try_parse_from(["darc", "query", "sessions"]).unwrap();
     assert!(matches!(
         cli.command,
         Commands::Query(super::QueryArgs {
             command: QueryCommands::Sessions(super::QuerySessionsArgs {
                 project_id,
-                json,
                 ..
             }),
-        }) if project_id.is_none() && json
+        }) if project_id.is_none()
     ));
 }
 
@@ -363,7 +353,6 @@ fn parses_query_sessions_touched_path_filter() {
         "25",
         "--offset",
         "50",
-        "--json",
     ])
     .unwrap();
     assert!(matches!(
@@ -374,14 +363,12 @@ fn parses_query_sessions_touched_path_filter() {
                 touched_path,
                 limit,
                 offset,
-                json,
                 ..
             }),
         }) if project_id.as_deref() == Some("repo-abc123")
             && touched_path.as_deref() == Some("src/components/**")
             && limit == 25
             && offset == 50
-            && json
     ));
 }
 
@@ -399,7 +386,6 @@ fn parses_query_files_path_command() {
         "30d",
         "--until",
         "2026-04-07T00:00:00Z",
-        "--json",
     ])
     .unwrap();
     assert!(matches!(
@@ -413,7 +399,6 @@ fn parses_query_files_path_command() {
                 until,
                 limit,
                 offset,
-                json,
                 ..
             }),
         }) if project_id.as_deref() == Some("repo-abc123")
@@ -423,7 +408,6 @@ fn parses_query_files_path_command() {
             && until.as_deref() == Some("2026-04-07T00:00:00Z")
             && limit == 50
             && offset == 0
-            && json
     ));
 }
 
@@ -441,7 +425,6 @@ fn parses_query_files_co_touched_command() {
         "10",
         "--offset",
         "5",
-        "--json",
     ])
     .unwrap();
     assert!(matches!(
@@ -453,7 +436,6 @@ fn parses_query_files_co_touched_command() {
                 co_touched_with,
                 limit,
                 offset,
-                json,
                 ..
             }),
         }) if project_id.as_deref() == Some("repo-abc123")
@@ -461,7 +443,6 @@ fn parses_query_files_co_touched_command() {
             && co_touched_with.as_deref() == Some("src/components/planner.rs")
             && limit == 10
             && offset == 5
-            && json
     ));
 }
 
@@ -477,7 +458,6 @@ fn parses_query_session_files_command() {
         "codex",
         "--session-id",
         "session-1",
-        "--json",
     ])
     .unwrap();
     assert!(matches!(
@@ -487,13 +467,11 @@ fn parses_query_session_files_command() {
                 project_id,
                 provider,
                 session_id,
-                json,
                 ..
             }),
         }) if project_id.as_deref() == Some("repo-abc123")
             && matches!(provider, super::ProviderArg::Codex)
             && session_id == "session-1"
-            && json
     ));
 }
 
@@ -511,7 +489,6 @@ fn parses_query_session_bundle_command() {
         "session-1",
         "--view",
         "narrative",
-        "--json",
     ])
     .unwrap();
     assert!(matches!(
@@ -524,7 +501,6 @@ fn parses_query_session_bundle_command() {
                 view,
                 turn_limit,
                 turn_offset,
-                json,
                 ..
             }),
         }) if project_id.as_deref() == Some("repo-abc123")
@@ -533,7 +509,6 @@ fn parses_query_session_bundle_command() {
             && matches!(view, super::ViewArg::Narrative)
             && turn_limit == 50
             && turn_offset == 0
-            && json
     ));
 }
 
@@ -549,7 +524,6 @@ fn parses_query_turns_session_scope_command() {
         "codex",
         "--session-id",
         "session-1",
-        "--json",
     ])
     .unwrap();
     assert!(matches!(
@@ -562,7 +536,6 @@ fn parses_query_turns_session_scope_command() {
                 view,
                 limit,
                 offset,
-                json,
                 ..
             }),
         }) if project_id.as_deref() == Some("repo-abc123")
@@ -571,7 +544,6 @@ fn parses_query_turns_session_scope_command() {
             && matches!(view, super::TurnListViewArg::Full)
             && limit == 50
             && offset == 0
-            && json
     ));
 }
 
@@ -593,7 +565,6 @@ fn parses_query_search_turns_literal_with_filters() {
         "--until",
         "2026-04-07T00:00:00Z",
         "--include-tool-output",
-        "--json",
     ])
     .unwrap();
     assert!(matches!(
@@ -607,7 +578,6 @@ fn parses_query_search_turns_literal_with_filters() {
                 since,
                 until,
                 include_tool_output,
-                json,
                 ..
                 }),
             }),
@@ -617,7 +587,6 @@ fn parses_query_search_turns_literal_with_filters() {
             && since.as_deref() == Some("5d")
             && until.as_deref() == Some("2026-04-07T00:00:00Z")
             && include_tool_output
-            && json
     ));
 }
 
@@ -634,7 +603,7 @@ fn query_help_mentions_machine_protocol() {
 }
 
 #[test]
-fn query_workspace_help_mentions_json_flag() {
+fn query_workspace_help_hides_json_flag() {
     let mut command = Cli::command();
     let query = command
         .find_subcommand_mut("query")
@@ -645,7 +614,7 @@ fn query_workspace_help_mentions_json_flag() {
         .render_long_help()
         .to_string();
 
-    assert!(help.contains("--json"));
+    assert!(!help.contains("--json"));
 }
 
 #[test]
@@ -743,27 +712,18 @@ fn query_files_help_mentions_path_and_co_touch_modes() {
 
 #[test]
 fn parses_query_workspace_insights_command() {
-    let cli = Cli::try_parse_from([
-        "darc",
-        "query",
-        "insights",
-        "workspace",
-        "--window",
-        "14d",
-        "--json",
-    ])
-    .unwrap();
+    let cli =
+        Cli::try_parse_from(["darc", "query", "insights", "workspace", "--window", "14d"]).unwrap();
     assert!(matches!(
         cli.command,
         Commands::Query(super::QueryArgs {
             command: QueryCommands::Insights(super::QueryInsightsArgs {
                 command: QueryInsightsCommands::Workspace(super::QueryWorkspaceInsightsArgs {
                     window_days,
-                    json,
                     ..
                 }),
             }),
-        }) if window_days == 14 && json
+        }) if window_days == 14
     ));
 }
 

@@ -210,13 +210,6 @@ enum QueryCommands {
 struct QueryWorkspaceArgs {
     #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
     root: PathBuf,
-
-    #[arg(
-        long,
-        required = true,
-        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
-    )]
-    json: bool,
 }
 
 /// Resolves one full session id or UUID prefix into canonical project/provider/session matches.
@@ -242,13 +235,6 @@ struct QueryResolveSessionArgs {
         help = "Require exactly one match and return it as one convenience object"
     )]
     pick_one: bool,
-
-    #[arg(
-        long,
-        required = true,
-        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
-    )]
-    json: bool,
 }
 
 /// Queries the session list for one configured project.
@@ -286,13 +272,6 @@ struct QuerySessionsArgs {
 
     #[arg(long, default_value_t = 0, help = "Number of sessions to skip")]
     offset: usize,
-
-    #[arg(
-        long,
-        required = true,
-        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
-    )]
-    json: bool,
 }
 
 /// Queries the turn list for one provider session.
@@ -342,13 +321,6 @@ struct QueryTurnsArgs {
 
     #[arg(long, default_value_t = 0, help = "Number of turns to skip")]
     offset: usize,
-
-    #[arg(
-        long,
-        required = true,
-        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
-    )]
-    json: bool,
 }
 
 /// Queries file pivots for one configured project.
@@ -392,13 +364,6 @@ struct QueryFilesArgs {
 
     #[arg(long, default_value_t = 0, help = "Number of rows to skip")]
     offset: usize,
-
-    #[arg(
-        long,
-        required = true,
-        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
-    )]
-    json: bool,
 }
 
 /// Queries one session-scoped per-file access summary payload.
@@ -418,13 +383,6 @@ struct QuerySessionFilesArgs {
 
     #[arg(long = "session-id", help = "Query this session id")]
     session_id: String,
-
-    #[arg(
-        long,
-        required = true,
-        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
-    )]
-    json: bool,
 }
 
 /// Queries one composite session bundle payload.
@@ -466,13 +424,6 @@ struct QuerySessionBundleArgs {
         help = "Number of turn details to skip"
     )]
     turn_offset: usize,
-
-    #[arg(
-        long,
-        required = true,
-        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
-    )]
-    json: bool,
 }
 
 /// Queries one full turn detail payload.
@@ -515,13 +466,6 @@ struct QueryTurnArgs {
         help = "Include one derived insights block with metrics plus tool and file analytics"
     )]
     include_insights: bool,
-
-    #[arg(
-        long,
-        required = true,
-        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
-    )]
-    json: bool,
 }
 
 /// Queries one search payload.
@@ -589,13 +533,6 @@ struct QuerySearchTurnsArgs {
 
     #[arg(long, default_value_t = 0, help = "Number of turn hits to skip")]
     offset: usize,
-
-    #[arg(
-        long,
-        required = true,
-        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
-    )]
-    json: bool,
 }
 
 /// Queries one workspace or project insights payload.
@@ -629,13 +566,6 @@ struct QueryWorkspaceInsightsArgs {
         help = "Rolling host-local day window in `<days>d` format"
     )]
     window_days: u32,
-
-    #[arg(
-        long,
-        required = true,
-        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
-    )]
-    json: bool,
 }
 
 /// Queries the project insights payload for one configured project.
@@ -657,13 +587,6 @@ struct QueryProjectInsightsArgs {
         help = "Maximum indexed turns to inspect"
     )]
     turn_limit: usize,
-
-    #[arg(
-        long,
-        required = true,
-        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
-    )]
-    json: bool,
 }
 
 /// Queries one turn insights payload.
@@ -686,13 +609,6 @@ struct QueryTurnInsightsArgs {
 
     #[arg(long = "turn-ordinal", help = "Query this turn ordinal")]
     turn_ordinal: u64,
-
-    #[arg(
-        long,
-        required = true,
-        help = "Required. Emit the stable machine-readable JSON envelope on stdout"
-    )]
-    json: bool,
 }
 
 /// Audit Codex rollout schema compatibility against stable release tags.
@@ -818,13 +734,11 @@ fn run_query(args: QueryArgs) -> Result<()> {
 
 /// Queries the workspace/sidebar payload for one darc root.
 fn run_query_workspace(args: QueryWorkspaceArgs) -> Result<()> {
-    ensure_json_requested(args.json)?;
     print_json_envelope("darc.query.workspace.v1", &query_workspace(Some(args.root)))
 }
 
 /// Resolves one full session id or UUID prefix into canonical matches.
 fn run_query_resolve_session(args: QueryResolveSessionArgs) -> Result<()> {
-    ensure_json_requested(args.json)?;
     let data = query_resolve_sessions(
         Some(args.root),
         ResolveSessionQueryRequest {
@@ -859,7 +773,6 @@ fn run_query_resolve_session(args: QueryResolveSessionArgs) -> Result<()> {
 
 /// Queries the session list for one configured project.
 fn run_query_sessions(args: QuerySessionsArgs) -> Result<()> {
-    ensure_json_requested(args.json)?;
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
     let since = args
         .since
@@ -884,7 +797,6 @@ fn run_query_sessions(args: QuerySessionsArgs) -> Result<()> {
 
 /// Queries file pivots for one configured project.
 fn run_query_files(args: QueryFilesArgs) -> Result<()> {
-    ensure_json_requested(args.json)?;
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
     let since = args
         .since
@@ -914,7 +826,6 @@ fn run_query_files(args: QueryFilesArgs) -> Result<()> {
 
 /// Queries one session-scoped per-file access summary payload.
 fn run_query_session_files(args: QuerySessionFilesArgs) -> Result<()> {
-    ensure_json_requested(args.json)?;
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
     let session_id = resolve_query_session_id_for_project(
         &project,
@@ -931,7 +842,6 @@ fn run_query_session_files(args: QuerySessionFilesArgs) -> Result<()> {
 
 /// Queries one composite session bundle payload.
 fn run_query_session_bundle(args: QuerySessionBundleArgs) -> Result<()> {
-    ensure_json_requested(args.json)?;
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
     let session_id = resolve_query_session_id_for_project(
         &project,
@@ -955,7 +865,6 @@ fn run_query_session_bundle(args: QuerySessionBundleArgs) -> Result<()> {
 
 /// Queries the turn list for one provider session.
 fn run_query_turns(args: QueryTurnsArgs) -> Result<()> {
-    ensure_json_requested(args.json)?;
     let since = args
         .since
         .as_deref()
@@ -991,7 +900,6 @@ fn run_query_turns(args: QueryTurnsArgs) -> Result<()> {
 
 /// Queries one full turn detail payload.
 fn run_query_turn(args: QueryTurnArgs) -> Result<()> {
-    ensure_json_requested(args.json)?;
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
     let session_id = resolve_query_session_id_for_project(
         &project,
@@ -1021,7 +929,6 @@ fn run_query_search(args: QuerySearchArgs) -> Result<()> {
 
 /// Queries one paginated turn-search payload.
 fn run_query_search_turns(args: QuerySearchTurnsArgs) -> Result<()> {
-    ensure_json_requested(args.json)?;
     let since = args
         .since
         .as_deref()
@@ -1075,14 +982,12 @@ fn run_query_insights(args: QueryInsightsArgs) -> Result<()> {
 
 /// Queries the workspace insights payload for one rolling host-local day window.
 fn run_query_workspace_insights(args: QueryWorkspaceInsightsArgs) -> Result<()> {
-    ensure_json_requested(args.json)?;
     let data = query_workspace_insight_report(Some(args.root), args.window_days)?;
     print_json_envelope("darc.query.insights.workspace.v1", &data)
 }
 
 /// Queries the project insights payload for one configured project.
 fn run_query_project_insights(args: QueryProjectInsightsArgs) -> Result<()> {
-    ensure_json_requested(args.json)?;
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
     let data = query_project_insight_report_for_project(&project, args.turn_limit)?;
     print_json_envelope("darc.query.insights.project.v1", &data)
@@ -1090,7 +995,6 @@ fn run_query_project_insights(args: QueryProjectInsightsArgs) -> Result<()> {
 
 /// Queries the turn insights payload for one provider session turn.
 fn run_query_turn_insights(args: QueryTurnInsightsArgs) -> Result<()> {
-    ensure_json_requested(args.json)?;
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
     let session_id = resolve_query_session_id_for_project(
         &project,
@@ -1155,14 +1059,6 @@ fn format_query_error(error: &anyhow::Error) -> String {
     serde_json::to_string_pretty(&payload).unwrap_or_else(|serialization_error| {
         format!(r#"{{"schema":"darc.error.v1","error":"{serialization_error}"}}"#)
     })
-}
-
-/// Returns an error unless the query command explicitly requested JSON output.
-fn ensure_json_requested(json: bool) -> Result<()> {
-    if json {
-        return Ok(());
-    }
-    bail!("query commands currently require --json")
 }
 
 /// Resolves one project-scoped query target from an explicit id or the active project.

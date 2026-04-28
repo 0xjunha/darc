@@ -213,7 +213,6 @@ fn workspace_query_emits_success_envelope() -> Result<()> {
         "workspace",
         "--root",
         root.to_string_lossy().as_ref(),
-        "--json",
     ])?;
 
     assert!(output.status.success());
@@ -238,7 +237,6 @@ fn sessions_query_emits_success_envelope() -> Result<()> {
         root.to_string_lossy().as_ref(),
         "--project-id",
         "repo-abc123",
-        "--json",
     ])?;
 
     assert!(output.status.success());
@@ -320,7 +318,6 @@ fn sessions_query_defaults_project_id_from_current_directory() -> Result<()> {
             "sessions",
             "--root",
             root.to_string_lossy().as_ref(),
-            "--json",
         ],
     )?;
 
@@ -347,7 +344,6 @@ fn sessions_query_without_project_id_rejects_unconfigured_current_directory() ->
             "sessions",
             "--root",
             root.to_string_lossy().as_ref(),
-            "--json",
         ],
     )?;
 
@@ -382,7 +378,6 @@ fn sessions_query_applies_touched_path_filter() -> Result<()> {
         "repo-abc123",
         "--touched-path",
         &touched_path,
-        "--json",
     ])?;
 
     assert!(output.status.success());
@@ -421,7 +416,6 @@ fn files_query_path_mode_emits_success_envelope() -> Result<()> {
         "repo-abc123",
         "--path",
         &path,
-        "--json",
     ])?;
 
     assert!(output.status.success());
@@ -464,7 +458,6 @@ fn session_files_query_emits_success_envelope() -> Result<()> {
         "codex",
         "--session-id",
         PRIMARY_SESSION_ID,
-        "--json",
     ])?;
 
     assert!(output.status.success());
@@ -500,7 +493,6 @@ fn session_bundle_query_emits_success_envelope() -> Result<()> {
         PRIMARY_SESSION_ID,
         "--view",
         "narrative",
-        "--json",
     ])?;
 
     assert!(output.status.success());
@@ -544,7 +536,6 @@ fn session_files_query_rejects_invalid_session_id() -> Result<()> {
         "codex",
         "--session-id",
         "abc",
-        "--json",
     ])?;
 
     assert!(!output.status.success());
@@ -571,7 +562,6 @@ fn session_files_query_rejects_prefix_session_id_with_resolver_hint() -> Result<
         "codex",
         "--session-id",
         PRIMARY_SESSION_PREFIX,
-        "--json",
     ])?;
 
     assert!(!output.status.success());
@@ -604,7 +594,6 @@ fn session_files_query_rejects_unknown_uuid_session_id() -> Result<()> {
         "codex",
         "--session-id",
         UNKNOWN_SESSION_ID,
-        "--json",
     ])?;
 
     assert!(!output.status.success());
@@ -671,7 +660,6 @@ fn sessions_query_includes_first_turn_abort_counts_and_edited_files() -> Result<
         root.to_string_lossy().as_ref(),
         "--project-id",
         "repo-abc123",
-        "--json",
     ])?;
 
     assert!(output.status.success());
@@ -712,7 +700,6 @@ fn sessions_query_applies_since_and_until_filters() -> Result<()> {
         "repo-abc123",
         "--since",
         "2026-04-06T00:00:00Z",
-        "--json",
     ])?;
     assert!(since_output.status.success());
     let since_value = parse_json(&since_output.stdout, "stdout")?;
@@ -735,7 +722,6 @@ fn sessions_query_applies_since_and_until_filters() -> Result<()> {
         "repo-abc123",
         "--until",
         "2026-04-07T00:00:00Z",
-        "--json",
     ])?;
     assert!(until_output.status.success());
     let until_value = parse_json(&until_output.stdout, "stdout")?;
@@ -760,7 +746,6 @@ fn sessions_query_applies_since_and_until_filters() -> Result<()> {
         "2026-04-06T00:00:00Z",
         "--until",
         "2026-04-07T00:00:00Z",
-        "--json",
     ])?;
     assert!(bounded_output.status.success());
     let bounded_value = parse_json(&bounded_output.stdout, "stdout")?;
@@ -792,7 +777,6 @@ fn turns_query_emits_success_envelope() -> Result<()> {
         "codex",
         "--session-id",
         PRIMARY_SESSION_ID,
-        "--json",
     ])?;
 
     assert!(output.status.success());
@@ -866,7 +850,6 @@ fn turns_query_rejects_invalid_absolute_time_bounds() -> Result<()> {
         PRIMARY_SESSION_ID,
         "--since",
         "2026-99-99T00:00:00Z",
-        "--json",
     ])?;
 
     assert!(!output.status.success());
@@ -934,7 +917,6 @@ fn turns_query_applies_since_and_until_filters_in_session_mode() -> Result<()> {
         "2026-04-06T10:00:00Z",
         "--until",
         "2026-04-06T10:03:00Z",
-        "--json",
     ])?;
 
     assert!(output.status.success());
@@ -969,7 +951,6 @@ fn turns_query_applies_since_and_until_filters_in_session_mode() -> Result<()> {
         "2",
         "--offset",
         "1",
-        "--json",
     ])?;
 
     assert!(page_output.status.success());
@@ -1005,7 +986,6 @@ fn turns_query_oneline_view_emits_compact_rows() -> Result<()> {
         "codex",
         "--session-id",
         PRIMARY_SESSION_ID,
-        "--json",
     ])?;
     let oneline_output = run_darc([
         "query",
@@ -1020,7 +1000,6 @@ fn turns_query_oneline_view_emits_compact_rows() -> Result<()> {
         PRIMARY_SESSION_ID,
         "--view",
         "oneline",
-        "--json",
     ])?;
 
     assert!(full_output.status.success());
@@ -1098,7 +1077,6 @@ fn search_turns_query_emits_literal_evidence_matches() -> Result<()> {
         "2026-04-06T00:00:00Z",
         "--until",
         "2026-04-07T00:00:00Z",
-        "--json",
     ])?;
 
     assert!(output.status.success());
@@ -1132,7 +1110,6 @@ fn search_turns_query_emits_literal_evidence_matches() -> Result<()> {
         "literal",
         "--query",
         "DARC_CODEX_BIN=/tmp/darc",
-        "--json",
     ])?;
 
     assert!(literal_hidden_output.status.success());
@@ -1153,7 +1130,6 @@ fn search_turns_query_emits_literal_evidence_matches() -> Result<()> {
         "--query",
         "DARC_CODEX_BIN=/tmp/darc",
         "--include-tool-output",
-        "--json",
     ])?;
 
     assert!(literal_output.status.success());
@@ -1177,7 +1153,6 @@ fn search_turns_query_emits_literal_evidence_matches() -> Result<()> {
         "--query",
         "DARC_[A-Z_]+_BIN",
         "--include-tool-output",
-        "--json",
     ])?;
 
     assert!(regex_output.status.success());
@@ -1207,7 +1182,6 @@ fn turns_query_rejects_removed_grep_flag() -> Result<()> {
         "staged init",
         "--context",
         "51",
-        "--json",
     ])?;
 
     assert!(!output.status.success());
@@ -1224,7 +1198,7 @@ fn turns_query_help_marks_session_scope_required() -> Result<()> {
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("--provider <PROVIDER> --session-id <SESSION_ID> --json"));
+    assert!(stdout.contains("--provider <PROVIDER> --session-id <SESSION_ID>"));
     assert!(stdout.contains("--provider <PROVIDER>      Provider for the session"));
     assert!(stdout.contains("--session-id <SESSION_ID>  Full session id to list turns for"));
     Ok(())
@@ -1247,7 +1221,6 @@ fn turn_query_emits_success_envelope_and_raw_field() -> Result<()> {
         "--turn-ordinal",
         "0",
         "--include-raw",
-        "--json",
     ])?;
 
     assert!(output.status.success());
@@ -1280,7 +1253,6 @@ fn turn_query_can_embed_derived_insights() -> Result<()> {
         "--turn-ordinal",
         "0",
         "--include-insights",
-        "--json",
     ])?;
 
     assert!(output.status.success());
@@ -1354,7 +1326,6 @@ fn turn_query_narrative_view_strips_bulky_fields() -> Result<()> {
         "--view",
         "narrative",
         "--include-raw",
-        "--json",
     ])?;
 
     assert!(output.status.success());
@@ -1386,7 +1357,6 @@ fn search_turns_query_emits_keyword_search_envelope() -> Result<()> {
         "keyword",
         "--query",
         "Inspect",
-        "--json",
     ])?;
 
     assert!(output.status.success());
@@ -1419,7 +1389,6 @@ fn search_turns_query_emits_file_search_envelope() -> Result<()> {
         "file-name",
         "--query",
         "README.md",
-        "--json",
     ])?;
 
     assert!(output.status.success());
@@ -1441,7 +1410,6 @@ fn search_turns_query_emits_file_search_envelope() -> Result<()> {
         "file-path",
         "--query",
         "README.md",
-        "--json",
     ])?;
 
     assert!(path_output.status.success());
@@ -1465,7 +1433,6 @@ fn search_turns_query_emits_file_search_envelope() -> Result<()> {
         "path-fragment",
         "--query",
         "README",
-        "--json",
     ])?;
 
     assert!(fragment_output.status.success());
@@ -1491,7 +1458,6 @@ fn workspace_insights_query_emits_success_envelope() -> Result<()> {
         root.to_string_lossy().as_ref(),
         "--window",
         "7d",
-        "--json",
     ])?;
 
     assert!(output.status.success());
@@ -1518,7 +1484,6 @@ fn project_insights_query_emits_success_envelope() -> Result<()> {
         "repo-abc123",
         "--turn-limit",
         "1000",
-        "--json",
     ])?;
 
     assert!(output.status.success());
@@ -1553,7 +1518,6 @@ fn turn_insights_query_emits_success_envelope() -> Result<()> {
         PRIMARY_SESSION_ID,
         "--turn-ordinal",
         "0",
-        "--json",
     ])?;
 
     assert!(output.status.success());
@@ -1643,7 +1607,6 @@ fn turn_insights_query_emits_shell_commands() -> Result<()> {
         PRIMARY_SESSION_ID,
         "--turn-ordinal",
         "1",
-        "--json",
     ])?;
 
     assert!(output.status.success());
@@ -1681,7 +1644,6 @@ fn turn_insights_query_missing_turn_emits_error_envelope() -> Result<()> {
         PRIMARY_SESSION_ID,
         "--turn-ordinal",
         "9",
-        "--json",
     ])?;
 
     assert!(!output.status.success());
@@ -1715,7 +1677,6 @@ fn turns_query_rejects_prefix_session_id() -> Result<()> {
         "codex",
         "--session-id",
         PRIMARY_SESSION_PREFIX,
-        "--json",
     ])?;
 
     assert!(!output.status.success());
@@ -1745,7 +1706,6 @@ fn search_turns_query_rejects_unknown_session_id_filter() -> Result<()> {
         "Inspect",
         "--session-id",
         UNKNOWN_SESSION_ID,
-        "--json",
     ])?;
 
     assert!(!output.status.success());
@@ -1774,7 +1734,6 @@ fn search_turns_query_rejects_tool_output_flag_for_keyword_mode() -> Result<()> 
         "--query",
         "Inspect",
         "--include-tool-output",
-        "--json",
     ])?;
 
     assert!(!output.status.success());
@@ -1804,7 +1763,6 @@ fn turn_query_rejects_invalid_session_id() -> Result<()> {
         "abc",
         "--turn-ordinal",
         "0",
-        "--json",
     ])?;
 
     assert!(!output.status.success());
@@ -1834,7 +1792,6 @@ fn turn_insights_query_rejects_prefix_session_id() -> Result<()> {
         PRIMARY_SESSION_PREFIX,
         "--turn-ordinal",
         "0",
-        "--json",
     ])?;
 
     assert!(!output.status.success());
@@ -1856,7 +1813,6 @@ fn resolve_session_query_emits_single_match_success() -> Result<()> {
         PRIMARY_SESSION_PREFIX,
         "--root",
         root.to_string_lossy().as_ref(),
-        "--json",
     ])?;
 
     assert!(output.status.success());
@@ -1893,7 +1849,6 @@ fn resolve_session_query_lists_matches_and_reports_ambiguity() -> Result<()> {
         PRIMARY_SESSION_PREFIX,
         "--root",
         root.to_string_lossy().as_ref(),
-        "--json",
     ])?;
     assert!(output.status.success());
     let value = parse_json(&output.stdout, "stdout")?;
@@ -1925,7 +1880,6 @@ fn resolve_session_query_lists_matches_and_reports_ambiguity() -> Result<()> {
         root.to_string_lossy().as_ref(),
         "--provider",
         "codex",
-        "--json",
     ])?;
     assert!(provider_output.status.success());
     let provider_value = parse_json(&provider_output.stdout, "stdout")?;
@@ -1954,7 +1908,6 @@ fn resolve_session_query_lists_matches_and_reports_ambiguity() -> Result<()> {
         "--root",
         root.to_string_lossy().as_ref(),
         "--pick-one",
-        "--json",
     ])?;
     assert!(!ambiguous_output.status.success());
     let ambiguous_value = parse_json(&ambiguous_output.stderr, "stderr")?;
@@ -1985,7 +1938,6 @@ fn resolve_session_query_reports_unknown_full_uuid() -> Result<()> {
         UNKNOWN_SESSION_ID,
         "--root",
         root.to_string_lossy().as_ref(),
-        "--json",
     ])?;
 
     assert!(!output.status.success());
@@ -2013,7 +1965,6 @@ fn resolve_session_query_reports_truncation() -> Result<()> {
         PRIMARY_SESSION_PREFIX,
         "--root",
         root.to_string_lossy().as_ref(),
-        "--json",
     ])?;
 
     assert!(output.status.success());
@@ -2037,7 +1988,6 @@ fn resolve_session_pick_one_feeds_session_bundle() -> Result<()> {
         "--root",
         root.to_string_lossy().as_ref(),
         "--pick-one",
-        "--json",
     ])?;
     assert!(resolved.status.success());
     let resolved_value = parse_json(&resolved.stdout, "stdout")?;
@@ -2058,7 +2008,6 @@ fn resolve_session_pick_one_feeds_session_bundle() -> Result<()> {
         "codex",
         "--session-id",
         &resolved_session_id,
-        "--json",
     ])?;
     assert!(bundle.status.success());
 
@@ -2073,7 +2022,6 @@ fn resolve_session_pick_one_feeds_session_bundle() -> Result<()> {
         "codex",
         "--session-id",
         PRIMARY_SESSION_PREFIX,
-        "--json",
     ])?;
     assert!(!prefix_bundle.status.success());
     let prefix_value = parse_json(&prefix_bundle.stderr, "stderr")?;
@@ -2094,7 +2042,6 @@ fn query_errors_emit_structured_stderr_envelope() -> Result<()> {
         missing_root.to_string_lossy().as_ref(),
         "--project-id",
         "repo-abc123",
-        "--json",
     ])?;
 
     assert!(!output.status.success());
