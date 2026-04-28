@@ -458,7 +458,7 @@ Today:
 - keyword search currently indexes `user_message`, `final_answer_text`, and selected derived step text such as commentary, tool names, and delegation summaries
 - keyword search does not currently index raw tool outputs or raw provider payload blobs
 - `mode=literal` treats the query text as exact plain text and matches it against derived `turn_evidence` rows
-- `mode=regex` treats the query text as a Rust regular expression and matches it against the same derived `turn_evidence` rows
+- `mode=regex` treats the query text as a Rust regular expression with Perl character classes such as `\s` enabled and matches it against the same derived `turn_evidence` rows
 - literal and regex search exclude `tool_output` evidence by default because command and tool output is often large and noisy for context-building
 - pass `--include-tool-output` with literal or regex search to include command/tool output evidence for forensic searches such as exact errors, stack traces, logs, or command output
 - `--include-tool-output` is rejected for `keyword`, `file_name`, `file_path`, and `path_fragment` search because those modes do not inspect `turn_evidence.tool_output`

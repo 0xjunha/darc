@@ -1247,6 +1247,30 @@ fn search_turns_query_emits_literal_evidence_matches() -> Result<()> {
         "final_answer"
     );
 
+    let regex_perl_space = run_darc([
+        "query",
+        "search",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--mode",
+        "regex",
+        "--query",
+        r"Run\s+the\s+CLI",
+        "--field",
+        "user-message",
+    ])?;
+
+    assert!(regex_perl_space.status.success());
+    let regex_perl_space_value = parse_json(&regex_perl_space.stdout, "stdout")?;
+    assert_eq!(regex_perl_space_value["data"]["mode"], "regex");
+    assert_eq!(
+        regex_perl_space_value["data"]["hits"][0]["matches"][0]["field"],
+        "user_message"
+    );
+
     let literal_without_tool_args = run_darc([
         "query",
         "search",
