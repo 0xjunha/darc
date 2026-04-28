@@ -826,6 +826,110 @@ fn session_summaries_filter_by_touched_path_glob() -> Result<()> {
 }
 
 #[test]
+fn session_summaries_touched_path_uses_latest_turn_time_bounds() -> Result<()> {
+    let index_path = test_index_path("session-touched-path-latest-turn-bounds");
+    let connection = open_index_database(&index_path)?;
+    for session_id in [
+        "session-recent-touch",
+        "session-old-touch",
+        "session-recent-only",
+    ] {
+        insert_indexed_session(
+            &connection,
+            IndexedSessionFixture::new("repo-a", SourceKind::Codex, session_id, "/tmp/repo-a"),
+        )?;
+    }
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            step_count: 1,
+            tool_call_count: 1,
+            duration_ms: 3_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-recent-touch",
+                0,
+                "2026-04-01T10:00:00Z",
+                "completed",
+                r##"[{"type":"tool_call","timestamp":"2026-04-01T10:00:01Z","call_id":"call-1","name":"Read","arguments":"{\"path\":\"src/components/planner.rs\"}"}]"##,
+            )
+        },
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture::new(
+            "repo-a",
+            SourceKind::Codex,
+            "session-recent-touch",
+            1,
+            "2026-04-08T10:00:00Z",
+            "completed",
+            "[]",
+        ),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            step_count: 1,
+            tool_call_count: 1,
+            duration_ms: 3_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-old-touch",
+                0,
+                "2026-04-01T11:00:00Z",
+                "completed",
+                r##"[{"type":"tool_call","timestamp":"2026-04-01T11:00:01Z","call_id":"call-2","name":"Read","arguments":"{\"path\":\"src/components/context.rs\"}"}]"##,
+            )
+        },
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture::new(
+            "repo-a",
+            SourceKind::Codex,
+            "session-recent-only",
+            0,
+            "2026-04-09T10:00:00Z",
+            "completed",
+            "[]",
+        ),
+    )?;
+
+    let sessions = query_project_sessions(
+        &index_path,
+        SessionsQueryRequest {
+            project_id: "repo-a",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            since: Some("2026-04-07T00:00:00Z"),
+            until: None,
+            touched_path: Some("src/components/**"),
+            limit: 50,
+            offset: 0,
+        },
+    )?;
+
+    assert!(!sessions.has_more);
+    assert_eq!(
+        sessions
+            .sessions
+            .iter()
+            .map(|session| session.session_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["session-recent-touch"]
+    );
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
 fn session_summaries_accept_absolute_project_root_touched_paths() -> Result<()> {
     let index_path = test_index_path("session-touched-path-absolute");
     let connection = open_index_database(&index_path)?;

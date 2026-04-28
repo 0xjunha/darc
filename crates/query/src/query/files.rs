@@ -11,8 +11,8 @@ use rusqlite::{Connection, params_from_iter, types::Value};
 
 use super::{
     CoTouchedFileSummary, FileSessionSummary, FilesQueryData, FilesQueryMode, FilesQueryRequest,
-    SessionFileSummary, SessionFilesQueryData, open_existing_index_database, paginate_ranked_rows,
-    parse_provider, sql_count_to_u64,
+    SessionFileSummary, SessionFilesQueryData, SessionSummary, open_existing_index_database,
+    paginate_ranked_rows, parse_provider, sql_count_to_u64,
 };
 
 const MAX_SESSION_KEYS_PER_QUERY: usize = 250;
@@ -181,20 +181,32 @@ pub fn query_project_session_files(
     build_session_files_query(&connection, project_id, provider, session_id, project_root)
 }
 
-/// Queries exact session identities whose file accesses match one touched-path glob.
-pub(crate) fn query_touched_path_session_keys(
+/// Filters one session-summary candidate batch to sessions that touched a glob-matched file path.
+pub(crate) fn filter_session_summaries_by_touched_path(
     connection: &Connection,
     project_id: &str,
     project_root: Option<&Path>,
+    sessions: Vec<SessionSummary>,
     touched_path: &str,
-) -> Result<Vec<(SourceKind, String)>> {
+) -> Result<Vec<SessionSummary>> {
+    if sessions.is_empty() {
+        return Ok(sessions);
+    }
+
     let touched_path = normalize_query_path_pattern(project_root, touched_path);
     let pattern = Pattern::new(&touched_path)
         .with_context(|| format!("invalid touched-path glob `{touched_path}`"))?;
     let path_selector = build_path_query_selector(project_root, &touched_path);
-    let rows = query_touched_path_file_rows(connection, project_id, &path_selector)?;
+    let session_keys = sessions
+        .iter()
+        .map(|session| SessionKey {
+            provider: session.provider,
+            session_id: session.session_id.clone(),
+        })
+        .collect::<Vec<_>>();
+    let rows = query_touched_path_file_rows(connection, project_id, &session_keys, &path_selector)?;
     let match_options = glob_match_options();
-    let mut session_keys = BTreeSet::<SessionKey>::new();
+    let mut matching_sessions = BTreeSet::<SessionKey>::new();
     for (provider, session_id, repo_relative_path, path) in rows {
         if path_matches_glob(
             &pattern,
@@ -203,82 +215,115 @@ pub(crate) fn query_touched_path_session_keys(
             repo_relative_path.as_deref(),
             &path,
         ) {
-            session_keys.insert(SessionKey {
+            matching_sessions.insert(SessionKey {
                 provider,
                 session_id,
             });
         }
     }
-    Ok(session_keys
+    Ok(sessions
         .into_iter()
-        .map(|session_key| (session_key.provider, session_key.session_id))
+        .filter(|session| {
+            matching_sessions.contains(&SessionKey {
+                provider: session.provider,
+                session_id: session.session_id.clone(),
+            })
+        })
         .collect())
 }
 
-/// Queries touched-path candidate file rows without changing session-filter semantics.
+/// Queries touched-path candidate file rows for one bounded session candidate set.
 fn query_touched_path_file_rows(
     connection: &Connection,
     project_id: &str,
+    session_keys: &[SessionKey],
     path_selector: &PathQuerySelector,
 ) -> Result<Vec<TouchedPathFileRow>> {
-    if matches!(path_selector, PathQuerySelector::Impossible) {
+    if session_keys.is_empty() || matches!(path_selector, PathQuerySelector::Impossible) {
         return Ok(Vec::new());
     }
 
+    let mut rows = Vec::new();
+    for session_chunk in session_keys.chunks(MAX_SESSION_KEYS_PER_QUERY) {
+        let sql = build_touched_path_file_rows_sql(session_chunk.len(), path_selector);
+        let mut params = build_session_key_values_params(project_id, session_chunk.iter())?;
+        if matches!(
+            path_selector,
+            PathQuerySelector::Exact { .. } | PathQuerySelector::Prefix { .. }
+        ) {
+            params.extend(path_selector.params());
+        }
+        let mut statement = connection
+            .prepare(&sql)
+            .context("failed to prepare touched-path file row query")?;
+        rows.extend(
+            statement
+                .query_map(params_from_iter(params), |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                })
+                .context("failed to query touched-path file rows")?
+                .map(|row| {
+                    let (provider, session_id, repo_relative_path, path) =
+                        row.context("failed to read touched-path file row")?;
+                    Ok((
+                        parse_provider(&provider)?,
+                        session_id,
+                        repo_relative_path,
+                        path,
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?,
+        );
+    }
+    Ok(rows)
+}
+
+/// Builds one requested-session file-row query with optional path selector narrowing.
+fn build_touched_path_file_rows_sql(row_count: usize, path_selector: &PathQuerySelector) -> String {
+    let relative_param = row_count
+        .checked_mul(2)
+        .and_then(|value| value.checked_add(2))
+        .expect("placeholder index should stay within usize range");
+    let absolute_param = relative_param
+        .checked_add(1)
+        .expect("placeholder index should stay within usize range");
     let path_filter = match path_selector {
         PathQuerySelector::Exact { .. } | PathQuerySelector::Prefix { .. } => {
-            format!("\n        AND {}", path_selector.sql_predicate(2, 3))
+            format!(
+                "\n            AND {}",
+                path_selector.sql_predicate(relative_param, absolute_param)
+            )
         }
         PathQuerySelector::Unbounded => String::new(),
-        PathQuerySelector::Impossible => unreachable!("impossible selector returns early"),
+        PathQuerySelector::Impossible => unreachable!("impossible selector is handled by caller"),
     };
-    let sql = format!(
+    build_session_key_values_query_sql(
+        row_count,
+        &format!(
+            "
+        SELECT DISTINCT
+            file_accesses.provider,
+            file_accesses.session_id,
+            file_accesses.repo_relative_path,
+            file_accesses.path
+        FROM requested
+        INNER JOIN file_accesses
+            ON file_accesses.project_id = ?1
+            AND file_accesses.provider = requested.provider
+            AND file_accesses.session_id = requested.session_id
+        WHERE NULLIF(TRIM(file_accesses.path), '') IS NOT NULL{path_filter}
+        ORDER BY
+            file_accesses.provider ASC,
+            file_accesses.session_id ASC,
+            COALESCE(file_accesses.repo_relative_path, file_accesses.path) COLLATE NOCASE ASC
         "
-    SELECT DISTINCT
-        file_accesses.provider,
-        file_accesses.session_id,
-        file_accesses.repo_relative_path,
-        file_accesses.path
-    FROM file_accesses
-    WHERE file_accesses.project_id = ?1
-        AND NULLIF(TRIM(file_accesses.path), '') IS NOT NULL{path_filter}
-    ORDER BY
-        file_accesses.provider ASC,
-        file_accesses.session_id ASC,
-        COALESCE(file_accesses.repo_relative_path, file_accesses.path) COLLATE NOCASE ASC
-    "
-    );
-    let mut params = vec![Value::Text(project_id.to_owned())];
-    if matches!(
-        path_selector,
-        PathQuerySelector::Exact { .. } | PathQuerySelector::Prefix { .. }
-    ) {
-        params.extend(path_selector.params());
-    }
-    let mut statement = connection
-        .prepare(&sql)
-        .context("failed to prepare touched-path file row query")?;
-    statement
-        .query_map(params_from_iter(params), |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, String>(3)?,
-            ))
-        })
-        .context("failed to query touched-path file rows")?
-        .map(|row| {
-            let (provider, session_id, repo_relative_path, path) =
-                row.context("failed to read touched-path file row")?;
-            Ok((
-                parse_provider(&provider)?,
-                session_id,
-                repo_relative_path,
-                path,
-            ))
-        })
-        .collect()
+        ),
+    )
 }
 
 /// Normalizes one path query so absolute project-root inputs match stored repo-relative paths.
@@ -1159,6 +1204,16 @@ pub(super) fn smoke_test_sql(connection: &Connection) -> Result<()> {
         (
             "requested session file rows query",
             build_requested_session_file_rows_sql(1),
+        ),
+        (
+            "touched-path requested session file rows query",
+            build_touched_path_file_rows_sql(
+                1,
+                &PathQuerySelector::Exact {
+                    relative: "README.md".to_owned(),
+                    absolute: Some("/tmp/repo/README.md".to_owned()),
+                },
+            ),
         ),
         (
             "requested session paths query",

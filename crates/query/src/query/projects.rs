@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use darc_paths::SourceKind;
 use rusqlite::{Connection, OptionalExtension, params};
 
-use super::files::query_touched_path_session_keys;
+use super::files::filter_session_summaries_by_touched_path;
 use super::turns::build_token_usage;
 use super::{
     ProjectIndexAggregate, ResolveSessionQueryData, ResolveSessionQueryRequest,
@@ -142,7 +142,16 @@ const PROJECT_SESSIONS_SQL: &str = "
             AND (?3 IS NULL OR julianday(turn_stats.latest_turn_at) < julianday(?3))
             AND (?4 IS NULL OR s.provider = ?4)
             AND (?5 IS NULL OR s.session_id = ?5)
-            {touched_session_filter}
+    ),
+    paged_sessions AS (
+        SELECT *
+        FROM filtered_sessions
+        ORDER BY
+            latest_turn_at IS NULL ASC,
+            latest_turn_at DESC,
+            provider ASC,
+            session_id DESC
+        LIMIT ?6 OFFSET ?7
     ),
     session_edited_files AS (
         SELECT
@@ -157,10 +166,10 @@ const PROJECT_SESSIONS_SQL: &str = "
                 file_accesses.session_id,
                 TRIM(COALESCE(file_accesses.repo_relative_path, file_accesses.path)) AS display_path
             FROM file_accesses
-            INNER JOIN filtered_sessions
-                ON filtered_sessions.project_id = file_accesses.project_id
-                AND filtered_sessions.provider = file_accesses.provider
-                AND filtered_sessions.session_id = file_accesses.session_id
+            INNER JOIN paged_sessions
+                ON paged_sessions.project_id = file_accesses.project_id
+                AND paged_sessions.provider = file_accesses.provider
+                AND paged_sessions.session_id = file_accesses.session_id
             WHERE file_accesses.access_type IN ('edit', 'write')
                 AND NULLIF(TRIM(COALESCE(file_accesses.repo_relative_path, file_accesses.path)), '') IS NOT NULL
             ORDER BY
@@ -172,106 +181,44 @@ const PROJECT_SESSIONS_SQL: &str = "
         GROUP BY project_id, provider, session_id
     )
     SELECT
-        filtered_sessions.project_id,
-        filtered_sessions.provider,
-        filtered_sessions.session_id,
-        filtered_sessions.parent_session_id,
-        filtered_sessions.session_kind,
-        filtered_sessions.cwd,
-        filtered_sessions.turn_count,
-        filtered_sessions.latest_turn_at,
-        filtered_sessions.latest_status,
-        filtered_sessions.primary_model,
-        filtered_sessions.total_token_count,
-        filtered_sessions.provider_total_token_count,
-        filtered_sessions.input_uncached_token_count,
-        filtered_sessions.cache_read_token_count,
-        filtered_sessions.cache_write_token_count,
-        filtered_sessions.output_token_count,
-        filtered_sessions.reasoning_token_count,
-        filtered_sessions.effective_agent_runtime_ms,
-        filtered_sessions.changed_file_count,
-        filtered_sessions.added_line_count,
-        filtered_sessions.removed_line_count,
-        filtered_sessions.first_turn_at,
-        filtered_sessions.first_user_prompt,
-        filtered_sessions.aborted_turn_count,
+        paged_sessions.project_id,
+        paged_sessions.provider,
+        paged_sessions.session_id,
+        paged_sessions.parent_session_id,
+        paged_sessions.session_kind,
+        paged_sessions.cwd,
+        paged_sessions.turn_count,
+        paged_sessions.latest_turn_at,
+        paged_sessions.latest_status,
+        paged_sessions.primary_model,
+        paged_sessions.total_token_count,
+        paged_sessions.provider_total_token_count,
+        paged_sessions.input_uncached_token_count,
+        paged_sessions.cache_read_token_count,
+        paged_sessions.cache_write_token_count,
+        paged_sessions.output_token_count,
+        paged_sessions.reasoning_token_count,
+        paged_sessions.effective_agent_runtime_ms,
+        paged_sessions.changed_file_count,
+        paged_sessions.added_line_count,
+        paged_sessions.removed_line_count,
+        paged_sessions.first_turn_at,
+        paged_sessions.first_user_prompt,
+        paged_sessions.aborted_turn_count,
         COALESCE(session_edited_files.edited_files_json, '[]')
-    FROM filtered_sessions
+    FROM paged_sessions
     LEFT JOIN session_edited_files
-        ON session_edited_files.project_id = filtered_sessions.project_id
-        AND session_edited_files.provider = filtered_sessions.provider
-        AND session_edited_files.session_id = filtered_sessions.session_id
+        ON session_edited_files.project_id = paged_sessions.project_id
+        AND session_edited_files.provider = paged_sessions.provider
+        AND session_edited_files.session_id = paged_sessions.session_id
     ORDER BY
-        filtered_sessions.latest_turn_at IS NULL ASC,
-        filtered_sessions.latest_turn_at DESC,
-        filtered_sessions.provider ASC,
-        filtered_sessions.session_id DESC
-    LIMIT ?6 OFFSET ?7
+        paged_sessions.latest_turn_at IS NULL ASC,
+        paged_sessions.latest_turn_at DESC,
+        paged_sessions.provider ASC,
+        paged_sessions.session_id DESC
 ";
 
-const TOUCHED_SESSION_FILTER_TABLE: &str = "temp_darc_touched_session_filter";
-
-const TOUCHED_SESSION_FILTER_PREDICATE: &str = "
-            AND EXISTS (
-                SELECT 1
-                FROM temp_darc_touched_session_filter
-                WHERE temp_darc_touched_session_filter.provider = s.provider
-                    AND temp_darc_touched_session_filter.session_id = s.session_id
-            )";
-
-/// Builds the project-session summary SQL with optional precomputed touched-path filtering.
-fn build_project_sessions_sql(use_touched_filter: bool) -> String {
-    PROJECT_SESSIONS_SQL.replace(
-        "{touched_session_filter}",
-        if use_touched_filter {
-            TOUCHED_SESSION_FILTER_PREDICATE
-        } else {
-            ""
-        },
-    )
-}
-
-/// Loads exact touched-path session keys into a connection-local temporary filter table.
-fn load_touched_session_filter(
-    connection: &Connection,
-    session_keys: &[(SourceKind, String)],
-) -> Result<()> {
-    connection
-        .execute(
-            &format!(
-                "
-                CREATE TEMP TABLE IF NOT EXISTS {TOUCHED_SESSION_FILTER_TABLE} (
-                    provider TEXT NOT NULL,
-                    session_id TEXT NOT NULL,
-                    PRIMARY KEY (provider, session_id)
-                )
-                "
-            ),
-            [],
-        )
-        .context("failed to create touched-path session filter table")?;
-    connection
-        .execute(&format!("DELETE FROM {TOUCHED_SESSION_FILTER_TABLE}"), [])
-        .context("failed to clear touched-path session filter table")?;
-    let mut statement = connection
-        .prepare(&format!(
-            "
-            INSERT OR IGNORE INTO {TOUCHED_SESSION_FILTER_TABLE} (
-                provider,
-                session_id
-            )
-            VALUES (?1, ?2)
-            "
-        ))
-        .context("failed to prepare touched-path session filter insert")?;
-    for (provider, session_id) in session_keys {
-        statement
-            .execute(params![provider.directory_name(), session_id])
-            .context("failed to insert touched-path session filter row")?;
-    }
-    Ok(())
-}
+const TOUCHED_SESSION_CANDIDATE_BATCH_ROWS: usize = if cfg!(test) { 2 } else { 250 };
 
 const RESOLVE_SESSIONS_SQL: &str = "
     SELECT DISTINCT
@@ -309,7 +256,6 @@ pub(crate) struct SessionSummaryQuery<'a> {
     session_id: Option<&'a str>,
     limit: usize,
     offset: usize,
-    use_touched_filter: bool,
 }
 
 const TURN_SUMMARY_COLUMNS: &[&str] = &[
@@ -384,49 +330,11 @@ pub fn query_project_sessions(
     request: SessionsQueryRequest<'_>,
 ) -> Result<SessionsQueryData> {
     let connection = open_existing_index_database(index_db_path)?;
-    let use_touched_filter = if let Some(touched_path) = request.touched_path {
-        let session_keys = query_touched_path_session_keys(
-            &connection,
-            request.project_id,
-            request.project_root,
-            touched_path,
-        )?;
-        if session_keys.is_empty() {
-            return Ok(SessionsQueryData {
-                project_id: request.project_id.to_owned(),
-                since: request.since.map(str::to_owned),
-                until: request.until.map(str::to_owned),
-                touched_path: Some(touched_path.to_owned()),
-                limit: u64::try_from(request.limit).context("query limit exceeds u64 range")?,
-                offset: u64::try_from(request.offset).context("query offset exceeds u64 range")?,
-                has_more: false,
-                sessions: Vec::new(),
-            });
-        }
-        load_touched_session_filter(&connection, &session_keys)?;
-        true
+    let (sessions, has_more) = if let Some(touched_path) = request.touched_path {
+        query_touched_path_session_page(&connection, request, touched_path)?
     } else {
-        false
+        query_session_page(&connection, request)?
     };
-    let page_limit = request
-        .limit
-        .checked_add(1)
-        .context("query limit exceeds usize range")?;
-    let mut sessions = query_sessions(
-        &connection,
-        SessionSummaryQuery {
-            project_id: request.project_id,
-            since: request.since,
-            until: request.until,
-            provider: None,
-            session_id: None,
-            limit: page_limit,
-            offset: request.offset,
-            use_touched_filter,
-        },
-    )?;
-    let has_more = sessions.len() > request.limit;
-    sessions.truncate(request.limit);
     Ok(SessionsQueryData {
         project_id: request.project_id.to_owned(),
         since: request.since.map(str::to_owned),
@@ -437,6 +345,95 @@ pub fn query_project_sessions(
         has_more,
         sessions,
     })
+}
+
+/// Queries one session page without touched-path post-filtering.
+fn query_session_page(
+    connection: &Connection,
+    request: SessionsQueryRequest<'_>,
+) -> Result<(Vec<SessionSummary>, bool)> {
+    let page_limit = request
+        .limit
+        .checked_add(1)
+        .context("query limit exceeds usize range")?;
+    let mut sessions = query_sessions(
+        connection,
+        SessionSummaryQuery {
+            project_id: request.project_id,
+            since: request.since,
+            until: request.until,
+            provider: None,
+            session_id: None,
+            limit: page_limit,
+            offset: request.offset,
+        },
+    )?;
+    let has_more = sessions.len() > request.limit;
+    sessions.truncate(request.limit);
+    Ok((sessions, has_more))
+}
+
+/// Queries one touched-path session page by filtering bounded session candidate batches.
+fn query_touched_path_session_page(
+    connection: &Connection,
+    request: SessionsQueryRequest<'_>,
+    touched_path: &str,
+) -> Result<(Vec<SessionSummary>, bool)> {
+    let desired_match_count = request
+        .offset
+        .checked_add(request.limit)
+        .and_then(|value| value.checked_add(1))
+        .context("query pagination exceeds usize range")?;
+    let mut matching_sessions = Vec::<SessionSummary>::new();
+    let mut candidate_offset = 0usize;
+
+    loop {
+        let candidates = query_sessions(
+            connection,
+            SessionSummaryQuery {
+                project_id: request.project_id,
+                since: request.since,
+                until: request.until,
+                provider: None,
+                session_id: None,
+                limit: TOUCHED_SESSION_CANDIDATE_BATCH_ROWS,
+                offset: candidate_offset,
+            },
+        )?;
+        let candidate_count = candidates.len();
+        if candidate_count == 0 {
+            break;
+        }
+
+        matching_sessions.extend(filter_session_summaries_by_touched_path(
+            connection,
+            request.project_id,
+            request.project_root,
+            candidates,
+            touched_path,
+        )?);
+        if matching_sessions.len() >= desired_match_count {
+            break;
+        }
+        if candidate_count < TOUCHED_SESSION_CANDIDATE_BATCH_ROWS {
+            break;
+        }
+        candidate_offset = candidate_offset
+            .checked_add(candidate_count)
+            .context("query candidate offset exceeds usize range")?;
+    }
+
+    let page_end = request
+        .offset
+        .checked_add(request.limit)
+        .context("query pagination exceeds usize range")?;
+    let has_more = matching_sessions.len() > page_end;
+    let sessions = matching_sessions
+        .into_iter()
+        .skip(request.offset)
+        .take(request.limit)
+        .collect();
+    Ok((sessions, has_more))
 }
 
 /// Queries the indexed turn list for one provider session.
@@ -572,9 +569,8 @@ pub(crate) fn query_sessions(
     let limit = i64::try_from(request.limit).context("query limit exceeds SQLite INTEGER range")?;
     let offset =
         i64::try_from(request.offset).context("query offset exceeds SQLite INTEGER range")?;
-    let sql = build_project_sessions_sql(request.use_touched_filter);
     let mut statement = connection
-        .prepare(&sql)
+        .prepare(PROJECT_SESSIONS_SQL)
         .context("failed to prepare indexed session query")?;
     let rows = statement
         .query_map(
@@ -708,7 +704,6 @@ pub(crate) fn query_session_summary(
             session_id: Some(session_id),
             limit: 1,
             offset: 0,
-            use_touched_filter: false,
         },
     )?
     .into_iter()
@@ -866,13 +861,12 @@ fn build_turn_summary(row: RawTurnSummaryRow) -> Result<TurnSummary> {
 #[cfg(test)]
 /// Prepares the session and project list SQL statements against one live schema.
 pub(super) fn smoke_test_sql(connection: &Connection) -> Result<()> {
-    let project_sessions_sql = build_project_sessions_sql(false);
     for (label, sql) in [
         (
             "project index aggregate query",
             PROJECT_INDEX_AGGREGATES_SQL,
         ),
-        ("project sessions query", project_sessions_sql.as_str()),
+        ("project sessions query", PROJECT_SESSIONS_SQL),
         ("resolve sessions query", RESOLVE_SESSIONS_SQL),
         ("project session id query", PROJECT_SESSION_ID_SQL),
         ("session turns query", session_turns_sql()),

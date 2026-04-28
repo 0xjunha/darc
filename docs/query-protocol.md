@@ -334,7 +334,7 @@ Today:
 - session totals are rollups across the indexed turns in that session
 - top-level session-list payloads additionally echo the resolved `since`, `until`, and `touched_path` request filters as nullable fields, plus non-null `limit`, `offset`, and `has_more` pagination fields
 - optional `--since` and `--until` filters apply to `latest_turn_at`, using inclusive lower-bound and exclusive upper-bound semantics
-- optional `--touched-path` requires at least one session-scoped, project-scoped file access of any access type whose canonical display path matches the provided glob, then session pagination applies after `latest_turn_at` bounds and ordering
+- optional `--touched-path` requires at least one session-scoped, project-scoped file access of any access type whose canonical display path matches the provided glob; Darc scans session candidates in `latest_turn_at` order after the `--since` / `--until` bounds and then applies touched-path pagination
 - `--since` and `--until` accept absolute ISO-8601 text or relative `<days>d` shorthand such as `5d`
 - each `token_usage.*` session field is `null` unless every indexed turn in that session carried a value for that exact field
 - `total_token_count` and `effective_agent_runtime_ms` are currently `null` on a session row unless every indexed turn in that session carried a value for that field
