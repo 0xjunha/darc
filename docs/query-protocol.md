@@ -46,7 +46,7 @@ Query commands emit JSON envelopes on stdout by default.
 
 - project-scoped queries accept optional `--project-id`; when omitted, Darc resolves the configured project from the current directory
 - project-wide provider filters default to all providers when `--provider` is omitted
-- `darc query sessions` defaults to `--view compact`; pass `--view full` for full `first_user_prompt` text and complete `edited_files`
+- `darc query sessions` defaults to `--view compact`; pass `--view full` for full `first_user_prompt` text. `edited_files` is always complete.
 - `darc query resolve-session` accepts either one full UUID or one UUID prefix and returns `project_id`, `provider`, and `session_id` for each match
 - `darc query search turns` defaults to `--mode keyword`; pass `--mode` only for literal, regex, or file/path search modes
 - `darc query search turns` accepts query text positionally or with `--query`; use `--query` for query text that begins with `-`
@@ -352,7 +352,7 @@ Today:
 Today:
 
 - session-list payloads include `view`, which is `compact` by default and `full` when `--view full` is supplied
-- session rows include `primary_model`, `total_token_count`, `token_usage`, `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, `removed_line_count`, `first_turn_at`, `first_user_prompt`, `first_user_prompt_truncated`, `aborted_turn_count`, `edited_files`, and `edited_files_truncated`
+- session rows include `primary_model`, `total_token_count`, `token_usage`, `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, `removed_line_count`, `first_turn_at`, `first_user_prompt`, `first_user_prompt_truncated`, `aborted_turn_count`, and `edited_files`
 - session totals are rollups across the indexed turns in that session
 - top-level session-list payloads additionally echo the resolved `provider`, `since`, `until`, and `touched_path` request filters as nullable fields, plus non-null `limit`, `offset`, and `has_more` pagination fields
 - top-level turn-list payloads echo nullable `since` and `until` filters plus non-null `limit`, `offset`, and `has_more` pagination fields
@@ -362,8 +362,8 @@ Today:
 - each `token_usage.*` session field is `null` unless every indexed turn in that session carried a value for that exact field
 - `total_token_count` and `effective_agent_runtime_ms` are currently `null` on a session row unless every indexed turn in that session carried a value for that field
 - `first_turn_at` and `first_user_prompt` come from the indexed turn with the minimum `turn_ordinal` in that session and are `null` only when the indexed session has no stored turns
-- in `view=compact`, `first_user_prompt` is capped at 240 characters and `edited_files` is capped at 10 paths; the corresponding `*_truncated` fields report whether additional data was omitted
-- in `view=full`, `first_user_prompt` and `edited_files` are not capped, and the corresponding `*_truncated` fields are false
+- in `view=compact`, `first_user_prompt` is capped at 240 characters and `first_user_prompt_truncated` reports whether additional prompt text was omitted
+- in `view=full`, `first_user_prompt` is not capped, and `first_user_prompt_truncated` is false
 - `aborted_turn_count` counts indexed turns in that session where `status` is `aborted`
 - `edited_files` is the distinct `COALESCE(repo_relative_path, path)` list from session-scoped `file_accesses` rows with `access_type` of `edit` or `write`, excluding null or whitespace-only paths and ordered by display path ascending
 - `darc.query.turns.v1` remains session-scoped and keeps non-null top-level `provider` and `session_id`; provider is inferred unless the session id is cross-provider ambiguous

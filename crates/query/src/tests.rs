@@ -601,7 +601,7 @@ fn session_summaries_leave_partial_token_and_runtime_totals_null() -> Result<()>
 }
 
 #[test]
-fn session_summaries_compact_view_caps_prompt_and_files() -> Result<()> {
+fn session_summaries_compact_view_caps_prompt_only() -> Result<()> {
     let index_path = test_index_path("session-compact-view");
     let connection = open_index_database(&index_path)?;
     insert_indexed_session(
@@ -679,8 +679,7 @@ fn session_summaries_compact_view_caps_prompt_and_files() -> Result<()> {
         240
     );
     assert!(compact.sessions[0].first_user_prompt_truncated);
-    assert_eq!(compact.sessions[0].edited_files.len(), 10);
-    assert!(compact.sessions[0].edited_files_truncated);
+    assert_eq!(compact.sessions[0].edited_files.len(), 12);
     assert_eq!(full.view, SessionsView::Full);
     assert_eq!(
         full.sessions[0]
@@ -693,7 +692,6 @@ fn session_summaries_compact_view_caps_prompt_and_files() -> Result<()> {
     );
     assert!(!full.sessions[0].first_user_prompt_truncated);
     assert_eq!(full.sessions[0].edited_files.len(), 12);
-    assert!(!full.sessions[0].edited_files_truncated);
 
     fs::remove_dir_all(
         index_path

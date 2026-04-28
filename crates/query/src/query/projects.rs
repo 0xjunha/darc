@@ -220,8 +220,6 @@ const PROJECT_SESSIONS_SQL: &str = "
 
 const TOUCHED_SESSION_CANDIDATE_BATCH_ROWS: usize = if cfg!(test) { 2 } else { 250 };
 const COMPACT_SESSION_PROMPT_CHARS: usize = 240;
-const COMPACT_SESSION_EDITED_FILE_LIMIT: usize = 10;
-
 const RESOLVE_SESSIONS_SQL: &str = "
     SELECT DISTINCT
         project_id,
@@ -396,12 +394,6 @@ fn compact_session_summary(mut session: SessionSummary) -> SessionSummary {
         let (prompt, truncated) = truncate_chars(prompt, COMPACT_SESSION_PROMPT_CHARS);
         session.first_user_prompt = Some(prompt);
         session.first_user_prompt_truncated = truncated;
-    }
-    if session.edited_files.len() > COMPACT_SESSION_EDITED_FILE_LIMIT {
-        session
-            .edited_files
-            .truncate(COMPACT_SESSION_EDITED_FILE_LIMIT);
-        session.edited_files_truncated = true;
     }
     session
 }
@@ -770,7 +762,6 @@ pub(crate) fn query_sessions(
                     first_user_prompt_truncated: false,
                     aborted_turn_count: sql_count_to_u64(aborted_turn_count)?,
                     edited_files: parse_edited_files_json(&edited_files_json)?,
-                    edited_files_truncated: false,
                 })
             },
         )

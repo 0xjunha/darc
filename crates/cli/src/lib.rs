@@ -307,7 +307,7 @@ struct QuerySessionsArgs {
         long,
         value_enum,
         default_value_t = SessionListViewArg::Compact,
-        help = "Return full session rows or compact prompt/file previews"
+        help = "Return full session prompts or compact prompt previews"
     )]
     view: SessionListViewArg,
 

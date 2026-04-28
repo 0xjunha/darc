@@ -271,10 +271,6 @@ fn sessions_query_emits_success_envelope() -> Result<()> {
         value["data"]["sessions"][0]["edited_files"],
         Value::Array(vec![])
     );
-    assert_eq!(
-        value["data"]["sessions"][0]["edited_files_truncated"],
-        false
-    );
     assert_eq!(value["data"]["sessions"][0]["total_token_count"], 321);
     assert_eq!(
         value["data"]["sessions"][0]["token_usage"]["input_uncached_token_count"],

@@ -159,7 +159,6 @@ pub struct SessionSummary {
     pub first_user_prompt_truncated: bool,
     pub aborted_turn_count: u64,
     pub edited_files: Vec<String>,
-    pub edited_files_truncated: bool,
 }
 
 /// Identifies the supported session-list projection modes.
