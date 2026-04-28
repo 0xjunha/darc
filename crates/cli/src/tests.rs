@@ -582,6 +582,10 @@ fn parses_query_search_turns_literal_with_filters() {
         "--until",
         "2026-04-07T00:00:00Z",
         "--include-tool-output",
+        "--field",
+        "user-message",
+        "--exclude-field",
+        "tool_arguments",
     ])
     .unwrap();
     assert!(matches!(
@@ -596,6 +600,8 @@ fn parses_query_search_turns_literal_with_filters() {
                 since,
                 until,
                 include_tool_output,
+                fields,
+                excluded_fields,
                 ..
                 }),
             }),
@@ -606,6 +612,8 @@ fn parses_query_search_turns_literal_with_filters() {
             && since.as_deref() == Some("5d")
             && until.as_deref() == Some("2026-04-07T00:00:00Z")
             && include_tool_output
+            && fields == [super::SearchEvidenceField::UserMessage]
+            && excluded_fields == [super::SearchEvidenceField::ToolArguments]
     ));
 }
 
@@ -739,6 +747,8 @@ fn query_search_turns_help_mentions_tool_output_opt_in() {
         .to_string();
 
     assert!(help.contains("--include-tool-output"));
+    assert!(help.contains("--field"));
+    assert!(help.contains("--exclude-field"));
     assert!(help.contains("literal and regex"));
     assert!(help.contains("path-fragment"));
 }

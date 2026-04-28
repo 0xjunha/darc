@@ -31,8 +31,8 @@ Query commands emit JSON envelopes on stdout by default.
 
 ### Search
 
-- `darc query search turns [--root <path>] [--project-id <id>] <query> [--mode <keyword|literal|regex|file-name|file-path|path-fragment>] [--include-tool-output] [--provider <provider>] [--session-id <id>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>]`
-- `darc query search turns [--root <path>] [--project-id <id>] --query <query> [--mode <keyword|literal|regex|file-name|file-path|path-fragment>] [--include-tool-output] [--provider <provider>] [--session-id <id>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>]`
+- `darc query search turns [--root <path>] [--project-id <id>] <query> [--mode <keyword|literal|regex|file-name|file-path|path-fragment>] [--include-tool-output] [--field <field>] [--exclude-field <field>] [--provider <provider>] [--session-id <id>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>]`
+- `darc query search turns [--root <path>] [--project-id <id>] --query <query> [--mode <keyword|literal|regex|file-name|file-path|path-fragment>] [--include-tool-output] [--field <field>] [--exclude-field <field>] [--provider <provider>] [--session-id <id>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>]`
 
 ### Insights
 
@@ -60,6 +60,8 @@ Query commands emit JSON envelopes on stdout by default.
 - `darc query turn` and `darc query session-bundle` default to `--view narrative`; pass `--view full` when raw tool arguments, outputs, or payload blobs are needed
 - `--turn-limit` on `darc query insights project` is an inspection bound over indexed turns, not response pagination; the previous `--limit` spelling is accepted as a compatibility alias
 - `--include-tool-output` on `darc query search turns` is accepted only with `--mode literal` or `--mode regex`
+- `--field` and `--exclude-field` on `darc query search turns` are accepted only with `--mode literal` or `--mode regex`; field values accept CLI kebab-case such as `user-message` and stable protocol snake_case such as `user_message`
+- `--field tool-output` requires `--include-tool-output`
 - session-scoped data commands require a full UUID session id; malformed ids return `invalid_session_id`, unknown UUIDs return `unknown_session`, ambiguous cross-provider UUIDs return `ambiguous_session`, and UUID-like prefixes fail explicitly instead of auto-resolving
 
 ## Common Workflows
@@ -83,7 +85,8 @@ The protocol is intentionally composable. A few common read patterns are now fir
     --root ~/.darc \
     --project-id repo-abc123 \
     --mode literal \
-    --query "--output-last-message"
+    --query "--output-last-message" \
+    --exclude-field tool-arguments
   ```
 
 - search command output or logs explicitly for forensic work:
@@ -436,6 +439,8 @@ Today:
 - literal and regex search exclude `tool_output` evidence by default because command and tool output is often large and noisy for context-building
 - pass `--include-tool-output` with literal or regex search to include command/tool output evidence for forensic searches such as exact errors, stack traces, logs, or command output
 - `--include-tool-output` is rejected for `keyword`, `file_name`, `file_path`, and `path_fragment` search because those modes do not inspect `turn_evidence.tool_output`
+- pass repeatable `--field` values to restrict literal and regex search to specific evidence fields, or repeatable `--exclude-field` values to omit fields from the default exact-search evidence set
+- accepted exact-search field names are `user-message`, `final-answer`, `commentary`, `reasoning-summary`, `tool-name`, `tool-arguments`, `tool-output`, `delegation-summary`, `delegation-metadata`, `hook-summary`, `attachment-metadata`, and `provider-response-item-metadata`; the stable snake_case labels are also accepted
 - literal and regex search inspect `user_message`, `final_answer`, `commentary`, `reasoning_summary`, `tool_name`,
   `tool_arguments`, `delegation_summary`, `delegation_metadata`, `hook_summary`,
   `attachment_metadata`, and `provider_response_item_metadata` evidence fields
@@ -451,7 +456,7 @@ Today:
 - `mode=file_name` searches the derived `file_accesses.file_name` basename field
 - `mode=file_path` treats the query text as the same case-insensitive project-scoped glob shape used by `darc query files`
 - `mode=path_fragment` searches derived path fields from `file_accesses.repo_relative_path` and `file_accesses.path` with exact/prefix/substring ranking
-- all search modes return turn identities, top-level turn metadata, nullable `since` / `until` request echoes, `include_tool_output`, and optional `snippet` / `matched_paths` / `matches` fields plus `matches_truncated`
+- all search modes return turn identities, top-level turn metadata, nullable `since` / `until` request echoes, `include_tool_output`, `fields`, `excluded_fields`, and optional `snippet` / `matched_paths` / `matches` fields plus `matches_truncated`
 - `matched_paths` is empty for keyword search and populated for file-name, file-path, or path-fragment hits
 - `matches` is empty for keyword and file search and populated for literal or regex hits
 - `matches_truncated` is always false for keyword and file search

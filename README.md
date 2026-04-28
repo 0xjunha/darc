@@ -112,7 +112,7 @@ single-call session bundles.
 - `darc query search turns <query>` defaults to keyword search and also supports literal, regex, file-name,
   glob-compatible file-path, and path-fragment modes with optional provider/session/time filters. Literal and regex
   search skip bulky tool outputs by default; add `--include-tool-output` for forensic searches over command output,
-  logs, or stack traces.
+  logs, or stack traces, and use `--field` / `--exclude-field` to narrow exact evidence fields.
 - project-scoped `darc query` commands accept optional `--project-id`; when omitted, Darc resolves the configured
   project from the current directory.
 - `darc query turns` lists one known session by full UUID, inferring the provider unless the id is cross-provider
@@ -136,6 +136,7 @@ darc query search turns \
   --project-id repo-abc123 \
   --mode literal \
   --query "--output-last-message" \
+  --exclude-field tool-arguments \
   --since 14d
 ```
 
