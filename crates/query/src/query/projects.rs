@@ -4,14 +4,14 @@ use anyhow::{Context, Result};
 use darc_paths::SourceKind;
 use rusqlite::{Connection, OptionalExtension, params};
 
-use super::files::filter_session_summaries_by_touched_path;
+use super::files::query_touched_path_session_keys;
 use super::turns::build_token_usage;
 use super::{
     ProjectIndexAggregate, ResolveSessionQueryData, ResolveSessionQueryRequest,
     ResolvedSessionMatch, SessionSummary, SessionsQueryData, SessionsQueryRequest, TurnSummary,
     TurnsQueryData, TurnsQueryRequest, open_existing_index_database, optional_sql_count_to_u64,
-    paginate_ranked_rows, parse_provider, parse_session_kind, parse_turn_status,
-    preview_first_line, preview_text, sql_count_to_u64,
+    parse_provider, parse_session_kind, parse_turn_status, preview_first_line, preview_text,
+    sql_count_to_u64,
 };
 
 const PROJECT_INDEX_AGGREGATES_SQL: &str = "
@@ -142,6 +142,7 @@ const PROJECT_SESSIONS_SQL: &str = "
             AND (?3 IS NULL OR julianday(turn_stats.latest_turn_at) < julianday(?3))
             AND (?4 IS NULL OR s.provider = ?4)
             AND (?5 IS NULL OR s.session_id = ?5)
+            {touched_session_filter}
     ),
     session_edited_files AS (
         SELECT
@@ -209,7 +210,68 @@ const PROJECT_SESSIONS_SQL: &str = "
     LIMIT ?6 OFFSET ?7
 ";
 
-const UNBOUNDED_SESSION_QUERY_LIMIT: usize = i64::MAX as usize;
+const TOUCHED_SESSION_FILTER_TABLE: &str = "temp_darc_touched_session_filter";
+
+const TOUCHED_SESSION_FILTER_PREDICATE: &str = "
+            AND EXISTS (
+                SELECT 1
+                FROM temp_darc_touched_session_filter
+                WHERE temp_darc_touched_session_filter.provider = s.provider
+                    AND temp_darc_touched_session_filter.session_id = s.session_id
+            )";
+
+/// Builds the project-session summary SQL with optional precomputed touched-path filtering.
+fn build_project_sessions_sql(use_touched_filter: bool) -> String {
+    PROJECT_SESSIONS_SQL.replace(
+        "{touched_session_filter}",
+        if use_touched_filter {
+            TOUCHED_SESSION_FILTER_PREDICATE
+        } else {
+            ""
+        },
+    )
+}
+
+/// Loads exact touched-path session keys into a connection-local temporary filter table.
+fn load_touched_session_filter(
+    connection: &Connection,
+    session_keys: &[(SourceKind, String)],
+) -> Result<()> {
+    connection
+        .execute(
+            &format!(
+                "
+                CREATE TEMP TABLE IF NOT EXISTS {TOUCHED_SESSION_FILTER_TABLE} (
+                    provider TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    PRIMARY KEY (provider, session_id)
+                )
+                "
+            ),
+            [],
+        )
+        .context("failed to create touched-path session filter table")?;
+    connection
+        .execute(&format!("DELETE FROM {TOUCHED_SESSION_FILTER_TABLE}"), [])
+        .context("failed to clear touched-path session filter table")?;
+    let mut statement = connection
+        .prepare(&format!(
+            "
+            INSERT OR IGNORE INTO {TOUCHED_SESSION_FILTER_TABLE} (
+                provider,
+                session_id
+            )
+            VALUES (?1, ?2)
+            "
+        ))
+        .context("failed to prepare touched-path session filter insert")?;
+    for (provider, session_id) in session_keys {
+        statement
+            .execute(params![provider.directory_name(), session_id])
+            .context("failed to insert touched-path session filter row")?;
+    }
+    Ok(())
+}
 
 const RESOLVE_SESSIONS_SQL: &str = "
     SELECT DISTINCT
@@ -247,6 +309,7 @@ pub(crate) struct SessionSummaryQuery<'a> {
     session_id: Option<&'a str>,
     limit: usize,
     offset: usize,
+    use_touched_filter: bool,
 }
 
 const TURN_SUMMARY_COLUMNS: &[&str] = &[
@@ -321,48 +384,49 @@ pub fn query_project_sessions(
     request: SessionsQueryRequest<'_>,
 ) -> Result<SessionsQueryData> {
     let connection = open_existing_index_database(index_db_path)?;
-    let (sessions, has_more) = if let Some(touched_path) = request.touched_path {
-        let sessions = query_sessions(
-            &connection,
-            SessionSummaryQuery {
-                project_id: request.project_id,
-                since: request.since,
-                until: request.until,
-                provider: None,
-                session_id: None,
-                limit: UNBOUNDED_SESSION_QUERY_LIMIT,
-                offset: 0,
-            },
-        )?;
-        let sessions = filter_session_summaries_by_touched_path(
+    let use_touched_filter = if let Some(touched_path) = request.touched_path {
+        let session_keys = query_touched_path_session_keys(
             &connection,
             request.project_id,
             request.project_root,
-            sessions,
             touched_path,
         )?;
-        paginate_ranked_rows(sessions, request.limit, request.offset)?
+        if session_keys.is_empty() {
+            return Ok(SessionsQueryData {
+                project_id: request.project_id.to_owned(),
+                since: request.since.map(str::to_owned),
+                until: request.until.map(str::to_owned),
+                touched_path: Some(touched_path.to_owned()),
+                limit: u64::try_from(request.limit).context("query limit exceeds u64 range")?,
+                offset: u64::try_from(request.offset).context("query offset exceeds u64 range")?,
+                has_more: false,
+                sessions: Vec::new(),
+            });
+        }
+        load_touched_session_filter(&connection, &session_keys)?;
+        true
     } else {
-        let page_limit = request
-            .limit
-            .checked_add(1)
-            .context("query limit exceeds usize range")?;
-        let mut sessions = query_sessions(
-            &connection,
-            SessionSummaryQuery {
-                project_id: request.project_id,
-                since: request.since,
-                until: request.until,
-                provider: None,
-                session_id: None,
-                limit: page_limit,
-                offset: request.offset,
-            },
-        )?;
-        let has_more = sessions.len() > request.limit;
-        sessions.truncate(request.limit);
-        (sessions, has_more)
+        false
     };
+    let page_limit = request
+        .limit
+        .checked_add(1)
+        .context("query limit exceeds usize range")?;
+    let mut sessions = query_sessions(
+        &connection,
+        SessionSummaryQuery {
+            project_id: request.project_id,
+            since: request.since,
+            until: request.until,
+            provider: None,
+            session_id: None,
+            limit: page_limit,
+            offset: request.offset,
+            use_touched_filter,
+        },
+    )?;
+    let has_more = sessions.len() > request.limit;
+    sessions.truncate(request.limit);
     Ok(SessionsQueryData {
         project_id: request.project_id.to_owned(),
         since: request.since.map(str::to_owned),
@@ -508,8 +572,9 @@ pub(crate) fn query_sessions(
     let limit = i64::try_from(request.limit).context("query limit exceeds SQLite INTEGER range")?;
     let offset =
         i64::try_from(request.offset).context("query offset exceeds SQLite INTEGER range")?;
+    let sql = build_project_sessions_sql(request.use_touched_filter);
     let mut statement = connection
-        .prepare(PROJECT_SESSIONS_SQL)
+        .prepare(&sql)
         .context("failed to prepare indexed session query")?;
     let rows = statement
         .query_map(
@@ -643,6 +708,7 @@ pub(crate) fn query_session_summary(
             session_id: Some(session_id),
             limit: 1,
             offset: 0,
+            use_touched_filter: false,
         },
     )?
     .into_iter()
@@ -800,12 +866,13 @@ fn build_turn_summary(row: RawTurnSummaryRow) -> Result<TurnSummary> {
 #[cfg(test)]
 /// Prepares the session and project list SQL statements against one live schema.
 pub(super) fn smoke_test_sql(connection: &Connection) -> Result<()> {
+    let project_sessions_sql = build_project_sessions_sql(false);
     for (label, sql) in [
         (
             "project index aggregate query",
             PROJECT_INDEX_AGGREGATES_SQL,
         ),
-        ("project sessions query", PROJECT_SESSIONS_SQL),
+        ("project sessions query", project_sessions_sql.as_str()),
         ("resolve sessions query", RESOLVE_SESSIONS_SQL),
         ("project session id query", PROJECT_SESSION_ID_SQL),
         ("session turns query", session_turns_sql()),
