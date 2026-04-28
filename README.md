@@ -107,16 +107,17 @@ See [Query protocol](docs/query-protocol.md) for the exact payload contract and 
 Darc's read-side query surface now covers project-scoped search, compact turn skims, file/session pivots, and
 single-call session bundles.
 
-- `darc query search turns` handles keyword, literal, regex, file-name, and file-path search with optional
-  provider/session/time filters. Literal and regex search skip bulky tool outputs by default; add
+- `darc query search turns` handles keyword, literal, regex, file-name, glob-compatible file-path, and path-fragment
+  search with optional provider/session/time filters. Literal and regex search skip bulky tool outputs by default; add
   `--include-tool-output` for forensic searches over command output, logs, or stack traces.
 - project-scoped `darc query` commands accept optional `--project-id`; when omitted, Darc resolves the configured
   project from the current directory.
-- `darc query turns` lists one known provider session (`--provider --session-id`, full UUID only); content discovery
-  lives under `darc query search turns`.
+- `darc query turns` lists one known provider session (`--provider --session-id`, full UUID only) with `--limit` /
+  `--offset`; content discovery lives under `darc query search turns`.
 - `darc query files`, `darc query session-files`, and `darc query session-bundle` let clients pivot between matched
-  files, touched sessions, per-session file summaries, and one-call session detail bundles.
-- `darc query resolve-session` explicitly expands a UUID prefix before you call session-scoped data commands.
+  files, touched sessions, per-session file summaries, and bounded one-call session detail bundles.
+- `darc query resolve-session` explicitly expands a UUID prefix before you call session-scoped data commands and
+  includes `project_id` with each match for multi-project roots.
 Examples:
 
 ```bash
@@ -161,6 +162,7 @@ darc query session-bundle \
   --provider codex \
   --session-id "$ID" \
   --view narrative \
+  --turn-limit 20 \
   --json
 ```
 

@@ -170,6 +170,7 @@ pub struct SessionsQueryRequest<'a> {
 /// Stores one provider plus canonical session id candidate returned by `resolve-session`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ResolvedSessionMatch {
+    pub project_id: String,
     pub provider: SourceKind,
     pub session_id: String,
 }
@@ -187,6 +188,7 @@ pub struct ResolveSessionQueryData {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResolveSessionQueryRequest<'a> {
     pub query: &'a str,
+    pub project_id: Option<&'a str>,
     pub provider: Option<SourceKind>,
     pub limit: usize,
 }
@@ -324,6 +326,9 @@ pub struct TurnsQueryData {
     pub since: Option<String>,
     pub until: Option<String>,
     pub view: TurnsView,
+    pub limit: u64,
+    pub offset: u64,
+    pub has_more: bool,
     pub turns: Vec<TurnSummary>,
 }
 
@@ -336,6 +341,8 @@ pub struct TurnsQueryRequest<'a> {
     pub since: Option<&'a str>,
     pub until: Option<&'a str>,
     pub view: TurnsView,
+    pub limit: usize,
+    pub offset: usize,
 }
 
 /// Identifies the supported turn-search modes.
@@ -347,6 +354,7 @@ pub enum SearchMode {
     Regex,
     FileName,
     FilePath,
+    PathFragment,
 }
 
 /// Stores one paginated turn-search response for one project.
@@ -370,6 +378,7 @@ pub struct SearchTurnsQueryData {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SearchTurnsRequest<'a> {
     pub project_id: &'a str,
+    pub project_root: Option<&'a Path>,
     pub mode: SearchMode,
     pub query: &'a str,
     pub include_tool_output: bool,
@@ -431,9 +440,24 @@ pub struct SessionBundleQueryData {
     pub provider: SourceKind,
     pub session_id: String,
     pub view: SessionBundleView,
+    pub turn_limit: u64,
+    pub turn_offset: u64,
+    pub turns_has_more: bool,
     pub session: SessionSummary,
     pub turns: Vec<TurnDetail>,
     pub session_files: SessionFilesQueryData,
+}
+
+/// Collects the supported filters for one composite session bundle query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionBundleQueryRequest<'a> {
+    pub project_id: &'a str,
+    pub provider: SourceKind,
+    pub session_id: &'a str,
+    pub project_root: Option<&'a Path>,
+    pub view: SessionBundleView,
+    pub turn_limit: usize,
+    pub turn_offset: usize,
 }
 
 /// Stores one turn-detail projection and enrichment configuration.

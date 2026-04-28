@@ -222,15 +222,18 @@ const TOUCHED_SESSION_CANDIDATE_BATCH_ROWS: usize = if cfg!(test) { 2 } else { 2
 
 const RESOLVE_SESSIONS_SQL: &str = "
     SELECT DISTINCT
+        project_id,
         provider,
         session_id
     FROM sessions
-    WHERE (?1 IS NULL OR provider = ?1)
-        AND session_id LIKE ?2 || '%' COLLATE NOCASE
+    WHERE (?1 IS NULL OR project_id = ?1)
+        AND (?2 IS NULL OR provider = ?2)
+        AND session_id LIKE ?3 || '%' COLLATE NOCASE
     ORDER BY
+        project_id ASC,
         provider ASC,
         session_id ASC
-    LIMIT ?3
+    LIMIT ?4
 ";
 
 const PROJECT_SESSION_ID_SQL: &str = "
@@ -311,6 +314,18 @@ type RawTurnSummaryRow = (
     i64,
     i64,
 );
+
+/// Collects the filters for one low-level session-turn summary SQL query.
+#[derive(Debug, Clone, Copy)]
+struct TurnSummaryQuery<'a> {
+    project_id: &'a str,
+    provider: SourceKind,
+    session_id: &'a str,
+    since: Option<&'a str>,
+    until: Option<&'a str>,
+    limit: usize,
+    offset: usize,
+}
 
 /// Returns the shared session-turn summary SQL used by every session-scoped list query.
 fn session_turns_sql() -> &'static str {
@@ -445,7 +460,7 @@ pub fn query_project_turns(
     build_turns_query(&connection, request)
 }
 
-/// Resolves one full session id or prefix into deterministic provider/session matches.
+/// Resolves one full session id or prefix into deterministic project/provider/session matches.
 pub fn query_resolve_sessions(
     index_db_path: &Path,
     request: ResolveSessionQueryRequest<'_>,
@@ -511,9 +526,16 @@ fn build_resolve_sessions_query(
         .prepare(RESOLVE_SESSIONS_SQL)
         .context("failed to prepare resolve-session query")?;
     let rows = statement
-        .query_map(params![provider, request.query, limit], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
+        .query_map(
+            params![request.project_id, provider, request.query, limit],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
         .context("failed to query session resolution matches")?
         .collect::<rusqlite::Result<Vec<_>>>()
         .context("failed to read session resolution rows")?;
@@ -521,8 +543,9 @@ fn build_resolve_sessions_query(
     let matches = rows
         .into_iter()
         .take(request.limit)
-        .map(|(provider, session_id)| -> Result<_> {
+        .map(|(project_id, provider, session_id)| -> Result<_> {
             Ok(ResolvedSessionMatch {
+                project_id,
                 provider: parse_provider(&provider)?,
                 session_id,
             })
@@ -542,6 +565,24 @@ fn build_turns_query(
     request: TurnsQueryRequest<'_>,
 ) -> Result<TurnsQueryData> {
     let project_id = request.project_id;
+    let page_limit = request
+        .limit
+        .checked_add(1)
+        .context("query limit exceeds usize range")?;
+    let mut turns = query_session_turn_summaries(
+        connection,
+        TurnSummaryQuery {
+            project_id,
+            provider: request.provider,
+            session_id: request.session_id,
+            since: request.since,
+            until: request.until,
+            limit: page_limit,
+            offset: request.offset,
+        },
+    )?;
+    let has_more = turns.len() > request.limit;
+    turns.truncate(request.limit);
     Ok(TurnsQueryData {
         project_id: project_id.to_owned(),
         provider: request.provider,
@@ -549,14 +590,10 @@ fn build_turns_query(
         since: request.since.map(str::to_owned),
         until: request.until.map(str::to_owned),
         view: request.view,
-        turns: query_session_turn_summaries(
-            connection,
-            project_id,
-            request.provider,
-            request.session_id,
-            request.since,
-            request.until,
-        )?,
+        limit: u64::try_from(request.limit).context("query limit exceeds u64 range")?,
+        offset: u64::try_from(request.offset).context("query offset exceeds u64 range")?,
+        has_more,
+        turns,
     })
 }
 
@@ -740,23 +777,24 @@ fn parse_edited_files_json(value: &str) -> Result<Vec<String>> {
 /// Queries the indexed turns for one provider session.
 fn query_session_turn_summaries(
     connection: &Connection,
-    project_id: &str,
-    provider: SourceKind,
-    session_id: &str,
-    since: Option<&str>,
-    until: Option<&str>,
+    request: TurnSummaryQuery<'_>,
 ) -> Result<Vec<TurnSummary>> {
+    let limit = i64::try_from(request.limit).context("query limit exceeds SQLite INTEGER range")?;
+    let offset =
+        i64::try_from(request.offset).context("query offset exceeds SQLite INTEGER range")?;
     let mut statement = connection
         .prepare(session_turns_sql())
         .context("failed to prepare indexed turn query")?;
     let rows = statement
         .query_map(
             (
-                project_id,
-                provider.directory_name(),
-                session_id,
-                since,
-                until,
+                request.project_id,
+                request.provider.directory_name(),
+                request.session_id,
+                request.since,
+                request.until,
+                limit,
+                offset,
             ),
             read_turn_summary_row,
         )
@@ -797,6 +835,7 @@ fn build_session_turns_sql() -> String {
         AND (?4 IS NULL OR julianday(started_at) >= julianday(?4))
         AND (?5 IS NULL OR julianday(started_at) < julianday(?5))
     ORDER BY turn_ordinal ASC
+    LIMIT ?6 OFFSET ?7
 ",
         select_list = build_turn_summary_select_list(""),
     )

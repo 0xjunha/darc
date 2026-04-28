@@ -8,8 +8,9 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use darc_core::query::{
     DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, FilesQueryRequest, QueryProtocolError,
     ResolveSessionQueryRequest, ResolvedQueryProject, ResolvedSessionMatch, SearchMode,
-    SearchTurnsRequest, SessionBundleView, TurnDetailOptions, TurnsQueryRequest, TurnsView,
-    query_files_for_project, query_project_insight_report_for_project, query_resolve_sessions,
+    SearchTurnsRequest, SessionBundleQueryRequest, SessionBundleView, TurnDetailOptions,
+    TurnsQueryRequest, TurnsView, query_files_for_project,
+    query_project_insight_report_for_project, query_resolve_sessions,
     query_search_turns_for_project, query_session_bundle_for_project,
     query_session_files_for_project, query_sessions_for_project, query_turn_for_project,
     query_turn_insight_report_for_project, query_turns_for_project, query_workspace,
@@ -218,7 +219,7 @@ struct QueryWorkspaceArgs {
     json: bool,
 }
 
-/// Resolves one full session id or UUID prefix into canonical provider/session matches.
+/// Resolves one full session id or UUID prefix into canonical project/provider/session matches.
 #[derive(Debug, Args)]
 struct QueryResolveSessionArgs {
     #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
@@ -226,6 +227,12 @@ struct QueryResolveSessionArgs {
 
     #[arg(help = "Resolve this full UUID or UUID prefix")]
     input: String,
+
+    #[arg(
+        long = "project-id",
+        help = "Restrict matches to this configured project id"
+    )]
+    project_id: Option<String>,
 
     #[arg(long, value_enum, help = "Restrict matches to this provider")]
     provider: Option<ProviderArg>,
@@ -329,6 +336,12 @@ struct QueryTurnsArgs {
         help = "Return full turn summaries or a compact one-line skim"
     )]
     view: TurnListViewArg,
+
+    #[arg(long, default_value_t = 50, help = "Maximum turns to return")]
+    limit: usize,
+
+    #[arg(long, default_value_t = 0, help = "Number of turns to skip")]
+    offset: usize,
 
     #[arg(
         long,
@@ -441,6 +454,20 @@ struct QuerySessionBundleArgs {
     view: ViewArg,
 
     #[arg(
+        long = "turn-limit",
+        default_value_t = 50,
+        help = "Maximum turn details to return"
+    )]
+    turn_limit: usize,
+
+    #[arg(
+        long = "turn-offset",
+        default_value_t = 0,
+        help = "Number of turn details to skip"
+    )]
+    turn_offset: usize,
+
+    #[arg(
         long,
         required = true,
         help = "Required. Emit the stable machine-readable JSON envelope on stdout"
@@ -529,7 +556,7 @@ struct QuerySearchTurnsArgs {
     #[arg(
         long,
         allow_hyphen_values = true,
-        help = "Search for this text or path fragment"
+        help = "Search for this text, file glob, or path fragment"
     )]
     query: String,
 
@@ -624,11 +651,12 @@ struct QueryProjectInsightsArgs {
     project_id: Option<String>,
 
     #[arg(
-        long,
+        long = "turn-limit",
+        alias = "limit",
         default_value_t = 1000,
         help = "Maximum indexed turns to inspect"
     )]
-    limit: usize,
+    turn_limit: usize,
 
     #[arg(
         long,
@@ -708,6 +736,7 @@ enum SearchModeArg {
     Regex,
     FileName,
     FilePath,
+    PathFragment,
 }
 
 /// Represents the supported turn-list projections for machine-readable turn queries.
@@ -800,6 +829,7 @@ fn run_query_resolve_session(args: QueryResolveSessionArgs) -> Result<()> {
         Some(args.root),
         ResolveSessionQueryRequest {
             query: &args.input,
+            project_id: args.project_id.as_deref(),
             provider: args.provider.map(provider_arg_to_source_kind),
             limit: DEFAULT_RESOLVE_SESSION_MATCH_LIMIT,
         },
@@ -910,9 +940,15 @@ fn run_query_session_bundle(args: QuerySessionBundleArgs) -> Result<()> {
     )?;
     let data = query_session_bundle_for_project(
         &project,
-        provider_arg_to_source_kind(args.provider),
-        &session_id,
-        view_arg_to_session_bundle_view(args.view),
+        SessionBundleQueryRequest {
+            project_id: "",
+            provider: provider_arg_to_source_kind(args.provider),
+            session_id: &session_id,
+            project_root: None,
+            view: view_arg_to_session_bundle_view(args.view),
+            turn_limit: args.turn_limit,
+            turn_offset: args.turn_offset,
+        },
     )?;
     print_json_envelope("darc.query.session_bundle.v1", &data)
 }
@@ -946,6 +982,8 @@ fn run_query_turns(args: QueryTurnsArgs) -> Result<()> {
             since: since.as_deref(),
             until: until.as_deref(),
             view: turn_list_view_arg_to_view(args.view),
+            limit: args.limit,
+            offset: args.offset,
         },
     )?;
     print_turns_query_envelope(&data)
@@ -1011,6 +1049,7 @@ fn run_query_search_turns(args: QuerySearchTurnsArgs) -> Result<()> {
         &project,
         SearchTurnsRequest {
             project_id: "",
+            project_root: None,
             mode,
             query: &args.query,
             include_tool_output: args.include_tool_output,
@@ -1045,7 +1084,7 @@ fn run_query_workspace_insights(args: QueryWorkspaceInsightsArgs) -> Result<()> 
 fn run_query_project_insights(args: QueryProjectInsightsArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
-    let data = query_project_insight_report_for_project(&project, args.limit)?;
+    let data = query_project_insight_report_for_project(&project, args.turn_limit)?;
     print_json_envelope("darc.query.insights.project.v1", &data)
 }
 
@@ -1203,6 +1242,7 @@ fn search_mode_arg_to_search_mode(mode: SearchModeArg) -> SearchMode {
         SearchModeArg::Regex => SearchMode::Regex,
         SearchModeArg::FileName => SearchMode::FileName,
         SearchModeArg::FilePath => SearchMode::FilePath,
+        SearchModeArg::PathFragment => SearchMode::PathFragment,
     }
 }
 
@@ -1233,6 +1273,9 @@ struct TurnsOnelineQueryData {
     since: Option<String>,
     until: Option<String>,
     view: TurnsView,
+    limit: u64,
+    offset: u64,
+    has_more: bool,
     turns: Vec<TurnsOnelineTurnRow>,
 }
 
@@ -1246,6 +1289,9 @@ impl TurnsOnelineQueryData {
             since: data.since.clone(),
             until: data.until.clone(),
             view: data.view,
+            limit: data.limit,
+            offset: data.offset,
+            has_more: data.has_more,
             turns: data
                 .turns
                 .iter()

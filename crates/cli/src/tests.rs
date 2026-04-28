@@ -222,6 +222,8 @@ fn parses_query_resolve_session_command() {
         "query",
         "resolve-session",
         "11111111",
+        "--project-id",
+        "repo-abc123",
         "--provider",
         "codex",
         "--pick-one",
@@ -233,12 +235,14 @@ fn parses_query_resolve_session_command() {
         Commands::Query(super::QueryArgs {
             command: QueryCommands::ResolveSession(super::QueryResolveSessionArgs {
                 input,
+                project_id,
                 provider,
                 pick_one,
                 json,
                 ..
             }),
         }) if input == "11111111"
+            && project_id.as_deref() == Some("repo-abc123")
             && matches!(provider, Some(super::ProviderArg::Codex))
             && pick_one
             && json
@@ -518,6 +522,8 @@ fn parses_query_session_bundle_command() {
                 provider,
                 session_id,
                 view,
+                turn_limit,
+                turn_offset,
                 json,
                 ..
             }),
@@ -525,6 +531,8 @@ fn parses_query_session_bundle_command() {
             && matches!(provider, super::ProviderArg::Codex)
             && session_id == "session-1"
             && matches!(view, super::ViewArg::Narrative)
+            && turn_limit == 50
+            && turn_offset == 0
             && json
     ));
 }
@@ -552,6 +560,8 @@ fn parses_query_turns_session_scope_command() {
                 provider,
                 session_id,
                 view,
+                limit,
+                offset,
                 json,
                 ..
             }),
@@ -559,6 +569,8 @@ fn parses_query_turns_session_scope_command() {
             && matches!(provider, super::ProviderArg::Codex)
             && session_id == "session-1"
             && matches!(view, super::TurnListViewArg::Full)
+            && limit == 50
+            && offset == 0
             && json
     ));
 }
@@ -709,6 +721,7 @@ fn query_search_turns_help_mentions_tool_output_opt_in() {
 
     assert!(help.contains("--include-tool-output"));
     assert!(help.contains("literal and regex"));
+    assert!(help.contains("path-fragment"));
 }
 
 #[test]

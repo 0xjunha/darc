@@ -2,13 +2,18 @@ use std::{collections::BTreeSet, ops::Range, path::Path};
 
 use anyhow::{Context, Result, bail};
 use darc_paths::SourceKind;
+use glob::{MatchOptions, Pattern};
 use regex::{Regex, RegexBuilder};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, params, params_from_iter, types::Value};
 
 use super::{
     SearchMode, SearchTurnHit, SearchTurnMatch, SearchTurnsQueryData, SearchTurnsRequest,
     open_existing_index_database, parse_provider, parse_turn_status, preview_text,
     sql_count_to_u64,
+};
+use crate::query::files::{
+    PathQuerySelector, build_path_query_selector, glob_match_options, normalize_query_path_pattern,
+    path_matches_glob,
 };
 
 const KEYWORD_SEARCH_SQL: &str = "
@@ -179,6 +184,7 @@ const LITERAL_TURN_EVIDENCE_ROWS_SQL: &str = "
 ";
 
 const EVIDENCE_SEARCH_TURN_BATCH_ROWS: usize = 1_000;
+const FILE_PATH_GLOB_TURN_BATCH_ROWS: usize = 1_000;
 const MAX_EVIDENCE_MATCHES_PER_TURN: usize = 20;
 const MAX_REGEX_QUERY_CHARS: usize = 1_024;
 const REGEX_SIZE_LIMIT_BYTES: usize = 1_000_000;
@@ -210,6 +216,21 @@ struct FileSearchRow {
     completed_at: Option<String>,
     status: darc_rollout::model::NormalizedTurnStatus,
     user_preview: String,
+    matched_path: String,
+}
+
+/// Stores one file-access row that still needs glob verification in Rust.
+#[derive(Debug, Clone)]
+struct FilePathGlobRow {
+    provider: SourceKind,
+    session_id: String,
+    turn_ordinal: u64,
+    started_at: String,
+    completed_at: Option<String>,
+    status: darc_rollout::model::NormalizedTurnStatus,
+    user_preview: String,
+    repo_relative_path: Option<String>,
+    path: String,
     matched_path: String,
 }
 
@@ -245,6 +266,7 @@ struct SearchScope<'a> {
     session_id: Option<&'a str>,
     since: Option<&'a str>,
     until: Option<&'a str>,
+    project_root: Option<&'a Path>,
 }
 
 /// Stores one keyword search request after CLI/project resolution.
@@ -274,6 +296,21 @@ struct FileSearchRequest<'a> {
     query: &'a str,
     kind: FileSearchKind,
     desired_hit_count: usize,
+}
+
+/// Stores one glob path-search request after CLI/project resolution.
+#[derive(Debug, Clone, Copy)]
+struct FilePathGlobSearchRequest<'a> {
+    scope: SearchScope<'a>,
+    query: &'a str,
+    desired_hit_count: usize,
+}
+
+/// Stores one SQL candidate-turn page for glob path verification.
+#[derive(Debug, Clone)]
+struct FilePathGlobTurnBatch {
+    rows: Vec<FilePathGlobRow>,
+    candidate_turn_count: usize,
 }
 
 /// Stores one candidate turn before scanning its evidence rows.
@@ -343,6 +380,7 @@ fn build_search_turns(
         session_id,
         since,
         until,
+        project_root: request.project_root,
     };
 
     let hits = match mode {
@@ -387,7 +425,7 @@ fn build_search_turns(
                 offset,
             },
         )?,
-        SearchMode::FileName | SearchMode::FilePath => {
+        SearchMode::FileName | SearchMode::PathFragment => {
             let desired_hit_count = offset
                 .checked_add(limit)
                 .and_then(|value| value.checked_add(1))
@@ -399,11 +437,28 @@ fn build_search_turns(
                     query,
                     kind: match mode {
                         SearchMode::FileName => FileSearchKind::Name,
-                        SearchMode::FilePath => FileSearchKind::Path,
-                        SearchMode::Keyword | SearchMode::Literal | SearchMode::Regex => {
+                        SearchMode::PathFragment => FileSearchKind::Path,
+                        SearchMode::Keyword
+                        | SearchMode::Literal
+                        | SearchMode::Regex
+                        | SearchMode::FilePath => {
                             unreachable!("handled above")
                         }
                     },
+                    desired_hit_count,
+                },
+            )?
+        }
+        SearchMode::FilePath => {
+            let desired_hit_count = offset
+                .checked_add(limit)
+                .and_then(|value| value.checked_add(1))
+                .context("search pagination exceeds usize range")?;
+            query_file_path_glob_hits(
+                connection,
+                FilePathGlobSearchRequest {
+                    scope,
+                    query,
                     desired_hit_count,
                 },
             )?
@@ -453,7 +508,10 @@ fn search_query_for_mode(mode: SearchMode, query: &str) -> Result<&str> {
             }
             Ok(query)
         }
-        SearchMode::Keyword | SearchMode::FileName | SearchMode::FilePath => {
+        SearchMode::Keyword
+        | SearchMode::FileName
+        | SearchMode::FilePath
+        | SearchMode::PathFragment => {
             let query = query.trim();
             if query.is_empty() {
                 bail!("search query must not be empty");
@@ -549,7 +607,10 @@ fn query_evidence_hits(
             let matcher = build_regex_matcher(request.query)?;
             query_regex_evidence_hits_by_turn(connection, request, &matcher)
         }
-        SearchMode::Keyword | SearchMode::FileName | SearchMode::FilePath => {
+        SearchMode::Keyword
+        | SearchMode::FileName
+        | SearchMode::FilePath
+        | SearchMode::PathFragment => {
             unreachable!("only exact evidence modes use evidence search")
         }
     }
@@ -947,6 +1008,319 @@ fn evidence_snippet(text: &str, matched: Range<usize>) -> String {
     snippet
 }
 
+/// Queries path-glob file hits and verifies candidates with the shared path matcher.
+fn query_file_path_glob_hits(
+    connection: &Connection,
+    request: FilePathGlobSearchRequest<'_>,
+) -> Result<Vec<SearchTurnHit>> {
+    let desired_hit_count = request.desired_hit_count;
+    if desired_hit_count == 0 {
+        return Ok(Vec::new());
+    }
+
+    let scope = request.scope;
+    let query = normalize_query_path_pattern(scope.project_root, request.query);
+    let pattern =
+        Pattern::new(&query).with_context(|| format!("invalid file-path glob `{query}`"))?;
+    let path_selector = build_path_query_selector(scope.project_root, &query);
+    let match_options = glob_match_options();
+    let mut hits = Vec::<SearchTurnHit>::new();
+    let mut candidate_offset = 0usize;
+
+    loop {
+        let batch = query_file_path_glob_turn_batch(
+            connection,
+            scope,
+            &path_selector,
+            FILE_PATH_GLOB_TURN_BATCH_ROWS,
+            candidate_offset,
+        )?;
+        if batch.candidate_turn_count == 0 {
+            break;
+        }
+
+        hits.extend(group_file_path_glob_rows(
+            batch.rows,
+            &pattern,
+            &match_options,
+            scope.project_root,
+        ));
+        if hits.len() >= desired_hit_count {
+            break;
+        }
+        if batch.candidate_turn_count < FILE_PATH_GLOB_TURN_BATCH_ROWS {
+            break;
+        }
+        candidate_offset = candidate_offset
+            .checked_add(batch.candidate_turn_count)
+            .context("search candidate offset exceeds usize range")?;
+    }
+
+    Ok(hits)
+}
+
+/// Queries one page of candidate turns and their path rows for glob verification.
+fn query_file_path_glob_turn_batch(
+    connection: &Connection,
+    scope: SearchScope<'_>,
+    path_selector: &PathQuerySelector,
+    limit: usize,
+    offset: usize,
+) -> Result<FilePathGlobTurnBatch> {
+    if matches!(path_selector, PathQuerySelector::Impossible) {
+        return Ok(FilePathGlobTurnBatch {
+            rows: Vec::new(),
+            candidate_turn_count: 0,
+        });
+    }
+
+    let sql = build_file_path_glob_turn_batch_sql(path_selector);
+    let limit = i64::try_from(limit).context("search limit exceeds SQLite INTEGER range")?;
+    let offset = i64::try_from(offset).context("search offset exceeds SQLite INTEGER range")?;
+    let mut params = vec![
+        Value::Text(scope.project_id.to_owned()),
+        optional_text_value(scope.provider),
+        optional_text_value(scope.session_id),
+        optional_text_value(scope.since),
+        optional_text_value(scope.until),
+        Value::Integer(limit),
+        Value::Integer(offset),
+    ];
+    if matches!(
+        path_selector,
+        PathQuerySelector::Exact { .. } | PathQuerySelector::Prefix { .. }
+    ) {
+        params.extend(path_selector.params());
+    }
+
+    let mut statement = connection
+        .prepare(&sql)
+        .context("failed to prepare file-path glob search query")?;
+    let rows = statement
+        .query_map(params_from_iter(params), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, Option<String>>(7)?,
+                row.get::<_, String>(8)?,
+                row.get::<_, String>(9)?,
+            ))
+        })
+        .context("failed to query file-path glob search rows")?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed to read file-path glob search rows")?;
+
+    let mut candidate_turns = BTreeSet::<SearchTurnKey>::new();
+    let rows = rows
+        .into_iter()
+        .map(
+            |(
+                provider,
+                session_id,
+                turn_ordinal,
+                started_at,
+                completed_at,
+                status,
+                user_message,
+                repo_relative_path,
+                path,
+                matched_path,
+            )| {
+                let provider = parse_provider(&provider)?;
+                let turn_ordinal = sql_count_to_u64(turn_ordinal)?;
+                candidate_turns.insert((provider, session_id.clone(), turn_ordinal));
+                Ok(FilePathGlobRow {
+                    provider,
+                    session_id,
+                    turn_ordinal,
+                    started_at,
+                    completed_at,
+                    status: parse_turn_status(&status)?,
+                    user_preview: preview_text(&user_message),
+                    repo_relative_path,
+                    path,
+                    matched_path,
+                })
+            },
+        )
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(FilePathGlobTurnBatch {
+        rows,
+        candidate_turn_count: candidate_turns.len(),
+    })
+}
+
+/// Converts optional string filters into SQLite values for dynamic query assembly.
+fn optional_text_value(value: Option<&str>) -> Value {
+    value.map_or(Value::Null, |value| Value::Text(value.to_owned()))
+}
+
+/// Groups glob-verified path rows back into turn hits.
+fn group_file_path_glob_rows(
+    rows: Vec<FilePathGlobRow>,
+    pattern: &Pattern,
+    options: &MatchOptions,
+    project_root: Option<&Path>,
+) -> Vec<SearchTurnHit> {
+    let mut grouped = Vec::<SearchTurnHit>::new();
+    let mut current = None::<FileSearchHitAccumulator>;
+
+    for row in rows {
+        let is_same_turn = current.as_ref().is_some_and(|accumulator| {
+            accumulator.provider == row.provider
+                && accumulator.session_id == row.session_id
+                && accumulator.turn_ordinal == row.turn_ordinal
+        });
+        if !is_same_turn {
+            push_glob_hit_if_matched(&mut grouped, current.take());
+            current = Some(start_file_path_glob_hit(&row));
+        }
+
+        if let Some(accumulator) = current.as_mut() {
+            record_glob_path_match(accumulator, row, pattern, options, project_root);
+        }
+    }
+
+    push_glob_hit_if_matched(&mut grouped, current);
+    grouped
+}
+
+/// Starts one grouped glob path-search hit without assuming the first row matches.
+fn start_file_path_glob_hit(row: &FilePathGlobRow) -> FileSearchHitAccumulator {
+    FileSearchHitAccumulator {
+        provider: row.provider,
+        session_id: row.session_id.clone(),
+        turn_ordinal: row.turn_ordinal,
+        started_at: row.started_at.clone(),
+        completed_at: row.completed_at.clone(),
+        status: row.status,
+        user_preview: row.user_preview.clone(),
+        matched_paths: BTreeSet::new(),
+    }
+}
+
+/// Records one path match when the shared glob matcher accepts the candidate row.
+fn record_glob_path_match(
+    accumulator: &mut FileSearchHitAccumulator,
+    row: FilePathGlobRow,
+    pattern: &Pattern,
+    options: &MatchOptions,
+    project_root: Option<&Path>,
+) {
+    if path_matches_glob(
+        pattern,
+        options,
+        project_root,
+        row.repo_relative_path.as_deref(),
+        &row.path,
+    ) {
+        accumulator.matched_paths.insert(row.matched_path);
+    }
+}
+
+/// Pushes a grouped glob hit only when at least one path survived glob verification.
+fn push_glob_hit_if_matched(
+    grouped: &mut Vec<SearchTurnHit>,
+    accumulator: Option<FileSearchHitAccumulator>,
+) {
+    if let Some(accumulator) = accumulator.filter(|value| !value.matched_paths.is_empty()) {
+        grouped.push(finalize_file_search_hit(accumulator));
+    }
+}
+
+/// Builds the SQL for one candidate-turn page used by glob path search.
+fn build_file_path_glob_turn_batch_sql(path_selector: &PathQuerySelector) -> String {
+    let path_filter = match path_selector {
+        PathQuerySelector::Exact { .. } | PathQuerySelector::Prefix { .. } => {
+            format!(
+                "\n                AND {}",
+                path_selector.sql_predicate(8, 9)
+            )
+        }
+        PathQuerySelector::Unbounded => String::new(),
+        PathQuerySelector::Impossible => unreachable!("impossible selector is handled by caller"),
+    };
+    let final_path_filter = match path_selector {
+        PathQuerySelector::Exact { .. } | PathQuerySelector::Prefix { .. } => {
+            format!("\n            AND {}", path_selector.sql_predicate(8, 9))
+        }
+        PathQuerySelector::Unbounded => String::new(),
+        PathQuerySelector::Impossible => unreachable!("impossible selector is handled by caller"),
+    };
+    let matched_path = "COALESCE(file_accesses.repo_relative_path, file_accesses.path)";
+
+    format!(
+        "
+        WITH candidate_turns AS (
+            SELECT
+                turns.provider,
+                turns.session_id,
+                turns.turn_ordinal,
+                turns.started_at,
+                turns.completed_at,
+                turns.status,
+                turns.user_message
+            FROM file_accesses
+            INNER JOIN turns
+                ON turns.project_id = file_accesses.project_id
+                AND turns.provider = file_accesses.provider
+                AND turns.session_id = file_accesses.session_id
+                AND turns.turn_ordinal = file_accesses.turn_ordinal
+            WHERE file_accesses.project_id = ?1
+                AND (?2 IS NULL OR file_accesses.provider = ?2)
+                AND (?3 IS NULL OR file_accesses.session_id = ?3)
+                AND (?4 IS NULL OR julianday(turns.started_at) >= julianday(?4))
+                AND (?5 IS NULL OR julianday(turns.started_at) < julianday(?5))
+                AND NULLIF(TRIM(file_accesses.path), '') IS NOT NULL{path_filter}
+            GROUP BY
+                turns.provider,
+                turns.session_id,
+                turns.turn_ordinal,
+                turns.started_at,
+                turns.completed_at,
+                turns.status,
+                turns.user_message
+            ORDER BY
+                turns.started_at DESC,
+                turns.provider ASC,
+                turns.session_id ASC,
+                turns.turn_ordinal ASC
+            LIMIT ?6 OFFSET ?7
+        )
+        SELECT
+            candidate_turns.provider,
+            candidate_turns.session_id,
+            candidate_turns.turn_ordinal,
+            candidate_turns.started_at,
+            candidate_turns.completed_at,
+            candidate_turns.status,
+            candidate_turns.user_message,
+            file_accesses.repo_relative_path,
+            file_accesses.path,
+            {matched_path} AS matched_path
+        FROM candidate_turns
+        INNER JOIN file_accesses
+            ON file_accesses.project_id = ?1
+            AND file_accesses.provider = candidate_turns.provider
+            AND file_accesses.session_id = candidate_turns.session_id
+            AND file_accesses.turn_ordinal = candidate_turns.turn_ordinal
+        WHERE NULLIF(TRIM(file_accesses.path), '') IS NOT NULL{final_path_filter}
+        ORDER BY
+            candidate_turns.started_at DESC,
+            candidate_turns.provider ASC,
+            candidate_turns.session_id ASC,
+            candidate_turns.turn_ordinal ASC,
+            matched_path COLLATE NOCASE ASC
+        "
+    )
+}
+
 /// Queries staged file-search hits so exact and prefix matches rank before contains matches.
 fn query_file_hits(
     connection: &Connection,
@@ -1312,6 +1686,21 @@ pub(super) fn smoke_test_sql(connection: &Connection) -> Result<()> {
                 .prepare(&build_file_search_stage_sql(kind, stage))
                 .with_context(|| format!("failed to prepare {kind:?} {stage:?} search query"))?;
         }
+    }
+    for path_selector in [
+        PathQuerySelector::Exact {
+            relative: "src/lib.rs".to_owned(),
+            absolute: None,
+        },
+        PathQuerySelector::Prefix {
+            relative_like: "src/%".to_owned(),
+            absolute_like: None,
+        },
+        PathQuerySelector::Unbounded,
+    ] {
+        connection
+            .prepare(&build_file_path_glob_turn_batch_sql(&path_selector))
+            .context("failed to prepare file-path glob search query")?;
     }
     Ok(())
 }

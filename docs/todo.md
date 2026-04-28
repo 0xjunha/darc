@@ -66,7 +66,7 @@ Needed:
 
 Current state:
 
-- Exact and prefix file-name and file-path search already use the staged indexed path.
+- Exact and prefix file-name and path-fragment search already use the staged indexed path.
 - The final contains fallback still uses `LIKE '%...%'`.
 
 Needed:

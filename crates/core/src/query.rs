@@ -13,10 +13,10 @@ pub use darc_query::{
     ProjectInsights, ProjectSummary, ProjectTimeStat, ResolveSessionQueryData,
     ResolveSessionQueryRequest, ResolvedSessionMatch, RootAvailability, RootInfo, SearchMode,
     SearchTurnHit, SearchTurnMatch, SearchTurnsQueryData, SearchTurnsRequest,
-    SessionBundleQueryData, SessionBundleView, SessionFileSummary, SessionFilesQueryData,
-    SessionKind, SessionRuntimeStat, SessionSummary, SessionsQueryData, SessionsQueryRequest,
-    ShellCommandSummary, ToolUsageStat, TurnDetail, TurnDetailInsights, TurnDetailOptions,
-    TurnInsights, TurnSummary, TurnsQueryData, TurnsQueryRequest, TurnsView,
+    SessionBundleQueryData, SessionBundleQueryRequest, SessionBundleView, SessionFileSummary,
+    SessionFilesQueryData, SessionKind, SessionRuntimeStat, SessionSummary, SessionsQueryData,
+    SessionsQueryRequest, ShellCommandSummary, ToolUsageStat, TurnDetail, TurnDetailInsights,
+    TurnDetailOptions, TurnInsights, TurnSummary, TurnsQueryData, TurnsQueryRequest, TurnsView,
     WorkspaceDailyTimeStat, WorkspaceInsights, WorkspaceQueryData,
 };
 use darc_query::{
@@ -201,7 +201,7 @@ pub fn query_files(
     query_files_for_project(&project, request)
 }
 
-/// Resolves one full session id or UUID prefix across every indexed provider.
+/// Resolves one full session id or UUID prefix across indexed projects and providers.
 pub fn query_resolve_sessions(
     root: Option<PathBuf>,
     request: ResolveSessionQueryRequest<'_>,
@@ -271,31 +271,26 @@ pub fn query_session_files(
 /// Queries one composite session bundle for one already-resolved configured provider session.
 pub fn query_session_bundle_for_project(
     project: &ResolvedQueryProject,
-    provider: SourceKind,
-    session_id: &str,
-    view: SessionBundleView,
+    request: SessionBundleQueryRequest<'_>,
 ) -> Result<SessionBundleQueryData> {
     let context = &project.context;
     query_project_session_bundle(
         &context.root.database_path,
-        &context.project.id,
-        provider,
-        session_id,
-        Some(context.project.local_path.as_path()),
-        view,
+        SessionBundleQueryRequest {
+            project_id: &context.project.id,
+            project_root: Some(context.project.local_path.as_path()),
+            ..request
+        },
     )
 }
 
 /// Queries one composite session bundle for one configured provider session.
 pub fn query_session_bundle(
     root: Option<PathBuf>,
-    project_id: &str,
-    provider: SourceKind,
-    session_id: &str,
-    view: SessionBundleView,
+    request: SessionBundleQueryRequest<'_>,
 ) -> Result<SessionBundleQueryData> {
-    let project = resolve_query_project(root, Some(project_id))?;
-    query_session_bundle_for_project(&project, provider, session_id, view)
+    let project = resolve_query_project(root, Some(request.project_id))?;
+    query_session_bundle_for_project(&project, request)
 }
 
 /// Queries the turn-list payload for one already-resolved configured provider session.
@@ -411,6 +406,7 @@ pub fn query_search_turns_for_project(
         &context.root.database_path,
         SearchTurnsRequest {
             project_id: &context.project.id,
+            project_root: Some(context.project.local_path.as_path()),
             ..request
         },
     )
@@ -581,14 +577,19 @@ impl QueryProtocolError {
             .map(|candidate| candidate.provider)
             .collect::<BTreeSet<_>>()
             .len();
+        let project_count = matches
+            .iter()
+            .map(|candidate| candidate.project_id.as_str())
+            .collect::<BTreeSet<_>>()
+            .len();
         let match_count = matches.len();
         let message = if truncated {
             format!(
-                "Prefix `{query}` matched at least {match_count} sessions across {provider_count} providers. Use a longer prefix or pass --provider."
+                "Prefix `{query}` matched at least {match_count} sessions across {project_count} projects and {provider_count} providers. Use a longer prefix or pass --project-id or --provider."
             )
         } else {
             format!(
-                "Prefix `{query}` matched {match_count} sessions across {provider_count} providers. Use a longer prefix or pass --provider."
+                "Prefix `{query}` matched {match_count} sessions across {project_count} projects and {provider_count} providers. Use a longer prefix or pass --project-id or --provider."
             )
         };
         Self::AmbiguousSession {

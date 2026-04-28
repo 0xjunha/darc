@@ -69,7 +69,7 @@ struct FileSessionAccumulator {
 
 /// Stores the supported path-selector plans used to narrow file-access queries in SQL.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum PathQuerySelector {
+pub(crate) enum PathQuerySelector {
     Exact {
         relative: String,
         absolute: Option<String>,
@@ -111,7 +111,7 @@ type TouchedPathFileRow = (SourceKind, String, Option<String>, String);
 
 impl PathQuerySelector {
     /// Returns the vetted SQL predicate for one path-selector plan.
-    fn sql_predicate(&self, relative_param: usize, absolute_param: usize) -> String {
+    pub(crate) fn sql_predicate(&self, relative_param: usize, absolute_param: usize) -> String {
         match self {
             Self::Exact { .. } => format!(
                 "(
@@ -134,7 +134,7 @@ impl PathQuerySelector {
     }
 
     /// Returns the SQLite parameter tail for one path-selector plan.
-    fn params(&self) -> Vec<Value> {
+    pub(crate) fn params(&self) -> Vec<Value> {
         match self {
             Self::Exact { relative, absolute } => {
                 vec![
@@ -854,7 +854,10 @@ fn normalize_project_scoped_relative_path(path: &str) -> Option<String> {
 }
 
 /// Builds the narrowest SQL selector Darc can derive from one normalized query pattern.
-fn build_path_query_selector(project_root: Option<&Path>, pattern: &str) -> PathQuerySelector {
+pub(crate) fn build_path_query_selector(
+    project_root: Option<&Path>,
+    pattern: &str,
+) -> PathQuerySelector {
     if pattern.is_empty() {
         return PathQuerySelector::Impossible;
     }

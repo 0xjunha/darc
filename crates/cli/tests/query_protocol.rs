@@ -510,6 +510,9 @@ fn session_bundle_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["provider"], "codex");
     assert_eq!(value["data"]["session_id"], PRIMARY_SESSION_ID);
     assert_eq!(value["data"]["view"], "narrative");
+    assert_eq!(value["data"]["turn_limit"], 50);
+    assert_eq!(value["data"]["turn_offset"], 0);
+    assert_eq!(value["data"]["turns_has_more"], false);
     assert_eq!(value["data"]["session"]["session_id"], PRIMARY_SESSION_ID);
     assert_eq!(value["data"]["turns"][0]["turn_ordinal"], 0);
     assert_eq!(value["data"]["turns"][0]["steps"][0]["type"], "tool_call");
@@ -799,6 +802,9 @@ fn turns_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["since"], Value::Null);
     assert_eq!(value["data"]["until"], Value::Null);
     assert_eq!(value["data"]["view"], "full");
+    assert_eq!(value["data"]["limit"], 50);
+    assert_eq!(value["data"]["offset"], 0);
+    assert_eq!(value["data"]["has_more"], false);
     assert_eq!(value["data"]["turns"][0]["turn_id"], "turn-1");
     assert_eq!(value["data"]["turns"][0]["step_count"], 2);
     assert_eq!(value["data"]["turns"][0]["tool_call_count"], 1);
@@ -935,6 +941,9 @@ fn turns_query_applies_since_and_until_filters_in_session_mode() -> Result<()> {
     let value = parse_json(&output.stdout, "stdout")?;
     assert_eq!(value["data"]["since"], "2026-04-06T10:00:00Z");
     assert_eq!(value["data"]["until"], "2026-04-06T10:03:00Z");
+    assert_eq!(value["data"]["limit"], 50);
+    assert_eq!(value["data"]["offset"], 0);
+    assert_eq!(value["data"]["has_more"], false);
     assert_eq!(
         value["data"]["turns"]
             .as_array()
@@ -943,6 +952,39 @@ fn turns_query_applies_since_and_until_filters_in_session_mode() -> Result<()> {
             .map(|turn| turn["turn_ordinal"].as_u64().unwrap())
             .collect::<Vec<_>>(),
         vec![0, 2]
+    );
+
+    let page_output = run_darc([
+        "query",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--provider",
+        "codex",
+        "--session-id",
+        PRIMARY_SESSION_ID,
+        "--limit",
+        "2",
+        "--offset",
+        "1",
+        "--json",
+    ])?;
+
+    assert!(page_output.status.success());
+    let page_value = parse_json(&page_output.stdout, "stdout")?;
+    assert_eq!(page_value["data"]["limit"], 2);
+    assert_eq!(page_value["data"]["offset"], 1);
+    assert_eq!(page_value["data"]["has_more"], true);
+    assert_eq!(
+        page_value["data"]["turns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|turn| turn["turn_ordinal"].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![1, 2]
     );
 
     remove_root(&root)?;
@@ -986,6 +1028,9 @@ fn turns_query_oneline_view_emits_compact_rows() -> Result<()> {
     let value = parse_json(&oneline_output.stdout, "stdout")?;
     assert_eq!(value["schema"], "darc.query.turns.v1");
     assert_eq!(value["data"]["view"], "oneline");
+    assert_eq!(value["data"]["limit"], 50);
+    assert_eq!(value["data"]["offset"], 0);
+    assert_eq!(value["data"]["has_more"], false);
     assert_eq!(value["data"]["turns"][0]["turn_ordinal"], 0);
     assert_eq!(value["data"]["turns"][0]["role"], "user");
     assert_eq!(
@@ -1408,6 +1453,29 @@ fn search_turns_query_emits_file_search_envelope() -> Result<()> {
         "README.md"
     );
 
+    let fragment_output = run_darc([
+        "query",
+        "search",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--mode",
+        "path-fragment",
+        "--query",
+        "README",
+        "--json",
+    ])?;
+
+    assert!(fragment_output.status.success());
+    let fragment_value = parse_json(&fragment_output.stdout, "stdout")?;
+    assert_eq!(fragment_value["data"]["mode"], "path_fragment");
+    assert_eq!(
+        fragment_value["data"]["hits"][0]["matched_paths"][0],
+        "README.md"
+    );
+
     remove_root(&root)?;
     Ok(())
 }
@@ -1448,7 +1516,7 @@ fn project_insights_query_emits_success_envelope() -> Result<()> {
         root.to_string_lossy().as_ref(),
         "--project-id",
         "repo-abc123",
-        "--limit",
+        "--turn-limit",
         "1000",
         "--json",
     ])?;
@@ -1795,6 +1863,7 @@ fn resolve_session_query_emits_single_match_success() -> Result<()> {
     let value = parse_json(&output.stdout, "stdout")?;
     assert_eq!(value["schema"], "darc.query.resolve_session.v1");
     assert_eq!(value["data"]["query"], PRIMARY_SESSION_PREFIX);
+    assert_eq!(value["data"]["matches"][0]["project_id"], "repo-abc123");
     assert_eq!(value["data"]["matches"][0]["provider"], "codex");
     assert_eq!(
         value["data"]["matches"][0]["session_id"],
@@ -1835,15 +1904,16 @@ fn resolve_session_query_lists_matches_and_reports_ambiguity() -> Result<()> {
             .iter()
             .map(|row| {
                 (
+                    row["project_id"].as_str().unwrap(),
                     row["provider"].as_str().unwrap(),
                     row["session_id"].as_str().unwrap(),
                 )
             })
             .collect::<Vec<_>>(),
         vec![
-            ("claude", TERTIARY_SESSION_ID),
-            ("codex", PRIMARY_SESSION_ID),
-            ("codex", SECONDARY_SESSION_ID),
+            ("repo-abc123", "claude", TERTIARY_SESSION_ID),
+            ("repo-abc123", "codex", PRIMARY_SESSION_ID),
+            ("repo-abc123", "codex", SECONDARY_SESSION_ID),
         ]
     );
 
@@ -1864,9 +1934,17 @@ fn resolve_session_query_lists_matches_and_reports_ambiguity() -> Result<()> {
             .as_array()
             .unwrap()
             .iter()
-            .map(|row| row["session_id"].as_str().unwrap())
+            .map(|row| {
+                (
+                    row["project_id"].as_str().unwrap(),
+                    row["session_id"].as_str().unwrap(),
+                )
+            })
             .collect::<Vec<_>>(),
-        vec![PRIMARY_SESSION_ID, SECONDARY_SESSION_ID]
+        vec![
+            ("repo-abc123", PRIMARY_SESSION_ID),
+            ("repo-abc123", SECONDARY_SESSION_ID)
+        ]
     );
 
     let ambiguous_output = run_darc([

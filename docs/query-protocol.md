@@ -18,33 +18,35 @@ All query commands currently require `--json`.
 
 ### Sessions, Turns, And Files
 
-- `darc query resolve-session <uuid-or-prefix> --root <path> [--provider <provider>] [--pick-one] --json`
+- `darc query resolve-session <uuid-or-prefix> --root <path> [--project-id <id>] [--provider <provider>] [--pick-one] --json`
 - `darc query sessions --root <path> [--project-id <id>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--touched-path <glob>] [--limit <n>] [--offset <n>] --json`
 - `darc query files --root <path> [--project-id <id>] --path <glob> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>] --json`
 - `darc query files --root <path> [--project-id <id>] --co-touched-with <path> [--limit <n>] [--offset <n>] --json`
 - `darc query session-files --root <path> [--project-id <id>] --provider <provider> --session-id <id> --json`
-- `darc query session-bundle --root <path> [--project-id <id>] --provider <provider> --session-id <id> [--view <full|narrative>] --json`
-- `darc query turns --root <path> [--project-id <id>] --provider <provider> --session-id <id> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--view <full|oneline>] --json`
+- `darc query session-bundle --root <path> [--project-id <id>] --provider <provider> --session-id <id> [--view <full|narrative>] [--turn-limit <n>] [--turn-offset <n>] --json`
+- `darc query turns --root <path> [--project-id <id>] --provider <provider> --session-id <id> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--view <full|oneline>] [--limit <n>] [--offset <n>] --json`
 - `darc query turn --root <path> [--project-id <id>] --provider <provider> --session-id <id> --turn-ordinal <n> [--view <full|narrative>] [--include-raw] [--include-insights] --json`
 
 ### Search
 
-- `darc query search turns --root <path> [--project-id <id>] --mode <keyword|literal|regex|file-name|file-path> --query <text> [--include-tool-output] [--provider <provider>] [--session-id <id>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>] --json`
+- `darc query search turns --root <path> [--project-id <id>] --mode <keyword|literal|regex|file-name|file-path|path-fragment> --query <text|glob|fragment> [--include-tool-output] [--provider <provider>] [--session-id <id>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>] --json`
 
 ### Insights
 
 - `darc query insights workspace --root <path> --window <days>d --json`
-- `darc query insights project --root <path> [--project-id <id>] --limit <n> --json`
+- `darc query insights project --root <path> [--project-id <id>] [--turn-limit <n>] --json`
 - `darc query insights turn --root <path> [--project-id <id>] --provider <provider> --session-id <id> --turn-ordinal <n> --json`
 
 ## Argument rules
 
 - project-scoped queries accept optional `--project-id`; when omitted, Darc resolves the configured project from the current directory
-- `darc query resolve-session` accepts either one full UUID or one UUID prefix
+- `darc query resolve-session` accepts either one full UUID or one UUID prefix and returns `project_id`, `provider`, and `session_id` for each match
 - `darc query turns` requires both `--provider` and `--session-id`
 - `darc query files` requires exactly one of `--path` or `--co-touched-with`
 - `--since` and `--until` on `darc query files` require `--path`
-- `--limit` and `--offset` are accepted by `darc query sessions` and both `darc query files` modes; both default to `--limit 50 --offset 0`
+- `--limit` and `--offset` are accepted by `darc query sessions`, `darc query turns`, `darc query search turns`, and both `darc query files` modes; these row/turn-hit limits default to `--limit 50 --offset 0`
+- `--turn-limit` and `--turn-offset` on `darc query session-bundle` bound embedded turn details and default to `--turn-limit 50 --turn-offset 0`
+- `--turn-limit` on `darc query insights project` is an inspection bound over indexed turns, not response pagination; the previous `--limit` spelling is accepted as a compatibility alias
 - `--include-tool-output` on `darc query search turns` is accepted only with `--mode literal` or `--mode regex`
 - session-scoped data commands require a full UUID `--session-id`; malformed ids return `invalid_session_id`, unknown UUIDs return `unknown_session`, and UUID-like prefixes fail explicitly instead of auto-resolving
 
@@ -120,6 +122,7 @@ The protocol is intentionally composable. A few common read patterns are now fir
     --provider codex \
     --session-id "$ID" \
     --view narrative \
+    --turn-limit 20 \
     --json
   ```
 
@@ -132,6 +135,7 @@ The protocol is intentionally composable. A few common read patterns are now fir
     --provider codex \
     --session-id 11111111-1111-4111-8111-111111111111 \
     --view oneline \
+    --limit 50 \
     --json
   ```
 
@@ -213,6 +217,7 @@ Clients should branch on `schema`, not on `darc_version`.
 
 - `view: "full"` keeps the existing turn-summary shape and now also includes `tool_call_count`
 - `view: "oneline"` returns a smaller per-turn object with `turn_ordinal`, `role`, `user_preview`, `step_count`, and `tool_call_count`
+- both projections include `limit`, `offset`, and `has_more`, and default to the first 50 turns
 - `oneline.user_preview` is derived from the first `user_message` line and capped at 80 characters
 - session-scoped oneline rows currently emit `role: "user"` because the preview always comes from the first user message line
 
@@ -333,6 +338,7 @@ Today:
 - session rows include `primary_model`, `total_token_count`, `token_usage`, `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, `removed_line_count`, `first_turn_at`, `first_user_prompt`, `aborted_turn_count`, and `edited_files`
 - session totals are rollups across the indexed turns in that session
 - top-level session-list payloads additionally echo the resolved `since`, `until`, and `touched_path` request filters as nullable fields, plus non-null `limit`, `offset`, and `has_more` pagination fields
+- top-level turn-list payloads echo nullable `since` and `until` filters plus non-null `limit`, `offset`, and `has_more` pagination fields
 - optional `--since` and `--until` filters apply to `latest_turn_at`, using inclusive lower-bound and exclusive upper-bound semantics
 - optional `--touched-path` requires at least one session-scoped, project-scoped file access of any access type whose canonical display path matches the provided glob; Darc scans session candidates in `latest_turn_at` order after the `--since` / `--until` bounds and then applies touched-path pagination
 - `--since` and `--until` accept absolute ISO-8601 text or relative `<days>d` shorthand such as `5d`
@@ -384,6 +390,7 @@ Today:
 - the top-level payload echoes `project_id`, `provider`, `session_id`, and `view`
 - `session` reuses the exact `darc.query.sessions.v1` session row shape
 - `turns` reuses the exact `darc.query.turn.v1` turn-detail row shape without wrapping each row in its own envelope
+- `turn_limit`, `turn_offset`, and `turns_has_more` describe the embedded turn-detail page
 - `session_files` reuses the exact `darc.query.session_files.v1` payload shape
 - `view=narrative` applies the same step projection rules as `darc query turn --view narrative --json`
 - `view=full` keeps the full normalized turn-step payload with `raw_steps_json` still forced to `null`
@@ -396,8 +403,8 @@ Today:
 
 - `query` echoes the supplied full UUID or prefix exactly as resolved by the CLI
 - without `--pick-one`, the payload includes deterministic `matches`, `total`, and `truncated` fields
-- `matches[*]` rows report `provider` plus canonical `session_id`
-- matches are ordered by `provider` ascending, then `session_id` ascending
+- `matches[*]` rows report `project_id`, `provider`, and canonical `session_id`
+- matches are ordered by `project_id` ascending, then `provider` ascending, then `session_id` ascending
 - results are capped to a generous fixed page and set `truncated=true` when more candidates exist
 - with `--pick-one`, the success payload uses one top-level `match` object for convenience
 - a full UUID that does not exist returns `unknown_session`
@@ -428,7 +435,7 @@ Today:
 - `mode=regex` treats `--query` as a Rust regular expression and matches it against the same derived `turn_evidence` rows
 - literal and regex search exclude `tool_output` evidence by default because command and tool output is often large and noisy for context-building
 - pass `--include-tool-output` with literal or regex search to include command/tool output evidence for forensic searches such as exact errors, stack traces, logs, or command output
-- `--include-tool-output` is rejected for `keyword`, `file_name`, and `file_path` search because those modes do not inspect `turn_evidence.tool_output`
+- `--include-tool-output` is rejected for `keyword`, `file_name`, `file_path`, and `path_fragment` search because those modes do not inspect `turn_evidence.tool_output`
 - literal and regex search inspect `user_message`, `final_answer`, `commentary`, `reasoning_summary`, `tool_name`,
   `tool_arguments`, `delegation_summary`, `delegation_metadata`, `hook_summary`,
   `attachment_metadata`, and `provider_response_item_metadata` evidence fields
@@ -442,12 +449,13 @@ Today:
 - each literal or regex turn hit returns at most 20 nested `matches`; `matches_truncated=true` means additional matching evidence rows in that turn were omitted from the preview
 - literal and regex search are not content-index backed; narrow provider, session, or time filters for broad audits when latency matters
 - `mode=file_name` searches the derived `file_accesses.file_name` basename field
-- `mode=file_path` searches derived path fields from `file_accesses.repo_relative_path` and `file_accesses.path`
+- `mode=file_path` treats `--query` as the same case-insensitive project-scoped glob shape used by `darc query files --path`
+- `mode=path_fragment` searches derived path fields from `file_accesses.repo_relative_path` and `file_accesses.path` with exact/prefix/substring ranking
 - all search modes return turn identities, top-level turn metadata, nullable `since` / `until` request echoes, `include_tool_output`, and optional `snippet` / `matched_paths` / `matches` fields plus `matches_truncated`
-- `matched_paths` is empty for keyword search and populated for file-name or file-path hits
+- `matched_paths` is empty for keyword search and populated for file-name, file-path, or path-fragment hits
 - `matches` is empty for keyword and file search and populated for literal or regex hits
 - `matches_truncated` is always false for keyword and file search
-- file-name and file-path search use case-insensitive exact/prefix/substring ranking and deduplicate turn hits before applying final pagination
+- file-name and path-fragment search use case-insensitive exact/prefix/substring ranking and deduplicate turn hits before applying final pagination
 - keyword search currently uses FTS ranking before recency tie-breaks
 
 ### Hard debugging

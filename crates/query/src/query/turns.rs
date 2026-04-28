@@ -92,6 +92,46 @@ const INDEXED_SESSION_TURNS_SQL: &str = "
     ORDER BY turn_ordinal ASC
 ";
 
+const INDEXED_SESSION_TURNS_PAGE_SQL: &str = "
+    SELECT
+        project_id,
+        provider,
+        session_id,
+        turn_ordinal,
+        turn_id,
+        started_at,
+        completed_at,
+        status,
+        user_message,
+        final_answer_at,
+        final_answer_text,
+        steps_json,
+        primary_model,
+        COALESCE(duration_ms, 0),
+        effective_agent_runtime_ms,
+        provider_total_token_count,
+        input_uncached_token_count,
+        cache_read_token_count,
+        cache_write_token_count,
+        output_token_count,
+        reasoning_token_count,
+        total_token_count,
+        COALESCE(changed_file_count, 0),
+        COALESCE(added_line_count, 0),
+        COALESCE(removed_line_count, 0),
+        COALESCE(step_count, 0),
+        COALESCE(tool_call_count, 0),
+        COALESCE(tool_output_count, 0),
+        COALESCE(attachment_count, 0),
+        COALESCE(delegation_count, 0),
+        COALESCE(hook_summary_count, 0),
+        has_final_answer
+    FROM turns
+    WHERE project_id = ?1 AND provider = ?2 AND session_id = ?3
+    ORDER BY turn_ordinal ASC
+    LIMIT ?4 OFFSET ?5
+";
+
 const INDEXED_TURN_EXISTS_SQL: &str = "
     SELECT 1
     FROM turns
@@ -210,13 +250,68 @@ pub(crate) fn build_session_turn_details(
     session_id: &str,
     options: TurnDetailOptions,
 ) -> Result<Vec<TurnDetail>> {
+    let rows = query_session_turn_detail_rows(
+        connection,
+        INDEXED_SESSION_TURNS_SQL,
+        (project_id, provider.directory_name(), session_id),
+        session_id,
+        provider,
+    )?;
+
+    build_turn_details_from_rows(connection, rows, options)
+}
+
+/// Builds one bounded page of normalized turn details for one indexed session.
+pub(crate) fn build_session_turn_details_page(
+    connection: &Connection,
+    project_id: &str,
+    provider: SourceKind,
+    session_id: &str,
+    options: TurnDetailOptions,
+    limit: usize,
+    offset: usize,
+) -> Result<(Vec<TurnDetail>, bool)> {
+    let page_limit = limit
+        .checked_add(1)
+        .context("query limit exceeds usize range")?;
+    let page_limit =
+        i64::try_from(page_limit).context("query limit exceeds SQLite INTEGER range")?;
+    let offset = i64::try_from(offset).context("query offset exceeds SQLite INTEGER range")?;
+    let mut rows = query_session_turn_detail_rows(
+        connection,
+        INDEXED_SESSION_TURNS_PAGE_SQL,
+        (
+            project_id,
+            provider.directory_name(),
+            session_id,
+            page_limit,
+            offset,
+        ),
+        session_id,
+        provider,
+    )?;
+    let has_more = rows.len() > limit;
+    rows.truncate(limit);
+    let turns = build_turn_details_from_rows(connection, rows, options)?;
+    Ok((turns, has_more))
+}
+
+/// Queries indexed turn-detail rows using one prepared statement and parameter tuple.
+fn query_session_turn_detail_rows<P>(
+    connection: &Connection,
+    sql: &str,
+    params: P,
+    session_id: &str,
+    provider: SourceKind,
+) -> Result<Vec<IndexedTurnRow>>
+where
+    P: rusqlite::Params,
+{
     let mut statement = connection
-        .prepare(INDEXED_SESSION_TURNS_SQL)
+        .prepare(sql)
         .context("failed to prepare indexed session turn detail query")?;
-    let rows = statement
-        .query_map((project_id, provider.directory_name(), session_id), |row| {
-            read_indexed_turn_row(row)
-        })
+    statement
+        .query_map(params, read_indexed_turn_row)
         .with_context(|| {
             format!(
                 "failed to query indexed turn details for session {session_id} and provider {}",
@@ -224,8 +319,15 @@ pub(crate) fn build_session_turn_details(
             )
         })?
         .collect::<rusqlite::Result<Vec<_>>>()
-        .context("failed to read indexed turn detail rows")?;
+        .context("failed to read indexed turn detail rows")
+}
 
+/// Converts indexed turn rows into public turn-detail payloads.
+fn build_turn_details_from_rows(
+    connection: &Connection,
+    rows: Vec<IndexedTurnRow>,
+    options: TurnDetailOptions,
+) -> Result<Vec<TurnDetail>> {
     rows.into_iter()
         .map(|row| {
             let insights = options
