@@ -79,6 +79,8 @@ darc refresh --all
 - `darc init` detects local sources and creates the shared Darc config.
 - `darc refresh` is the daily happy path. It runs `sync` then `index` for the active project, or every registered
   project with `--all`.
+- `darc status` shows human-readable health for the active project. Add `--workspace` to summarize every configured
+  project, and `--check` to run sync planning without writing manifests, config, archives, or SQLite.
 - `darc sync` archives matching Claude and Codex sessions for the active project.
 - `darc index` indexes archived sessions into SQLite.
 - `darc query` exposes the machine-readable read protocol for workspace, session, turn, file-pivot, search, and

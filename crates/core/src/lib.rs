@@ -5,6 +5,7 @@ mod index;
 mod init;
 mod project;
 pub mod query;
+mod status;
 mod sync;
 
 pub use config::SourceKind;
@@ -18,5 +19,9 @@ pub use project::{
     RefreshProjectAttempt, RefreshProjectFailure, RefreshReport, RemoveReport, RenameReport,
     link_project, refresh_all_projects, refresh_all_projects_best_effort, refresh_project,
     remove_project, rename_project,
+};
+pub use status::{
+    ProjectStatusReport, StatusProject, StatusSource, StatusSyncCheck, StatusSyncFailure,
+    StatusSyncPlan, WorkspaceStatusReport, status_project, status_workspace,
 };
 pub use sync::{SyncOptions, SyncPlan, SyncReport, execute_sync, prepare_sync};
