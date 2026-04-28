@@ -19,9 +19,9 @@ All query commands currently require `--json`.
 ### Sessions, Turns, And Files
 
 - `darc query resolve-session <uuid-or-prefix> --root <path> [--provider <provider>] [--pick-one] --json`
-- `darc query sessions --root <path> [--project-id <id>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--touched-path <glob>] --json`
-- `darc query files --root <path> [--project-id <id>] --path <glob> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] --json`
-- `darc query files --root <path> [--project-id <id>] --co-touched-with <path> [--limit <n>] --json`
+- `darc query sessions --root <path> [--project-id <id>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--touched-path <glob>] [--limit <n>] [--offset <n>] --json`
+- `darc query files --root <path> [--project-id <id>] --path <glob> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>] --json`
+- `darc query files --root <path> [--project-id <id>] --co-touched-with <path> [--limit <n>] [--offset <n>] --json`
 - `darc query session-files --root <path> [--project-id <id>] --provider <provider> --session-id <id> --json`
 - `darc query session-bundle --root <path> [--project-id <id>] --provider <provider> --session-id <id> [--view <full|narrative>] --json`
 - `darc query turns --root <path> [--project-id <id>] --provider <provider> --session-id <id> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--view <full|oneline>] --json`
@@ -44,7 +44,7 @@ All query commands currently require `--json`.
 - `darc query turns` requires both `--provider` and `--session-id`
 - `darc query files` requires exactly one of `--path` or `--co-touched-with`
 - `--since` and `--until` on `darc query files` require `--path`
-- `--limit` on `darc query files` requires `--co-touched-with`
+- `--limit` and `--offset` are accepted by `darc query sessions` and both `darc query files` modes; both default to `--limit 50 --offset 0`
 - `--include-tool-output` on `darc query search turns` is accepted only with `--mode literal` or `--mode regex`
 - session-scoped data commands require a full UUID `--session-id`; malformed ids return `invalid_session_id`, unknown UUIDs return `unknown_session`, and UUID-like prefixes fail explicitly instead of auto-resolving
 
@@ -94,6 +94,7 @@ The protocol is intentionally composable. A few common read patterns are now fir
     --root ~/.darc \
     --project-id repo-abc123 \
     --path "src/components/planner.rs" \
+    --limit 20 \
     --json
   ```
 
@@ -331,9 +332,9 @@ Today:
 
 - session rows include `primary_model`, `total_token_count`, `token_usage`, `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, `removed_line_count`, `first_turn_at`, `first_user_prompt`, `aborted_turn_count`, and `edited_files`
 - session totals are rollups across the indexed turns in that session
-- top-level session-list payloads additionally echo the resolved `since`, `until`, and `touched_path` request filters as nullable fields
+- top-level session-list payloads additionally echo the resolved `since`, `until`, and `touched_path` request filters as nullable fields, plus non-null `limit`, `offset`, and `has_more` pagination fields
 - optional `--since` and `--until` filters apply to `latest_turn_at`, using inclusive lower-bound and exclusive upper-bound semantics
-- optional `--touched-path` filters session rows after the `latest_turn_at` bounds by requiring at least one session-scoped, project-scoped file access whose canonical display path matches the provided glob
+- optional `--touched-path` requires at least one session-scoped, project-scoped file access of any access type whose canonical display path matches the provided glob; Darc scans session candidates in `latest_turn_at` order after the `--since` / `--until` bounds and then applies touched-path pagination
 - `--since` and `--until` accept absolute ISO-8601 text or relative `<days>d` shorthand such as `5d`
 - each `token_usage.*` session field is `null` unless every indexed turn in that session carried a value for that exact field
 - `total_token_count` and `effective_agent_runtime_ms` are currently `null` on a session row unless every indexed turn in that session carried a value for that field
@@ -354,17 +355,19 @@ Today:
 
 Today:
 
-- `darc.query.files.v1` includes `project_id`, `mode`, nullable `path`, nullable `co_touched_with`, nullable `since`, nullable `until`, nullable `limit`, plus `sessions` and `files` arrays
+- `darc.query.files.v1` includes `project_id`, `mode`, nullable `path`, nullable `co_touched_with`, nullable `since`, nullable `until`, non-null `limit`, non-null `offset`, non-null `has_more`, plus `sessions` and `files` arrays
 - `mode=path` populates `sessions` and leaves `files` empty
 - `mode=co_touched_with` populates `files` and leaves `sessions` empty
 - `mode=path` applies `--since` and `--until` to touched turns using `turns.started_at`, with inclusive lower-bound and exclusive upper-bound semantics
 - `mode=path` ranks session rows by higher `touch_count`, then newer `last_touched_at`, then `provider`, then `session_id`
+- `mode=path` applies `--limit` and `--offset` after ranking the matching sessions
 - `mode=path` session rows report `provider`, `session_id`, `touch_count`, `read_count`, `write_count`, `first_turn_ordinal`, `last_turn_ordinal`, `first_touched_at`, `last_touched_at`, and deterministic `matched_paths`
 - `matched_paths` is the canonical matched file list for that session, ordered by display path ascending
 - `query files --path` currently excludes derived `list` accesses, and obvious directory-only operands are omitted during extraction, so directory listings, search roots, and `mkdir`-style directory writes do not count as file touches
 - `mode=co_touched_with` treats the seed path as one exact canonical display path, normalizing project-root absolute paths down to project-relative form when possible
 - `mode=co_touched_with` only considers project-scoped in-repo file identities and does not expose or rank external absolute paths
 - `mode=co_touched_with` ranks file rows by higher `co_touch_count`, then `path` ascending
+- `mode=co_touched_with` applies `--limit` and `--offset` after ranking the co-touched files
 - `mode=co_touched_with` file rows report `path` plus the number of distinct sessions that touched both that file and the seed file
 - `darc.query.session_files.v1` reports `project_id`, `provider`, `session_id`, and deterministic `files`
 - `session_files` rows report canonical `path`, best-effort `repo_relative_path`, `read_count`, `write_count`, `first_turn_ordinal`, and `last_turn_ordinal`

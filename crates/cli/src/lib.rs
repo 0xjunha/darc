@@ -274,6 +274,12 @@ struct QuerySessionsArgs {
     )]
     touched_path: Option<String>,
 
+    #[arg(long, default_value_t = 50, help = "Maximum sessions to return")]
+    limit: usize,
+
+    #[arg(long, default_value_t = 0, help = "Number of sessions to skip")]
+    offset: usize,
+
     #[arg(
         long,
         required = true,
@@ -368,11 +374,11 @@ struct QueryFilesArgs {
     )]
     until: Option<String>,
 
-    #[arg(
-        long,
-        help = "Maximum co-touched files to return for --co-touched-with mode"
-    )]
-    limit: Option<usize>,
+    #[arg(long, default_value_t = 50, help = "Maximum rows to return")]
+    limit: usize,
+
+    #[arg(long, default_value_t = 0, help = "Number of rows to skip")]
+    offset: usize,
 
     #[arg(
         long,
@@ -840,6 +846,8 @@ fn run_query_sessions(args: QuerySessionsArgs) -> Result<()> {
         since.as_deref(),
         until.as_deref(),
         args.touched_path.as_deref(),
+        args.limit,
+        args.offset,
     )?;
     print_json_envelope("darc.query.sessions.v1", &data)
 }
@@ -868,6 +876,7 @@ fn run_query_files(args: QueryFilesArgs) -> Result<()> {
             since: since.as_deref(),
             until: until.as_deref(),
             limit: args.limit,
+            offset: args.offset,
         },
     )?;
     print_json_envelope("darc.query.files.v1", &data)
