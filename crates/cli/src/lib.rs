@@ -535,7 +535,7 @@ struct QuerySearchTurnsArgs {
     #[arg(
         long,
         allow_hyphen_values = true,
-        help = "Search for this text or path fragment"
+        help = "Search for this text, file glob, or path fragment"
     )]
     query: String,
 
@@ -714,6 +714,7 @@ enum SearchModeArg {
     Regex,
     FileName,
     FilePath,
+    PathFragment,
 }
 
 /// Represents the supported turn-list projections for machine-readable turn queries.
@@ -1019,6 +1020,7 @@ fn run_query_search_turns(args: QuerySearchTurnsArgs) -> Result<()> {
         &project,
         SearchTurnsRequest {
             project_id: "",
+            project_root: None,
             mode,
             query: &args.query,
             include_tool_output: args.include_tool_output,
@@ -1211,6 +1213,7 @@ fn search_mode_arg_to_search_mode(mode: SearchModeArg) -> SearchMode {
         SearchModeArg::Regex => SearchMode::Regex,
         SearchModeArg::FileName => SearchMode::FileName,
         SearchModeArg::FilePath => SearchMode::FilePath,
+        SearchModeArg::PathFragment => SearchMode::PathFragment,
     }
 }
 

@@ -29,7 +29,7 @@ All query commands currently require `--json`.
 
 ### Search
 
-- `darc query search turns --root <path> [--project-id <id>] --mode <keyword|literal|regex|file-name|file-path> --query <text> [--include-tool-output] [--provider <provider>] [--session-id <id>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>] --json`
+- `darc query search turns --root <path> [--project-id <id>] --mode <keyword|literal|regex|file-name|file-path|path-fragment> --query <text|glob|fragment> [--include-tool-output] [--provider <provider>] [--session-id <id>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>] --json`
 
 ### Insights
 
@@ -428,7 +428,7 @@ Today:
 - `mode=regex` treats `--query` as a Rust regular expression and matches it against the same derived `turn_evidence` rows
 - literal and regex search exclude `tool_output` evidence by default because command and tool output is often large and noisy for context-building
 - pass `--include-tool-output` with literal or regex search to include command/tool output evidence for forensic searches such as exact errors, stack traces, logs, or command output
-- `--include-tool-output` is rejected for `keyword`, `file_name`, and `file_path` search because those modes do not inspect `turn_evidence.tool_output`
+- `--include-tool-output` is rejected for `keyword`, `file_name`, `file_path`, and `path_fragment` search because those modes do not inspect `turn_evidence.tool_output`
 - literal and regex search inspect `user_message`, `final_answer`, `commentary`, `reasoning_summary`, `tool_name`,
   `tool_arguments`, `delegation_summary`, `delegation_metadata`, `hook_summary`,
   `attachment_metadata`, and `provider_response_item_metadata` evidence fields
@@ -442,12 +442,13 @@ Today:
 - each literal or regex turn hit returns at most 20 nested `matches`; `matches_truncated=true` means additional matching evidence rows in that turn were omitted from the preview
 - literal and regex search are not content-index backed; narrow provider, session, or time filters for broad audits when latency matters
 - `mode=file_name` searches the derived `file_accesses.file_name` basename field
-- `mode=file_path` searches derived path fields from `file_accesses.repo_relative_path` and `file_accesses.path`
+- `mode=file_path` treats `--query` as the same case-insensitive project-scoped glob shape used by `darc query files --path`
+- `mode=path_fragment` searches derived path fields from `file_accesses.repo_relative_path` and `file_accesses.path` with exact/prefix/substring ranking
 - all search modes return turn identities, top-level turn metadata, nullable `since` / `until` request echoes, `include_tool_output`, and optional `snippet` / `matched_paths` / `matches` fields plus `matches_truncated`
-- `matched_paths` is empty for keyword search and populated for file-name or file-path hits
+- `matched_paths` is empty for keyword search and populated for file-name, file-path, or path-fragment hits
 - `matches` is empty for keyword and file search and populated for literal or regex hits
 - `matches_truncated` is always false for keyword and file search
-- file-name and file-path search use case-insensitive exact/prefix/substring ranking and deduplicate turn hits before applying final pagination
+- file-name and path-fragment search use case-insensitive exact/prefix/substring ranking and deduplicate turn hits before applying final pagination
 - keyword search currently uses FTS ranking before recency tie-breaks
 
 ### Hard debugging

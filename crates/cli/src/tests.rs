@@ -713,6 +713,7 @@ fn query_search_turns_help_mentions_tool_output_opt_in() {
 
     assert!(help.contains("--include-tool-output"));
     assert!(help.contains("literal and regex"));
+    assert!(help.contains("path-fragment"));
 }
 
 #[test]

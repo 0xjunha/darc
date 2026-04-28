@@ -411,6 +411,7 @@ pub fn query_search_turns_for_project(
         &context.root.database_path,
         SearchTurnsRequest {
             project_id: &context.project.id,
+            project_root: Some(context.project.local_path.as_path()),
             ..request
         },
     )

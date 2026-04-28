@@ -2594,6 +2594,7 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
         &index_path,
         SearchTurnsRequest {
             project_id: "repo-a",
+            project_root: None,
             mode: SearchMode::Keyword,
             query: "Inspect",
             include_tool_output: false,
@@ -2609,6 +2610,7 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
         &index_path,
         SearchTurnsRequest {
             project_id: "repo-a",
+            project_root: None,
             mode: SearchMode::Keyword,
             query: "SECRET_TOKEN",
             include_tool_output: false,
@@ -2636,6 +2638,7 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
         &index_path,
         SearchTurnsRequest {
             project_id: "repo-a",
+            project_root: None,
             mode: SearchMode::Literal,
             query: "SECRET_TOKEN=top-secret",
             include_tool_output: false,
@@ -2651,6 +2654,7 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
         &index_path,
         SearchTurnsRequest {
             project_id: "repo-a",
+            project_root: None,
             mode: SearchMode::Regex,
             query: "SECRET_[A-Z]+=top-secret",
             include_tool_output: false,
@@ -2666,6 +2670,7 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
         &index_path,
         SearchTurnsRequest {
             project_id: "repo-a",
+            project_root: None,
             mode: SearchMode::Literal,
             query: "SECRET_TOKEN=top-secret",
             include_tool_output: true,
@@ -2681,6 +2686,7 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
         &index_path,
         SearchTurnsRequest {
             project_id: "repo-a",
+            project_root: None,
             mode: SearchMode::Regex,
             query: "SECRET_[A-Z]+=top-secret",
             include_tool_output: true,
@@ -2696,6 +2702,7 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
         &index_path,
         SearchTurnsRequest {
             project_id: "repo-a",
+            project_root: None,
             mode: SearchMode::Literal,
             query: "SHARED_EXACT_MARKER",
             include_tool_output: false,
@@ -2711,6 +2718,7 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
         &index_path,
         SearchTurnsRequest {
             project_id: "repo-a",
+            project_root: None,
             mode: SearchMode::Regex,
             query: "SHARED_EXACT_[A-Z]+",
             include_tool_output: false,
@@ -2868,6 +2876,7 @@ fn search_turns_exact_modes_match_extended_evidence_fields() -> Result<()> {
             &index_path,
             SearchTurnsRequest {
                 project_id: "repo-a",
+                project_root: None,
                 mode,
                 query,
                 include_tool_output: false,
@@ -2942,6 +2951,7 @@ fn search_turns_exact_modes_preserve_outer_whitespace() -> Result<()> {
             &index_path,
             SearchTurnsRequest {
                 project_id: "repo-a",
+                project_root: None,
                 mode,
                 query: " error ",
                 include_tool_output: true,
@@ -3011,6 +3021,7 @@ fn search_turns_exact_modes_cap_nested_matches() -> Result<()> {
         &index_path,
         SearchTurnsRequest {
             project_id: "repo-a",
+            project_root: None,
             mode: SearchMode::Literal,
             query: "repeated-marker",
             include_tool_output: false,
@@ -3092,6 +3103,7 @@ fn search_turns_literal_filters_evidence_before_preview_cap() -> Result<()> {
         &index_path,
         SearchTurnsRequest {
             project_id: "repo-a",
+            project_root: None,
             mode: SearchMode::Literal,
             query: "late-literal-marker",
             include_tool_output: false,
@@ -3181,6 +3193,7 @@ fn search_turns_literal_streams_past_legacy_candidate_cap() -> Result<()> {
         &index_path,
         SearchTurnsRequest {
             project_id: "repo-a",
+            project_root: None,
             mode: SearchMode::Literal,
             query: "rare-literal-needle",
             include_tool_output: false,
@@ -3264,6 +3277,7 @@ fn search_turns_regex_streams_past_legacy_candidate_cap() -> Result<()> {
         &index_path,
         SearchTurnsRequest {
             project_id: "repo-a",
+            project_root: None,
             mode: SearchMode::Regex,
             query: "rare-regex-[a-z]+",
             include_tool_output: false,
@@ -3320,6 +3334,7 @@ fn search_turns_file_modes_match_derived_paths() -> Result<()> {
         &index_path,
         SearchTurnsRequest {
             project_id: "repo-a",
+            project_root: None,
             mode: SearchMode::FileName,
             query: "main,old.rs",
             include_tool_output: false,
@@ -3335,8 +3350,41 @@ fn search_turns_file_modes_match_derived_paths() -> Result<()> {
         &index_path,
         SearchTurnsRequest {
             project_id: "repo-a",
+            project_root: Some(Path::new("/tmp/repo-a")),
             mode: SearchMode::FilePath,
             query: "src/main,old.rs",
+            include_tool_output: false,
+            provider: None,
+            session_id: None,
+            since: None,
+            until: None,
+            limit: 10,
+            offset: 0,
+        },
+    )?;
+    let glob_path_result = query_search_turns(
+        &index_path,
+        SearchTurnsRequest {
+            project_id: "repo-a",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            mode: SearchMode::FilePath,
+            query: "/tmp/repo-a/src/**",
+            include_tool_output: false,
+            provider: None,
+            session_id: None,
+            since: None,
+            until: None,
+            limit: 10,
+            offset: 0,
+        },
+    )?;
+    let path_fragment_result = query_search_turns(
+        &index_path,
+        SearchTurnsRequest {
+            project_id: "repo-a",
+            project_root: None,
+            mode: SearchMode::PathFragment,
+            query: "main,old",
             include_tool_output: false,
             provider: None,
             session_id: None,
@@ -3349,12 +3397,22 @@ fn search_turns_file_modes_match_derived_paths() -> Result<()> {
 
     assert_eq!(file_name_result.hits.len(), 1);
     assert_eq!(file_path_result.hits.len(), 1);
+    assert_eq!(glob_path_result.hits.len(), 1);
+    assert_eq!(path_fragment_result.hits.len(), 1);
     assert_eq!(
         file_name_result.hits[0].matched_paths,
         vec!["src/main,old.rs"]
     );
     assert_eq!(
         file_path_result.hits[0].matched_paths,
+        vec!["src/main,old.rs"]
+    );
+    assert_eq!(
+        glob_path_result.hits[0].matched_paths,
+        vec!["src/main,old.rs"]
+    );
+    assert_eq!(
+        path_fragment_result.hits[0].matched_paths,
         vec!["src/main,old.rs"]
     );
 
@@ -3408,6 +3466,7 @@ fn search_turns_file_modes_dedupe_before_pagination() -> Result<()> {
         &index_path,
         SearchTurnsRequest {
             project_id: "repo-a",
+            project_root: None,
             mode: SearchMode::FileName,
             query: "foo",
             include_tool_output: false,

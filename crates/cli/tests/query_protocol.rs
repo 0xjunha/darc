@@ -1450,6 +1450,29 @@ fn search_turns_query_emits_file_search_envelope() -> Result<()> {
         "README.md"
     );
 
+    let fragment_output = run_darc([
+        "query",
+        "search",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--mode",
+        "path-fragment",
+        "--query",
+        "README",
+        "--json",
+    ])?;
+
+    assert!(fragment_output.status.success());
+    let fragment_value = parse_json(&fragment_output.stdout, "stdout")?;
+    assert_eq!(fragment_value["data"]["mode"], "path_fragment");
+    assert_eq!(
+        fragment_value["data"]["hits"][0]["matched_paths"][0],
+        "README.md"
+    );
+
     remove_root(&root)?;
     Ok(())
 }

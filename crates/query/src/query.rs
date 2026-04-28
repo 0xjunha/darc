@@ -352,6 +352,7 @@ pub enum SearchMode {
     Regex,
     FileName,
     FilePath,
+    PathFragment,
 }
 
 /// Stores one paginated turn-search response for one project.
@@ -375,6 +376,7 @@ pub struct SearchTurnsQueryData {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SearchTurnsRequest<'a> {
     pub project_id: &'a str,
+    pub project_root: Option<&'a Path>,
     pub mode: SearchMode,
     pub query: &'a str,
     pub include_tool_output: bool,
