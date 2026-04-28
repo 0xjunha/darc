@@ -329,6 +329,9 @@ fn sessions_query_defaults_project_id_from_current_directory() -> Result<()> {
     let value = parse_json(&output.stdout, "stdout")?;
     assert_eq!(value["schema"], "darc.query.sessions.v1");
     assert_eq!(value["data"]["project_id"], "repo-abc123");
+    assert_eq!(value["data"]["limit"], 50);
+    assert_eq!(value["data"]["offset"], 0);
+    assert_eq!(value["data"]["has_more"], false);
 
     remove_root(&root)?;
     Ok(())
@@ -386,6 +389,9 @@ fn sessions_query_applies_touched_path_filter() -> Result<()> {
     let value = parse_json(&output.stdout, "stdout")?;
     assert_eq!(value["schema"], "darc.query.sessions.v1");
     assert_eq!(value["data"]["touched_path"], touched_path);
+    assert_eq!(value["data"]["limit"], 50);
+    assert_eq!(value["data"]["offset"], 0);
+    assert_eq!(value["data"]["has_more"], false);
     assert_eq!(
         value["data"]["sessions"]
             .as_array()
@@ -425,6 +431,9 @@ fn files_query_path_mode_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["mode"], "path");
     assert_eq!(value["data"]["path"], path);
     assert_eq!(value["data"]["co_touched_with"], Value::Null);
+    assert_eq!(value["data"]["limit"], 50);
+    assert_eq!(value["data"]["offset"], 0);
+    assert_eq!(value["data"]["has_more"], false);
     assert_eq!(
         value["data"]["sessions"][0]["session_id"],
         PRIMARY_SESSION_ID

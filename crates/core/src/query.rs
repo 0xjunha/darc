@@ -14,10 +14,10 @@ pub use darc_query::{
     ResolveSessionQueryRequest, ResolvedSessionMatch, RootAvailability, RootInfo, SearchMode,
     SearchTurnHit, SearchTurnMatch, SearchTurnsQueryData, SearchTurnsRequest,
     SessionBundleQueryData, SessionBundleView, SessionFileSummary, SessionFilesQueryData,
-    SessionKind, SessionRuntimeStat, SessionSummary, SessionsQueryData, ShellCommandSummary,
-    ToolUsageStat, TurnDetail, TurnDetailInsights, TurnDetailOptions, TurnInsights, TurnSummary,
-    TurnsQueryData, TurnsQueryRequest, TurnsView, WorkspaceDailyTimeStat, WorkspaceInsights,
-    WorkspaceQueryData,
+    SessionKind, SessionRuntimeStat, SessionSummary, SessionsQueryData, SessionsQueryRequest,
+    ShellCommandSummary, ToolUsageStat, TurnDetail, TurnDetailInsights, TurnDetailOptions,
+    TurnInsights, TurnSummary, TurnsQueryData, TurnsQueryRequest, TurnsView,
+    WorkspaceDailyTimeStat, WorkspaceInsights, WorkspaceQueryData,
 };
 use darc_query::{
     ProjectIndexAggregate, list_project_index_aggregates, lookup_project_session_id,
@@ -144,15 +144,21 @@ pub fn query_sessions_for_project(
     since: Option<&str>,
     until: Option<&str>,
     touched_path: Option<&str>,
+    limit: usize,
+    offset: usize,
 ) -> Result<SessionsQueryData> {
     let context = &project.context;
     query_project_sessions(
         &context.root.database_path,
-        &context.project.id,
-        Some(context.project.local_path.as_path()),
-        since,
-        until,
-        touched_path,
+        SessionsQueryRequest {
+            project_id: &context.project.id,
+            project_root: Some(context.project.local_path.as_path()),
+            since,
+            until,
+            touched_path,
+            limit,
+            offset,
+        },
     )
 }
 
@@ -163,9 +169,11 @@ pub fn query_sessions(
     since: Option<&str>,
     until: Option<&str>,
     touched_path: Option<&str>,
+    limit: usize,
+    offset: usize,
 ) -> Result<SessionsQueryData> {
     let project = resolve_query_project(root, Some(project_id))?;
-    query_sessions_for_project(&project, since, until, touched_path)
+    query_sessions_for_project(&project, since, until, touched_path, limit, offset)
 }
 
 /// Queries one file-pivot payload for one already-resolved configured project.

@@ -41,6 +41,20 @@ pub(crate) fn smoke_test_sql(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Applies offset/limit pagination to a fully ranked in-memory row set.
+pub(crate) fn paginate_ranked_rows<T>(
+    rows: Vec<T>,
+    limit: usize,
+    offset: usize,
+) -> Result<(Vec<T>, bool)> {
+    let page_end = offset
+        .checked_add(limit)
+        .context("query pagination exceeds usize range")?;
+    let has_more = rows.len() > page_end;
+    let rows = rows.into_iter().skip(offset).take(limit).collect();
+    Ok((rows, has_more))
+}
+
 /// Caps `resolve-session` responses to one generous deterministic page.
 pub const DEFAULT_RESOLVE_SESSION_MATCH_LIMIT: usize = 50;
 
@@ -135,7 +149,22 @@ pub struct SessionsQueryData {
     pub since: Option<String>,
     pub until: Option<String>,
     pub touched_path: Option<String>,
+    pub limit: u64,
+    pub offset: u64,
+    pub has_more: bool,
     pub sessions: Vec<SessionSummary>,
+}
+
+/// Collects the supported inputs for one project session-list query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionsQueryRequest<'a> {
+    pub project_id: &'a str,
+    pub project_root: Option<&'a Path>,
+    pub since: Option<&'a str>,
+    pub until: Option<&'a str>,
+    pub touched_path: Option<&'a str>,
+    pub limit: usize,
+    pub offset: usize,
 }
 
 /// Stores one provider plus canonical session id candidate returned by `resolve-session`.
@@ -201,7 +230,9 @@ pub struct FilesQueryData {
     pub co_touched_with: Option<String>,
     pub since: Option<String>,
     pub until: Option<String>,
-    pub limit: Option<u64>,
+    pub limit: u64,
+    pub offset: u64,
+    pub has_more: bool,
     pub sessions: Vec<FileSessionSummary>,
     pub files: Vec<CoTouchedFileSummary>,
 }
@@ -215,7 +246,8 @@ pub struct FilesQueryRequest<'a> {
     pub co_touched_with: Option<&'a str>,
     pub since: Option<&'a str>,
     pub until: Option<&'a str>,
-    pub limit: Option<usize>,
+    pub limit: usize,
+    pub offset: usize,
 }
 
 /// Stores one session-scoped per-file access summary row.

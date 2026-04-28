@@ -8,9 +8,10 @@ use super::files::filter_session_summaries_by_touched_path;
 use super::turns::build_token_usage;
 use super::{
     ProjectIndexAggregate, ResolveSessionQueryData, ResolveSessionQueryRequest,
-    ResolvedSessionMatch, SessionSummary, SessionsQueryData, TurnSummary, TurnsQueryData,
-    TurnsQueryRequest, open_existing_index_database, optional_sql_count_to_u64, parse_provider,
-    parse_session_kind, parse_turn_status, preview_first_line, preview_text, sql_count_to_u64,
+    ResolvedSessionMatch, SessionSummary, SessionsQueryData, SessionsQueryRequest, TurnSummary,
+    TurnsQueryData, TurnsQueryRequest, open_existing_index_database, optional_sql_count_to_u64,
+    paginate_ranked_rows, parse_provider, parse_session_kind, parse_turn_status,
+    preview_first_line, preview_text, sql_count_to_u64,
 };
 
 const PROJECT_INDEX_AGGREGATES_SQL: &str = "
@@ -205,7 +206,10 @@ const PROJECT_SESSIONS_SQL: &str = "
         filtered_sessions.latest_turn_at DESC,
         filtered_sessions.provider ASC,
         filtered_sessions.session_id DESC
+    LIMIT ?6 OFFSET ?7
 ";
+
+const UNBOUNDED_SESSION_QUERY_LIMIT: usize = i64::MAX as usize;
 
 const RESOLVE_SESSIONS_SQL: &str = "
     SELECT DISTINCT
@@ -232,6 +236,18 @@ const PROJECT_SESSION_ID_SQL: &str = "
         session_id ASC
     LIMIT 1
 ";
+
+/// Collects the filters for one low-level session-summary SQL query.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SessionSummaryQuery<'a> {
+    project_id: &'a str,
+    since: Option<&'a str>,
+    until: Option<&'a str>,
+    provider: Option<SourceKind>,
+    session_id: Option<&'a str>,
+    limit: usize,
+    offset: usize,
+}
 
 const TURN_SUMMARY_COLUMNS: &[&str] = &[
     "project_id",
@@ -302,30 +318,59 @@ pub fn list_project_index_aggregates(index_db_path: &Path) -> Result<Vec<Project
 /// Queries the indexed session list for one project.
 pub fn query_project_sessions(
     index_db_path: &Path,
-    project_id: &str,
-    project_root: Option<&Path>,
-    since: Option<&str>,
-    until: Option<&str>,
-    touched_path: Option<&str>,
+    request: SessionsQueryRequest<'_>,
 ) -> Result<SessionsQueryData> {
     let connection = open_existing_index_database(index_db_path)?;
-    let sessions = query_sessions(&connection, project_id, since, until, None, None)?;
-    let sessions = if let Some(touched_path) = touched_path {
-        filter_session_summaries_by_touched_path(
+    let (sessions, has_more) = if let Some(touched_path) = request.touched_path {
+        let sessions = query_sessions(
             &connection,
-            project_id,
-            project_root,
+            SessionSummaryQuery {
+                project_id: request.project_id,
+                since: request.since,
+                until: request.until,
+                provider: None,
+                session_id: None,
+                limit: UNBOUNDED_SESSION_QUERY_LIMIT,
+                offset: 0,
+            },
+        )?;
+        let sessions = filter_session_summaries_by_touched_path(
+            &connection,
+            request.project_id,
+            request.project_root,
             sessions,
             touched_path,
-        )?
+        )?;
+        paginate_ranked_rows(sessions, request.limit, request.offset)?
     } else {
-        sessions
+        let page_limit = request
+            .limit
+            .checked_add(1)
+            .context("query limit exceeds usize range")?;
+        let mut sessions = query_sessions(
+            &connection,
+            SessionSummaryQuery {
+                project_id: request.project_id,
+                since: request.since,
+                until: request.until,
+                provider: None,
+                session_id: None,
+                limit: page_limit,
+                offset: request.offset,
+            },
+        )?;
+        let has_more = sessions.len() > request.limit;
+        sessions.truncate(request.limit);
+        (sessions, has_more)
     };
     Ok(SessionsQueryData {
-        project_id: project_id.to_owned(),
-        since: since.map(str::to_owned),
-        until: until.map(str::to_owned),
-        touched_path: touched_path.map(str::to_owned),
+        project_id: request.project_id.to_owned(),
+        since: request.since.map(str::to_owned),
+        until: request.until.map(str::to_owned),
+        touched_path: request.touched_path.map(str::to_owned),
+        limit: u64::try_from(request.limit).context("query limit exceeds u64 range")?,
+        offset: u64::try_from(request.offset).context("query offset exceeds u64 range")?,
+        has_more,
         sessions,
     })
 }
@@ -457,19 +502,26 @@ fn build_turns_query(
 /// Queries the indexed sessions for one configured project.
 pub(crate) fn query_sessions(
     connection: &Connection,
-    project_id: &str,
-    since: Option<&str>,
-    until: Option<&str>,
-    provider: Option<SourceKind>,
-    session_id: Option<&str>,
+    request: SessionSummaryQuery<'_>,
 ) -> Result<Vec<SessionSummary>> {
-    let provider = provider.map(SourceKind::directory_name);
+    let provider = request.provider.map(SourceKind::directory_name);
+    let limit = i64::try_from(request.limit).context("query limit exceeds SQLite INTEGER range")?;
+    let offset =
+        i64::try_from(request.offset).context("query offset exceeds SQLite INTEGER range")?;
     let mut statement = connection
         .prepare(PROJECT_SESSIONS_SQL)
         .context("failed to prepare indexed session query")?;
     let rows = statement
         .query_map(
-            params![project_id, since, until, provider, session_id],
+            params![
+                request.project_id,
+                request.since,
+                request.until,
+                provider,
+                request.session_id,
+                limit,
+                offset
+            ],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -583,11 +635,15 @@ pub(crate) fn query_session_summary(
     let session_ref = format!("{}:{session_id}", provider.directory_name());
     query_sessions(
         connection,
-        project_id,
-        None,
-        None,
-        Some(provider),
-        Some(session_id),
+        SessionSummaryQuery {
+            project_id,
+            since: None,
+            until: None,
+            provider: Some(provider),
+            session_id: Some(session_id),
+            limit: 1,
+            offset: 0,
+        },
     )?
     .into_iter()
     .next()

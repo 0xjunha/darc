@@ -12,7 +12,7 @@ use rusqlite::{Connection, params_from_iter, types::Value};
 use super::{
     CoTouchedFileSummary, FileSessionSummary, FilesQueryData, FilesQueryMode, FilesQueryRequest,
     SessionFileSummary, SessionFilesQueryData, SessionSummary, open_existing_index_database,
-    parse_provider, sql_count_to_u64,
+    paginate_ranked_rows, parse_provider, sql_count_to_u64,
 };
 
 const MAX_SESSION_KEYS_PER_QUERY: usize = 250;
@@ -313,9 +313,6 @@ fn build_files_query(
         .filter(|value| !value.is_empty());
     match (path, co_touched_with) {
         (Some(path), None) => {
-            if request.limit.is_some() {
-                bail!("--limit requires --co-touched-with");
-            }
             let sessions = query_file_session_matches(
                 connection,
                 request.project_id,
@@ -324,6 +321,8 @@ fn build_files_query(
                 request.since,
                 request.until,
             )?;
+            let (sessions, has_more) =
+                paginate_ranked_rows(sessions, request.limit, request.offset)?;
             Ok(FilesQueryData {
                 project_id: request.project_id.to_owned(),
                 mode: FilesQueryMode::Path,
@@ -331,7 +330,9 @@ fn build_files_query(
                 co_touched_with: None,
                 since: request.since.map(str::to_owned),
                 until: request.until.map(str::to_owned),
-                limit: None,
+                limit: u64::try_from(request.limit).context("query limit exceeds u64 range")?,
+                offset: u64::try_from(request.offset).context("query offset exceeds u64 range")?,
+                has_more,
                 sessions,
                 files: Vec::new(),
             })
@@ -348,8 +349,8 @@ fn build_files_query(
                 request.project_id,
                 request.project_root,
                 seed_path,
-                request.limit,
             )?;
+            let (files, has_more) = paginate_ranked_rows(files, request.limit, request.offset)?;
             Ok(FilesQueryData {
                 project_id: request.project_id.to_owned(),
                 mode: FilesQueryMode::CoTouchedWith,
@@ -357,10 +358,9 @@ fn build_files_query(
                 co_touched_with: Some(seed_path.to_owned()),
                 since: None,
                 until: None,
-                limit: request
-                    .limit
-                    .map(|value| u64::try_from(value).context("query limit exceeds u64 range"))
-                    .transpose()?,
+                limit: u64::try_from(request.limit).context("query limit exceeds u64 range")?,
+                offset: u64::try_from(request.offset).context("query offset exceeds u64 range")?,
+                has_more,
                 sessions: Vec::new(),
                 files,
             })
@@ -517,7 +517,6 @@ fn query_co_touched_files(
     project_id: &str,
     project_root: Option<&Path>,
     seed_path: &str,
-    limit: Option<usize>,
 ) -> Result<Vec<CoTouchedFileSummary>> {
     let seed_path = normalize_project_scoped_query_path(project_root, seed_path);
     let Some(seed_path) = seed_path else {
@@ -589,9 +588,6 @@ fn query_co_touched_files(
             .cmp(&left.co_touch_count)
             .then_with(|| left.path.cmp(&right.path))
     });
-    if let Some(limit) = limit {
-        files.truncate(limit);
-    }
     Ok(files)
 }
 

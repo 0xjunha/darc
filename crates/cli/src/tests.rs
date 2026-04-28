@@ -355,6 +355,10 @@ fn parses_query_sessions_touched_path_filter() {
         "repo-abc123",
         "--touched-path",
         "src/components/**",
+        "--limit",
+        "25",
+        "--offset",
+        "50",
         "--json",
     ])
     .unwrap();
@@ -364,11 +368,15 @@ fn parses_query_sessions_touched_path_filter() {
             command: QueryCommands::Sessions(super::QuerySessionsArgs {
                 project_id,
                 touched_path,
+                limit,
+                offset,
                 json,
                 ..
             }),
         }) if project_id.as_deref() == Some("repo-abc123")
             && touched_path.as_deref() == Some("src/components/**")
+            && limit == 25
+            && offset == 50
             && json
     ));
 }
@@ -400,6 +408,7 @@ fn parses_query_files_path_command() {
                 since,
                 until,
                 limit,
+                offset,
                 json,
                 ..
             }),
@@ -408,7 +417,8 @@ fn parses_query_files_path_command() {
             && co_touched_with.is_none()
             && since.as_deref() == Some("30d")
             && until.as_deref() == Some("2026-04-07T00:00:00Z")
-            && limit.is_none()
+            && limit == 50
+            && offset == 0
             && json
     ));
 }
@@ -425,6 +435,8 @@ fn parses_query_files_co_touched_command() {
         "src/components/planner.rs",
         "--limit",
         "10",
+        "--offset",
+        "5",
         "--json",
     ])
     .unwrap();
@@ -436,13 +448,15 @@ fn parses_query_files_co_touched_command() {
                 path,
                 co_touched_with,
                 limit,
+                offset,
                 json,
                 ..
             }),
         }) if project_id.as_deref() == Some("repo-abc123")
             && path.is_none()
             && co_touched_with.as_deref() == Some("src/components/planner.rs")
-            && limit == Some(10)
+            && limit == 10
+            && offset == 5
             && json
     ));
 }
