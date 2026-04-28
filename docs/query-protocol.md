@@ -20,6 +20,7 @@ Query commands emit JSON envelopes on stdout by default.
 
 - `darc query resolve-session <uuid-or-prefix> [--root <path>] [--project-id <id>] [--provider <provider>] [--pick-one]`
 - `darc query sessions [--root <path>] [--project-id <id>] [--provider <provider>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--touched-path <glob>] [--limit <n>] [--offset <n>]`
+- `darc query files [--root <path>] [--project-id <id>] [--provider <provider>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>]`
 - `darc query files [--root <path>] [--project-id <id>] [--provider <provider>] <path-or-glob> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>]`
 - `darc query files [--root <path>] [--project-id <id>] [--provider <provider>] --path <path-or-glob> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>]`
 - `darc query files [--root <path>] [--project-id <id>] [--provider <provider>] --co-touched-with <path> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>]`
@@ -48,14 +49,14 @@ Query commands emit JSON envelopes on stdout by default.
 - `darc query resolve-session` accepts either one full UUID or one UUID prefix and returns `project_id`, `provider`, and `session_id` for each match
 - `darc query search turns` defaults to `--mode keyword`; pass `--mode` only for literal, regex, or file/path search modes
 - `darc query search turns` accepts query text positionally or with `--query`; use `--query` for query text that begins with `-`
-- `darc query files` treats positional `<path-or-glob>` as path mode; `--path` is the explicit equivalent
+- `darc query files` with no path selector ranks top touched files; positional `<path-or-glob>` uses path mode, and `--path` is the explicit equivalent
 - session-scoped commands accept `<session-id>` positionally or with `--session-id`; Darc infers `--provider` when that session id is unique within the project
 - turn-scoped commands accept `<turn-ordinal>` positionally or with `--turn-ordinal`
 - do not pass both positional and flag forms for the same value
 - pass `--provider` when the same session id exists for multiple providers
-- `darc query files` requires exactly one of positional path, `--path`, or `--co-touched-with`
-- `--since` and `--until` on `darc query files` apply to both path and co-touch modes
-- `--limit` and `--offset` are accepted by `darc query sessions`, `darc query turns`, `darc query search turns`, and both `darc query files` modes; these row/turn-hit limits default to `--limit 50 --offset 0`
+- `darc query files` accepts at most one of positional path, `--path`, or `--co-touched-with`; omit all three for top-file mode
+- `--since` and `--until` on `darc query files` apply to top-file, path, and co-touch modes
+- `--limit` and `--offset` are accepted by `darc query sessions`, `darc query turns`, `darc query search turns`, and every `darc query files` mode; these row/turn-hit limits default to `--limit 50 --offset 0`
 - `--turn-limit` and `--turn-offset` on `darc query session-bundle` bound embedded turn details and default to `--turn-limit 50 --turn-offset 0`
 - `darc query turn` and `darc query session-bundle` default to `--view narrative`; pass `--view full` when raw tool arguments, outputs, or payload blobs are needed
 - `--turn-limit` on `darc query insights project` is an inspection bound over indexed turns, not response pagination; the previous `--limit` spelling is accepted as a compatibility alias
@@ -98,6 +99,16 @@ The protocol is intentionally composable. A few common read patterns are now fir
     --mode regex \
     "panic: .*" \
     --include-tool-output
+  ```
+
+- list top touched files for initial discovery:
+
+  ```bash
+  darc query files \
+    --root ~/.darc \
+    --project-id repo-abc123 \
+    --since 30d \
+    --limit 20
   ```
 
 - pivot from a file path to the sessions that touched it:
@@ -365,8 +376,13 @@ Today:
 Today:
 
 - `darc.query.files.v1` includes `project_id`, `mode`, nullable `provider`, nullable `path`, nullable `co_touched_with`, nullable `since`, nullable `until`, non-null `limit`, non-null `offset`, non-null `has_more`, plus `sessions` and `files` arrays
+- `mode=top` is selected when no positional path, `--path`, or `--co-touched-with` is supplied; it populates `files` and leaves `sessions` empty
 - `mode=path` populates `sessions` and leaves `files` empty
 - `mode=co_touched_with` populates `files` and leaves `sessions` empty
+- `mode=top` applies `--since` and `--until` to touched turns using `turns.started_at`, with inclusive lower-bound and exclusive upper-bound semantics
+- `mode=top` ranks file rows by higher `touch_count`, then higher `session_count`, then newer `last_touched_at`, then `path` ascending
+- `mode=top` applies `--limit` and `--offset` after ranking the project-wide touched files
+- `mode=top` file rows report `path`, nullable `co_touch_count`, `touch_count`, `session_count`, `read_count`, `write_count`, `first_touched_at`, and `last_touched_at`; `co_touch_count` is `null` in top mode
 - `mode=path` applies `--since` and `--until` to touched turns using `turns.started_at`, with inclusive lower-bound and exclusive upper-bound semantics
 - `mode=path` ranks session rows by higher `touch_count`, then newer `last_touched_at`, then `provider`, then `session_id`
 - `mode=path` applies `--limit` and `--offset` after ranking the matching sessions
@@ -378,7 +394,7 @@ Today:
 - `mode=co_touched_with` applies `--since` and `--until` to both seed-path matches and returned co-touch rows using `turns.started_at`, with inclusive lower-bound and exclusive upper-bound semantics
 - `mode=co_touched_with` ranks file rows by higher `co_touch_count`, then `path` ascending
 - `mode=co_touched_with` applies `--limit` and `--offset` after ranking the co-touched files
-- `mode=co_touched_with` file rows report `path` plus the number of distinct sessions that touched both that file and the seed file
+- `mode=co_touched_with` file rows report `path`, non-null `co_touch_count`, and nullable top-mode metrics; top-mode metrics are `null` in co-touch mode
 - `darc.query.session_files.v1` reports `project_id`, `provider`, `session_id`, and deterministic `files`
 - `session_files` rows report canonical `path`, best-effort `repo_relative_path`, `read_count`, `write_count`, `first_turn_ordinal`, and `last_turn_ordinal`
 - `session_files` rows collapse equivalent absolute, repo-relative, and `./`-prefixed accesses for the same in-repo file onto one canonical display path before counting

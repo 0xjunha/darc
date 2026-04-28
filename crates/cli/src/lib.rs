@@ -218,7 +218,11 @@ enum QueryCommands {
     ResolveSession(QueryResolveSessionArgs),
     /// Queries the session list for one configured project.
     Sessions(QuerySessionsArgs),
-    /// Queries file pivots for one configured project.
+    /// Lists top files or pivots from one file selector.
+    #[command(
+        about = "List top files or pivot from one file selector",
+        long_about = "List top files or pivot from one file selector.\n\nWith no PATH, --path, or --co-touched-with, this ranks touched files across the project.\nPass PATH or --path to return sessions that touched matching paths.\nPass --co-touched-with to return files touched in the same sessions as the seed path."
+    )]
     Files(QueryFilesArgs),
     /// Queries per-file access summaries for one session.
     SessionFiles(QuerySessionFilesArgs),
@@ -358,7 +362,7 @@ struct QueryTurnsArgs {
     offset: usize,
 }
 
-/// Queries file pivots for one configured project.
+/// Lists top files or pivots from one file selector.
 #[derive(Debug, Args)]
 struct QueryFilesArgs {
     #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
@@ -375,19 +379,19 @@ struct QueryFilesArgs {
 
     #[arg(
         long,
-        help = "Return sessions that touched file paths matching this glob"
+        help = "Return sessions that touched file paths matching this glob instead of top files"
     )]
     path: Option<String>,
 
     #[arg(
         value_name = "PATH",
-        help = "Return sessions that touched this path or glob"
+        help = "Return sessions that touched this path or glob instead of top files"
     )]
     path_arg: Option<String>,
 
     #[arg(
         long = "co-touched-with",
-        help = "Return files that were touched in the same sessions as this seed path"
+        help = "Return files touched in the same sessions as this seed path instead of top files"
     )]
     co_touched_with: Option<String>,
 
@@ -915,7 +919,7 @@ fn run_query_sessions(args: QuerySessionsArgs) -> Result<()> {
     print_json_envelope("darc.query.sessions.v1", &data)
 }
 
-/// Queries file pivots for one configured project.
+/// Lists top files or pivots from one file selector for one configured project.
 fn run_query_files(args: QueryFilesArgs) -> Result<()> {
     let path = optional_named_or_positional(
         "file path",
@@ -926,9 +930,6 @@ fn run_query_files(args: QueryFilesArgs) -> Result<()> {
     )?;
     if path.is_some() && args.co_touched_with.is_some() {
         bail!("query files accepts either PATH/--path or --co-touched-with, not both");
-    }
-    if path.is_none() && args.co_touched_with.is_none() {
-        bail!("query files requires PATH, --path, or --co-touched-with");
     }
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
     let since = args

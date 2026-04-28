@@ -10,7 +10,7 @@ use glob::{MatchOptions, Pattern};
 use rusqlite::{Connection, params_from_iter, types::Value};
 
 use super::{
-    CoTouchedFileSummary, FileSessionSummary, FilesQueryData, FilesQueryMode, FilesQueryRequest,
+    FilePivotSummary, FileSessionSummary, FilesQueryData, FilesQueryMode, FilesQueryRequest,
     SessionFileSummary, SessionFilesQueryData, SessionSummary, open_existing_index_database,
     paginate_ranked_rows, parse_provider, sql_count_to_u64,
 };
@@ -65,6 +65,16 @@ struct FileSessionAccumulator {
     first_touched_at: String,
     last_touched_at: String,
     matched_paths: BTreeSet<String>,
+}
+
+/// Stores one in-progress project-wide file ranking row.
+#[derive(Debug, Clone)]
+struct TouchedFileAccumulator {
+    session_keys: BTreeSet<SessionKey>,
+    read_count: u64,
+    write_count: u64,
+    first_touched_at: String,
+    last_touched_at: String,
 }
 
 /// Stores the supported path-selector plans used to narrow file-access queries in SQL.
@@ -371,6 +381,31 @@ fn build_files_query(
         .map(str::trim)
         .filter(|value| !value.is_empty());
     match (path, co_touched_with) {
+        (None, None) => {
+            let files = query_top_touched_files(
+                connection,
+                request.project_id,
+                request.project_root,
+                request.provider,
+                request.since,
+                request.until,
+            )?;
+            let (files, has_more) = paginate_ranked_rows(files, request.limit, request.offset)?;
+            Ok(FilesQueryData {
+                project_id: request.project_id.to_owned(),
+                mode: FilesQueryMode::Top,
+                provider: request.provider,
+                path: None,
+                co_touched_with: None,
+                since: request.since.map(str::to_owned),
+                until: request.until.map(str::to_owned),
+                limit: u64::try_from(request.limit).context("query limit exceeds u64 range")?,
+                offset: u64::try_from(request.offset).context("query offset exceeds u64 range")?,
+                has_more,
+                sessions: Vec::new(),
+                files,
+            })
+        }
         (Some(path), None) => {
             let sessions = query_file_session_matches(
                 connection,
@@ -427,7 +462,6 @@ fn build_files_query(
         (Some(_), Some(_)) => {
             bail!("query files requires exactly one of --path or --co-touched-with")
         }
-        (None, None) => bail!("query files requires exactly one of --path or --co-touched-with"),
     }
 }
 
@@ -468,6 +502,84 @@ pub(crate) fn build_session_files_query(
         session_id: session_id.to_owned(),
         files,
     })
+}
+
+/// Queries project-wide touched files ranked by access frequency.
+fn query_top_touched_files(
+    connection: &Connection,
+    project_id: &str,
+    project_root: Option<&Path>,
+    provider: Option<SourceKind>,
+    since: Option<&str>,
+    until: Option<&str>,
+) -> Result<Vec<FilePivotSummary>> {
+    let rows = query_raw_session_file_rows(
+        connection,
+        project_id,
+        SessionFileQueryFilters {
+            provider,
+            session_id: None,
+            since,
+            until,
+            path_selector: None,
+        },
+    )?;
+    let mut files = BTreeMap::<String, TouchedFileAccumulator>::new();
+    for row in aggregate_session_file_rows(rows, project_root) {
+        let key = SessionKey {
+            provider: row.provider,
+            session_id: row.session_id.clone(),
+        };
+        files
+            .entry(row.path.clone())
+            .and_modify(|file| {
+                file.session_keys.insert(key.clone());
+                file.read_count = file.read_count.saturating_add(row.read_count);
+                file.write_count = file.write_count.saturating_add(row.write_count);
+                if row.first_touched_at < file.first_touched_at {
+                    file.first_touched_at = row.first_touched_at.clone();
+                }
+                if row.last_touched_at > file.last_touched_at {
+                    file.last_touched_at = row.last_touched_at.clone();
+                }
+            })
+            .or_insert_with(|| TouchedFileAccumulator {
+                session_keys: BTreeSet::from([key]),
+                read_count: row.read_count,
+                write_count: row.write_count,
+                first_touched_at: row.first_touched_at.clone(),
+                last_touched_at: row.last_touched_at.clone(),
+            });
+    }
+
+    let mut files = files
+        .into_iter()
+        .map(|(path, file)| {
+            let touch_count = file.read_count.saturating_add(file.write_count);
+            FilePivotSummary {
+                path,
+                co_touch_count: None,
+                touch_count: Some(touch_count),
+                session_count: Some(
+                    u64::try_from(file.session_keys.len())
+                        .expect("session count should fit into u64"),
+                ),
+                read_count: Some(file.read_count),
+                write_count: Some(file.write_count),
+                first_touched_at: Some(file.first_touched_at),
+                last_touched_at: Some(file.last_touched_at),
+            }
+        })
+        .collect::<Vec<_>>();
+    files.sort_by(|left, right| {
+        right
+            .touch_count
+            .cmp(&left.touch_count)
+            .then_with(|| right.session_count.cmp(&left.session_count))
+            .then_with(|| right.last_touched_at.cmp(&left.last_touched_at))
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    Ok(files)
 }
 
 /// Queries one file-to-session pivot ranked by descending touch frequency.
@@ -580,7 +692,7 @@ fn query_co_touched_files(
     since: Option<&str>,
     until: Option<&str>,
     seed_path: &str,
-) -> Result<Vec<CoTouchedFileSummary>> {
+) -> Result<Vec<FilePivotSummary>> {
     let seed_path = normalize_project_scoped_query_path(project_root, seed_path);
     let Some(seed_path) = seed_path else {
         return Ok(Vec::new());
@@ -645,9 +757,15 @@ fn query_co_touched_files(
 
     let mut files = co_touched_counts
         .into_iter()
-        .map(|(path, co_touch_count)| CoTouchedFileSummary {
+        .map(|(path, co_touch_count)| FilePivotSummary {
             path,
-            co_touch_count,
+            co_touch_count: Some(co_touch_count),
+            touch_count: None,
+            session_count: None,
+            read_count: None,
+            write_count: None,
+            first_touched_at: None,
+            last_touched_at: None,
         })
         .collect::<Vec<_>>();
     files.sort_by(|left, right| {

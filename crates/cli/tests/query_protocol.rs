@@ -443,6 +443,40 @@ fn files_query_path_mode_emits_success_envelope() -> Result<()> {
 }
 
 #[test]
+fn files_query_without_selector_emits_top_files() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-files-top")?;
+
+    let output = run_darc([
+        "query",
+        "files",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--limit",
+        "5",
+    ])?;
+
+    assert!(output.status.success());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.files.v1");
+    assert_eq!(value["data"]["project_id"], "repo-abc123");
+    assert_eq!(value["data"]["mode"], "top");
+    assert_eq!(value["data"]["path"], Value::Null);
+    assert_eq!(value["data"]["co_touched_with"], Value::Null);
+    assert_eq!(value["data"]["limit"], 5);
+    assert_eq!(value["data"]["sessions"], Value::Array(vec![]));
+    assert_eq!(value["data"]["files"][0]["path"], "README.md");
+    assert_eq!(value["data"]["files"][0]["touch_count"], 1);
+    assert_eq!(value["data"]["files"][0]["session_count"], 1);
+    assert_eq!(value["data"]["files"][0]["read_count"], 1);
+    assert_eq!(value["data"]["files"][0]["write_count"], 0);
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
 fn files_query_co_touched_mode_accepts_time_bounds() -> Result<()> {
     let root = create_query_fixture_root("cli-query-files-co-touch-time")?;
 

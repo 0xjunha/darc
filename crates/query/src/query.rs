@@ -200,6 +200,7 @@ pub struct ResolveSessionQueryRequest<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FilesQueryMode {
+    Top,
     Path,
     CoTouchedWith,
 }
@@ -219,14 +220,20 @@ pub struct FileSessionSummary {
     pub matched_paths: Vec<String>,
 }
 
-/// Stores one co-touched file ranked by how many seed sessions also touched it.
+/// Stores one file row returned by a file-pivot query.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CoTouchedFileSummary {
+pub struct FilePivotSummary {
     pub path: String,
-    pub co_touch_count: u64,
+    pub co_touch_count: Option<u64>,
+    pub touch_count: Option<u64>,
+    pub session_count: Option<u64>,
+    pub read_count: Option<u64>,
+    pub write_count: Option<u64>,
+    pub first_touched_at: Option<String>,
+    pub last_touched_at: Option<String>,
 }
 
-/// Stores one file-level query payload for path pivots and co-touch ranking.
+/// Stores one file-level query payload for top-file, path, and co-touch ranking.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FilesQueryData {
     pub project_id: String,
@@ -240,7 +247,7 @@ pub struct FilesQueryData {
     pub offset: u64,
     pub has_more: bool,
     pub sessions: Vec<FileSessionSummary>,
-    pub files: Vec<CoTouchedFileSummary>,
+    pub files: Vec<FilePivotSummary>,
 }
 
 /// Collects the supported inputs for one file-pivot query request.

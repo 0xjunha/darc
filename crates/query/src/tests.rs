@@ -22,7 +22,7 @@ use darc_test_utils::{
 use serde_json::to_value;
 
 use crate::query::{
-    FilesQueryRequest, HardDebuggingTurn, LocalDate, ProjectInsights, SearchMode,
+    FilesQueryMode, FilesQueryRequest, HardDebuggingTurn, LocalDate, ProjectInsights, SearchMode,
     SearchTurnsRequest, SessionBundleQueryRequest, SessionBundleView, SessionKind,
     SessionsQueryRequest, TurnDetailOptions, TurnInsights, TurnsQueryRequest, TurnsView,
     build_project_insights, build_turn_insights, build_workspace_insights,
@@ -1289,6 +1289,20 @@ fn query_files_path_mode_ranks_sessions_and_respects_time_bounds() -> Result<()>
             offset: 0,
         },
     )?;
+    let top = query_project_files(
+        &index_path,
+        FilesQueryRequest {
+            project_id: "repo-a",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            provider: None,
+            path: None,
+            co_touched_with: None,
+            since: None,
+            until: None,
+            limit: 50,
+            offset: 0,
+        },
+    )?;
 
     assert_eq!(
         exact
@@ -1310,6 +1324,41 @@ fn query_files_path_mode_ranks_sessions_and_respects_time_bounds() -> Result<()>
     assert_eq!(exact.offset, 0);
     assert!(!exact.has_more);
     assert_eq!(codex_exact.provider, Some(SourceKind::Codex));
+    assert_eq!(top.mode, FilesQueryMode::Top);
+    assert_eq!(top.path, None);
+    assert_eq!(top.co_touched_with, None);
+    assert_eq!(
+        top.files
+            .iter()
+            .map(|file| (
+                file.path.as_str(),
+                file.touch_count,
+                file.session_count,
+                file.read_count,
+                file.write_count,
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                "src/components/planner.rs",
+                Some(3),
+                Some(3),
+                Some(3),
+                Some(0),
+            ),
+            (
+                "src/components/context.rs",
+                Some(1),
+                Some(1),
+                Some(0),
+                Some(1),
+            ),
+        ]
+    );
+    assert_eq!(
+        top.files[0].last_touched_at.as_deref(),
+        Some("2026-04-06T10:00:00Z")
+    );
     assert_eq!(
         codex_exact
             .sessions
@@ -1452,9 +1501,9 @@ fn query_files_co_touched_mode_counts_sessions_and_sorts_ties() -> Result<()> {
             .map(|file| (file.path.as_str(), file.co_touch_count))
             .collect::<Vec<_>>(),
         vec![
-            ("src/components/context.rs", 2),
-            ("src/components/alpha.rs", 1),
-            ("src/components/api.rs", 1),
+            ("src/components/context.rs", Some(2)),
+            ("src/components/alpha.rs", Some(1)),
+            ("src/components/api.rs", Some(1)),
         ]
     );
     assert_eq!(result.limit, 10);
@@ -1483,7 +1532,7 @@ fn query_files_co_touched_mode_counts_sessions_and_sorts_ties() -> Result<()> {
             .iter()
             .map(|file| (file.path.as_str(), file.co_touch_count))
             .collect::<Vec<_>>(),
-        vec![("src/components/alpha.rs", 1)]
+        vec![("src/components/alpha.rs", Some(1))]
     );
 
     fs::remove_dir_all(
@@ -1574,7 +1623,7 @@ fn query_files_co_touched_mode_applies_time_bounds() -> Result<()> {
             .iter()
             .map(|file| (file.path.as_str(), file.co_touch_count))
             .collect::<Vec<_>>(),
-        vec![("src/components/inside.rs", 1)]
+        vec![("src/components/inside.rs", Some(1))]
     );
 
     fs::remove_dir_all(

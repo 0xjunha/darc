@@ -3,7 +3,7 @@ mod query;
 mod tests;
 
 pub use query::{
-    CoTouchedFileSummary, DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, DailyTimeStat, FileSessionSummary,
+    DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, DailyTimeStat, FilePivotSummary, FileSessionSummary,
     FileUsageStat, FilesQueryData, FilesQueryMode, FilesQueryRequest, HardDebuggingTurn,
     ProjectIndexAggregate, ProjectInsights, ProjectSummary, ProjectTimeStat,
     ResolveSessionQueryData, ResolveSessionQueryRequest, ResolvedSessionMatch, RootAvailability,
