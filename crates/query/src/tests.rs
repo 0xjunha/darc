@@ -1871,7 +1871,7 @@ fn turn_detail_narrative_view_strips_bulky_step_fields() -> Result<()> {
         "session-1",
         0,
         TurnDetailOptions {
-            include_raw: true,
+            include_raw: false,
             include_insights: false,
             narrative: true,
         },
@@ -1927,6 +1927,25 @@ fn turn_detail_narrative_view_strips_bulky_step_fields() -> Result<()> {
             ..
         } if payload_json.is_empty() && item_type == "web_search_call"
     ));
+
+    let error = query_turn_detail(
+        &index_path,
+        "repo-a",
+        SourceKind::Codex,
+        "session-1",
+        0,
+        TurnDetailOptions {
+            include_raw: true,
+            include_insights: false,
+            narrative: true,
+        },
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("raw turn payloads require full turn detail view")
+    );
 
     fs::remove_dir_all(
         index_path

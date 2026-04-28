@@ -420,7 +420,7 @@ Today:
 - `tool_call` keeps `timestamp`, `call_id`, and `name`, but clears `arguments`
 - `tool_call_output` keeps `timestamp` and `call_id`, but clears `output`
 - `attachment`, `delegation`, `hook_summary`, and `provider_response_item` keep their identifying metadata, but clear `payload_json`
-- `raw_steps_json` is forced to `null` in narrative view even when `--include-raw` is set
+- `raw_steps_json` is forced to `null` in narrative view; explicit `--view narrative --include-raw` is rejected, while omitted `--view` plus `--include-raw` implies `--view full`
 
 ### Turn search
 
@@ -476,7 +476,7 @@ Raw/debug payload fields are optional and command-specific.
 
 Today:
 
-- `darc query turn --view full --include-raw` includes `raw_steps_json`
+- `darc query turn --include-raw` includes `raw_steps_json` and implies `--view full` when no explicit `--view` is supplied
 - `darc query turn --include-insights` includes `insights`
 - without `--include-raw`, `raw_steps_json` is currently still present in the response and set to `null`
 - without `--include-insights`, `insights` is currently still present in the response and set to `null`

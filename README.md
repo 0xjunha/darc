@@ -120,7 +120,7 @@ single-call session bundles.
 - `darc query files <path>`, `darc query session-files <session-id>`, and
   `darc query session-bundle <session-id>` let clients pivot between matched files, touched sessions, per-session file
   summaries, and bounded one-call session detail bundles. Turn detail and session bundle reads default to narrative
-  payloads; pass `--view full` only when raw tool arguments, outputs, or payload blobs are needed.
+  payloads; pass `--view full` or `--include-raw` only when raw tool arguments, outputs, or payload blobs are needed.
 - `darc query resolve-session` explicitly expands a UUID prefix before you call session-scoped data commands and
   includes `project_id` with each match for multi-project roots.
 Examples:

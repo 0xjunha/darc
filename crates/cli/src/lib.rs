@@ -517,10 +517,9 @@ struct QueryTurnArgs {
     #[arg(
         long,
         value_enum,
-        default_value_t = ViewArg::Narrative,
-        help = "Step detail level. `narrative` omits tool arguments, outputs, and payload blobs"
+        help = "Step detail level. Defaults to narrative unless --include-raw is set; `narrative` omits tool arguments, outputs, and payload blobs"
     )]
-    view: ViewArg,
+    view: Option<ViewArg>,
 
     #[arg(
         long,
@@ -1035,6 +1034,14 @@ fn run_query_turn(args: QueryTurnArgs) -> Result<()> {
         args.provider.map(provider_arg_to_source_kind),
         session_id,
     )?;
+    let view = match (args.view, args.include_raw) {
+        (Some(ViewArg::Narrative), true) => {
+            bail!("--include-raw requires --view full; omit --view to let --include-raw imply full")
+        }
+        (Some(view), _) => view,
+        (None, true) => ViewArg::Full,
+        (None, false) => ViewArg::Narrative,
+    };
     let data = query_turn_for_project(
         &project,
         session.provider,
@@ -1043,7 +1050,7 @@ fn run_query_turn(args: QueryTurnArgs) -> Result<()> {
         TurnDetailOptions {
             include_raw: args.include_raw,
             include_insights: args.include_insights,
-            narrative: matches!(args.view, ViewArg::Narrative),
+            narrative: matches!(view, ViewArg::Narrative),
         },
     )?;
     print_json_envelope("darc.query.turn.v1", &data)

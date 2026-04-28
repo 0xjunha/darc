@@ -795,6 +795,9 @@ impl IndexedTurnRow {
         options: TurnDetailOptions,
         insights: Option<TurnDetailInsights>,
     ) -> Result<TurnDetail> {
+        if options.include_raw && options.narrative {
+            bail!("raw turn payloads require full turn detail view");
+        }
         let steps = serde_json::from_str::<Vec<NormalizedTurnStep>>(&self.steps_json)
             .context("failed to parse stored normalized turn steps")?;
         let steps = if options.narrative {
