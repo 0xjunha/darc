@@ -458,7 +458,7 @@ struct QuerySessionBundleArgs {
     #[arg(
         long,
         value_enum,
-        default_value_t = ViewArg::Full,
+        default_value_t = ViewArg::Narrative,
         help = "Turn detail level. `narrative` omits tool arguments, outputs, and payload blobs"
     )]
     view: ViewArg,
@@ -517,7 +517,7 @@ struct QueryTurnArgs {
     #[arg(
         long,
         value_enum,
-        default_value_t = ViewArg::Full,
+        default_value_t = ViewArg::Narrative,
         help = "Step detail level. `narrative` omits tool arguments, outputs, and payload blobs"
     )]
     view: ViewArg,

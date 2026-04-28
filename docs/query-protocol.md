@@ -57,6 +57,7 @@ Query commands emit JSON envelopes on stdout by default.
 - `--since` and `--until` on `darc query files` require path mode
 - `--limit` and `--offset` are accepted by `darc query sessions`, `darc query turns`, `darc query search turns`, and both `darc query files` modes; these row/turn-hit limits default to `--limit 50 --offset 0`
 - `--turn-limit` and `--turn-offset` on `darc query session-bundle` bound embedded turn details and default to `--turn-limit 50 --turn-offset 0`
+- `darc query turn` and `darc query session-bundle` default to `--view narrative`; pass `--view full` when raw tool arguments, outputs, or payload blobs are needed
 - `--turn-limit` on `darc query insights project` is an inspection bound over indexed turns, not response pagination; the previous `--limit` spelling is accepted as a compatibility alias
 - `--include-tool-output` on `darc query search turns` is accepted only with `--mode literal` or `--mode regex`
 - session-scoped data commands require a full UUID session id; malformed ids return `invalid_session_id`, unknown UUIDs return `unknown_session`, ambiguous cross-provider UUIDs return `ambiguous_session`, and UUID-like prefixes fail explicitly instead of auto-resolving
@@ -124,7 +125,6 @@ The protocol is intentionally composable. A few common read patterns are now fir
     --root ~/.darc \
     --project-id repo-abc123 \
     "$ID" \
-    --view narrative \
     --turn-limit 20
   ```
 
@@ -412,7 +412,7 @@ Today:
 
 ### Narrative turn detail
 
-`darc query turn --view narrative` keeps the same `darc.query.turn.v1` schema but projects each step down to the conversational structure without the bulky tool arguments, tool outputs, or raw payload blobs.
+`darc query turn` defaults to `--view narrative`, which keeps the same `darc.query.turn.v1` schema but projects each step down to the conversational structure without the bulky tool arguments, tool outputs, or raw payload blobs.
 
 Today:
 
@@ -476,7 +476,7 @@ Raw/debug payload fields are optional and command-specific.
 
 Today:
 
-- `darc query turn --include-raw` includes `raw_steps_json`
+- `darc query turn --view full --include-raw` includes `raw_steps_json`
 - `darc query turn --include-insights` includes `insights`
 - without `--include-raw`, `raw_steps_json` is currently still present in the response and set to `null`
 - without `--include-insights`, `insights` is currently still present in the response and set to `null`

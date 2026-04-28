@@ -484,8 +484,6 @@ fn session_bundle_query_emits_success_envelope() -> Result<()> {
         "--project-id",
         "repo-abc123",
         PRIMARY_SESSION_ID,
-        "--view",
-        "narrative",
     ])?;
 
     assert!(output.status.success());
@@ -1253,6 +1251,8 @@ fn turn_query_emits_success_envelope_and_raw_field() -> Result<()> {
         "repo-abc123",
         PRIMARY_SESSION_ID,
         "0",
+        "--view",
+        "full",
         "--include-raw",
     ])?;
 
