@@ -1120,6 +1120,8 @@ fn search_turns_query_emits_literal_evidence_matches() -> Result<()> {
     assert_eq!(value["schema"], "darc.query.search.turns.v1");
     assert_eq!(value["data"]["mode"], "literal");
     assert_eq!(value["data"]["include_tool_output"], false);
+    assert_eq!(value["data"]["fields"], Value::Array(vec![]));
+    assert_eq!(value["data"]["excluded_fields"], Value::Array(vec![]));
     assert_eq!(value["data"]["since"], "2026-04-06T00:00:00Z");
     assert_eq!(value["data"]["until"], "2026-04-07T00:00:00Z");
     assert_eq!(value["data"]["hits"][0]["turn_ordinal"], 1);
@@ -1132,6 +1134,57 @@ fn search_turns_query_emits_literal_evidence_matches() -> Result<()> {
             .as_str()
             .is_some_and(|snippet| snippet.contains("--output-last-message"))
     );
+
+    let literal_content_only = run_darc([
+        "query",
+        "search",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--mode",
+        "literal",
+        "--query",
+        "Captured the output.",
+        "--field",
+        "final-answer",
+    ])?;
+
+    assert!(literal_content_only.status.success());
+    let content_value = parse_json(&literal_content_only.stdout, "stdout")?;
+    assert_eq!(
+        content_value["data"]["fields"],
+        serde_json::json!(["final_answer"])
+    );
+    assert_eq!(
+        content_value["data"]["hits"][0]["matches"][0]["field"],
+        "final_answer"
+    );
+
+    let literal_without_tool_args = run_darc([
+        "query",
+        "search",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--mode",
+        "literal",
+        "--query",
+        "--output-last-message",
+        "--exclude-field",
+        "tool-arguments",
+    ])?;
+
+    assert!(literal_without_tool_args.status.success());
+    let excluded_value = parse_json(&literal_without_tool_args.stdout, "stdout")?;
+    assert_eq!(
+        excluded_value["data"]["excluded_fields"],
+        serde_json::json!(["tool_arguments"])
+    );
+    assert_eq!(excluded_value["data"]["hits"], Value::Array(vec![]));
 
     let literal_hidden_output = run_darc([
         "query",

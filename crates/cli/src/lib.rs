@@ -10,9 +10,9 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use darc_core::query::{
     DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, FilesQueryRequest, QueryProtocolError,
-    ResolveSessionQueryRequest, ResolvedQueryProject, ResolvedSessionMatch, SearchMode,
-    SearchTurnsRequest, SessionBundleQueryRequest, SessionBundleView, TurnDetailOptions,
-    TurnsQueryRequest, TurnsView, query_files_for_project,
+    ResolveSessionQueryRequest, ResolvedQueryProject, ResolvedSessionMatch, SearchEvidenceField,
+    SearchMode, SearchTurnsRequest, SessionBundleQueryRequest, SessionBundleView,
+    TurnDetailOptions, TurnsQueryRequest, TurnsView, query_files_for_project,
     query_project_insight_report_for_project, query_resolve_sessions,
     query_search_turns_for_project, query_session_bundle_for_project,
     query_session_files_for_project, query_sessions_for_project, query_turn_for_project,
@@ -606,6 +606,22 @@ struct QuerySearchTurnsArgs {
     )]
     include_tool_output: bool,
 
+    #[arg(
+        long = "field",
+        value_name = "FIELD",
+        value_parser = parse_search_evidence_field,
+        help = "Restrict literal and regex search to this evidence field"
+    )]
+    fields: Vec<SearchEvidenceField>,
+
+    #[arg(
+        long = "exclude-field",
+        value_name = "FIELD",
+        value_parser = parse_search_evidence_field,
+        help = "Exclude this evidence field from literal and regex search"
+    )]
+    excluded_fields: Vec<SearchEvidenceField>,
+
     #[arg(long, default_value_t = 50, help = "Maximum turn hits to return")]
     limit: usize,
 
@@ -1103,6 +1119,8 @@ fn run_query_search_turns(args: QuerySearchTurnsArgs) -> Result<()> {
             mode,
             query,
             include_tool_output: args.include_tool_output,
+            fields: &args.fields,
+            excluded_fields: &args.excluded_fields,
             provider: args.provider.map(provider_arg_to_source_kind),
             session_id: session_id.as_deref(),
             since: since.as_deref(),
@@ -1335,6 +1353,25 @@ fn resolve_query_time_bound_at(
     now: std::time::SystemTime,
 ) -> std::result::Result<String, String> {
     darc_paths::resolve_query_time_bound_at(value, now)
+}
+
+/// Parses one exact-search evidence field from snake_case or CLI kebab-case text.
+fn parse_search_evidence_field(value: &str) -> Result<SearchEvidenceField, String> {
+    SearchEvidenceField::parse_label(value).ok_or_else(|| {
+        format!(
+            "unsupported evidence field `{value}`; expected one of {}",
+            supported_search_evidence_fields()
+        )
+    })
+}
+
+/// Formats the accepted exact-search evidence field names for CLI errors.
+fn supported_search_evidence_fields() -> String {
+    SearchEvidenceField::ALL
+        .iter()
+        .map(|field| field.as_str().replace('_', "-"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Converts one parsed provider argument back into the shared source kind.

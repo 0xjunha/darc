@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 pub use bundles::query_project_session_bundle;
+pub use darc_index::evidence::EvidenceField as SearchEvidenceField;
 use darc_index::{open_index_database, policy::HardDebuggingCandidate};
 use darc_paths::SourceKind;
 use darc_rollout::model::{NormalizedTokenUsage, NormalizedTurnStatus, NormalizedTurnStep};
@@ -364,6 +365,8 @@ pub struct SearchTurnsQueryData {
     pub mode: SearchMode,
     pub query: String,
     pub include_tool_output: bool,
+    pub fields: Vec<String>,
+    pub excluded_fields: Vec<String>,
     pub provider: Option<SourceKind>,
     pub session_id: Option<String>,
     pub since: Option<String>,
@@ -382,6 +385,8 @@ pub struct SearchTurnsRequest<'a> {
     pub mode: SearchMode,
     pub query: &'a str,
     pub include_tool_output: bool,
+    pub fields: &'a [SearchEvidenceField],
+    pub excluded_fields: &'a [SearchEvidenceField],
     pub provider: Option<SourceKind>,
     pub session_id: Option<&'a str>,
     pub since: Option<&'a str>,

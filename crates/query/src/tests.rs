@@ -2654,6 +2654,8 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             mode: SearchMode::Keyword,
             query: "Inspect",
             include_tool_output: false,
+            fields: &[],
+            excluded_fields: &[],
             provider: None,
             session_id: None,
             since: None,
@@ -2670,6 +2672,8 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             mode: SearchMode::Keyword,
             query: "SECRET_TOKEN",
             include_tool_output: false,
+            fields: &[],
+            excluded_fields: &[],
             provider: None,
             session_id: None,
             since: None,
@@ -2698,6 +2702,8 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             mode: SearchMode::Literal,
             query: "SECRET_TOKEN=top-secret",
             include_tool_output: false,
+            fields: &[],
+            excluded_fields: &[],
             provider: None,
             session_id: None,
             since: None,
@@ -2714,6 +2720,8 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             mode: SearchMode::Regex,
             query: "SECRET_[A-Z]+=top-secret",
             include_tool_output: false,
+            fields: &[],
+            excluded_fields: &[],
             provider: None,
             session_id: None,
             since: None,
@@ -2730,6 +2738,8 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             mode: SearchMode::Literal,
             query: "SECRET_TOKEN=top-secret",
             include_tool_output: true,
+            fields: &[],
+            excluded_fields: &[],
             provider: None,
             session_id: None,
             since: None,
@@ -2746,6 +2756,8 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             mode: SearchMode::Regex,
             query: "SECRET_[A-Z]+=top-secret",
             include_tool_output: true,
+            fields: &[],
+            excluded_fields: &[],
             provider: None,
             session_id: None,
             since: None,
@@ -2762,6 +2774,8 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             mode: SearchMode::Literal,
             query: "SHARED_EXACT_MARKER",
             include_tool_output: false,
+            fields: &[],
+            excluded_fields: &[],
             provider: None,
             session_id: None,
             since: None,
@@ -2778,6 +2792,8 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             mode: SearchMode::Regex,
             query: "SHARED_EXACT_[A-Z]+",
             include_tool_output: false,
+            fields: &[],
+            excluded_fields: &[],
             provider: None,
             session_id: None,
             since: None,
@@ -2786,6 +2802,60 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             offset: 0,
         },
     )?;
+    let content_only_literal_result = query_search_turns(
+        &index_path,
+        SearchTurnsRequest {
+            project_id: "repo-a",
+            project_root: None,
+            mode: SearchMode::Literal,
+            query: "SHARED_EXACT_MARKER",
+            include_tool_output: false,
+            fields: &[EvidenceField::UserMessage, EvidenceField::FinalAnswer],
+            excluded_fields: &[],
+            provider: None,
+            session_id: None,
+            since: None,
+            until: None,
+            limit: 10,
+            offset: 0,
+        },
+    )?;
+    let excluded_tool_arguments_result = query_search_turns(
+        &index_path,
+        SearchTurnsRequest {
+            project_id: "repo-a",
+            project_root: None,
+            mode: SearchMode::Literal,
+            query: "SHARED_EXACT_MARKER",
+            include_tool_output: false,
+            fields: &[],
+            excluded_fields: &[EvidenceField::ToolArguments],
+            provider: None,
+            session_id: None,
+            since: None,
+            until: None,
+            limit: 10,
+            offset: 0,
+        },
+    )?;
+    let tool_output_field_without_opt_in = query_search_turns(
+        &index_path,
+        SearchTurnsRequest {
+            project_id: "repo-a",
+            project_root: None,
+            mode: SearchMode::Literal,
+            query: "SECRET_TOKEN=top-secret",
+            include_tool_output: false,
+            fields: &[EvidenceField::ToolOutput],
+            excluded_fields: &[],
+            provider: None,
+            session_id: None,
+            since: None,
+            until: None,
+            limit: 10,
+            offset: 0,
+        },
+    );
 
     assert!(!literal_result.include_tool_output);
     assert!(literal_result.hits.is_empty());
@@ -2811,6 +2881,22 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
     assert_eq!(
         shared_regex_result.hits[0].matches[0].field,
         "tool_arguments"
+    );
+    assert_eq!(
+        content_only_literal_result.fields,
+        vec!["user_message".to_owned(), "final_answer".to_owned()]
+    );
+    assert!(content_only_literal_result.hits.is_empty());
+    assert_eq!(
+        excluded_tool_arguments_result.excluded_fields,
+        vec!["tool_arguments".to_owned()]
+    );
+    assert!(excluded_tool_arguments_result.hits.is_empty());
+    assert!(
+        tool_output_field_without_opt_in
+            .unwrap_err()
+            .to_string()
+            .contains("--field tool-output requires --include-tool-output")
     );
 
     fs::remove_dir_all(
@@ -2936,6 +3022,8 @@ fn search_turns_exact_modes_match_extended_evidence_fields() -> Result<()> {
                 mode,
                 query,
                 include_tool_output: false,
+                fields: &[],
+                excluded_fields: &[],
                 provider: None,
                 session_id: None,
                 since: None,
@@ -3011,6 +3099,8 @@ fn search_turns_exact_modes_preserve_outer_whitespace() -> Result<()> {
                 mode,
                 query: " error ",
                 include_tool_output: true,
+                fields: &[],
+                excluded_fields: &[],
                 provider: None,
                 session_id: None,
                 since: None,
@@ -3081,6 +3171,8 @@ fn search_turns_exact_modes_cap_nested_matches() -> Result<()> {
             mode: SearchMode::Literal,
             query: "repeated-marker",
             include_tool_output: false,
+            fields: &[],
+            excluded_fields: &[],
             provider: None,
             session_id: None,
             since: None,
@@ -3163,6 +3255,8 @@ fn search_turns_literal_filters_evidence_before_preview_cap() -> Result<()> {
             mode: SearchMode::Literal,
             query: "late-literal-marker",
             include_tool_output: false,
+            fields: &[],
+            excluded_fields: &[],
             provider: None,
             session_id: None,
             since: None,
@@ -3253,6 +3347,8 @@ fn search_turns_literal_streams_past_legacy_candidate_cap() -> Result<()> {
             mode: SearchMode::Literal,
             query: "rare-literal-needle",
             include_tool_output: false,
+            fields: &[],
+            excluded_fields: &[],
             provider: None,
             session_id: None,
             since: None,
@@ -3337,6 +3433,8 @@ fn search_turns_regex_streams_past_legacy_candidate_cap() -> Result<()> {
             mode: SearchMode::Regex,
             query: "rare-regex-[a-z]+",
             include_tool_output: false,
+            fields: &[],
+            excluded_fields: &[],
             provider: None,
             session_id: None,
             since: None,
@@ -3394,6 +3492,8 @@ fn search_turns_file_modes_match_derived_paths() -> Result<()> {
             mode: SearchMode::FileName,
             query: "main,old.rs",
             include_tool_output: false,
+            fields: &[],
+            excluded_fields: &[],
             provider: None,
             session_id: None,
             since: None,
@@ -3410,6 +3510,8 @@ fn search_turns_file_modes_match_derived_paths() -> Result<()> {
             mode: SearchMode::FilePath,
             query: "src/main,old.rs",
             include_tool_output: false,
+            fields: &[],
+            excluded_fields: &[],
             provider: None,
             session_id: None,
             since: None,
@@ -3426,6 +3528,8 @@ fn search_turns_file_modes_match_derived_paths() -> Result<()> {
             mode: SearchMode::FilePath,
             query: "/tmp/repo-a/src/**",
             include_tool_output: false,
+            fields: &[],
+            excluded_fields: &[],
             provider: None,
             session_id: None,
             since: None,
@@ -3442,6 +3546,8 @@ fn search_turns_file_modes_match_derived_paths() -> Result<()> {
             mode: SearchMode::PathFragment,
             query: "main,old",
             include_tool_output: false,
+            fields: &[],
+            excluded_fields: &[],
             provider: None,
             session_id: None,
             since: None,
@@ -3526,6 +3632,8 @@ fn search_turns_file_modes_dedupe_before_pagination() -> Result<()> {
             mode: SearchMode::FileName,
             query: "foo",
             include_tool_output: false,
+            fields: &[],
+            excluded_fields: &[],
             provider: None,
             session_id: None,
             since: None,
