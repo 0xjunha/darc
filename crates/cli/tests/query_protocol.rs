@@ -247,6 +247,7 @@ fn sessions_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["since"], Value::Null);
     assert_eq!(value["data"]["until"], Value::Null);
     assert_eq!(value["data"]["touched_path"], Value::Null);
+    assert_eq!(value["data"]["view"], "compact");
     assert_eq!(
         value["data"]["sessions"][0]["session_id"],
         PRIMARY_SESSION_ID
@@ -261,10 +262,18 @@ fn sessions_query_emits_success_envelope() -> Result<()> {
         value["data"]["sessions"][0]["first_user_prompt"],
         "Inspect the repository status"
     );
+    assert_eq!(
+        value["data"]["sessions"][0]["first_user_prompt_truncated"],
+        false
+    );
     assert_eq!(value["data"]["sessions"][0]["aborted_turn_count"], 0);
     assert_eq!(
         value["data"]["sessions"][0]["edited_files"],
         Value::Array(vec![])
+    );
+    assert_eq!(
+        value["data"]["sessions"][0]["edited_files_truncated"],
+        false
     );
     assert_eq!(value["data"]["sessions"][0]["total_token_count"], 321);
     assert_eq!(
@@ -329,7 +338,6 @@ fn sessions_query_defaults_project_id_from_current_directory() -> Result<()> {
     assert_eq!(value["data"]["limit"], 50);
     assert_eq!(value["data"]["offset"], 0);
     assert_eq!(value["data"]["has_more"], false);
-    assert_eq!(value["data"]["matched_path_limit"], 20);
 
     remove_root(&root)?;
     Ok(())
@@ -772,12 +780,15 @@ fn sessions_query_includes_first_turn_abort_counts_and_edited_files() -> Result<
         root.to_string_lossy().as_ref(),
         "--project-id",
         "repo-abc123",
+        "--view",
+        "full",
     ])?;
 
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
     let value = parse_json(&output.stdout, "stdout")?;
     assert_eq!(value["schema"], "darc.query.sessions.v1");
+    assert_eq!(value["data"]["view"], "full");
     assert_eq!(
         value["data"]["sessions"][0]["first_turn_at"],
         "2026-04-06T10:00:00Z"

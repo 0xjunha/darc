@@ -12,9 +12,9 @@ use darc_core::query::{
     DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, FilesQueryRequest,
     QueryProtocolError, ResolveSessionQueryRequest, ResolvedQueryProject, ResolvedSessionMatch,
     SearchEvidenceField, SearchMode, SearchTurnsRequest, SessionBundleQueryRequest,
-    SessionBundleView, TurnDetailOptions, TurnsQueryRequest, TurnsView, query_files_for_project,
-    query_project_insight_report_for_project, query_resolve_sessions,
-    query_search_turns_for_project, query_session_bundle_for_project,
+    SessionBundleView, SessionsQueryRequest, SessionsView, TurnDetailOptions, TurnsQueryRequest,
+    TurnsView, query_files_for_project, query_project_insight_report_for_project,
+    query_resolve_sessions, query_search_turns_for_project, query_session_bundle_for_project,
     query_session_files_for_project, query_sessions_for_project, query_turn_for_project,
     query_turn_insight_report_for_project, query_turns_for_project, query_workspace,
     query_workspace_insight_report, resolve_query_project,
@@ -302,6 +302,14 @@ struct QuerySessionsArgs {
         help = "Only keep sessions that touched a file path matching this glob"
     )]
     touched_path: Option<String>,
+
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = SessionListViewArg::Compact,
+        help = "Return full session rows or compact prompt/file previews"
+    )]
+    view: SessionListViewArg,
 
     #[arg(long, default_value_t = 50, help = "Maximum sessions to return")]
     limit: usize,
@@ -805,6 +813,13 @@ enum SearchModeArg {
     PathFragment,
 }
 
+/// Represents the supported session-list projections.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum SessionListViewArg {
+    Compact,
+    Full,
+}
+
 /// Represents the supported turn-list projections for machine-readable turn queries.
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
 enum TurnListViewArg {
@@ -937,12 +952,17 @@ fn run_query_sessions(args: QuerySessionsArgs) -> Result<()> {
         .transpose()?;
     let data = query_sessions_for_project(
         &project,
-        args.provider.map(provider_arg_to_source_kind),
-        since.as_deref(),
-        until.as_deref(),
-        args.touched_path.as_deref(),
-        args.limit,
-        args.offset,
+        SessionsQueryRequest {
+            project_id: "",
+            project_root: None,
+            provider: args.provider.map(provider_arg_to_source_kind),
+            since: since.as_deref(),
+            until: until.as_deref(),
+            touched_path: args.touched_path.as_deref(),
+            view: session_list_view_arg_to_view(args.view),
+            limit: args.limit,
+            offset: args.offset,
+        },
     )?;
     print_json_envelope("darc.query.sessions.v1", &data)
 }
@@ -1459,6 +1479,14 @@ fn search_mode_arg_to_search_mode(mode: SearchModeArg) -> SearchMode {
         SearchModeArg::FileName => SearchMode::FileName,
         SearchModeArg::FilePath => SearchMode::FilePath,
         SearchModeArg::PathFragment => SearchMode::PathFragment,
+    }
+}
+
+/// Converts one parsed session-list view argument into the shared query projection enum.
+fn session_list_view_arg_to_view(view: SessionListViewArg) -> SessionsView {
+    match view {
+        SessionListViewArg::Compact => SessionsView::Compact,
+        SessionListViewArg::Full => SessionsView::Full,
     }
 }
 

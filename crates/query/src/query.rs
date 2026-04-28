@@ -156,8 +156,19 @@ pub struct SessionSummary {
     pub removed_line_count: u64,
     pub first_turn_at: Option<String>,
     pub first_user_prompt: Option<String>,
+    pub first_user_prompt_truncated: bool,
     pub aborted_turn_count: u64,
     pub edited_files: Vec<String>,
+    pub edited_files_truncated: bool,
+}
+
+/// Identifies the supported session-list projection modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionsView {
+    #[default]
+    Compact,
+    Full,
 }
 
 /// Stores the full session-list query payload for one project.
@@ -168,6 +179,7 @@ pub struct SessionsQueryData {
     pub since: Option<String>,
     pub until: Option<String>,
     pub touched_path: Option<String>,
+    pub view: SessionsView,
     pub limit: u64,
     pub offset: u64,
     pub has_more: bool,
@@ -183,6 +195,7 @@ pub struct SessionsQueryRequest<'a> {
     pub since: Option<&'a str>,
     pub until: Option<&'a str>,
     pub touched_path: Option<&'a str>,
+    pub view: SessionsView,
     pub limit: usize,
     pub offset: usize,
 }

@@ -15,9 +15,10 @@ pub use darc_query::{
     RootInfo, SearchEvidenceField, SearchMode, SearchTurnHit, SearchTurnMatch,
     SearchTurnsQueryData, SearchTurnsRequest, SessionBundleQueryData, SessionBundleQueryRequest,
     SessionBundleView, SessionFileSummary, SessionFilesQueryData, SessionKind, SessionRuntimeStat,
-    SessionSummary, SessionsQueryData, SessionsQueryRequest, ShellCommandSummary, ToolUsageStat,
-    TurnDetail, TurnDetailInsights, TurnDetailOptions, TurnInsights, TurnSummary, TurnsQueryData,
-    TurnsQueryRequest, TurnsView, WorkspaceDailyTimeStat, WorkspaceInsights, WorkspaceQueryData,
+    SessionSummary, SessionsQueryData, SessionsQueryRequest, SessionsView, ShellCommandSummary,
+    ToolUsageStat, TurnDetail, TurnDetailInsights, TurnDetailOptions, TurnInsights, TurnSummary,
+    TurnsQueryData, TurnsQueryRequest, TurnsView, WorkspaceDailyTimeStat, WorkspaceInsights,
+    WorkspaceQueryData,
 };
 use darc_query::{
     ProjectIndexAggregate, list_project_index_aggregates, lookup_project_session_matches,
@@ -148,12 +149,7 @@ pub fn resolve_query_config_project(
 /// Queries the session-list payload for one already-resolved configured project.
 pub fn query_sessions_for_project(
     project: &ResolvedQueryProject,
-    provider: Option<SourceKind>,
-    since: Option<&str>,
-    until: Option<&str>,
-    touched_path: Option<&str>,
-    limit: usize,
-    offset: usize,
+    request: SessionsQueryRequest<'_>,
 ) -> Result<SessionsQueryData> {
     let context = &project.context;
     query_project_sessions(
@@ -161,12 +157,8 @@ pub fn query_sessions_for_project(
         SessionsQueryRequest {
             project_id: &context.project.id,
             project_root: Some(context.project.local_path.as_path()),
-            provider,
-            since,
-            until,
-            touched_path,
-            limit,
-            offset,
+            provider: request.provider,
+            ..request
         },
     )
 }
@@ -177,15 +169,7 @@ pub fn query_sessions(
     request: SessionsQueryRequest<'_>,
 ) -> Result<SessionsQueryData> {
     let project = resolve_query_project(root, Some(request.project_id))?;
-    query_sessions_for_project(
-        &project,
-        request.provider,
-        request.since,
-        request.until,
-        request.touched_path,
-        request.limit,
-        request.offset,
-    )
+    query_sessions_for_project(&project, request)
 }
 
 /// Queries one file-pivot payload for one already-resolved configured project.

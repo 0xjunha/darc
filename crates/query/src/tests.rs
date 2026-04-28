@@ -24,12 +24,12 @@ use serde_json::to_value;
 use crate::query::{
     DEFAULT_MATCHED_PATH_LIMIT, FilesQueryMode, FilesQueryRequest, HardDebuggingTurn, LocalDate,
     ProjectInsights, SearchMode, SearchTurnsRequest, SessionBundleQueryRequest, SessionBundleView,
-    SessionKind, SessionsQueryRequest, TurnDetailOptions, TurnInsights, TurnsQueryRequest,
-    TurnsView, build_project_insights, build_turn_insights, build_workspace_insights,
-    open_existing_index_database, parse_session_kind, query_project_files,
-    query_project_session_bundle, query_project_session_files, query_project_sessions,
-    query_project_turns, query_search_turns, query_session_turn_details, query_turn_detail,
-    query_turn_exists, smoke_test_sql,
+    SessionKind, SessionsQueryRequest, SessionsView, TurnDetailOptions, TurnInsights,
+    TurnsQueryRequest, TurnsView, build_project_insights, build_turn_insights,
+    build_workspace_insights, open_existing_index_database, parse_session_kind,
+    query_project_files, query_project_session_bundle, query_project_session_files,
+    query_project_sessions, query_project_turns, query_search_turns, query_session_turn_details,
+    query_turn_detail, query_turn_exists, smoke_test_sql,
 };
 
 /// Builds one temporary SQLite index path for query tests.
@@ -581,6 +581,7 @@ fn session_summaries_leave_partial_token_and_runtime_totals_null() -> Result<()>
             since: None,
             until: None,
             touched_path: None,
+            view: SessionsView::Full,
             limit: 50,
             offset: 0,
         },
@@ -590,6 +591,109 @@ fn session_summaries_leave_partial_token_and_runtime_totals_null() -> Result<()>
     assert_eq!(sessions.sessions[0].total_token_count, None);
     assert_eq!(sessions.sessions[0].token_usage, None);
     assert_eq!(sessions.sessions[0].effective_agent_runtime_ms, None);
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn session_summaries_compact_view_caps_prompt_and_files() -> Result<()> {
+    let index_path = test_index_path("session-compact-view");
+    let connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
+    )?;
+    let prompt = "a".repeat(300);
+    let steps_json = format!(
+        "[{}]",
+        (0..12)
+            .map(|index| {
+                format!(
+                    r#"{{"type":"tool_call","timestamp":"2026-04-05T12:00:{index:02}Z","call_id":"call-{index}","name":"Edit","arguments":"{{\"file_path\":\"src/file-{index:02}.rs\"}}"}}"#
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            user_message: &prompt,
+            step_count: 12,
+            tool_call_count: 12,
+            duration_ms: 3_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                0,
+                "2026-04-05T12:00:00Z",
+                "completed",
+                &steps_json,
+            )
+        },
+    )?;
+
+    let compact = query_project_sessions(
+        &index_path,
+        SessionsQueryRequest {
+            project_id: "repo-a",
+            project_root: None,
+            provider: None,
+            since: None,
+            until: None,
+            touched_path: None,
+            view: SessionsView::Compact,
+            limit: 50,
+            offset: 0,
+        },
+    )?;
+    let full = query_project_sessions(
+        &index_path,
+        SessionsQueryRequest {
+            project_id: "repo-a",
+            project_root: None,
+            provider: None,
+            since: None,
+            until: None,
+            touched_path: None,
+            view: SessionsView::Full,
+            limit: 50,
+            offset: 0,
+        },
+    )?;
+
+    assert_eq!(compact.view, SessionsView::Compact);
+    assert_eq!(
+        compact.sessions[0]
+            .first_user_prompt
+            .as_ref()
+            .expect("prompt should exist")
+            .chars()
+            .count(),
+        240
+    );
+    assert!(compact.sessions[0].first_user_prompt_truncated);
+    assert_eq!(compact.sessions[0].edited_files.len(), 10);
+    assert!(compact.sessions[0].edited_files_truncated);
+    assert_eq!(full.view, SessionsView::Full);
+    assert_eq!(
+        full.sessions[0]
+            .first_user_prompt
+            .as_ref()
+            .expect("prompt should exist")
+            .chars()
+            .count(),
+        300
+    );
+    assert!(!full.sessions[0].first_user_prompt_truncated);
+    assert_eq!(full.sessions[0].edited_files.len(), 12);
+    assert!(!full.sessions[0].edited_files_truncated);
 
     fs::remove_dir_all(
         index_path
@@ -645,6 +749,7 @@ fn session_summaries_filter_by_latest_turn_bounds() -> Result<()> {
             since: None,
             until: None,
             touched_path: None,
+            view: SessionsView::Full,
             limit: 50,
             offset: 0,
         },
@@ -658,6 +763,7 @@ fn session_summaries_filter_by_latest_turn_bounds() -> Result<()> {
             since: Some("2026-04-06T00:00:00Z"),
             until: None,
             touched_path: None,
+            view: SessionsView::Full,
             limit: 50,
             offset: 0,
         },
@@ -671,6 +777,7 @@ fn session_summaries_filter_by_latest_turn_bounds() -> Result<()> {
             since: None,
             until: Some("2026-04-06T00:00:00Z"),
             touched_path: None,
+            view: SessionsView::Full,
             limit: 50,
             offset: 0,
         },
@@ -684,6 +791,7 @@ fn session_summaries_filter_by_latest_turn_bounds() -> Result<()> {
             since: Some("2026-04-05T12:00:00Z"),
             until: Some("2026-04-06T12:00:00Z"),
             touched_path: None,
+            view: SessionsView::Full,
             limit: 50,
             offset: 0,
         },
@@ -767,6 +875,7 @@ fn session_summaries_filter_by_provider() -> Result<()> {
             since: None,
             until: None,
             touched_path: None,
+            view: SessionsView::Full,
             limit: 50,
             offset: 0,
         },
@@ -872,6 +981,7 @@ fn session_summaries_filter_by_touched_path_glob() -> Result<()> {
             since: None,
             until: None,
             touched_path: Some("src/components/**"),
+            view: SessionsView::Full,
             limit: 50,
             offset: 0,
         },
@@ -976,6 +1086,7 @@ fn session_summaries_touched_path_uses_latest_turn_time_bounds() -> Result<()> {
             since: Some("2026-04-07T00:00:00Z"),
             until: None,
             touched_path: Some("src/components/**"),
+            view: SessionsView::Full,
             limit: 50,
             offset: 0,
         },
@@ -1034,6 +1145,7 @@ fn session_summaries_accept_absolute_project_root_touched_paths() -> Result<()> 
             since: None,
             until: None,
             touched_path: Some("/tmp/repo-a/README.md"),
+            view: SessionsView::Full,
             limit: 50,
             offset: 0,
         },
@@ -1113,6 +1225,7 @@ fn session_summaries_paginate_after_touched_path_filter() -> Result<()> {
             since: None,
             until: None,
             touched_path: Some("src/**/*.rs"),
+            view: SessionsView::Full,
             limit: 2,
             offset: 0,
         },
@@ -1126,6 +1239,7 @@ fn session_summaries_paginate_after_touched_path_filter() -> Result<()> {
             since: None,
             until: None,
             touched_path: Some("src/**/*.rs"),
+            view: SessionsView::Full,
             limit: 2,
             offset: 2,
         },

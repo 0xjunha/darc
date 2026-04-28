@@ -116,6 +116,8 @@ single-call session bundles.
 - project-scoped `darc query` commands accept optional `--project-id`; when omitted, Darc resolves the configured
   project from the current directory. Project pivots such as `sessions`, `files`, and `insights project` also accept
   `--provider` when a corpus mixes Codex and Claude history.
+- `darc query sessions` defaults to compact prompt/file previews for browsing; pass `--view full` when you need full
+  first prompts and complete edited-file lists.
 - `darc query turns` lists one known session by full UUID, inferring the provider unless the id is cross-provider
   ambiguous; content discovery lives under `darc query search turns`.
 - `darc query files` ranks top touched files for initial discovery. `darc query files <path>`,
