@@ -222,6 +222,8 @@ fn parses_query_resolve_session_command() {
         "query",
         "resolve-session",
         "11111111",
+        "--project-id",
+        "repo-abc123",
         "--provider",
         "codex",
         "--pick-one",
@@ -233,12 +235,14 @@ fn parses_query_resolve_session_command() {
         Commands::Query(super::QueryArgs {
             command: QueryCommands::ResolveSession(super::QueryResolveSessionArgs {
                 input,
+                project_id,
                 provider,
                 pick_one,
                 json,
                 ..
             }),
         }) if input == "11111111"
+            && project_id.as_deref() == Some("repo-abc123")
             && matches!(provider, Some(super::ProviderArg::Codex))
             && pick_one
             && json

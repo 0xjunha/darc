@@ -201,7 +201,7 @@ pub fn query_files(
     query_files_for_project(&project, request)
 }
 
-/// Resolves one full session id or UUID prefix across every indexed provider.
+/// Resolves one full session id or UUID prefix across indexed projects and providers.
 pub fn query_resolve_sessions(
     root: Option<PathBuf>,
     request: ResolveSessionQueryRequest<'_>,
@@ -577,14 +577,19 @@ impl QueryProtocolError {
             .map(|candidate| candidate.provider)
             .collect::<BTreeSet<_>>()
             .len();
+        let project_count = matches
+            .iter()
+            .map(|candidate| candidate.project_id.as_str())
+            .collect::<BTreeSet<_>>()
+            .len();
         let match_count = matches.len();
         let message = if truncated {
             format!(
-                "Prefix `{query}` matched at least {match_count} sessions across {provider_count} providers. Use a longer prefix or pass --provider."
+                "Prefix `{query}` matched at least {match_count} sessions across {project_count} projects and {provider_count} providers. Use a longer prefix or pass --project-id or --provider."
             )
         } else {
             format!(
-                "Prefix `{query}` matched {match_count} sessions across {provider_count} providers. Use a longer prefix or pass --provider."
+                "Prefix `{query}` matched {match_count} sessions across {project_count} projects and {provider_count} providers. Use a longer prefix or pass --project-id or --provider."
             )
         };
         Self::AmbiguousSession {

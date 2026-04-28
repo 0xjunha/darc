@@ -1516,7 +1516,7 @@ fn project_insights_query_emits_success_envelope() -> Result<()> {
         root.to_string_lossy().as_ref(),
         "--project-id",
         "repo-abc123",
-        "--limit",
+        "--turn-limit",
         "1000",
         "--json",
     ])?;
@@ -1863,6 +1863,7 @@ fn resolve_session_query_emits_single_match_success() -> Result<()> {
     let value = parse_json(&output.stdout, "stdout")?;
     assert_eq!(value["schema"], "darc.query.resolve_session.v1");
     assert_eq!(value["data"]["query"], PRIMARY_SESSION_PREFIX);
+    assert_eq!(value["data"]["matches"][0]["project_id"], "repo-abc123");
     assert_eq!(value["data"]["matches"][0]["provider"], "codex");
     assert_eq!(
         value["data"]["matches"][0]["session_id"],
@@ -1903,15 +1904,16 @@ fn resolve_session_query_lists_matches_and_reports_ambiguity() -> Result<()> {
             .iter()
             .map(|row| {
                 (
+                    row["project_id"].as_str().unwrap(),
                     row["provider"].as_str().unwrap(),
                     row["session_id"].as_str().unwrap(),
                 )
             })
             .collect::<Vec<_>>(),
         vec![
-            ("claude", TERTIARY_SESSION_ID),
-            ("codex", PRIMARY_SESSION_ID),
-            ("codex", SECONDARY_SESSION_ID),
+            ("repo-abc123", "claude", TERTIARY_SESSION_ID),
+            ("repo-abc123", "codex", PRIMARY_SESSION_ID),
+            ("repo-abc123", "codex", SECONDARY_SESSION_ID),
         ]
     );
 
@@ -1932,9 +1934,17 @@ fn resolve_session_query_lists_matches_and_reports_ambiguity() -> Result<()> {
             .as_array()
             .unwrap()
             .iter()
-            .map(|row| row["session_id"].as_str().unwrap())
+            .map(|row| {
+                (
+                    row["project_id"].as_str().unwrap(),
+                    row["session_id"].as_str().unwrap(),
+                )
+            })
             .collect::<Vec<_>>(),
-        vec![PRIMARY_SESSION_ID, SECONDARY_SESSION_ID]
+        vec![
+            ("repo-abc123", PRIMARY_SESSION_ID),
+            ("repo-abc123", SECONDARY_SESSION_ID)
+        ]
     );
 
     let ambiguous_output = run_darc([

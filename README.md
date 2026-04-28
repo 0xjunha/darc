@@ -112,11 +112,12 @@ single-call session bundles.
   `--include-tool-output` for forensic searches over command output, logs, or stack traces.
 - project-scoped `darc query` commands accept optional `--project-id`; when omitted, Darc resolves the configured
   project from the current directory.
-- `darc query turns` lists one known provider session (`--provider --session-id`, full UUID only); content discovery
-  lives under `darc query search turns`.
+- `darc query turns` lists one known provider session (`--provider --session-id`, full UUID only) with `--limit` /
+  `--offset`; content discovery lives under `darc query search turns`.
 - `darc query files`, `darc query session-files`, and `darc query session-bundle` let clients pivot between matched
-  files, touched sessions, per-session file summaries, and one-call session detail bundles.
-- `darc query resolve-session` explicitly expands a UUID prefix before you call session-scoped data commands.
+  files, touched sessions, per-session file summaries, and bounded one-call session detail bundles.
+- `darc query resolve-session` explicitly expands a UUID prefix before you call session-scoped data commands and
+  includes `project_id` with each match for multi-project roots.
 Examples:
 
 ```bash

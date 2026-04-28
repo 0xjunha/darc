@@ -222,15 +222,18 @@ const TOUCHED_SESSION_CANDIDATE_BATCH_ROWS: usize = if cfg!(test) { 2 } else { 2
 
 const RESOLVE_SESSIONS_SQL: &str = "
     SELECT DISTINCT
+        project_id,
         provider,
         session_id
     FROM sessions
-    WHERE (?1 IS NULL OR provider = ?1)
-        AND session_id LIKE ?2 || '%' COLLATE NOCASE
+    WHERE (?1 IS NULL OR project_id = ?1)
+        AND (?2 IS NULL OR provider = ?2)
+        AND session_id LIKE ?3 || '%' COLLATE NOCASE
     ORDER BY
+        project_id ASC,
         provider ASC,
         session_id ASC
-    LIMIT ?3
+    LIMIT ?4
 ";
 
 const PROJECT_SESSION_ID_SQL: &str = "
@@ -457,7 +460,7 @@ pub fn query_project_turns(
     build_turns_query(&connection, request)
 }
 
-/// Resolves one full session id or prefix into deterministic provider/session matches.
+/// Resolves one full session id or prefix into deterministic project/provider/session matches.
 pub fn query_resolve_sessions(
     index_db_path: &Path,
     request: ResolveSessionQueryRequest<'_>,
@@ -523,9 +526,16 @@ fn build_resolve_sessions_query(
         .prepare(RESOLVE_SESSIONS_SQL)
         .context("failed to prepare resolve-session query")?;
     let rows = statement
-        .query_map(params![provider, request.query, limit], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
+        .query_map(
+            params![request.project_id, provider, request.query, limit],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
         .context("failed to query session resolution matches")?
         .collect::<rusqlite::Result<Vec<_>>>()
         .context("failed to read session resolution rows")?;
@@ -533,8 +543,9 @@ fn build_resolve_sessions_query(
     let matches = rows
         .into_iter()
         .take(request.limit)
-        .map(|(provider, session_id)| -> Result<_> {
+        .map(|(project_id, provider, session_id)| -> Result<_> {
             Ok(ResolvedSessionMatch {
+                project_id,
                 provider: parse_provider(&provider)?,
                 session_id,
             })

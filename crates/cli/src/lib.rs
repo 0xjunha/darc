@@ -219,7 +219,7 @@ struct QueryWorkspaceArgs {
     json: bool,
 }
 
-/// Resolves one full session id or UUID prefix into canonical provider/session matches.
+/// Resolves one full session id or UUID prefix into canonical project/provider/session matches.
 #[derive(Debug, Args)]
 struct QueryResolveSessionArgs {
     #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
@@ -227,6 +227,12 @@ struct QueryResolveSessionArgs {
 
     #[arg(help = "Resolve this full UUID or UUID prefix")]
     input: String,
+
+    #[arg(
+        long = "project-id",
+        help = "Restrict matches to this configured project id"
+    )]
+    project_id: Option<String>,
 
     #[arg(long, value_enum, help = "Restrict matches to this provider")]
     provider: Option<ProviderArg>,
@@ -645,11 +651,12 @@ struct QueryProjectInsightsArgs {
     project_id: Option<String>,
 
     #[arg(
-        long,
+        long = "turn-limit",
+        alias = "limit",
         default_value_t = 1000,
         help = "Maximum indexed turns to inspect"
     )]
-    limit: usize,
+    turn_limit: usize,
 
     #[arg(
         long,
@@ -822,6 +829,7 @@ fn run_query_resolve_session(args: QueryResolveSessionArgs) -> Result<()> {
         Some(args.root),
         ResolveSessionQueryRequest {
             query: &args.input,
+            project_id: args.project_id.as_deref(),
             provider: args.provider.map(provider_arg_to_source_kind),
             limit: DEFAULT_RESOLVE_SESSION_MATCH_LIMIT,
         },
@@ -1076,7 +1084,7 @@ fn run_query_workspace_insights(args: QueryWorkspaceInsightsArgs) -> Result<()> 
 fn run_query_project_insights(args: QueryProjectInsightsArgs) -> Result<()> {
     ensure_json_requested(args.json)?;
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
-    let data = query_project_insight_report_for_project(&project, args.limit)?;
+    let data = query_project_insight_report_for_project(&project, args.turn_limit)?;
     print_json_envelope("darc.query.insights.project.v1", &data)
 }
 

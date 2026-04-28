@@ -170,6 +170,7 @@ pub struct SessionsQueryRequest<'a> {
 /// Stores one provider plus canonical session id candidate returned by `resolve-session`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ResolvedSessionMatch {
+    pub project_id: String,
     pub provider: SourceKind,
     pub session_id: String,
 }
@@ -187,6 +188,7 @@ pub struct ResolveSessionQueryData {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResolveSessionQueryRequest<'a> {
     pub query: &'a str,
+    pub project_id: Option<&'a str>,
     pub provider: Option<SourceKind>,
     pub limit: usize,
 }
