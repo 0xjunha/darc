@@ -46,8 +46,9 @@ const PROJECT_INSIGHT_ROWS_SQL: &str = "
         COALESCE(duration_ms, 0)
     FROM turns
     WHERE project_id = ?1
+        AND (?2 IS NULL OR provider = ?2)
     ORDER BY started_at DESC, provider ASC, session_id ASC, turn_ordinal ASC
-    LIMIT ?2
+    LIMIT ?3
 ";
 
 const TURN_TOOL_USAGE_SQL: &str = "
@@ -66,8 +67,9 @@ const RECENT_PROJECT_TOOL_USAGE_SQL: &str = "
         SELECT project_id, provider, session_id, turn_ordinal
         FROM turns
         WHERE project_id = ?1
+            AND (?2 IS NULL OR provider = ?2)
         ORDER BY started_at DESC, provider ASC, session_id ASC, turn_ordinal ASC
-        LIMIT ?2
+        LIMIT ?3
     )
     SELECT tool_calls.tool_name, COUNT(*) AS call_count
     FROM recent_turns
@@ -99,8 +101,9 @@ const RECENT_PROJECT_FILE_USAGE_SQL: &str = "
         SELECT project_id, provider, session_id, turn_ordinal
         FROM turns
         WHERE project_id = ?1
+            AND (?2 IS NULL OR provider = ?2)
         ORDER BY started_at DESC, provider ASC, session_id ASC, turn_ordinal ASC
-        LIMIT ?2
+        LIMIT ?3
     )
     SELECT
         file_accesses.path,
@@ -147,10 +150,11 @@ pub fn query_workspace_insights(
 pub fn query_project_insights(
     index_db_path: &Path,
     project_id: &str,
+    provider: Option<SourceKind>,
     limit: usize,
 ) -> Result<ProjectInsights> {
     let connection = open_existing_index_database(index_db_path)?;
-    build_project_insights(&connection, project_id, limit)
+    build_project_insights(&connection, project_id, provider, limit)
 }
 
 /// Builds one workspace insights report from indexed turn rows.
@@ -284,16 +288,25 @@ pub(crate) fn build_workspace_insights(
 pub(crate) fn build_project_insights(
     connection: &Connection,
     project_id: &str,
+    provider: Option<SourceKind>,
     limit: usize,
 ) -> Result<ProjectInsights> {
-    let rows = query_project_insight_rows(connection, project_id, limit)?;
+    let rows = query_project_insight_rows(connection, project_id, provider, limit)?;
     let all_files = query_file_usage_stats(
         connection,
-        FileUsageScope::RecentProject { project_id, limit },
+        FileUsageScope::RecentProject {
+            project_id,
+            provider,
+            limit,
+        },
     )?;
     let mut most_common_tools = query_tool_usage_stats(
         connection,
-        ToolUsageScope::RecentProject { project_id, limit },
+        ToolUsageScope::RecentProject {
+            project_id,
+            provider,
+            limit,
+        },
     )?;
     sort_tool_usage_stats(&mut most_common_tools);
     most_common_tools.truncate(10);
@@ -352,6 +365,7 @@ pub(crate) fn build_project_insights(
     most_written_files.truncate(10);
 
     Ok(ProjectInsights {
+        provider,
         daily_time: daily_time_map
             .into_iter()
             .map(|(date, active_time_ms)| DailyTimeStat {
@@ -430,15 +444,17 @@ fn query_workspace_insight_rows(
 fn query_project_insight_rows(
     connection: &Connection,
     project_id: &str,
+    provider: Option<SourceKind>,
     limit: usize,
 ) -> Result<Vec<ProjectInsightRow>> {
     let limit =
         i64::try_from(limit).context("project insights limit exceeds SQLite INTEGER range")?;
+    let provider = provider.map(SourceKind::directory_name);
     let mut statement = connection
         .prepare(PROJECT_INSIGHT_ROWS_SQL)
         .context("failed to prepare project insights query")?;
     let rows = statement
-        .query_map((project_id, limit), |row| {
+        .query_map((project_id, provider, limit), |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
@@ -512,14 +528,19 @@ pub(crate) fn query_tool_usage_stats(
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .context("failed to read turn tool usage rows")?
         }
-        ToolUsageScope::RecentProject { project_id, limit } => {
+        ToolUsageScope::RecentProject {
+            project_id,
+            provider,
+            limit,
+        } => {
             let limit = i64::try_from(limit)
                 .context("project insights limit exceeds SQLite INTEGER range")?;
+            let provider = provider.map(SourceKind::directory_name);
             let mut statement = connection
                 .prepare(RECENT_PROJECT_TOOL_USAGE_SQL)
                 .context("failed to prepare project tool usage query")?;
             statement
-                .query_map((project_id, limit), |row| {
+                .query_map((project_id, provider, limit), |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
                 })
                 .context("failed to query project tool usage rows")?
@@ -575,14 +596,19 @@ pub(crate) fn query_file_usage_stats(
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .context("failed to read turn file usage rows")?
         }
-        FileUsageScope::RecentProject { project_id, limit } => {
+        FileUsageScope::RecentProject {
+            project_id,
+            provider,
+            limit,
+        } => {
             let limit = i64::try_from(limit)
                 .context("project insights limit exceeds SQLite INTEGER range")?;
+            let provider = provider.map(SourceKind::directory_name);
             let mut statement = connection
                 .prepare(RECENT_PROJECT_FILE_USAGE_SQL)
                 .context("failed to prepare project file usage query")?;
             statement
-                .query_map((project_id, limit), |row| {
+                .query_map((project_id, provider, limit), |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, Option<String>>(1)?,

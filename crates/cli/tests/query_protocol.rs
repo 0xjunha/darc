@@ -443,6 +443,41 @@ fn files_query_path_mode_emits_success_envelope() -> Result<()> {
 }
 
 #[test]
+fn files_query_co_touched_mode_accepts_time_bounds() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-files-co-touch-time")?;
+
+    let output = run_darc([
+        "query",
+        "files",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--co-touched-with",
+        "README.md",
+        "--since",
+        "2026-04-06T09:00:00Z",
+        "--until",
+        "2026-04-07T00:00:00Z",
+    ])?;
+
+    assert!(output.status.success());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.files.v1");
+    assert_eq!(value["data"]["project_id"], "repo-abc123");
+    assert_eq!(value["data"]["mode"], "co_touched_with");
+    assert_eq!(value["data"]["path"], Value::Null);
+    assert_eq!(value["data"]["co_touched_with"], "README.md");
+    assert_eq!(value["data"]["since"], "2026-04-06T09:00:00Z");
+    assert_eq!(value["data"]["until"], "2026-04-07T00:00:00Z");
+    assert_eq!(value["data"]["sessions"], Value::Array(vec![]));
+    assert_eq!(value["data"]["files"], Value::Array(vec![]));
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
 fn session_files_query_emits_success_envelope() -> Result<()> {
     let root = create_query_fixture_root("cli-query-session-files")?;
 
@@ -1607,6 +1642,8 @@ fn project_insights_query_emits_success_envelope() -> Result<()> {
         root.to_string_lossy().as_ref(),
         "--project-id",
         "repo-abc123",
+        "--provider",
+        "codex",
         "--turn-limit",
         "1000",
     ])?;
@@ -1615,6 +1652,7 @@ fn project_insights_query_emits_success_envelope() -> Result<()> {
     assert!(output.stderr.is_empty());
     let value = parse_json(&output.stdout, "stdout")?;
     assert_eq!(value["schema"], "darc.query.insights.project.v1");
+    assert_eq!(value["data"]["provider"], "codex");
     assert_eq!(value["data"]["most_common_tools"][0]["name"], "Read");
     assert_eq!(value["data"]["total_time_ms"], 5000);
     assert_eq!(

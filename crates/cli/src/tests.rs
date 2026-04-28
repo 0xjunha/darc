@@ -315,6 +315,8 @@ fn parses_query_sessions_with_time_bounds() {
         "sessions",
         "--project-id",
         "repo-abc123",
+        "--provider",
+        "codex",
         "--since",
         "5d",
         "--until",
@@ -326,12 +328,14 @@ fn parses_query_sessions_with_time_bounds() {
         Commands::Query(super::QueryArgs {
             command: QueryCommands::Sessions(super::QuerySessionsArgs {
                 project_id,
+                provider,
                 since,
                 until,
                 touched_path,
                 ..
             }),
         }) if project_id.as_deref() == Some("repo-abc123")
+            && matches!(provider, Some(super::ProviderArg::Codex))
             && since.as_deref() == Some("5d")
             && until.as_deref() == Some("2026-04-07T00:00:00Z")
             && touched_path.is_none()
@@ -393,6 +397,8 @@ fn parses_query_files_path_command() {
         "files",
         "--project-id",
         "repo-abc123",
+        "--provider",
+        "claude",
         "src/components/**/*.rs",
         "--since",
         "30d",
@@ -405,6 +411,7 @@ fn parses_query_files_path_command() {
         Commands::Query(super::QueryArgs {
             command: QueryCommands::Files(super::QueryFilesArgs {
                 project_id,
+                provider,
                 path,
                 path_arg,
                 co_touched_with,
@@ -415,6 +422,7 @@ fn parses_query_files_path_command() {
                 ..
             }),
         }) if project_id.as_deref() == Some("repo-abc123")
+            && matches!(provider, Some(super::ProviderArg::Claude))
             && path.is_none()
             && path_arg.as_deref() == Some("src/components/**/*.rs")
             && co_touched_with.is_none()
@@ -435,6 +443,10 @@ fn parses_query_files_co_touched_command() {
         "repo-abc123",
         "--co-touched-with",
         "src/components/planner.rs",
+        "--since",
+        "7d",
+        "--until",
+        "2026-04-08T00:00:00Z",
         "--limit",
         "10",
         "--offset",
@@ -448,6 +460,8 @@ fn parses_query_files_co_touched_command() {
                 project_id,
                 path,
                 co_touched_with,
+                since,
+                until,
                 limit,
                 offset,
                 ..
@@ -455,6 +469,8 @@ fn parses_query_files_co_touched_command() {
         }) if project_id.as_deref() == Some("repo-abc123")
             && path.is_none()
             && co_touched_with.as_deref() == Some("src/components/planner.rs")
+            && since.as_deref() == Some("7d")
+            && until.as_deref() == Some("2026-04-08T00:00:00Z")
             && limit == 10
             && offset == 5
     ));

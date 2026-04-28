@@ -367,6 +367,7 @@ pub fn query_project_sessions(
     };
     Ok(SessionsQueryData {
         project_id: request.project_id.to_owned(),
+        provider: request.provider,
         since: request.since.map(str::to_owned),
         until: request.until.map(str::to_owned),
         touched_path: request.touched_path.map(str::to_owned),
@@ -392,7 +393,7 @@ fn query_session_page(
             project_id: request.project_id,
             since: request.since,
             until: request.until,
-            provider: None,
+            provider: request.provider,
             session_id: None,
             limit: page_limit,
             offset: request.offset,
@@ -424,7 +425,7 @@ fn query_touched_path_session_page(
                 project_id: request.project_id,
                 since: request.since,
                 until: request.until,
-                provider: None,
+                provider: request.provider,
                 session_id: None,
                 limit: TOUCHED_SESSION_CANDIDATE_BATCH_ROWS,
                 offset: candidate_offset,
