@@ -1434,6 +1434,21 @@ fn query_files_path_mode_ranks_sessions_and_respects_time_bounds() -> Result<()>
             matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
         },
     )?;
+    let top_limited = query_project_files(
+        &index_path,
+        FilesQueryRequest {
+            project_id: "repo-a",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            provider: None,
+            path: None,
+            co_touched_with: None,
+            since: None,
+            until: None,
+            limit: 1,
+            offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
+        },
+    )?;
 
     assert_eq!(
         exact
@@ -1490,6 +1505,9 @@ fn query_files_path_mode_ranks_sessions_and_respects_time_bounds() -> Result<()>
         top.files[0].last_touched_at.as_deref(),
         Some("2026-04-06T10:00:00Z")
     );
+    assert_eq!(top_limited.files.len(), 1);
+    assert_eq!(top_limited.files[0].path, "src/components/planner.rs");
+    assert!(top_limited.has_more);
     assert_eq!(
         codex_exact
             .sessions

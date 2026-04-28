@@ -1,4 +1,5 @@
 use std::{
+    cmp::Ordering,
     collections::{BTreeMap, BTreeSet},
     fmt::Write,
     path::Path,
@@ -377,15 +378,7 @@ fn build_files_query(
         optional_non_empty_file_selector("--co-touched-with", request.co_touched_with)?;
     match (path, co_touched_with) {
         (None, None) => {
-            let files = query_top_touched_files(
-                connection,
-                request.project_id,
-                request.project_root,
-                request.provider,
-                request.since,
-                request.until,
-            )?;
-            let (files, has_more) = paginate_ranked_rows(files, request.limit, request.offset)?;
+            let (files, has_more) = query_top_touched_files(connection, request)?;
             Ok(FilesQueryData {
                 project_id: request.project_id.to_owned(),
                 mode: FilesQueryMode::Top,
@@ -543,50 +536,54 @@ pub(crate) fn build_session_files_query(
 /// Queries project-wide touched files ranked by access frequency.
 fn query_top_touched_files(
     connection: &Connection,
-    project_id: &str,
-    project_root: Option<&Path>,
-    provider: Option<SourceKind>,
-    since: Option<&str>,
-    until: Option<&str>,
-) -> Result<Vec<FilePivotSummary>> {
-    let rows = query_raw_session_file_rows(
+    request: FilesQueryRequest<'_>,
+) -> Result<(Vec<FilePivotSummary>, bool)> {
+    let mut files = BTreeMap::<String, TouchedFileAccumulator>::new();
+    for_each_raw_session_file_row(
         connection,
-        project_id,
+        request.project_id,
         SessionFileQueryFilters {
-            provider,
+            provider: request.provider,
             session_id: None,
-            since,
-            until,
+            since: request.since,
+            until: request.until,
             path_selector: None,
         },
+        |row| {
+            let Some(path) = display_path_for_access(
+                request.project_root,
+                row.repo_relative_path.as_deref(),
+                &row.path,
+            ) else {
+                return Ok(());
+            };
+            let key = SessionKey {
+                provider: row.provider,
+                session_id: row.session_id.clone(),
+            };
+            files
+                .entry(path)
+                .and_modify(|file| {
+                    file.session_keys.insert(key.clone());
+                    file.read_count = file.read_count.saturating_add(row.read_count);
+                    file.write_count = file.write_count.saturating_add(row.write_count);
+                    if row.first_touched_at < file.first_touched_at {
+                        file.first_touched_at = row.first_touched_at.clone();
+                    }
+                    if row.last_touched_at > file.last_touched_at {
+                        file.last_touched_at = row.last_touched_at.clone();
+                    }
+                })
+                .or_insert_with(|| TouchedFileAccumulator {
+                    session_keys: BTreeSet::from([key]),
+                    read_count: row.read_count,
+                    write_count: row.write_count,
+                    first_touched_at: row.first_touched_at.clone(),
+                    last_touched_at: row.last_touched_at.clone(),
+                });
+            Ok(())
+        },
     )?;
-    let mut files = BTreeMap::<String, TouchedFileAccumulator>::new();
-    for row in aggregate_session_file_rows(rows, project_root) {
-        let key = SessionKey {
-            provider: row.provider,
-            session_id: row.session_id.clone(),
-        };
-        files
-            .entry(row.path.clone())
-            .and_modify(|file| {
-                file.session_keys.insert(key.clone());
-                file.read_count = file.read_count.saturating_add(row.read_count);
-                file.write_count = file.write_count.saturating_add(row.write_count);
-                if row.first_touched_at < file.first_touched_at {
-                    file.first_touched_at = row.first_touched_at.clone();
-                }
-                if row.last_touched_at > file.last_touched_at {
-                    file.last_touched_at = row.last_touched_at.clone();
-                }
-            })
-            .or_insert_with(|| TouchedFileAccumulator {
-                session_keys: BTreeSet::from([key]),
-                read_count: row.read_count,
-                write_count: row.write_count,
-                first_touched_at: row.first_touched_at.clone(),
-                last_touched_at: row.last_touched_at.clone(),
-            });
-    }
 
     let mut files = files
         .into_iter()
@@ -607,15 +604,38 @@ fn query_top_touched_files(
             }
         })
         .collect::<Vec<_>>();
-    files.sort_by(|left, right| {
-        right
-            .touch_count
-            .cmp(&left.touch_count)
-            .then_with(|| right.session_count.cmp(&left.session_count))
-            .then_with(|| right.last_touched_at.cmp(&left.last_touched_at))
-            .then_with(|| left.path.cmp(&right.path))
-    });
-    Ok(files)
+    paginate_top_touched_files(&mut files, request.limit, request.offset)
+}
+
+/// Applies top-file pagination after sorting only the prefix needed for the requested page.
+fn paginate_top_touched_files(
+    files: &mut Vec<FilePivotSummary>,
+    limit: usize,
+    offset: usize,
+) -> Result<(Vec<FilePivotSummary>, bool)> {
+    let page_end = offset
+        .checked_add(limit)
+        .context("query pagination exceeds usize range")?;
+    let has_more = files.len() > page_end;
+    let sort_len = page_end.min(files.len());
+    if sort_len == 0 {
+        files.clear();
+    } else if sort_len < files.len() {
+        files.select_nth_unstable_by(sort_len, compare_top_touched_files);
+        files.truncate(sort_len);
+    }
+    files.sort_by(compare_top_touched_files);
+    Ok((files.drain(..).skip(offset).take(limit).collect(), has_more))
+}
+
+/// Compares top-file rows by rank descending and path ascending.
+fn compare_top_touched_files(left: &FilePivotSummary, right: &FilePivotSummary) -> Ordering {
+    right
+        .touch_count
+        .cmp(&left.touch_count)
+        .then_with(|| right.session_count.cmp(&left.session_count))
+        .then_with(|| right.last_touched_at.cmp(&left.last_touched_at))
+        .then_with(|| left.path.cmp(&right.path))
 }
 
 /// Queries one file-to-session pivot ranked by descending touch frequency.
@@ -820,11 +840,29 @@ fn query_raw_session_file_rows(
     project_id: &str,
     filters: SessionFileQueryFilters<'_>,
 ) -> Result<Vec<RawSessionFileRow>> {
+    let mut rows = Vec::new();
+    for_each_raw_session_file_row(connection, project_id, filters, |row| {
+        rows.push(row);
+        Ok(())
+    })?;
+    Ok(rows)
+}
+
+/// Visits grouped raw file rows for one provider/session/time selector set.
+fn for_each_raw_session_file_row<F>(
+    connection: &Connection,
+    project_id: &str,
+    filters: SessionFileQueryFilters<'_>,
+    mut visit: F,
+) -> Result<()>
+where
+    F: FnMut(RawSessionFileRow) -> Result<()>,
+{
     if filters
         .path_selector
         .is_some_and(|selector| matches!(selector, PathQuerySelector::Impossible))
     {
-        return Ok(Vec::new());
+        return Ok(());
     }
 
     let sql = build_session_file_rows_sql(filters.path_selector);
@@ -832,14 +870,14 @@ fn query_raw_session_file_rows(
         .prepare(&sql)
         .context("failed to prepare session file rows query")?;
     let params = build_session_file_rows_params(project_id, filters)?;
-    let rows = statement
+    for row in statement
         .query_map(params_from_iter(params), read_raw_session_file_row)
         .context("failed to query session file rows")?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .context("failed to read session file rows")?;
-    rows.into_iter()
-        .map(build_raw_session_file_row)
-        .collect::<Result<Vec<_>>>()
+    {
+        let row = row.context("failed to read session file row")?;
+        visit(build_raw_session_file_row(row)?)?;
+    }
+    Ok(())
 }
 
 /// Queries grouped raw file rows for one requested session set.
