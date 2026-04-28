@@ -9,12 +9,12 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use darc_core::query::{
-    DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, FilesQueryRequest, QueryProtocolError,
-    ResolveSessionQueryRequest, ResolvedQueryProject, ResolvedSessionMatch, SearchEvidenceField,
-    SearchMode, SearchTurnsRequest, SessionBundleQueryRequest, SessionBundleView,
-    TurnDetailOptions, TurnsQueryRequest, TurnsView, query_files_for_project,
-    query_project_insight_report_for_project, query_resolve_sessions,
-    query_search_turns_for_project, query_session_bundle_for_project,
+    DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, FilesQueryRequest,
+    QueryProtocolError, ResolveSessionQueryRequest, ResolvedQueryProject, ResolvedSessionMatch,
+    SearchEvidenceField, SearchMode, SearchTurnsRequest, SessionBundleQueryRequest,
+    SessionBundleView, SessionsQueryRequest, SessionsView, TurnDetailOptions, TurnsQueryRequest,
+    TurnsView, query_files_for_project, query_project_insight_report_for_project,
+    query_resolve_sessions, query_search_turns_for_project, query_session_bundle_for_project,
     query_session_files_for_project, query_sessions_for_project, query_turn_for_project,
     query_turn_insight_report_for_project, query_turns_for_project, query_workspace,
     query_workspace_insight_report, resolve_query_project,
@@ -218,7 +218,11 @@ enum QueryCommands {
     ResolveSession(QueryResolveSessionArgs),
     /// Queries the session list for one configured project.
     Sessions(QuerySessionsArgs),
-    /// Queries file pivots for one configured project.
+    /// Lists top files or pivots from one file selector.
+    #[command(
+        about = "List top files or pivot from one file selector",
+        long_about = "List top files or pivot from one file selector.\n\nWith no PATH, --path, or --co-touched-with, this ranks touched files across the project.\nPass PATH or --path to return sessions that touched matching paths.\nPass --co-touched-with to return files touched in the same sessions as the seed path."
+    )]
     Files(QueryFilesArgs),
     /// Queries per-file access summaries for one session.
     SessionFiles(QuerySessionFilesArgs),
@@ -299,6 +303,14 @@ struct QuerySessionsArgs {
     )]
     touched_path: Option<String>,
 
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = SessionListViewArg::Compact,
+        help = "Return full session prompts or compact prompt previews"
+    )]
+    view: SessionListViewArg,
+
     #[arg(long, default_value_t = 50, help = "Maximum sessions to return")]
     limit: usize,
 
@@ -321,13 +333,16 @@ struct QueryTurnsArgs {
     #[arg(long, value_enum, help = "Disambiguate a cross-provider session id")]
     provider: Option<ProviderArg>,
 
-    #[arg(value_name = "SESSION_ID", help = "Full session id to list turns for")]
+    #[arg(
+        value_name = "SESSION_ID",
+        help = "Full session id to list turns for; required unless --session-id is set"
+    )]
     session_id_arg: Option<String>,
 
     #[arg(
         long = "session-id",
         value_name = "SESSION_ID",
-        help = "Full session id to list turns for"
+        help = "Full session id to list turns for; alternative to positional SESSION_ID"
     )]
     session_id: Option<String>,
 
@@ -358,7 +373,7 @@ struct QueryTurnsArgs {
     offset: usize,
 }
 
-/// Queries file pivots for one configured project.
+/// Lists top files or pivots from one file selector.
 #[derive(Debug, Args)]
 struct QueryFilesArgs {
     #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
@@ -375,19 +390,19 @@ struct QueryFilesArgs {
 
     #[arg(
         long,
-        help = "Return sessions that touched file paths matching this glob"
+        help = "Return sessions that touched file paths matching this glob instead of top files"
     )]
     path: Option<String>,
 
     #[arg(
         value_name = "PATH",
-        help = "Return sessions that touched this path or glob"
+        help = "Return sessions that touched this path or glob instead of top files"
     )]
     path_arg: Option<String>,
 
     #[arg(
         long = "co-touched-with",
-        help = "Return files that were touched in the same sessions as this seed path"
+        help = "Return files touched in the same sessions as this seed path instead of top files"
     )]
     co_touched_with: Option<String>,
 
@@ -408,6 +423,20 @@ struct QueryFilesArgs {
 
     #[arg(long, default_value_t = 0, help = "Number of rows to skip")]
     offset: usize,
+
+    #[arg(
+        long = "matched-path-limit",
+        default_value_t = DEFAULT_MATCHED_PATH_LIMIT,
+        conflicts_with = "include_all_matched_paths",
+        help = "Maximum matched_paths entries per path-mode row"
+    )]
+    matched_path_limit: usize,
+
+    #[arg(
+        long = "include-all-matched-paths",
+        help = "Return every matched path in path-mode rows"
+    )]
+    include_all_matched_paths: bool,
 }
 
 /// Queries one session-scoped per-file access summary payload.
@@ -425,13 +454,16 @@ struct QuerySessionFilesArgs {
     #[arg(long, value_enum, help = "Disambiguate a cross-provider session id")]
     provider: Option<ProviderArg>,
 
-    #[arg(value_name = "SESSION_ID", help = "Query this session id")]
+    #[arg(
+        value_name = "SESSION_ID",
+        help = "Query this session id; required unless --session-id is set"
+    )]
     session_id_arg: Option<String>,
 
     #[arg(
         long = "session-id",
         value_name = "SESSION_ID",
-        help = "Query this session id"
+        help = "Query this session id; alternative to positional SESSION_ID"
     )]
     session_id: Option<String>,
 }
@@ -451,13 +483,16 @@ struct QuerySessionBundleArgs {
     #[arg(long, value_enum, help = "Disambiguate a cross-provider session id")]
     provider: Option<ProviderArg>,
 
-    #[arg(value_name = "SESSION_ID", help = "Query this session id")]
+    #[arg(
+        value_name = "SESSION_ID",
+        help = "Query this session id; required unless --session-id is set"
+    )]
     session_id_arg: Option<String>,
 
     #[arg(
         long = "session-id",
         value_name = "SESSION_ID",
-        help = "Query this session id"
+        help = "Query this session id; alternative to positional SESSION_ID"
     )]
     session_id: Option<String>,
 
@@ -502,21 +537,21 @@ struct QueryTurnArgs {
     #[arg(
         value_names = ["SESSION_ID", "TURN_ORDINAL"],
         num_args = 0..=2,
-        help = "Query this session id and turn ordinal"
+        help = "Query this session id and turn ordinal; required unless both flags are set"
     )]
     positional_args: Vec<String>,
 
     #[arg(
         long = "session-id",
         value_name = "SESSION_ID",
-        help = "Query this session id"
+        help = "Query this session id; alternative to positional SESSION_ID"
     )]
     session_id: Option<String>,
 
     #[arg(
         long = "turn-ordinal",
         value_name = "TURN_ORDINAL",
-        help = "Query this turn ordinal"
+        help = "Query this turn ordinal; alternative to positional TURN_ORDINAL"
     )]
     turn_ordinal: Option<u64>,
 
@@ -633,6 +668,20 @@ struct QuerySearchTurnsArgs {
 
     #[arg(long, default_value_t = 0, help = "Number of turn hits to skip")]
     offset: usize,
+
+    #[arg(
+        long = "matched-path-limit",
+        default_value_t = DEFAULT_MATCHED_PATH_LIMIT,
+        conflicts_with = "include_all_matched_paths",
+        help = "Maximum matched_paths entries per file-search hit"
+    )]
+    matched_path_limit: usize,
+
+    #[arg(
+        long = "include-all-matched-paths",
+        help = "Return every matched path in file-search hits"
+    )]
+    include_all_matched_paths: bool,
 }
 
 /// Queries one workspace or project insights payload.
@@ -710,21 +759,21 @@ struct QueryTurnInsightsArgs {
     #[arg(
         value_names = ["SESSION_ID", "TURN_ORDINAL"],
         num_args = 0..=2,
-        help = "Query this session id and turn ordinal"
+        help = "Query this session id and turn ordinal; required unless both flags are set"
     )]
     positional_args: Vec<String>,
 
     #[arg(
         long = "session-id",
         value_name = "SESSION_ID",
-        help = "Query this session id"
+        help = "Query this session id; alternative to positional SESSION_ID"
     )]
     session_id: Option<String>,
 
     #[arg(
         long = "turn-ordinal",
         value_name = "TURN_ORDINAL",
-        help = "Query this turn ordinal"
+        help = "Query this turn ordinal; alternative to positional TURN_ORDINAL"
     )]
     turn_ordinal: Option<u64>,
 }
@@ -771,6 +820,13 @@ enum SearchModeArg {
     FileName,
     FilePath,
     PathFragment,
+}
+
+/// Represents the supported session-list projections.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum SessionListViewArg {
+    Compact,
+    Full,
 }
 
 /// Represents the supported turn-list projections for machine-readable turn queries.
@@ -905,17 +961,22 @@ fn run_query_sessions(args: QuerySessionsArgs) -> Result<()> {
         .transpose()?;
     let data = query_sessions_for_project(
         &project,
-        args.provider.map(provider_arg_to_source_kind),
-        since.as_deref(),
-        until.as_deref(),
-        args.touched_path.as_deref(),
-        args.limit,
-        args.offset,
+        SessionsQueryRequest {
+            project_id: "",
+            project_root: None,
+            provider: args.provider.map(provider_arg_to_source_kind),
+            since: since.as_deref(),
+            until: until.as_deref(),
+            touched_path: args.touched_path.as_deref(),
+            view: session_list_view_arg_to_view(args.view),
+            limit: args.limit,
+            offset: args.offset,
+        },
     )?;
     print_json_envelope("darc.query.sessions.v1", &data)
 }
 
-/// Queries file pivots for one configured project.
+/// Lists top files or pivots from one file selector for one configured project.
 fn run_query_files(args: QueryFilesArgs) -> Result<()> {
     let path = optional_named_or_positional(
         "file path",
@@ -926,9 +987,6 @@ fn run_query_files(args: QueryFilesArgs) -> Result<()> {
     )?;
     if path.is_some() && args.co_touched_with.is_some() {
         bail!("query files accepts either PATH/--path or --co-touched-with, not both");
-    }
-    if path.is_none() && args.co_touched_with.is_none() {
-        bail!("query files requires PATH, --path, or --co-touched-with");
     }
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
     let since = args
@@ -953,6 +1011,10 @@ fn run_query_files(args: QueryFilesArgs) -> Result<()> {
             until: until.as_deref(),
             limit: args.limit,
             offset: args.offset,
+            matched_path_limit: matched_path_limit_arg(
+                args.include_all_matched_paths,
+                args.matched_path_limit,
+            ),
         },
     )?;
     print_json_envelope("darc.query.files.v1", &data)
@@ -1138,6 +1200,10 @@ fn run_query_search_turns(args: QuerySearchTurnsArgs) -> Result<()> {
             until: until.as_deref(),
             limit: args.limit,
             offset: args.offset,
+            matched_path_limit: matched_path_limit_arg(
+                args.include_all_matched_paths,
+                args.matched_path_limit,
+            ),
         },
     )?;
     print_json_envelope("darc.query.search.turns.v1", &data)
@@ -1287,6 +1353,14 @@ fn required_named_or_positional<'a>(
     })
 }
 
+/// Returns the matched-path preview limit selected by CLI flags.
+fn matched_path_limit_arg(
+    include_all_matched_paths: bool,
+    matched_path_limit: usize,
+) -> Option<usize> {
+    (!include_all_matched_paths).then_some(matched_path_limit)
+}
+
 /// Resolves session-id and turn-ordinal values from flag and positional forms.
 fn resolve_turn_identity_args<'a>(
     session_id: Option<&'a str>,
@@ -1414,6 +1488,14 @@ fn search_mode_arg_to_search_mode(mode: SearchModeArg) -> SearchMode {
         SearchModeArg::FileName => SearchMode::FileName,
         SearchModeArg::FilePath => SearchMode::FilePath,
         SearchModeArg::PathFragment => SearchMode::PathFragment,
+    }
+}
+
+/// Converts one parsed session-list view argument into the shared query projection enum.
+fn session_list_view_arg_to_view(view: SessionListViewArg) -> SessionsView {
+    match view {
+        SessionListViewArg::Compact => SessionsView::Compact,
+        SessionListViewArg::Full => SessionsView::Full,
     }
 }
 

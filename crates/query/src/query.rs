@@ -56,8 +56,25 @@ pub(crate) fn paginate_ranked_rows<T>(
     Ok((rows, has_more))
 }
 
+/// Applies one optional matched-path preview cap to an already ordered path list.
+pub(crate) fn apply_matched_path_limit(
+    mut paths: Vec<String>,
+    matched_path_limit: Option<usize>,
+) -> (Vec<String>, bool) {
+    if let Some(limit) = matched_path_limit
+        && paths.len() > limit
+    {
+        paths.truncate(limit);
+        return (paths, true);
+    }
+    (paths, false)
+}
+
 /// Caps `resolve-session` responses to one generous deterministic page.
 pub const DEFAULT_RESOLVE_SESSION_MATCH_LIMIT: usize = 50;
+
+/// Caps per-row matched path previews unless callers opt into all matched paths.
+pub const DEFAULT_MATCHED_PATH_LIMIT: usize = 20;
 
 /// Stores one indexed project aggregate used by the workspace sidebar.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -139,8 +156,18 @@ pub struct SessionSummary {
     pub removed_line_count: u64,
     pub first_turn_at: Option<String>,
     pub first_user_prompt: Option<String>,
+    pub first_user_prompt_truncated: bool,
     pub aborted_turn_count: u64,
     pub edited_files: Vec<String>,
+}
+
+/// Identifies the supported session-list projection modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionsView {
+    #[default]
+    Compact,
+    Full,
 }
 
 /// Stores the full session-list query payload for one project.
@@ -151,6 +178,7 @@ pub struct SessionsQueryData {
     pub since: Option<String>,
     pub until: Option<String>,
     pub touched_path: Option<String>,
+    pub view: SessionsView,
     pub limit: u64,
     pub offset: u64,
     pub has_more: bool,
@@ -166,6 +194,7 @@ pub struct SessionsQueryRequest<'a> {
     pub since: Option<&'a str>,
     pub until: Option<&'a str>,
     pub touched_path: Option<&'a str>,
+    pub view: SessionsView,
     pub limit: usize,
     pub offset: usize,
 }
@@ -200,6 +229,7 @@ pub struct ResolveSessionQueryRequest<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FilesQueryMode {
+    Top,
     Path,
     CoTouchedWith,
 }
@@ -217,16 +247,23 @@ pub struct FileSessionSummary {
     pub first_touched_at: String,
     pub last_touched_at: String,
     pub matched_paths: Vec<String>,
+    pub matched_paths_truncated: bool,
 }
 
-/// Stores one co-touched file ranked by how many seed sessions also touched it.
+/// Stores one file row returned by a file-pivot query.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CoTouchedFileSummary {
+pub struct FilePivotSummary {
     pub path: String,
-    pub co_touch_count: u64,
+    pub co_touch_count: Option<u64>,
+    pub touch_count: Option<u64>,
+    pub session_count: Option<u64>,
+    pub read_count: Option<u64>,
+    pub write_count: Option<u64>,
+    pub first_touched_at: Option<String>,
+    pub last_touched_at: Option<String>,
 }
 
-/// Stores one file-level query payload for path pivots and co-touch ranking.
+/// Stores one file-level query payload for top-file, path, and co-touch ranking.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FilesQueryData {
     pub project_id: String,
@@ -239,8 +276,9 @@ pub struct FilesQueryData {
     pub limit: u64,
     pub offset: u64,
     pub has_more: bool,
+    pub matched_path_limit: Option<u64>,
     pub sessions: Vec<FileSessionSummary>,
-    pub files: Vec<CoTouchedFileSummary>,
+    pub files: Vec<FilePivotSummary>,
 }
 
 /// Collects the supported inputs for one file-pivot query request.
@@ -255,6 +293,7 @@ pub struct FilesQueryRequest<'a> {
     pub until: Option<&'a str>,
     pub limit: usize,
     pub offset: usize,
+    pub matched_path_limit: Option<usize>,
 }
 
 /// Stores one session-scoped per-file access summary row.
@@ -378,6 +417,7 @@ pub struct SearchTurnsQueryData {
     pub limit: u64,
     pub offset: u64,
     pub has_more: bool,
+    pub matched_path_limit: Option<u64>,
     pub hits: Vec<SearchTurnHit>,
 }
 
@@ -397,6 +437,7 @@ pub struct SearchTurnsRequest<'a> {
     pub until: Option<&'a str>,
     pub limit: usize,
     pub offset: usize,
+    pub matched_path_limit: Option<usize>,
 }
 
 /// Stores one field-level evidence match nested inside a turn search hit.
@@ -418,6 +459,7 @@ pub struct SearchTurnHit {
     pub user_preview: String,
     pub snippet: Option<String>,
     pub matched_paths: Vec<String>,
+    pub matched_paths_truncated: bool,
     pub matches: Vec<SearchTurnMatch>,
     pub matches_truncated: bool,
 }

@@ -726,6 +726,7 @@ fn query_turn_help_mentions_narrative_view_behavior() {
     assert!(help.contains("--view"));
     assert!(help.contains("narrative"));
     assert!(help.contains("tool arguments"));
+    assert!(help.contains("required unless both flags are set"));
 }
 
 #[test]
@@ -745,6 +746,7 @@ fn query_turns_help_omits_removed_grep_surface() {
     assert!(help.contains("oneline"));
     assert!(help.contains("--since"));
     assert!(help.contains("--until"));
+    assert!(help.contains("required unless --session-id is set"));
 }
 
 #[test]

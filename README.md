@@ -116,13 +116,18 @@ single-call session bundles.
 - project-scoped `darc query` commands accept optional `--project-id`; when omitted, Darc resolves the configured
   project from the current directory. Project pivots such as `sessions`, `files`, and `insights project` also accept
   `--provider` when a corpus mixes Codex and Claude history.
+- `darc query sessions` defaults to compact prompt previews for browsing; pass `--view full` when you need full
+  first prompts. Edited file lists are always complete.
 - `darc query turns` lists one known session by full UUID, inferring the provider unless the id is cross-provider
   ambiguous; content discovery lives under `darc query search turns`.
-- `darc query files <path>`, `darc query session-files <session-id>`, and
-  `darc query session-bundle <session-id>` let clients pivot between matched files, touched sessions, per-session file
-  summaries, and bounded one-call session detail bundles. File pivots accept provider and time filters in both path and
-  co-touch modes. Turn detail and session bundle reads default to narrative payloads; pass `--view full` or
-  `--include-raw` only when raw tool arguments, outputs, or payload blobs are needed.
+- `darc query files` ranks top touched files for initial discovery. `darc query files <path>`,
+  `darc query session-files <session-id>`, and `darc query session-bundle <session-id>` let clients pivot between
+  matched files, touched sessions, per-session file summaries, and bounded one-call session detail bundles. File pivots
+  accept provider and time filters in top-file, path, and co-touch modes. Turn detail and session bundle reads default
+  to narrative payloads; pass `--view full` or `--include-raw` only when raw tool arguments, outputs, or payload blobs
+  are needed.
+- Broad file/path queries cap each row's `matched_paths` preview by default; use `--matched-path-limit` or
+  `--include-all-matched-paths` when you need more path evidence per result.
 - `darc query resolve-session` explicitly expands a UUID prefix before you call session-scoped data commands and
   includes `project_id` with each match for multi-project roots.
 Examples:
@@ -148,6 +153,13 @@ darc query search turns \
   --mode regex \
   "panic: .*" \
   --include-tool-output
+```
+
+```bash
+darc query files \
+  --project-id repo-abc123 \
+  --since 30d \
+  --limit 20
 ```
 
 ```bash

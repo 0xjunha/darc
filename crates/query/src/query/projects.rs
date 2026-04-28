@@ -8,10 +8,10 @@ use super::files::filter_session_summaries_by_touched_path;
 use super::turns::build_token_usage;
 use super::{
     ProjectIndexAggregate, ResolveSessionQueryData, ResolveSessionQueryRequest,
-    ResolvedSessionMatch, SessionSummary, SessionsQueryData, SessionsQueryRequest, TurnSummary,
-    TurnsQueryData, TurnsQueryRequest, open_existing_index_database, optional_sql_count_to_u64,
-    parse_provider, parse_session_kind, parse_turn_status, preview_first_line, preview_text,
-    sql_count_to_u64,
+    ResolvedSessionMatch, SessionSummary, SessionsQueryData, SessionsQueryRequest, SessionsView,
+    TurnSummary, TurnsQueryData, TurnsQueryRequest, open_existing_index_database,
+    optional_sql_count_to_u64, parse_provider, parse_session_kind, parse_turn_status,
+    preview_first_line, preview_text, sql_count_to_u64,
 };
 
 const PROJECT_INDEX_AGGREGATES_SQL: &str = "
@@ -219,7 +219,7 @@ const PROJECT_SESSIONS_SQL: &str = "
 ";
 
 const TOUCHED_SESSION_CANDIDATE_BATCH_ROWS: usize = if cfg!(test) { 2 } else { 250 };
-
+const COMPACT_SESSION_PROMPT_CHARS: usize = 500;
 const RESOLVE_SESSIONS_SQL: &str = "
     SELECT DISTINCT
         project_id,
@@ -365,17 +365,45 @@ pub fn query_project_sessions(
     } else {
         query_session_page(&connection, request)?
     };
+    let sessions = apply_sessions_view(sessions, request.view);
     Ok(SessionsQueryData {
         project_id: request.project_id.to_owned(),
         provider: request.provider,
         since: request.since.map(str::to_owned),
         until: request.until.map(str::to_owned),
         touched_path: request.touched_path.map(str::to_owned),
+        view: request.view,
         limit: u64::try_from(request.limit).context("query limit exceeds u64 range")?,
         offset: u64::try_from(request.offset).context("query offset exceeds u64 range")?,
         has_more,
         sessions,
     })
+}
+
+/// Applies the requested session-list projection to already paginated rows.
+fn apply_sessions_view(sessions: Vec<SessionSummary>, view: SessionsView) -> Vec<SessionSummary> {
+    match view {
+        SessionsView::Full => sessions,
+        SessionsView::Compact => sessions.into_iter().map(compact_session_summary).collect(),
+    }
+}
+
+/// Projects one session summary into the compact browse shape.
+fn compact_session_summary(mut session: SessionSummary) -> SessionSummary {
+    if let Some(prompt) = session.first_user_prompt.take() {
+        let (prompt, truncated) = truncate_chars(prompt, COMPACT_SESSION_PROMPT_CHARS);
+        session.first_user_prompt = Some(prompt);
+        session.first_user_prompt_truncated = truncated;
+    }
+    session
+}
+
+/// Truncates one string by character count without adding marker text.
+fn truncate_chars(value: String, limit: usize) -> (String, bool) {
+    if value.chars().count() <= limit {
+        return (value, false);
+    }
+    (value.chars().take(limit).collect(), true)
 }
 
 /// Queries one session page without touched-path post-filtering.
@@ -731,6 +759,7 @@ pub(crate) fn query_sessions(
                     removed_line_count: sql_count_to_u64(removed_line_count)?,
                     first_turn_at,
                     first_user_prompt,
+                    first_user_prompt_truncated: false,
                     aborted_turn_count: sql_count_to_u64(aborted_turn_count)?,
                     edited_files: parse_edited_files_json(&edited_files_json)?,
                 })

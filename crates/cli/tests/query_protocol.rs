@@ -247,6 +247,7 @@ fn sessions_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["since"], Value::Null);
     assert_eq!(value["data"]["until"], Value::Null);
     assert_eq!(value["data"]["touched_path"], Value::Null);
+    assert_eq!(value["data"]["view"], "compact");
     assert_eq!(
         value["data"]["sessions"][0]["session_id"],
         PRIMARY_SESSION_ID
@@ -260,6 +261,10 @@ fn sessions_query_emits_success_envelope() -> Result<()> {
     assert_eq!(
         value["data"]["sessions"][0]["first_user_prompt"],
         "Inspect the repository status"
+    );
+    assert_eq!(
+        value["data"]["sessions"][0]["first_user_prompt_truncated"],
+        false
     );
     assert_eq!(value["data"]["sessions"][0]["aborted_turn_count"], 0);
     assert_eq!(
@@ -436,7 +441,73 @@ fn files_query_path_mode_emits_success_envelope() -> Result<()> {
         value["data"]["sessions"][0]["matched_paths"],
         serde_json::json!(["README.md"])
     );
+    assert_eq!(
+        value["data"]["sessions"][0]["matched_paths_truncated"],
+        false
+    );
     assert_eq!(value["data"]["files"], Value::Array(vec![]));
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn files_query_without_selector_emits_top_files() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-files-top")?;
+
+    let output = run_darc([
+        "query",
+        "files",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--limit",
+        "5",
+    ])?;
+
+    assert!(output.status.success());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.files.v1");
+    assert_eq!(value["data"]["project_id"], "repo-abc123");
+    assert_eq!(value["data"]["mode"], "top");
+    assert_eq!(value["data"]["path"], Value::Null);
+    assert_eq!(value["data"]["co_touched_with"], Value::Null);
+    assert_eq!(value["data"]["limit"], 5);
+    assert_eq!(value["data"]["sessions"], Value::Array(vec![]));
+    assert_eq!(value["data"]["files"][0]["path"], "README.md");
+    assert_eq!(value["data"]["files"][0]["touch_count"], 1);
+    assert_eq!(value["data"]["files"][0]["session_count"], 1);
+    assert_eq!(value["data"]["files"][0]["read_count"], 1);
+    assert_eq!(value["data"]["files"][0]["write_count"], 0);
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn files_query_rejects_explicit_empty_selector() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-files-empty-selector")?;
+
+    let output = run_darc([
+        "query",
+        "files",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--path",
+        "",
+    ])?;
+
+    assert!(!output.status.success());
+    let value = parse_json(&output.stderr, "stderr")?;
+    assert_eq!(value["schema"], "darc.error.v1");
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("PATH/--path cannot be empty"))
+    );
 
     remove_root(&root)?;
     Ok(())
@@ -733,12 +804,15 @@ fn sessions_query_includes_first_turn_abort_counts_and_edited_files() -> Result<
         root.to_string_lossy().as_ref(),
         "--project-id",
         "repo-abc123",
+        "--view",
+        "full",
     ])?;
 
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
     let value = parse_json(&output.stdout, "stdout")?;
     assert_eq!(value["schema"], "darc.query.sessions.v1");
+    assert_eq!(value["data"]["view"], "full");
     assert_eq!(
         value["data"]["sessions"][0]["first_turn_at"],
         "2026-04-06T10:00:00Z"
@@ -1197,6 +1271,30 @@ fn search_turns_query_emits_literal_evidence_matches() -> Result<()> {
         "final_answer"
     );
 
+    let regex_perl_space = run_darc([
+        "query",
+        "search",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--mode",
+        "regex",
+        "--query",
+        r"Run\s+the\s+CLI",
+        "--field",
+        "user-message",
+    ])?;
+
+    assert!(regex_perl_space.status.success());
+    let regex_perl_space_value = parse_json(&regex_perl_space.stdout, "stdout")?;
+    assert_eq!(regex_perl_space_value["data"]["mode"], "regex");
+    assert_eq!(
+        regex_perl_space_value["data"]["hits"][0]["matches"][0]["field"],
+        "user_message"
+    );
+
     let literal_without_tool_args = run_darc([
         "query",
         "search",
@@ -1323,7 +1421,7 @@ fn turns_query_help_lists_positional_session_and_optional_provider() -> Result<(
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("--session-id <SESSION_ID>"));
     assert!(stdout.contains("--provider <PROVIDER>      Disambiguate a cross-provider session id"));
-    assert!(stdout.contains("--session-id <SESSION_ID>  Full session id to list turns for"));
+    assert!(stdout.contains("required unless --session-id is set"));
     Ok(())
 }
 
@@ -1556,7 +1654,9 @@ fn search_turns_query_emits_file_search_envelope() -> Result<()> {
     let value = parse_json(&output.stdout, "stdout")?;
     assert_eq!(value["schema"], "darc.query.search.turns.v1");
     assert_eq!(value["data"]["mode"], "file_name");
+    assert_eq!(value["data"]["matched_path_limit"], 20);
     assert_eq!(value["data"]["hits"][0]["matched_paths"][0], "README.md");
+    assert_eq!(value["data"]["hits"][0]["matched_paths_truncated"], false);
 
     let path_output = run_darc([
         "query",
