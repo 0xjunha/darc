@@ -161,6 +161,7 @@ darc query session-bundle \
   --provider codex \
   --session-id "$ID" \
   --view narrative \
+  --turn-limit 20 \
   --json
 ```
 

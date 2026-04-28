@@ -8,8 +8,9 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use darc_core::query::{
     DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, FilesQueryRequest, QueryProtocolError,
     ResolveSessionQueryRequest, ResolvedQueryProject, ResolvedSessionMatch, SearchMode,
-    SearchTurnsRequest, SessionBundleView, TurnDetailOptions, TurnsQueryRequest, TurnsView,
-    query_files_for_project, query_project_insight_report_for_project, query_resolve_sessions,
+    SearchTurnsRequest, SessionBundleQueryRequest, SessionBundleView, TurnDetailOptions,
+    TurnsQueryRequest, TurnsView, query_files_for_project,
+    query_project_insight_report_for_project, query_resolve_sessions,
     query_search_turns_for_project, query_session_bundle_for_project,
     query_session_files_for_project, query_sessions_for_project, query_turn_for_project,
     query_turn_insight_report_for_project, query_turns_for_project, query_workspace,
@@ -445,6 +446,20 @@ struct QuerySessionBundleArgs {
         help = "Turn detail level. `narrative` omits tool arguments, outputs, and payload blobs"
     )]
     view: ViewArg,
+
+    #[arg(
+        long = "turn-limit",
+        default_value_t = 50,
+        help = "Maximum turn details to return"
+    )]
+    turn_limit: usize,
+
+    #[arg(
+        long = "turn-offset",
+        default_value_t = 0,
+        help = "Number of turn details to skip"
+    )]
+    turn_offset: usize,
 
     #[arg(
         long,
@@ -917,9 +932,15 @@ fn run_query_session_bundle(args: QuerySessionBundleArgs) -> Result<()> {
     )?;
     let data = query_session_bundle_for_project(
         &project,
-        provider_arg_to_source_kind(args.provider),
-        &session_id,
-        view_arg_to_session_bundle_view(args.view),
+        SessionBundleQueryRequest {
+            project_id: "",
+            provider: provider_arg_to_source_kind(args.provider),
+            session_id: &session_id,
+            project_root: None,
+            view: view_arg_to_session_bundle_view(args.view),
+            turn_limit: args.turn_limit,
+            turn_offset: args.turn_offset,
+        },
     )?;
     print_json_envelope("darc.query.session_bundle.v1", &data)
 }

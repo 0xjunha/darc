@@ -518,6 +518,8 @@ fn parses_query_session_bundle_command() {
                 provider,
                 session_id,
                 view,
+                turn_limit,
+                turn_offset,
                 json,
                 ..
             }),
@@ -525,6 +527,8 @@ fn parses_query_session_bundle_command() {
             && matches!(provider, super::ProviderArg::Codex)
             && session_id == "session-1"
             && matches!(view, super::ViewArg::Narrative)
+            && turn_limit == 50
+            && turn_offset == 0
             && json
     ));
 }

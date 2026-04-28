@@ -23,12 +23,13 @@ use serde_json::to_value;
 
 use crate::query::{
     FilesQueryRequest, HardDebuggingTurn, LocalDate, ProjectInsights, SearchMode,
-    SearchTurnsRequest, SessionBundleView, SessionKind, SessionsQueryRequest, TurnDetailOptions,
-    TurnInsights, TurnsQueryRequest, TurnsView, build_project_insights, build_turn_insights,
-    build_workspace_insights, open_existing_index_database, parse_session_kind,
-    query_project_files, query_project_session_bundle, query_project_session_files,
-    query_project_sessions, query_project_turns, query_search_turns, query_session_turn_details,
-    query_turn_detail, query_turn_exists, smoke_test_sql,
+    SearchTurnsRequest, SessionBundleQueryRequest, SessionBundleView, SessionKind,
+    SessionsQueryRequest, TurnDetailOptions, TurnInsights, TurnsQueryRequest, TurnsView,
+    build_project_insights, build_turn_insights, build_workspace_insights,
+    open_existing_index_database, parse_session_kind, query_project_files,
+    query_project_session_bundle, query_project_session_files, query_project_sessions,
+    query_project_turns, query_search_turns, query_session_turn_details, query_turn_detail,
+    query_turn_exists, smoke_test_sql,
 };
 
 /// Builds one temporary SQLite index path for query tests.
@@ -1683,17 +1684,24 @@ fn query_session_bundle_reuses_session_and_file_shapes_with_narrative_turns() ->
 
     let result = query_project_session_bundle(
         &index_path,
-        "repo-a",
-        SourceKind::Codex,
-        "session-1",
-        Some(Path::new("/tmp/repo-a")),
-        SessionBundleView::Narrative,
+        SessionBundleQueryRequest {
+            project_id: "repo-a",
+            provider: SourceKind::Codex,
+            session_id: "session-1",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            view: SessionBundleView::Narrative,
+            turn_limit: 50,
+            turn_offset: 0,
+        },
     )?;
 
     assert_eq!(result.project_id, "repo-a");
     assert_eq!(result.provider, SourceKind::Codex);
     assert_eq!(result.session_id, "session-1");
     assert_eq!(result.view, SessionBundleView::Narrative);
+    assert_eq!(result.turn_limit, 50);
+    assert_eq!(result.turn_offset, 0);
+    assert!(!result.turns_has_more);
     assert_eq!(result.session.session_id, "session-1");
     assert_eq!(result.session.turn_count, 2);
     assert_eq!(result.turns.len(), 2);
@@ -1719,6 +1727,31 @@ fn query_session_bundle_reuses_session_and_file_shapes_with_narrative_turns() ->
             })
             .collect::<Vec<_>>(),
         vec![("src/lib.rs", 0, 1, 1, 1), ("README.md", 1, 0, 0, 0)]
+    );
+
+    let page = query_project_session_bundle(
+        &index_path,
+        SessionBundleQueryRequest {
+            project_id: "repo-a",
+            provider: SourceKind::Codex,
+            session_id: "session-1",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            view: SessionBundleView::Narrative,
+            turn_limit: 1,
+            turn_offset: 0,
+        },
+    )?;
+
+    assert_eq!(page.turn_limit, 1);
+    assert_eq!(page.turn_offset, 0);
+    assert!(page.turns_has_more);
+    assert_eq!(page.session.turn_count, 2);
+    assert_eq!(
+        page.turns
+            .iter()
+            .map(|turn| turn.turn_ordinal)
+            .collect::<Vec<_>>(),
+        vec![0]
     );
 
     fs::remove_dir_all(
@@ -1778,11 +1811,15 @@ fn query_session_bundle_ignores_unrelated_invalid_session_rows() -> Result<()> {
 
     let result = query_project_session_bundle(
         &index_path,
-        "repo-a",
-        SourceKind::Codex,
-        "session-1",
-        Some(Path::new("/tmp/repo-a")),
-        SessionBundleView::Full,
+        SessionBundleQueryRequest {
+            project_id: "repo-a",
+            provider: SourceKind::Codex,
+            session_id: "session-1",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            view: SessionBundleView::Full,
+            turn_limit: 50,
+            turn_offset: 0,
+        },
     )?;
 
     assert_eq!(result.session.session_id, "session-1");

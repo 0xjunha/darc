@@ -438,9 +438,24 @@ pub struct SessionBundleQueryData {
     pub provider: SourceKind,
     pub session_id: String,
     pub view: SessionBundleView,
+    pub turn_limit: u64,
+    pub turn_offset: u64,
+    pub turns_has_more: bool,
     pub session: SessionSummary,
     pub turns: Vec<TurnDetail>,
     pub session_files: SessionFilesQueryData,
+}
+
+/// Collects the supported filters for one composite session bundle query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionBundleQueryRequest<'a> {
+    pub project_id: &'a str,
+    pub provider: SourceKind,
+    pub session_id: &'a str,
+    pub project_root: Option<&'a Path>,
+    pub view: SessionBundleView,
+    pub turn_limit: usize,
+    pub turn_offset: usize,
 }
 
 /// Stores one turn-detail projection and enrichment configuration.

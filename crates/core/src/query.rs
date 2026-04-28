@@ -13,10 +13,10 @@ pub use darc_query::{
     ProjectInsights, ProjectSummary, ProjectTimeStat, ResolveSessionQueryData,
     ResolveSessionQueryRequest, ResolvedSessionMatch, RootAvailability, RootInfo, SearchMode,
     SearchTurnHit, SearchTurnMatch, SearchTurnsQueryData, SearchTurnsRequest,
-    SessionBundleQueryData, SessionBundleView, SessionFileSummary, SessionFilesQueryData,
-    SessionKind, SessionRuntimeStat, SessionSummary, SessionsQueryData, SessionsQueryRequest,
-    ShellCommandSummary, ToolUsageStat, TurnDetail, TurnDetailInsights, TurnDetailOptions,
-    TurnInsights, TurnSummary, TurnsQueryData, TurnsQueryRequest, TurnsView,
+    SessionBundleQueryData, SessionBundleQueryRequest, SessionBundleView, SessionFileSummary,
+    SessionFilesQueryData, SessionKind, SessionRuntimeStat, SessionSummary, SessionsQueryData,
+    SessionsQueryRequest, ShellCommandSummary, ToolUsageStat, TurnDetail, TurnDetailInsights,
+    TurnDetailOptions, TurnInsights, TurnSummary, TurnsQueryData, TurnsQueryRequest, TurnsView,
     WorkspaceDailyTimeStat, WorkspaceInsights, WorkspaceQueryData,
 };
 use darc_query::{
@@ -271,31 +271,26 @@ pub fn query_session_files(
 /// Queries one composite session bundle for one already-resolved configured provider session.
 pub fn query_session_bundle_for_project(
     project: &ResolvedQueryProject,
-    provider: SourceKind,
-    session_id: &str,
-    view: SessionBundleView,
+    request: SessionBundleQueryRequest<'_>,
 ) -> Result<SessionBundleQueryData> {
     let context = &project.context;
     query_project_session_bundle(
         &context.root.database_path,
-        &context.project.id,
-        provider,
-        session_id,
-        Some(context.project.local_path.as_path()),
-        view,
+        SessionBundleQueryRequest {
+            project_id: &context.project.id,
+            project_root: Some(context.project.local_path.as_path()),
+            ..request
+        },
     )
 }
 
 /// Queries one composite session bundle for one configured provider session.
 pub fn query_session_bundle(
     root: Option<PathBuf>,
-    project_id: &str,
-    provider: SourceKind,
-    session_id: &str,
-    view: SessionBundleView,
+    request: SessionBundleQueryRequest<'_>,
 ) -> Result<SessionBundleQueryData> {
-    let project = resolve_query_project(root, Some(project_id))?;
-    query_session_bundle_for_project(&project, provider, session_id, view)
+    let project = resolve_query_project(root, Some(request.project_id))?;
+    query_session_bundle_for_project(&project, request)
 }
 
 /// Queries the turn-list payload for one already-resolved configured provider session.
