@@ -333,13 +333,16 @@ struct QueryTurnsArgs {
     #[arg(long, value_enum, help = "Disambiguate a cross-provider session id")]
     provider: Option<ProviderArg>,
 
-    #[arg(value_name = "SESSION_ID", help = "Full session id to list turns for")]
+    #[arg(
+        value_name = "SESSION_ID",
+        help = "Full session id to list turns for; required unless --session-id is set"
+    )]
     session_id_arg: Option<String>,
 
     #[arg(
         long = "session-id",
         value_name = "SESSION_ID",
-        help = "Full session id to list turns for"
+        help = "Full session id to list turns for; alternative to positional SESSION_ID"
     )]
     session_id: Option<String>,
 
@@ -451,13 +454,16 @@ struct QuerySessionFilesArgs {
     #[arg(long, value_enum, help = "Disambiguate a cross-provider session id")]
     provider: Option<ProviderArg>,
 
-    #[arg(value_name = "SESSION_ID", help = "Query this session id")]
+    #[arg(
+        value_name = "SESSION_ID",
+        help = "Query this session id; required unless --session-id is set"
+    )]
     session_id_arg: Option<String>,
 
     #[arg(
         long = "session-id",
         value_name = "SESSION_ID",
-        help = "Query this session id"
+        help = "Query this session id; alternative to positional SESSION_ID"
     )]
     session_id: Option<String>,
 }
@@ -477,13 +483,16 @@ struct QuerySessionBundleArgs {
     #[arg(long, value_enum, help = "Disambiguate a cross-provider session id")]
     provider: Option<ProviderArg>,
 
-    #[arg(value_name = "SESSION_ID", help = "Query this session id")]
+    #[arg(
+        value_name = "SESSION_ID",
+        help = "Query this session id; required unless --session-id is set"
+    )]
     session_id_arg: Option<String>,
 
     #[arg(
         long = "session-id",
         value_name = "SESSION_ID",
-        help = "Query this session id"
+        help = "Query this session id; alternative to positional SESSION_ID"
     )]
     session_id: Option<String>,
 
@@ -528,21 +537,21 @@ struct QueryTurnArgs {
     #[arg(
         value_names = ["SESSION_ID", "TURN_ORDINAL"],
         num_args = 0..=2,
-        help = "Query this session id and turn ordinal"
+        help = "Query this session id and turn ordinal; required unless both flags are set"
     )]
     positional_args: Vec<String>,
 
     #[arg(
         long = "session-id",
         value_name = "SESSION_ID",
-        help = "Query this session id"
+        help = "Query this session id; alternative to positional SESSION_ID"
     )]
     session_id: Option<String>,
 
     #[arg(
         long = "turn-ordinal",
         value_name = "TURN_ORDINAL",
-        help = "Query this turn ordinal"
+        help = "Query this turn ordinal; alternative to positional TURN_ORDINAL"
     )]
     turn_ordinal: Option<u64>,
 
@@ -750,21 +759,21 @@ struct QueryTurnInsightsArgs {
     #[arg(
         value_names = ["SESSION_ID", "TURN_ORDINAL"],
         num_args = 0..=2,
-        help = "Query this session id and turn ordinal"
+        help = "Query this session id and turn ordinal; required unless both flags are set"
     )]
     positional_args: Vec<String>,
 
     #[arg(
         long = "session-id",
         value_name = "SESSION_ID",
-        help = "Query this session id"
+        help = "Query this session id; alternative to positional SESSION_ID"
     )]
     session_id: Option<String>,
 
     #[arg(
         long = "turn-ordinal",
         value_name = "TURN_ORDINAL",
-        help = "Query this turn ordinal"
+        help = "Query this turn ordinal; alternative to positional TURN_ORDINAL"
     )]
     turn_ordinal: Option<u64>,
 }

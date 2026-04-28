@@ -1397,7 +1397,7 @@ fn turns_query_help_lists_positional_session_and_optional_provider() -> Result<(
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("--session-id <SESSION_ID>"));
     assert!(stdout.contains("--provider <PROVIDER>      Disambiguate a cross-provider session id"));
-    assert!(stdout.contains("--session-id <SESSION_ID>  Full session id to list turns for"));
+    assert!(stdout.contains("required unless --session-id is set"));
     Ok(())
 }
 

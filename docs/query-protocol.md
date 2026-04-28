@@ -51,8 +51,8 @@ Query commands emit JSON envelopes on stdout by default.
 - `darc query search turns` defaults to `--mode keyword`; pass `--mode` only for literal, regex, or file/path search modes
 - `darc query search turns` accepts query text positionally or with `--query`; use `--query` for query text that begins with `-`
 - `darc query files` with no path selector ranks top touched files; positional `<path-or-glob>` uses path mode, and `--path` is the explicit equivalent
-- session-scoped commands accept `<session-id>` positionally or with `--session-id`; Darc infers `--provider` when that session id is unique within the project
-- turn-scoped commands accept `<turn-ordinal>` positionally or with `--turn-ordinal`
+- session-scoped commands require a session id supplied either positionally or with `--session-id`; Darc infers `--provider` when that session id is unique within the project
+- turn-scoped commands require a turn ordinal supplied either positionally or with `--turn-ordinal`
 - do not pass both positional and flag forms for the same value
 - pass `--provider` when the same session id exists for multiple providers
 - `darc query files` accepts at most one of positional path, `--path`, or `--co-touched-with`; omit all three for top-file mode
