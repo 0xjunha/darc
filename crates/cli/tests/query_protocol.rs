@@ -799,6 +799,9 @@ fn turns_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["since"], Value::Null);
     assert_eq!(value["data"]["until"], Value::Null);
     assert_eq!(value["data"]["view"], "full");
+    assert_eq!(value["data"]["limit"], 50);
+    assert_eq!(value["data"]["offset"], 0);
+    assert_eq!(value["data"]["has_more"], false);
     assert_eq!(value["data"]["turns"][0]["turn_id"], "turn-1");
     assert_eq!(value["data"]["turns"][0]["step_count"], 2);
     assert_eq!(value["data"]["turns"][0]["tool_call_count"], 1);
@@ -935,6 +938,9 @@ fn turns_query_applies_since_and_until_filters_in_session_mode() -> Result<()> {
     let value = parse_json(&output.stdout, "stdout")?;
     assert_eq!(value["data"]["since"], "2026-04-06T10:00:00Z");
     assert_eq!(value["data"]["until"], "2026-04-06T10:03:00Z");
+    assert_eq!(value["data"]["limit"], 50);
+    assert_eq!(value["data"]["offset"], 0);
+    assert_eq!(value["data"]["has_more"], false);
     assert_eq!(
         value["data"]["turns"]
             .as_array()
@@ -943,6 +949,39 @@ fn turns_query_applies_since_and_until_filters_in_session_mode() -> Result<()> {
             .map(|turn| turn["turn_ordinal"].as_u64().unwrap())
             .collect::<Vec<_>>(),
         vec![0, 2]
+    );
+
+    let page_output = run_darc([
+        "query",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--provider",
+        "codex",
+        "--session-id",
+        PRIMARY_SESSION_ID,
+        "--limit",
+        "2",
+        "--offset",
+        "1",
+        "--json",
+    ])?;
+
+    assert!(page_output.status.success());
+    let page_value = parse_json(&page_output.stdout, "stdout")?;
+    assert_eq!(page_value["data"]["limit"], 2);
+    assert_eq!(page_value["data"]["offset"], 1);
+    assert_eq!(page_value["data"]["has_more"], true);
+    assert_eq!(
+        page_value["data"]["turns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|turn| turn["turn_ordinal"].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![1, 2]
     );
 
     remove_root(&root)?;
@@ -986,6 +1025,9 @@ fn turns_query_oneline_view_emits_compact_rows() -> Result<()> {
     let value = parse_json(&oneline_output.stdout, "stdout")?;
     assert_eq!(value["schema"], "darc.query.turns.v1");
     assert_eq!(value["data"]["view"], "oneline");
+    assert_eq!(value["data"]["limit"], 50);
+    assert_eq!(value["data"]["offset"], 0);
+    assert_eq!(value["data"]["has_more"], false);
     assert_eq!(value["data"]["turns"][0]["turn_ordinal"], 0);
     assert_eq!(value["data"]["turns"][0]["role"], "user");
     assert_eq!(

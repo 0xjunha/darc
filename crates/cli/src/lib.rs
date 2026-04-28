@@ -330,6 +330,12 @@ struct QueryTurnsArgs {
     )]
     view: TurnListViewArg,
 
+    #[arg(long, default_value_t = 50, help = "Maximum turns to return")]
+    limit: usize,
+
+    #[arg(long, default_value_t = 0, help = "Number of turns to skip")]
+    offset: usize,
+
     #[arg(
         long,
         required = true,
@@ -946,6 +952,8 @@ fn run_query_turns(args: QueryTurnsArgs) -> Result<()> {
             since: since.as_deref(),
             until: until.as_deref(),
             view: turn_list_view_arg_to_view(args.view),
+            limit: args.limit,
+            offset: args.offset,
         },
     )?;
     print_turns_query_envelope(&data)
@@ -1233,6 +1241,9 @@ struct TurnsOnelineQueryData {
     since: Option<String>,
     until: Option<String>,
     view: TurnsView,
+    limit: u64,
+    offset: u64,
+    has_more: bool,
     turns: Vec<TurnsOnelineTurnRow>,
 }
 
@@ -1246,6 +1257,9 @@ impl TurnsOnelineQueryData {
             since: data.since.clone(),
             until: data.until.clone(),
             view: data.view,
+            limit: data.limit,
+            offset: data.offset,
+            has_more: data.has_more,
             turns: data
                 .turns
                 .iter()

@@ -1942,15 +1942,45 @@ fn query_project_turns_support_since_until_and_tool_call_counts() -> Result<()> 
             since: Some("2026-04-06T10:00:00Z"),
             until: Some("2026-04-06T10:01:00Z"),
             view: TurnsView::Oneline,
+            limit: 50,
+            offset: 0,
         },
     )?;
 
     assert_eq!(result.view, TurnsView::Oneline);
     assert_eq!(result.since.as_deref(), Some("2026-04-06T10:00:00Z"));
     assert_eq!(result.until.as_deref(), Some("2026-04-06T10:01:00Z"));
+    assert_eq!(result.limit, 50);
+    assert_eq!(result.offset, 0);
+    assert!(!result.has_more);
     assert_eq!(result.turns.len(), 1);
     assert_eq!(result.turns[0].turn_ordinal, 1);
     assert_eq!(result.turns[0].tool_call_count, 2);
+
+    let page = query_project_turns(
+        &index_path,
+        TurnsQueryRequest {
+            project_id: "repo-a",
+            provider: SourceKind::Codex,
+            session_id: "session-1",
+            since: None,
+            until: None,
+            view: TurnsView::Full,
+            limit: 1,
+            offset: 1,
+        },
+    )?;
+
+    assert_eq!(page.limit, 1);
+    assert_eq!(page.offset, 1);
+    assert!(page.has_more);
+    assert_eq!(
+        page.turns
+            .iter()
+            .map(|turn| turn.turn_ordinal)
+            .collect::<Vec<_>>(),
+        vec![1]
+    );
 
     fs::remove_dir_all(
         index_path
@@ -3441,6 +3471,8 @@ fn full_turn_payload_serialization_skips_oneline_helper_fields() -> Result<()> {
             since: None,
             until: None,
             view: TurnsView::Full,
+            limit: 50,
+            offset: 0,
         },
     )?;
     let turns_value = to_value(&turns)?;

@@ -324,6 +324,9 @@ pub struct TurnsQueryData {
     pub since: Option<String>,
     pub until: Option<String>,
     pub view: TurnsView,
+    pub limit: u64,
+    pub offset: u64,
+    pub has_more: bool,
     pub turns: Vec<TurnSummary>,
 }
 
@@ -336,6 +339,8 @@ pub struct TurnsQueryRequest<'a> {
     pub since: Option<&'a str>,
     pub until: Option<&'a str>,
     pub view: TurnsView,
+    pub limit: usize,
+    pub offset: usize,
 }
 
 /// Identifies the supported turn-search modes.

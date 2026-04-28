@@ -552,6 +552,8 @@ fn parses_query_turns_session_scope_command() {
                 provider,
                 session_id,
                 view,
+                limit,
+                offset,
                 json,
                 ..
             }),
@@ -559,6 +561,8 @@ fn parses_query_turns_session_scope_command() {
             && matches!(provider, super::ProviderArg::Codex)
             && session_id == "session-1"
             && matches!(view, super::TurnListViewArg::Full)
+            && limit == 50
+            && offset == 0
             && json
     ));
 }
