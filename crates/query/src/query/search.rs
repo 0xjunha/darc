@@ -947,7 +947,7 @@ fn evidence_snippet(text: &str, matched: Range<usize>) -> String {
     snippet
 }
 
-/// Queries staged file-search hits so exact and prefix matches can use dedicated indexes first.
+/// Queries staged file-search hits so exact and prefix matches rank before contains matches.
 fn query_file_hits(
     connection: &Connection,
     request: FileSearchRequest<'_>,
@@ -970,7 +970,8 @@ fn query_file_hits(
             break;
         }
 
-        let remaining = desired_hit_count.saturating_sub(hits.len());
+        // Query a full page from every stage because later stages can overlap earlier ones.
+        // The shared dedupe pass below owns the final page boundary.
         let stage_hits = query_file_hits_stage(
             connection,
             FileSearchStageRequest {
@@ -978,7 +979,7 @@ fn query_file_hits(
                 kind: request.kind,
                 stage,
                 pattern: &pattern,
-                limit: remaining,
+                limit: desired_hit_count,
             },
         )?;
         for hit in stage_hits {

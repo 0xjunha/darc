@@ -2996,6 +2996,74 @@ fn search_turns_file_modes_match_derived_paths() -> Result<()> {
 }
 
 #[test]
+fn search_turns_file_modes_dedupe_before_pagination() -> Result<()> {
+    let index_path = test_index_path("search-file-dedupe-pagination");
+    let connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
+    )?;
+
+    for (turn_ordinal, started_at, file_path) in [
+        (0, "2026-04-06T11:03:00Z", "src/foo"),
+        (1, "2026-04-06T11:02:00Z", "src/foo"),
+        (2, "2026-04-06T11:01:00Z", "src/foo-alpha.rs"),
+        (3, "2026-04-06T11:00:00Z", "src/foo-beta.rs"),
+    ] {
+        let steps_json = format!(
+            r#"[{{"type":"tool_call","timestamp":"{started_at}","call_id":"call-{turn_ordinal}","name":"Read","arguments":"{{\"file_path\":\"{file_path}\"}}"}}]"#
+        );
+        insert_indexed_turn(
+            &connection,
+            IndexedTurnFixture {
+                user_message: "Inspect a source file",
+                step_count: 1,
+                tool_call_count: 1,
+                duration_ms: 3_000,
+                ..IndexedTurnFixture::new(
+                    "repo-a",
+                    SourceKind::Codex,
+                    "session-1",
+                    turn_ordinal,
+                    started_at,
+                    "completed",
+                    &steps_json,
+                )
+            },
+        )?;
+    }
+
+    let result = query_search_turns(
+        &index_path,
+        SearchTurnsRequest {
+            project_id: "repo-a",
+            mode: SearchMode::FileName,
+            query: "foo",
+            include_tool_output: false,
+            provider: None,
+            session_id: None,
+            since: None,
+            until: None,
+            limit: 3,
+            offset: 0,
+        },
+    )?;
+
+    assert_eq!(result.hits.len(), 3);
+    assert!(result.has_more);
+    assert_eq!(result.hits[0].turn_ordinal, 0);
+    assert_eq!(result.hits[1].turn_ordinal, 1);
+    assert_eq!(result.hits[2].turn_ordinal, 2);
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
 fn full_turn_payload_serialization_skips_oneline_helper_fields() -> Result<()> {
     let index_path = test_index_path("turn-payload-skip-oneline-helpers");
     let connection = open_index_database(&index_path)?;
