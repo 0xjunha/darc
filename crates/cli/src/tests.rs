@@ -276,8 +276,7 @@ fn parses_query_turn_command() {
         Commands::Query(super::QueryArgs {
             command: QueryCommands::Turn(super::QueryTurnArgs {
                 project_id,
-                session_id_arg,
-                turn_ordinal_arg,
+                positional_args,
                 session_id,
                 turn_ordinal,
                 view,
@@ -286,8 +285,7 @@ fn parses_query_turn_command() {
                 ..
             }),
         }) if project_id.as_deref() == Some("repo-abc123")
-            && session_id_arg.as_deref() == Some("session-1")
-            && turn_ordinal_arg == Some(2)
+            && positional_args == ["session-1", "2"]
             && session_id.is_none()
             && turn_ordinal.is_none()
             && matches!(view, super::ViewArg::Narrative)

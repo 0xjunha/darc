@@ -248,6 +248,21 @@ pub fn resolve_query_session_id_for_project(
     )
 }
 
+/// Resolves one strict search session-id filter without forcing cross-provider disambiguation.
+pub fn resolve_query_search_session_id_for_project(
+    project: &ResolvedQueryProject,
+    provider: Option<SourceKind>,
+    session_id: &str,
+) -> Result<String> {
+    let context = &project.context;
+    validate_project_session_filter_id(
+        &context.root.database_path,
+        &context.project.id,
+        provider,
+        session_id,
+    )
+}
+
 /// Resolves one strict `darc query` session id plus provider against one project.
 pub fn resolve_query_session_for_project(
     project: &ResolvedQueryProject,
@@ -849,6 +864,30 @@ fn validate_project_session_id(
     session_id: &str,
 ) -> Result<String> {
     Ok(validate_project_session_ref(index_db_path, project_id, provider, session_id)?.session_id)
+}
+
+/// Validates one strict session-id filter without rejecting cross-provider matches.
+fn validate_project_session_filter_id(
+    index_db_path: &Path,
+    project_id: &str,
+    provider: Option<SourceKind>,
+    session_id: &str,
+) -> Result<String> {
+    let session_id = session_id.trim();
+    match classify_strict_session_input(session_id) {
+        SessionIdShape::Prefix => {
+            return Err(QueryProtocolError::unknown_data_session(session_id, true).into());
+        }
+        SessionIdShape::Invalid => {
+            return Err(QueryProtocolError::invalid_data_session_id(session_id).into());
+        }
+        SessionIdShape::FullUuid => {}
+    }
+    lookup_project_session_matches(index_db_path, project_id, provider, session_id, 1)?
+        .into_iter()
+        .next()
+        .map(|resolved| resolved.session_id)
+        .ok_or_else(|| QueryProtocolError::unknown_data_session(session_id, false).into())
 }
 
 /// Validates one strict session id and resolves its canonical provider/session identity.

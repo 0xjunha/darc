@@ -191,7 +191,7 @@ Session-id-specific error codes:
 
 - `invalid_session_id`: the supplied resolver query or data-command session id is not a full UUID or accepted UUID-prefix shape
 - `unknown_session`: the full UUID or explicit prefix did not resolve to an indexed session
-- `ambiguous_session`: `darc query resolve-session --pick-one` found more than one candidate
+- `ambiguous_session`: `darc query resolve-session --pick-one` found more than one candidate, or a session-scoped data command found the same full UUID under multiple providers; pass `--provider` to choose one provider
 
 ## Schema ids
 

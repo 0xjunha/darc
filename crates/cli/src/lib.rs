@@ -14,8 +14,8 @@ use darc_core::query::{
     query_search_turns_for_project, query_session_bundle_for_project,
     query_session_files_for_project, query_sessions_for_project, query_turn_for_project,
     query_turn_insight_report_for_project, query_turns_for_project, query_workspace,
-    query_workspace_insight_report, resolve_query_project, resolve_query_session_for_project,
-    resolve_query_session_id_for_project,
+    query_workspace_insight_report, resolve_query_project,
+    resolve_query_search_session_id_for_project, resolve_query_session_for_project,
 };
 use darc_core::{
     IndexOptions, InitDraft, RefreshAllBestEffortReport, RefreshOptions, RefreshProjectAttempt,
@@ -465,11 +465,12 @@ struct QueryTurnArgs {
     #[arg(long, value_enum, help = "Disambiguate a cross-provider session id")]
     provider: Option<ProviderArg>,
 
-    #[arg(value_name = "SESSION_ID", help = "Query this session id")]
-    session_id_arg: Option<String>,
-
-    #[arg(value_name = "TURN_ORDINAL", help = "Query this turn ordinal")]
-    turn_ordinal_arg: Option<u64>,
+    #[arg(
+        value_names = ["SESSION_ID", "TURN_ORDINAL"],
+        num_args = 0..=2,
+        help = "Query this session id and turn ordinal"
+    )]
+    positional_args: Vec<String>,
 
     #[arg(
         long = "session-id",
@@ -654,11 +655,12 @@ struct QueryTurnInsightsArgs {
     #[arg(long, value_enum, help = "Disambiguate a cross-provider session id")]
     provider: Option<ProviderArg>,
 
-    #[arg(value_name = "SESSION_ID", help = "Query this session id")]
-    session_id_arg: Option<String>,
-
-    #[arg(value_name = "TURN_ORDINAL", help = "Query this turn ordinal")]
-    turn_ordinal_arg: Option<u64>,
+    #[arg(
+        value_names = ["SESSION_ID", "TURN_ORDINAL"],
+        num_args = 0..=2,
+        help = "Query this session id and turn ordinal"
+    )]
+    positional_args: Vec<String>,
 
     #[arg(
         long = "session-id",
@@ -993,19 +995,10 @@ fn run_query_turns(args: QueryTurnsArgs) -> Result<()> {
 
 /// Queries one turn detail payload.
 fn run_query_turn(args: QueryTurnArgs) -> Result<()> {
-    let session_id = required_named_or_positional(
-        "session id",
-        "--session-id",
+    let (session_id, turn_ordinal) = resolve_turn_identity_args(
         args.session_id.as_deref(),
-        "SESSION_ID",
-        args.session_id_arg.as_deref(),
-    )?;
-    let turn_ordinal = required_named_or_positional_copy(
-        "turn ordinal",
-        "--turn-ordinal",
         args.turn_ordinal,
-        "TURN_ORDINAL",
-        args.turn_ordinal_arg,
+        &args.positional_args,
     )?;
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
     let session = resolve_query_session_for_project(
@@ -1058,7 +1051,7 @@ fn run_query_search_turns(args: QuerySearchTurnsArgs) -> Result<()> {
         .session_id
         .as_deref()
         .map(|session_id| {
-            resolve_query_session_id_for_project(
+            resolve_query_search_session_id_for_project(
                 &project,
                 args.provider.map(provider_arg_to_source_kind),
                 session_id,
@@ -1109,19 +1102,10 @@ fn run_query_project_insights(args: QueryProjectInsightsArgs) -> Result<()> {
 
 /// Queries the turn insights payload for one session turn.
 fn run_query_turn_insights(args: QueryTurnInsightsArgs) -> Result<()> {
-    let session_id = required_named_or_positional(
-        "session id",
-        "--session-id",
+    let (session_id, turn_ordinal) = resolve_turn_identity_args(
         args.session_id.as_deref(),
-        "SESSION_ID",
-        args.session_id_arg.as_deref(),
-    )?;
-    let turn_ordinal = required_named_or_positional_copy(
-        "turn ordinal",
-        "--turn-ordinal",
         args.turn_ordinal,
-        "TURN_ORDINAL",
-        args.turn_ordinal_arg,
+        &args.positional_args,
     )?;
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
     let session = resolve_query_session_for_project(
@@ -1234,23 +1218,42 @@ fn required_named_or_positional<'a>(
     })
 }
 
-/// Resolves one required copy value supplied either as a flag or a positional argument.
-fn required_named_or_positional_copy<T: Copy>(
-    value_label: &str,
-    flag_name: &str,
-    flag_value: Option<T>,
-    positional_name: &str,
-    positional_value: Option<T>,
-) -> Result<T> {
-    match (flag_value, positional_value) {
-        (Some(_), Some(_)) => {
-            bail!("pass {value_label} either as {positional_name} or {flag_name}, not both")
+/// Resolves session-id and turn-ordinal values from flag and positional forms.
+fn resolve_turn_identity_args<'a>(
+    session_id: Option<&'a str>,
+    turn_ordinal: Option<u64>,
+    positional_args: &'a [String],
+) -> Result<(&'a str, u64)> {
+    match (session_id, turn_ordinal, positional_args) {
+        (Some(session_id), Some(turn_ordinal), []) => Ok((session_id, turn_ordinal)),
+        (Some(session_id), None, [turn_ordinal]) => {
+            Ok((session_id, parse_turn_ordinal_arg(turn_ordinal)?))
         }
-        (Some(value), None) | (None, Some(value)) => Ok(value),
-        (None, None) => Err(anyhow!(
-            "query command requires {value_label} as {positional_name} or {flag_name}"
-        )),
+        (None, Some(turn_ordinal), [session_id]) => Ok((session_id, turn_ordinal)),
+        (None, None, [session_id, turn_ordinal]) => {
+            Ok((session_id, parse_turn_ordinal_arg(turn_ordinal)?))
+        }
+        (Some(_), Some(_), _) => bail!(
+            "pass turn identity either as SESSION_ID TURN_ORDINAL or with --session-id/--turn-ordinal, not both"
+        ),
+        (Some(_), None, []) => {
+            bail!("query command requires turn ordinal as TURN_ORDINAL or --turn-ordinal")
+        }
+        (None, Some(_), []) => {
+            bail!("query command requires session id as SESSION_ID or --session-id")
+        }
+        (None, None, []) => bail!(
+            "query command requires session id and turn ordinal as SESSION_ID TURN_ORDINAL or --session-id/--turn-ordinal"
+        ),
+        _ => bail!("unexpected extra positional turn identity arguments"),
     }
+}
+
+/// Parses one turn ordinal positional value.
+fn parse_turn_ordinal_arg(value: &str) -> Result<u64> {
+    value
+        .parse()
+        .with_context(|| format!("invalid turn ordinal `{value}`"))
 }
 
 /// Returns whether one string is a full canonical UUID text value.

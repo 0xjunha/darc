@@ -1281,6 +1281,7 @@ fn turn_query_can_embed_derived_insights() -> Result<()> {
         "repo-abc123",
         "--provider",
         "codex",
+        "--session-id",
         PRIMARY_SESSION_ID,
         "0",
         "--include-insights",
@@ -1397,6 +1398,48 @@ fn search_turns_query_emits_keyword_search_envelope() -> Result<()> {
         value["data"]["hits"][0]["matched_paths"],
         Value::Array(vec![])
     );
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn search_turns_query_allows_cross_provider_session_id_filter() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-search-cross-provider-session")?;
+    insert_query_fixture_provider_session(
+        &root,
+        SourceKind::Claude,
+        PRIMARY_SESSION_ID,
+        "2026-04-06T10:01:00Z",
+    )?;
+
+    let output = run_darc([
+        "query",
+        "search",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "Inspect",
+        "--session-id",
+        PRIMARY_SESSION_ID,
+    ])?;
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.search.turns.v1");
+    assert_eq!(value["data"]["provider"], Value::Null);
+    assert_eq!(value["data"]["session_id"], PRIMARY_SESSION_ID);
+    let mut providers = value["data"]["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hit| hit["provider"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    providers.sort_unstable();
+    assert_eq!(providers, vec!["claude", "codex"]);
 
     remove_root(&root)?;
     Ok(())
@@ -1544,7 +1587,6 @@ fn turn_insights_query_emits_success_envelope() -> Result<()> {
         "codex",
         "--session-id",
         PRIMARY_SESSION_ID,
-        "--turn-ordinal",
         "0",
     ])?;
 
