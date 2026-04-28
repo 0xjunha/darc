@@ -444,7 +444,7 @@ Today:
 - `matched_paths` is empty for keyword search and populated for file-name or file-path hits
 - `matches` is empty for keyword and file search and populated for literal or regex hits
 - `matches_truncated` is always false for keyword and file search
-- file-name and file-path search currently use case-insensitive exact/prefix/substring ranking before recency tie-breaks
+- file-name and file-path search use case-insensitive exact/prefix/substring ranking and deduplicate turn hits before applying final pagination
 - keyword search currently uses FTS ranking before recency tie-breaks
 
 ### Hard debugging

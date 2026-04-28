@@ -294,11 +294,15 @@ struct QueryTurnsArgs {
     )]
     project_id: Option<String>,
 
-    #[arg(long, value_enum, help = "Restrict turns to this provider")]
-    provider: Option<ProviderArg>,
+    #[arg(long, value_enum, required = true, help = "Provider for the session")]
+    provider: ProviderArg,
 
-    #[arg(long = "session-id", help = "Restrict turns to this session id")]
-    session_id: Option<String>,
+    #[arg(
+        long = "session-id",
+        required = true,
+        help = "Full session id to list turns for"
+    )]
+    session_id: String,
 
     #[arg(
         long,
@@ -918,15 +922,11 @@ fn run_query_turns(args: QueryTurnsArgs) -> Result<()> {
         .map(resolve_query_time_bound)
         .transpose()?;
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
-    let provider = args.provider.context("query turns requires --provider")?;
-    let session_id = args
-        .session_id
-        .as_deref()
-        .context("query turns requires --session-id")?;
+    let provider = args.provider;
     let session_id = resolve_query_session_id_for_project(
         &project,
         Some(provider_arg_to_source_kind(provider)),
-        session_id,
+        &args.session_id,
     )?;
     let data = query_turns_for_project(
         &project,

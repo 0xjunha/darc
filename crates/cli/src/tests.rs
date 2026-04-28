@@ -542,8 +542,8 @@ fn parses_query_turns_session_scope_command() {
                 ..
             }),
         }) if project_id.as_deref() == Some("repo-abc123")
-            && matches!(provider, Some(super::ProviderArg::Codex))
-            && session_id.as_deref() == Some("session-1")
+            && matches!(provider, super::ProviderArg::Codex)
+            && session_id == "session-1"
             && matches!(view, super::TurnListViewArg::Full)
             && json
     ));

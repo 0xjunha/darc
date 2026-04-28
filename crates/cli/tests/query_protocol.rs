@@ -1164,6 +1164,19 @@ fn turns_query_rejects_removed_grep_flag() -> Result<()> {
 }
 
 #[test]
+fn turns_query_help_marks_session_scope_required() -> Result<()> {
+    let output = run_darc(["query", "turns", "--help"])?;
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--provider <PROVIDER> --session-id <SESSION_ID> --json"));
+    assert!(stdout.contains("--provider <PROVIDER>      Provider for the session"));
+    assert!(stdout.contains("--session-id <SESSION_ID>  Full session id to list turns for"));
+    Ok(())
+}
+
+#[test]
 fn turn_query_emits_success_envelope_and_raw_field() -> Result<()> {
     let root = create_query_fixture_root("cli-query-turn")?;
     let output = run_darc([
