@@ -14,7 +14,8 @@ use darc_core::query::{
     query_search_turns_for_project, query_session_bundle_for_project,
     query_session_files_for_project, query_sessions_for_project, query_turn_for_project,
     query_turn_insight_report_for_project, query_turns_for_project, query_workspace,
-    query_workspace_insight_report, resolve_query_project, resolve_query_session_id_for_project,
+    query_workspace_insight_report, resolve_query_project, resolve_query_session_for_project,
+    resolve_query_session_id_for_project,
 };
 use darc_core::{
     IndexOptions, InitDraft, RefreshAllBestEffortReport, RefreshOptions, RefreshProjectAttempt,
@@ -286,8 +287,8 @@ struct QueryTurnsArgs {
     )]
     project_id: Option<String>,
 
-    #[arg(long, value_enum, required = true, help = "Provider for the session")]
-    provider: ProviderArg,
+    #[arg(long, value_enum, help = "Provider for the session")]
+    provider: Option<ProviderArg>,
 
     #[arg(
         long = "session-id",
@@ -379,7 +380,7 @@ struct QuerySessionFilesArgs {
     project_id: Option<String>,
 
     #[arg(long, value_enum, help = "Query this provider session")]
-    provider: ProviderArg,
+    provider: Option<ProviderArg>,
 
     #[arg(long = "session-id", help = "Query this session id")]
     session_id: String,
@@ -398,7 +399,7 @@ struct QuerySessionBundleArgs {
     project_id: Option<String>,
 
     #[arg(long, value_enum, help = "Query this provider session")]
-    provider: ProviderArg,
+    provider: Option<ProviderArg>,
 
     #[arg(long = "session-id", help = "Query this session id")]
     session_id: String,
@@ -439,7 +440,7 @@ struct QueryTurnArgs {
     project_id: Option<String>,
 
     #[arg(long, value_enum, help = "Query this provider")]
-    provider: ProviderArg,
+    provider: Option<ProviderArg>,
 
     #[arg(long = "session-id", help = "Query this session id")]
     session_id: String,
@@ -602,7 +603,7 @@ struct QueryTurnInsightsArgs {
     project_id: Option<String>,
 
     #[arg(long, value_enum, help = "Query this provider")]
-    provider: ProviderArg,
+    provider: Option<ProviderArg>,
 
     #[arg(long = "session-id", help = "Query this session id")]
     session_id: String,
@@ -827,33 +828,29 @@ fn run_query_files(args: QueryFilesArgs) -> Result<()> {
 /// Queries one session-scoped per-file access summary payload.
 fn run_query_session_files(args: QuerySessionFilesArgs) -> Result<()> {
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
-    let session_id = resolve_query_session_id_for_project(
+    let session = resolve_query_session_for_project(
         &project,
-        Some(provider_arg_to_source_kind(args.provider)),
+        args.provider.map(provider_arg_to_source_kind),
         &args.session_id,
     )?;
-    let data = query_session_files_for_project(
-        &project,
-        provider_arg_to_source_kind(args.provider),
-        &session_id,
-    )?;
+    let data = query_session_files_for_project(&project, session.provider, &session.session_id)?;
     print_json_envelope("darc.query.session_files.v1", &data)
 }
 
 /// Queries one composite session bundle payload.
 fn run_query_session_bundle(args: QuerySessionBundleArgs) -> Result<()> {
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
-    let session_id = resolve_query_session_id_for_project(
+    let session = resolve_query_session_for_project(
         &project,
-        Some(provider_arg_to_source_kind(args.provider)),
+        args.provider.map(provider_arg_to_source_kind),
         &args.session_id,
     )?;
     let data = query_session_bundle_for_project(
         &project,
         SessionBundleQueryRequest {
             project_id: "",
-            provider: provider_arg_to_source_kind(args.provider),
-            session_id: &session_id,
+            provider: session.provider,
+            session_id: &session.session_id,
             project_root: None,
             view: view_arg_to_session_bundle_view(args.view),
             turn_limit: args.turn_limit,
@@ -876,18 +873,17 @@ fn run_query_turns(args: QueryTurnsArgs) -> Result<()> {
         .map(resolve_query_time_bound)
         .transpose()?;
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
-    let provider = args.provider;
-    let session_id = resolve_query_session_id_for_project(
+    let session = resolve_query_session_for_project(
         &project,
-        Some(provider_arg_to_source_kind(provider)),
+        args.provider.map(provider_arg_to_source_kind),
         &args.session_id,
     )?;
     let data = query_turns_for_project(
         &project,
         TurnsQueryRequest {
             project_id: "",
-            provider: provider_arg_to_source_kind(provider),
-            session_id: &session_id,
+            provider: session.provider,
+            session_id: &session.session_id,
             since: since.as_deref(),
             until: until.as_deref(),
             view: turn_list_view_arg_to_view(args.view),
@@ -901,15 +897,15 @@ fn run_query_turns(args: QueryTurnsArgs) -> Result<()> {
 /// Queries one full turn detail payload.
 fn run_query_turn(args: QueryTurnArgs) -> Result<()> {
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
-    let session_id = resolve_query_session_id_for_project(
+    let session = resolve_query_session_for_project(
         &project,
-        Some(provider_arg_to_source_kind(args.provider)),
+        args.provider.map(provider_arg_to_source_kind),
         &args.session_id,
     )?;
     let data = query_turn_for_project(
         &project,
-        provider_arg_to_source_kind(args.provider),
-        &session_id,
+        session.provider,
+        &session.session_id,
         args.turn_ordinal,
         TurnDetailOptions {
             include_raw: args.include_raw,
@@ -996,15 +992,15 @@ fn run_query_project_insights(args: QueryProjectInsightsArgs) -> Result<()> {
 /// Queries the turn insights payload for one provider session turn.
 fn run_query_turn_insights(args: QueryTurnInsightsArgs) -> Result<()> {
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
-    let session_id = resolve_query_session_id_for_project(
+    let session = resolve_query_session_for_project(
         &project,
-        Some(provider_arg_to_source_kind(args.provider)),
+        args.provider.map(provider_arg_to_source_kind),
         &args.session_id,
     )?;
     let data = query_turn_insight_report_for_project(
         &project,
-        provider_arg_to_source_kind(args.provider),
-        &session_id,
+        session.provider,
+        &session.session_id,
         args.turn_ordinal,
     )?;
     print_json_envelope("darc.query.insights.turn.v1", &data)

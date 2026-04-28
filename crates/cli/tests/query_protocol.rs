@@ -454,8 +454,6 @@ fn session_files_query_emits_success_envelope() -> Result<()> {
         root.to_string_lossy().as_ref(),
         "--project-id",
         "repo-abc123",
-        "--provider",
-        "codex",
         "--session-id",
         PRIMARY_SESSION_ID,
     ])?;
@@ -487,8 +485,6 @@ fn session_bundle_query_emits_success_envelope() -> Result<()> {
         root.to_string_lossy().as_ref(),
         "--project-id",
         "repo-abc123",
-        "--provider",
-        "codex",
         "--session-id",
         PRIMARY_SESSION_ID,
         "--view",
@@ -517,6 +513,55 @@ fn session_bundle_query_emits_success_envelope() -> Result<()> {
         value["data"]["session_files"]["files"][0]["read_count"],
         serde_json::json!(1)
     );
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn session_scoped_query_requires_provider_for_cross_provider_session_id() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-session-provider-ambiguity")?;
+    insert_query_fixture_provider_session(
+        &root,
+        SourceKind::Claude,
+        PRIMARY_SESSION_ID,
+        "2026-04-06T10:05:00Z",
+    )?;
+
+    let ambiguous_output = run_darc([
+        "query",
+        "session-files",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--session-id",
+        PRIMARY_SESSION_ID,
+    ])?;
+    assert!(!ambiguous_output.status.success());
+    let ambiguous_value = parse_json(&ambiguous_output.stderr, "stderr")?;
+    assert_eq!(ambiguous_value["schema"], "darc.error.v1");
+    assert_eq!(ambiguous_value["error"]["code"], "ambiguous_session");
+    assert_eq!(
+        ambiguous_value["error"]["details"]["query"],
+        PRIMARY_SESSION_ID
+    );
+
+    let provider_output = run_darc([
+        "query",
+        "session-files",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--provider",
+        "codex",
+        "--session-id",
+        PRIMARY_SESSION_ID,
+    ])?;
+    assert!(provider_output.status.success());
+    let provider_value = parse_json(&provider_output.stdout, "stdout")?;
+    assert_eq!(provider_value["data"]["provider"], "codex");
 
     remove_root(&root)?;
     Ok(())
@@ -773,8 +818,6 @@ fn turns_query_emits_success_envelope() -> Result<()> {
         root.to_string_lossy().as_ref(),
         "--project-id",
         "repo-abc123",
-        "--provider",
-        "codex",
         "--session-id",
         PRIMARY_SESSION_ID,
     ])?;
@@ -1192,13 +1235,13 @@ fn turns_query_rejects_removed_grep_flag() -> Result<()> {
 }
 
 #[test]
-fn turns_query_help_marks_session_scope_required() -> Result<()> {
+fn turns_query_help_marks_session_required_and_provider_optional() -> Result<()> {
     let output = run_darc(["query", "turns", "--help"])?;
 
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("--provider <PROVIDER> --session-id <SESSION_ID>"));
+    assert!(stdout.contains("--session-id <SESSION_ID>"));
     assert!(stdout.contains("--provider <PROVIDER>      Provider for the session"));
     assert!(stdout.contains("--session-id <SESSION_ID>  Full session id to list turns for"));
     Ok(())
@@ -1214,8 +1257,6 @@ fn turn_query_emits_success_envelope_and_raw_field() -> Result<()> {
         root.to_string_lossy().as_ref(),
         "--project-id",
         "repo-abc123",
-        "--provider",
-        "codex",
         "--session-id",
         PRIMARY_SESSION_ID,
         "--turn-ordinal",

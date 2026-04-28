@@ -470,7 +470,7 @@ fn parses_query_session_files_command() {
                 ..
             }),
         }) if project_id.as_deref() == Some("repo-abc123")
-            && matches!(provider, super::ProviderArg::Codex)
+            && matches!(provider, Some(super::ProviderArg::Codex))
             && session_id == "session-1"
     ));
 }
@@ -504,7 +504,7 @@ fn parses_query_session_bundle_command() {
                 ..
             }),
         }) if project_id.as_deref() == Some("repo-abc123")
-            && matches!(provider, super::ProviderArg::Codex)
+            && matches!(provider, Some(super::ProviderArg::Codex))
             && session_id == "session-1"
             && matches!(view, super::ViewArg::Narrative)
             && turn_limit == 50
@@ -539,7 +539,7 @@ fn parses_query_turns_session_scope_command() {
                 ..
             }),
         }) if project_id.as_deref() == Some("repo-abc123")
-            && matches!(provider, super::ProviderArg::Codex)
+            && matches!(provider, Some(super::ProviderArg::Codex))
             && session_id == "session-1"
             && matches!(view, super::TurnListViewArg::Full)
             && limit == 50

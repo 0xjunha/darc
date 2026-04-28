@@ -249,6 +249,21 @@ const PROJECT_SESSION_ID_SQL: &str = "
     LIMIT 1
 ";
 
+const PROJECT_SESSION_MATCHES_SQL: &str = "
+    SELECT DISTINCT
+        project_id,
+        provider,
+        session_id
+    FROM sessions
+    WHERE project_id = ?1
+        AND (?2 IS NULL OR provider = ?2)
+        AND session_id = ?3 COLLATE NOCASE
+    ORDER BY
+        provider ASC,
+        session_id ASC
+    LIMIT ?4
+";
+
 /// Collects the filters for one low-level session-summary SQL query.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SessionSummaryQuery<'a> {
@@ -768,6 +783,53 @@ pub(crate) fn query_project_session_id(
     Ok(session_id)
 }
 
+/// Queries exact project-scoped session matches for provider inference.
+pub fn lookup_project_session_matches(
+    index_db_path: &Path,
+    project_id: &str,
+    provider: Option<SourceKind>,
+    session_id: &str,
+    limit: usize,
+) -> Result<Vec<ResolvedSessionMatch>> {
+    let connection = open_existing_index_database(index_db_path)?;
+    query_project_session_matches(&connection, project_id, provider, session_id, limit)
+}
+
+/// Queries exact project-scoped session matches from one open SQLite connection.
+fn query_project_session_matches(
+    connection: &Connection,
+    project_id: &str,
+    provider: Option<SourceKind>,
+    session_id: &str,
+    limit: usize,
+) -> Result<Vec<ResolvedSessionMatch>> {
+    let provider = provider.map(SourceKind::directory_name);
+    let limit = i64::try_from(limit).context("project session match limit exceeds SQLite range")?;
+    let mut statement = connection
+        .prepare(PROJECT_SESSION_MATCHES_SQL)
+        .context("failed to prepare project session matches query")?;
+    let rows = statement
+        .query_map(params![project_id, provider, session_id, limit], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .context("failed to query project session matches")?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed to read project session match rows")?;
+    rows.into_iter()
+        .map(|(project_id, provider, session_id)| -> Result<_> {
+            Ok(ResolvedSessionMatch {
+                project_id,
+                provider: parse_provider(&provider)?,
+                session_id,
+            })
+        })
+        .collect()
+}
+
 /// Parses one JSON array of edited session file paths from SQLite aggregation output.
 fn parse_edited_files_json(value: &str) -> Result<Vec<String>> {
     serde_json::from_str(value)
@@ -908,6 +970,7 @@ pub(super) fn smoke_test_sql(connection: &Connection) -> Result<()> {
         ("project sessions query", PROJECT_SESSIONS_SQL),
         ("resolve sessions query", RESOLVE_SESSIONS_SQL),
         ("project session id query", PROJECT_SESSION_ID_SQL),
+        ("project session matches query", PROJECT_SESSION_MATCHES_SQL),
         ("session turns query", session_turns_sql()),
     ] {
         connection

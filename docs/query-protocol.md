@@ -22,10 +22,10 @@ Query commands emit JSON envelopes on stdout by default.
 - `darc query sessions --root <path> [--project-id <id>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--touched-path <glob>] [--limit <n>] [--offset <n>]`
 - `darc query files --root <path> [--project-id <id>] --path <glob> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>]`
 - `darc query files --root <path> [--project-id <id>] --co-touched-with <path> [--limit <n>] [--offset <n>]`
-- `darc query session-files --root <path> [--project-id <id>] --provider <provider> --session-id <id>`
-- `darc query session-bundle --root <path> [--project-id <id>] --provider <provider> --session-id <id> [--view <full|narrative>] [--turn-limit <n>] [--turn-offset <n>]`
-- `darc query turns --root <path> [--project-id <id>] --provider <provider> --session-id <id> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--view <full|oneline>] [--limit <n>] [--offset <n>]`
-- `darc query turn --root <path> [--project-id <id>] --provider <provider> --session-id <id> --turn-ordinal <n> [--view <full|narrative>] [--include-raw] [--include-insights]`
+- `darc query session-files --root <path> [--project-id <id>] [--provider <provider>] --session-id <id>`
+- `darc query session-bundle --root <path> [--project-id <id>] [--provider <provider>] --session-id <id> [--view <full|narrative>] [--turn-limit <n>] [--turn-offset <n>]`
+- `darc query turns --root <path> [--project-id <id>] [--provider <provider>] --session-id <id> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--view <full|oneline>] [--limit <n>] [--offset <n>]`
+- `darc query turn --root <path> [--project-id <id>] [--provider <provider>] --session-id <id> --turn-ordinal <n> [--view <full|narrative>] [--include-raw] [--include-insights]`
 
 ### Search
 
@@ -35,20 +35,21 @@ Query commands emit JSON envelopes on stdout by default.
 
 - `darc query insights workspace --root <path> --window <days>d`
 - `darc query insights project --root <path> [--project-id <id>] [--turn-limit <n>]`
-- `darc query insights turn --root <path> [--project-id <id>] --provider <provider> --session-id <id> --turn-ordinal <n>`
+- `darc query insights turn --root <path> [--project-id <id>] [--provider <provider>] --session-id <id> --turn-ordinal <n>`
 
 ## Argument rules
 
 - project-scoped queries accept optional `--project-id`; when omitted, Darc resolves the configured project from the current directory
 - `darc query resolve-session` accepts either one full UUID or one UUID prefix and returns `project_id`, `provider`, and `session_id` for each match
-- `darc query turns` requires both `--provider` and `--session-id`
+- session-scoped commands require `--session-id`; Darc infers `--provider` when that session id is unique within the project
+- pass `--provider` when the same session id exists for multiple providers
 - `darc query files` requires exactly one of `--path` or `--co-touched-with`
 - `--since` and `--until` on `darc query files` require `--path`
 - `--limit` and `--offset` are accepted by `darc query sessions`, `darc query turns`, `darc query search turns`, and both `darc query files` modes; these row/turn-hit limits default to `--limit 50 --offset 0`
 - `--turn-limit` and `--turn-offset` on `darc query session-bundle` bound embedded turn details and default to `--turn-limit 50 --turn-offset 0`
 - `--turn-limit` on `darc query insights project` is an inspection bound over indexed turns, not response pagination; the previous `--limit` spelling is accepted as a compatibility alias
 - `--include-tool-output` on `darc query search turns` is accepted only with `--mode literal` or `--mode regex`
-- session-scoped data commands require a full UUID `--session-id`; malformed ids return `invalid_session_id`, unknown UUIDs return `unknown_session`, and UUID-like prefixes fail explicitly instead of auto-resolving
+- session-scoped data commands require a full UUID `--session-id`; malformed ids return `invalid_session_id`, unknown UUIDs return `unknown_session`, ambiguous cross-provider UUIDs return `ambiguous_session`, and UUID-like prefixes fail explicitly instead of auto-resolving
 
 ## Common Workflows
 
@@ -102,7 +103,6 @@ The protocol is intentionally composable. A few common read patterns are now fir
   darc query session-files \
     --root ~/.darc \
     --project-id repo-abc123 \
-    --provider codex \
     --session-id 11111111-1111-4111-8111-111111111111
   ```
 
@@ -114,7 +114,6 @@ The protocol is intentionally composable. A few common read patterns are now fir
   darc query session-bundle \
     --root ~/.darc \
     --project-id repo-abc123 \
-    --provider codex \
     --session-id "$ID" \
     --view narrative \
     --turn-limit 20
@@ -126,7 +125,6 @@ The protocol is intentionally composable. A few common read patterns are now fir
   darc query turns \
     --root ~/.darc \
     --project-id repo-abc123 \
-    --provider codex \
     --session-id 11111111-1111-4111-8111-111111111111 \
     --view oneline \
     --limit 50
@@ -340,7 +338,7 @@ Today:
 - `first_turn_at` and `first_user_prompt` come from the indexed turn with the minimum `turn_ordinal` in that session and are `null` only when the indexed session has no stored turns
 - `aborted_turn_count` counts indexed turns in that session where `status` is `aborted`
 - `edited_files` is the distinct `COALESCE(repo_relative_path, path)` list from session-scoped `file_accesses` rows with `access_type` of `edit` or `write`, excluding null or whitespace-only paths and ordered by display path ascending
-- `darc.query.turns.v1` remains the session-scoped `--provider --session-id` list mode and keeps non-null top-level `provider` and `session_id`
+- `darc.query.turns.v1` remains session-scoped and keeps non-null top-level `provider` and `session_id`; provider is inferred unless the session id is cross-provider ambiguous
 - session-scoped data commands do not auto-resolve UUID prefixes; callers must expand prefixes explicitly with `darc query resolve-session`
 - `query files --path <glob>` and `--touched-path <glob>` on `query sessions` currently use the Rust `glob` crate syntax, matched case-insensitively against one canonical project-scoped display path per access
 - absolute query paths under the configured project root are normalized down to project-relative form before matching, so `/repo/README.md` and `README.md` hit the same indexed access

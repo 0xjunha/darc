@@ -17,8 +17,8 @@ pub use files::{query_project_files, query_project_session_files};
 pub(crate) use insights::{build_project_insights, build_workspace_insights};
 pub use insights::{query_project_insights, query_workspace_insights};
 pub use projects::{
-    list_project_index_aggregates, lookup_project_session_id, query_project_sessions,
-    query_project_turns, query_resolve_sessions,
+    list_project_index_aggregates, lookup_project_session_id, lookup_project_session_matches,
+    query_project_sessions, query_project_turns, query_resolve_sessions,
 };
 use rusqlite::Connection;
 pub use search::query_search_turns;
