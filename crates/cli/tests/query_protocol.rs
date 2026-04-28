@@ -486,6 +486,34 @@ fn files_query_without_selector_emits_top_files() -> Result<()> {
 }
 
 #[test]
+fn files_query_rejects_explicit_empty_selector() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-files-empty-selector")?;
+
+    let output = run_darc([
+        "query",
+        "files",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--path",
+        "",
+    ])?;
+
+    assert!(!output.status.success());
+    let value = parse_json(&output.stderr, "stderr")?;
+    assert_eq!(value["schema"], "darc.error.v1");
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("PATH/--path cannot be empty"))
+    );
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
 fn files_query_co_touched_mode_accepts_time_bounds() -> Result<()> {
     let root = create_query_fixture_root("cli-query-files-co-touch-time")?;
 

@@ -372,14 +372,9 @@ fn build_files_query(
     connection: &Connection,
     request: FilesQueryRequest<'_>,
 ) -> Result<FilesQueryData> {
-    let path = request
-        .path
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let co_touched_with = request
-        .co_touched_with
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
+    let path = optional_non_empty_file_selector("PATH/--path", request.path)?;
+    let co_touched_with =
+        optional_non_empty_file_selector("--co-touched-with", request.co_touched_with)?;
     match (path, co_touched_with) {
         (None, None) => {
             let files = query_top_touched_files(
@@ -472,6 +467,21 @@ fn build_files_query(
             bail!("query files requires exactly one of --path or --co-touched-with")
         }
     }
+}
+
+/// Trims one optional selector while rejecting explicitly empty input.
+fn optional_non_empty_file_selector<'a>(
+    label: &str,
+    value: Option<&'a str>,
+) -> Result<Option<&'a str>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        bail!("{label} cannot be empty");
+    }
+    Ok(Some(value))
 }
 
 /// Applies the matched-path preview cap to each file-session row.

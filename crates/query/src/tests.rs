@@ -1572,6 +1572,63 @@ fn query_files_path_mode_ranks_sessions_and_respects_time_bounds() -> Result<()>
 }
 
 #[test]
+fn query_files_rejects_explicit_empty_selectors() -> Result<()> {
+    let index_path = test_index_path("query-files-empty-selector");
+    let _connection = open_index_database(&index_path)?;
+
+    let empty_path = query_project_files(
+        &index_path,
+        FilesQueryRequest {
+            project_id: "repo-a",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            provider: None,
+            path: Some(" "),
+            co_touched_with: None,
+            since: None,
+            until: None,
+            limit: 50,
+            offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
+        },
+    )
+    .expect_err("empty path selector should fail");
+    assert!(
+        empty_path
+            .to_string()
+            .contains("PATH/--path cannot be empty")
+    );
+
+    let empty_co_touched = query_project_files(
+        &index_path,
+        FilesQueryRequest {
+            project_id: "repo-a",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            provider: None,
+            path: None,
+            co_touched_with: Some(""),
+            since: None,
+            until: None,
+            limit: 50,
+            offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
+        },
+    )
+    .expect_err("empty co-touch selector should fail");
+    assert!(
+        empty_co_touched
+            .to_string()
+            .contains("--co-touched-with cannot be empty")
+    );
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
 fn query_files_co_touched_mode_counts_sessions_and_sorts_ties() -> Result<()> {
     let index_path = test_index_path("query-files-co-touch");
     let connection = open_index_database(&index_path)?;
