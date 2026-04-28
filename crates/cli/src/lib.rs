@@ -192,13 +192,13 @@ enum QueryCommands {
     Sessions(QuerySessionsArgs),
     /// Queries file pivots for one configured project.
     Files(QueryFilesArgs),
-    /// Queries per-file access summaries for one provider session.
+    /// Queries per-file access summaries for one session.
     SessionFiles(QuerySessionFilesArgs),
-    /// Queries one composite session bundle for one provider session.
+    /// Queries one composite session bundle for one session.
     SessionBundle(QuerySessionBundleArgs),
-    /// Queries the turn list for one provider session.
+    /// Queries the turn list for one session.
     Turns(QueryTurnsArgs),
-    /// Queries one full turn detail payload.
+    /// Queries one turn detail payload.
     Turn(QueryTurnArgs),
     /// Queries one paginated search payload.
     Search(QuerySearchArgs),
@@ -275,7 +275,7 @@ struct QuerySessionsArgs {
     offset: usize,
 }
 
-/// Queries the turn list for one provider session.
+/// Queries the turn list for one session.
 #[derive(Debug, Args)]
 struct QueryTurnsArgs {
     #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
@@ -287,15 +287,18 @@ struct QueryTurnsArgs {
     )]
     project_id: Option<String>,
 
-    #[arg(long, value_enum, help = "Provider for the session")]
+    #[arg(long, value_enum, help = "Disambiguate a cross-provider session id")]
     provider: Option<ProviderArg>,
+
+    #[arg(value_name = "SESSION_ID", help = "Full session id to list turns for")]
+    session_id_arg: Option<String>,
 
     #[arg(
         long = "session-id",
-        required = true,
+        value_name = "SESSION_ID",
         help = "Full session id to list turns for"
     )]
-    session_id: String,
+    session_id: Option<String>,
 
     #[arg(
         long,
@@ -343,6 +346,12 @@ struct QueryFilesArgs {
     path: Option<String>,
 
     #[arg(
+        value_name = "PATH",
+        help = "Return sessions that touched this path or glob"
+    )]
+    path_arg: Option<String>,
+
+    #[arg(
         long = "co-touched-with",
         help = "Return files that were touched in the same sessions as this seed path"
     )]
@@ -350,13 +359,13 @@ struct QueryFilesArgs {
 
     #[arg(
         long,
-        help = "Inclusive started_at lower bound for --path mode. Example: `5d` or `2026-04-07T00:00:00Z`"
+        help = "Inclusive started_at lower bound for path mode. Example: `5d` or `2026-04-07T00:00:00Z`"
     )]
     since: Option<String>,
 
     #[arg(
         long,
-        help = "Exclusive started_at upper bound for --path mode. Example: `1d` or `2026-04-08T00:00:00Z`"
+        help = "Exclusive started_at upper bound for path mode. Example: `1d` or `2026-04-08T00:00:00Z`"
     )]
     until: Option<String>,
 
@@ -379,11 +388,18 @@ struct QuerySessionFilesArgs {
     )]
     project_id: Option<String>,
 
-    #[arg(long, value_enum, help = "Query this provider session")]
+    #[arg(long, value_enum, help = "Disambiguate a cross-provider session id")]
     provider: Option<ProviderArg>,
 
-    #[arg(long = "session-id", help = "Query this session id")]
-    session_id: String,
+    #[arg(value_name = "SESSION_ID", help = "Query this session id")]
+    session_id_arg: Option<String>,
+
+    #[arg(
+        long = "session-id",
+        value_name = "SESSION_ID",
+        help = "Query this session id"
+    )]
+    session_id: Option<String>,
 }
 
 /// Queries one composite session bundle payload.
@@ -398,11 +414,18 @@ struct QuerySessionBundleArgs {
     )]
     project_id: Option<String>,
 
-    #[arg(long, value_enum, help = "Query this provider session")]
+    #[arg(long, value_enum, help = "Disambiguate a cross-provider session id")]
     provider: Option<ProviderArg>,
 
-    #[arg(long = "session-id", help = "Query this session id")]
-    session_id: String,
+    #[arg(value_name = "SESSION_ID", help = "Query this session id")]
+    session_id_arg: Option<String>,
+
+    #[arg(
+        long = "session-id",
+        value_name = "SESSION_ID",
+        help = "Query this session id"
+    )]
+    session_id: Option<String>,
 
     #[arg(
         long,
@@ -427,7 +450,7 @@ struct QuerySessionBundleArgs {
     turn_offset: usize,
 }
 
-/// Queries one full turn detail payload.
+/// Queries one turn detail payload.
 #[derive(Debug, Args)]
 struct QueryTurnArgs {
     #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
@@ -439,14 +462,28 @@ struct QueryTurnArgs {
     )]
     project_id: Option<String>,
 
-    #[arg(long, value_enum, help = "Query this provider")]
+    #[arg(long, value_enum, help = "Disambiguate a cross-provider session id")]
     provider: Option<ProviderArg>,
 
-    #[arg(long = "session-id", help = "Query this session id")]
-    session_id: String,
+    #[arg(value_name = "SESSION_ID", help = "Query this session id")]
+    session_id_arg: Option<String>,
 
-    #[arg(long = "turn-ordinal", help = "Query this turn ordinal")]
-    turn_ordinal: u64,
+    #[arg(value_name = "TURN_ORDINAL", help = "Query this turn ordinal")]
+    turn_ordinal_arg: Option<u64>,
+
+    #[arg(
+        long = "session-id",
+        value_name = "SESSION_ID",
+        help = "Query this session id"
+    )]
+    session_id: Option<String>,
+
+    #[arg(
+        long = "turn-ordinal",
+        value_name = "TURN_ORDINAL",
+        help = "Query this turn ordinal"
+    )]
+    turn_ordinal: Option<u64>,
 
     #[arg(
         long,
@@ -495,15 +532,27 @@ struct QuerySearchTurnsArgs {
     )]
     project_id: Option<String>,
 
-    #[arg(long, value_enum, help = "Search in this mode")]
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = SearchModeArg::Keyword,
+        help = "Search in this mode"
+    )]
     mode: SearchModeArg,
+
+    #[arg(
+        value_name = "QUERY",
+        help = "Search for this text, file glob, or path fragment"
+    )]
+    query_arg: Option<String>,
 
     #[arg(
         long,
         allow_hyphen_values = true,
+        value_name = "QUERY",
         help = "Search for this text, file glob, or path fragment"
     )]
-    query: String,
+    query: Option<String>,
 
     #[arg(
         long,
@@ -550,7 +599,7 @@ enum QueryInsightsCommands {
     Workspace(QueryWorkspaceInsightsArgs),
     /// Queries the project insights payload for one configured project.
     Project(QueryProjectInsightsArgs),
-    /// Queries the turn insights payload for one provider session turn.
+    /// Queries the turn insights payload for one session turn.
     Turn(QueryTurnInsightsArgs),
 }
 
@@ -602,14 +651,28 @@ struct QueryTurnInsightsArgs {
     )]
     project_id: Option<String>,
 
-    #[arg(long, value_enum, help = "Query this provider")]
+    #[arg(long, value_enum, help = "Disambiguate a cross-provider session id")]
     provider: Option<ProviderArg>,
 
-    #[arg(long = "session-id", help = "Query this session id")]
-    session_id: String,
+    #[arg(value_name = "SESSION_ID", help = "Query this session id")]
+    session_id_arg: Option<String>,
 
-    #[arg(long = "turn-ordinal", help = "Query this turn ordinal")]
-    turn_ordinal: u64,
+    #[arg(value_name = "TURN_ORDINAL", help = "Query this turn ordinal")]
+    turn_ordinal_arg: Option<u64>,
+
+    #[arg(
+        long = "session-id",
+        value_name = "SESSION_ID",
+        help = "Query this session id"
+    )]
+    session_id: Option<String>,
+
+    #[arg(
+        long = "turn-ordinal",
+        value_name = "TURN_ORDINAL",
+        help = "Query this turn ordinal"
+    )]
+    turn_ordinal: Option<u64>,
 }
 
 /// Audit Codex rollout schema compatibility against stable release tags.
@@ -798,6 +861,19 @@ fn run_query_sessions(args: QuerySessionsArgs) -> Result<()> {
 
 /// Queries file pivots for one configured project.
 fn run_query_files(args: QueryFilesArgs) -> Result<()> {
+    let path = optional_named_or_positional(
+        "file path",
+        "--path",
+        args.path.as_deref(),
+        "PATH",
+        args.path_arg.as_deref(),
+    )?;
+    if path.is_some() && args.co_touched_with.is_some() {
+        bail!("query files accepts either PATH/--path or --co-touched-with, not both");
+    }
+    if path.is_none() && args.co_touched_with.is_none() {
+        bail!("query files requires PATH, --path, or --co-touched-with");
+    }
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
     let since = args
         .since
@@ -814,7 +890,7 @@ fn run_query_files(args: QueryFilesArgs) -> Result<()> {
         FilesQueryRequest {
             project_id: "",
             project_root: None,
-            path: args.path.as_deref(),
+            path,
             co_touched_with: args.co_touched_with.as_deref(),
             since: since.as_deref(),
             until: until.as_deref(),
@@ -827,11 +903,18 @@ fn run_query_files(args: QueryFilesArgs) -> Result<()> {
 
 /// Queries one session-scoped per-file access summary payload.
 fn run_query_session_files(args: QuerySessionFilesArgs) -> Result<()> {
+    let session_id = required_named_or_positional(
+        "session id",
+        "--session-id",
+        args.session_id.as_deref(),
+        "SESSION_ID",
+        args.session_id_arg.as_deref(),
+    )?;
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
     let session = resolve_query_session_for_project(
         &project,
         args.provider.map(provider_arg_to_source_kind),
-        &args.session_id,
+        session_id,
     )?;
     let data = query_session_files_for_project(&project, session.provider, &session.session_id)?;
     print_json_envelope("darc.query.session_files.v1", &data)
@@ -839,11 +922,18 @@ fn run_query_session_files(args: QuerySessionFilesArgs) -> Result<()> {
 
 /// Queries one composite session bundle payload.
 fn run_query_session_bundle(args: QuerySessionBundleArgs) -> Result<()> {
+    let session_id = required_named_or_positional(
+        "session id",
+        "--session-id",
+        args.session_id.as_deref(),
+        "SESSION_ID",
+        args.session_id_arg.as_deref(),
+    )?;
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
     let session = resolve_query_session_for_project(
         &project,
         args.provider.map(provider_arg_to_source_kind),
-        &args.session_id,
+        session_id,
     )?;
     let data = query_session_bundle_for_project(
         &project,
@@ -860,8 +950,15 @@ fn run_query_session_bundle(args: QuerySessionBundleArgs) -> Result<()> {
     print_json_envelope("darc.query.session_bundle.v1", &data)
 }
 
-/// Queries the turn list for one provider session.
+/// Queries the turn list for one session.
 fn run_query_turns(args: QueryTurnsArgs) -> Result<()> {
+    let session_id = required_named_or_positional(
+        "session id",
+        "--session-id",
+        args.session_id.as_deref(),
+        "SESSION_ID",
+        args.session_id_arg.as_deref(),
+    )?;
     let since = args
         .since
         .as_deref()
@@ -876,7 +973,7 @@ fn run_query_turns(args: QueryTurnsArgs) -> Result<()> {
     let session = resolve_query_session_for_project(
         &project,
         args.provider.map(provider_arg_to_source_kind),
-        &args.session_id,
+        session_id,
     )?;
     let data = query_turns_for_project(
         &project,
@@ -894,19 +991,33 @@ fn run_query_turns(args: QueryTurnsArgs) -> Result<()> {
     print_turns_query_envelope(&data)
 }
 
-/// Queries one full turn detail payload.
+/// Queries one turn detail payload.
 fn run_query_turn(args: QueryTurnArgs) -> Result<()> {
+    let session_id = required_named_or_positional(
+        "session id",
+        "--session-id",
+        args.session_id.as_deref(),
+        "SESSION_ID",
+        args.session_id_arg.as_deref(),
+    )?;
+    let turn_ordinal = required_named_or_positional_copy(
+        "turn ordinal",
+        "--turn-ordinal",
+        args.turn_ordinal,
+        "TURN_ORDINAL",
+        args.turn_ordinal_arg,
+    )?;
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
     let session = resolve_query_session_for_project(
         &project,
         args.provider.map(provider_arg_to_source_kind),
-        &args.session_id,
+        session_id,
     )?;
     let data = query_turn_for_project(
         &project,
         session.provider,
         &session.session_id,
-        args.turn_ordinal,
+        turn_ordinal,
         TurnDetailOptions {
             include_raw: args.include_raw,
             include_insights: args.include_insights,
@@ -925,6 +1036,13 @@ fn run_query_search(args: QuerySearchArgs) -> Result<()> {
 
 /// Queries one paginated turn-search payload.
 fn run_query_search_turns(args: QuerySearchTurnsArgs) -> Result<()> {
+    let query = required_named_or_positional(
+        "query text",
+        "--query",
+        args.query.as_deref(),
+        "QUERY",
+        args.query_arg.as_deref(),
+    )?;
     let since = args
         .since
         .as_deref()
@@ -954,7 +1072,7 @@ fn run_query_search_turns(args: QuerySearchTurnsArgs) -> Result<()> {
             project_id: "",
             project_root: None,
             mode,
-            query: &args.query,
+            query,
             include_tool_output: args.include_tool_output,
             provider: args.provider.map(provider_arg_to_source_kind),
             session_id: session_id.as_deref(),
@@ -989,19 +1107,33 @@ fn run_query_project_insights(args: QueryProjectInsightsArgs) -> Result<()> {
     print_json_envelope("darc.query.insights.project.v1", &data)
 }
 
-/// Queries the turn insights payload for one provider session turn.
+/// Queries the turn insights payload for one session turn.
 fn run_query_turn_insights(args: QueryTurnInsightsArgs) -> Result<()> {
+    let session_id = required_named_or_positional(
+        "session id",
+        "--session-id",
+        args.session_id.as_deref(),
+        "SESSION_ID",
+        args.session_id_arg.as_deref(),
+    )?;
+    let turn_ordinal = required_named_or_positional_copy(
+        "turn ordinal",
+        "--turn-ordinal",
+        args.turn_ordinal,
+        "TURN_ORDINAL",
+        args.turn_ordinal_arg,
+    )?;
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
     let session = resolve_query_session_for_project(
         &project,
         args.provider.map(provider_arg_to_source_kind),
-        &args.session_id,
+        session_id,
     )?;
     let data = query_turn_insight_report_for_project(
         &project,
         session.provider,
         &session.session_id,
-        args.turn_ordinal,
+        turn_ordinal,
     )?;
     print_json_envelope("darc.query.insights.turn.v1", &data)
 }
@@ -1063,6 +1195,62 @@ fn resolve_database_query_project_target(
     project_id: Option<&str>,
 ) -> Result<ResolvedQueryProject> {
     resolve_query_project(Some(root.to_path_buf()), project_id)
+}
+
+/// Resolves one optional value supplied either as a flag or a positional argument.
+fn optional_named_or_positional<'a>(
+    value_label: &str,
+    flag_name: &str,
+    flag_value: Option<&'a str>,
+    positional_name: &str,
+    positional_value: Option<&'a str>,
+) -> Result<Option<&'a str>> {
+    match (flag_value, positional_value) {
+        (Some(_), Some(_)) => {
+            bail!("pass {value_label} either as {positional_name} or {flag_name}, not both")
+        }
+        (Some(value), None) | (None, Some(value)) => Ok(Some(value)),
+        (None, None) => Ok(None),
+    }
+}
+
+/// Resolves one required value supplied either as a flag or a positional argument.
+fn required_named_or_positional<'a>(
+    value_label: &str,
+    flag_name: &str,
+    flag_value: Option<&'a str>,
+    positional_name: &str,
+    positional_value: Option<&'a str>,
+) -> Result<&'a str> {
+    optional_named_or_positional(
+        value_label,
+        flag_name,
+        flag_value,
+        positional_name,
+        positional_value,
+    )?
+    .ok_or_else(|| {
+        anyhow!("query command requires {value_label} as {positional_name} or {flag_name}")
+    })
+}
+
+/// Resolves one required copy value supplied either as a flag or a positional argument.
+fn required_named_or_positional_copy<T: Copy>(
+    value_label: &str,
+    flag_name: &str,
+    flag_value: Option<T>,
+    positional_name: &str,
+    positional_value: Option<T>,
+) -> Result<T> {
+    match (flag_value, positional_value) {
+        (Some(_), Some(_)) => {
+            bail!("pass {value_label} either as {positional_name} or {flag_name}, not both")
+        }
+        (Some(value), None) | (None, Some(value)) => Ok(value),
+        (None, None) => Err(anyhow!(
+            "query command requires {value_label} as {positional_name} or {flag_name}"
+        )),
+    }
 }
 
 /// Returns whether one string is a full canonical UUID text value.

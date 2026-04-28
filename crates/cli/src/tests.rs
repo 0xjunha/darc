@@ -263,9 +263,7 @@ fn parses_query_turn_command() {
         "repo-abc123",
         "--provider",
         "codex",
-        "--session-id",
         "session-1",
-        "--turn-ordinal",
         "2",
         "--view",
         "narrative",
@@ -278,6 +276,8 @@ fn parses_query_turn_command() {
         Commands::Query(super::QueryArgs {
             command: QueryCommands::Turn(super::QueryTurnArgs {
                 project_id,
+                session_id_arg,
+                turn_ordinal_arg,
                 session_id,
                 turn_ordinal,
                 view,
@@ -286,8 +286,10 @@ fn parses_query_turn_command() {
                 ..
             }),
         }) if project_id.as_deref() == Some("repo-abc123")
-            && session_id == "session-1"
-            && turn_ordinal == 2
+            && session_id_arg.as_deref() == Some("session-1")
+            && turn_ordinal_arg == Some(2)
+            && session_id.is_none()
+            && turn_ordinal.is_none()
             && matches!(view, super::ViewArg::Narrative)
             && include_raw
             && include_insights
@@ -380,7 +382,6 @@ fn parses_query_files_path_command() {
         "files",
         "--project-id",
         "repo-abc123",
-        "--path",
         "src/components/**/*.rs",
         "--since",
         "30d",
@@ -394,6 +395,7 @@ fn parses_query_files_path_command() {
             command: QueryCommands::Files(super::QueryFilesArgs {
                 project_id,
                 path,
+                path_arg,
                 co_touched_with,
                 since,
                 until,
@@ -402,7 +404,8 @@ fn parses_query_files_path_command() {
                 ..
             }),
         }) if project_id.as_deref() == Some("repo-abc123")
-            && path.as_deref() == Some("src/components/**/*.rs")
+            && path.is_none()
+            && path_arg.as_deref() == Some("src/components/**/*.rs")
             && co_touched_with.is_none()
             && since.as_deref() == Some("30d")
             && until.as_deref() == Some("2026-04-07T00:00:00Z")
@@ -456,7 +459,6 @@ fn parses_query_session_files_command() {
         "repo-abc123",
         "--provider",
         "codex",
-        "--session-id",
         "session-1",
     ])
     .unwrap();
@@ -466,12 +468,14 @@ fn parses_query_session_files_command() {
             command: QueryCommands::SessionFiles(super::QuerySessionFilesArgs {
                 project_id,
                 provider,
+                session_id_arg,
                 session_id,
                 ..
             }),
         }) if project_id.as_deref() == Some("repo-abc123")
             && matches!(provider, Some(super::ProviderArg::Codex))
-            && session_id == "session-1"
+            && session_id_arg.as_deref() == Some("session-1")
+            && session_id.is_none()
     ));
 }
 
@@ -485,7 +489,6 @@ fn parses_query_session_bundle_command() {
         "repo-abc123",
         "--provider",
         "codex",
-        "--session-id",
         "session-1",
         "--view",
         "narrative",
@@ -497,6 +500,7 @@ fn parses_query_session_bundle_command() {
             command: QueryCommands::SessionBundle(super::QuerySessionBundleArgs {
                 project_id,
                 provider,
+                session_id_arg,
                 session_id,
                 view,
                 turn_limit,
@@ -505,7 +509,8 @@ fn parses_query_session_bundle_command() {
             }),
         }) if project_id.as_deref() == Some("repo-abc123")
             && matches!(provider, Some(super::ProviderArg::Codex))
-            && session_id == "session-1"
+            && session_id_arg.as_deref() == Some("session-1")
+            && session_id.is_none()
             && matches!(view, super::ViewArg::Narrative)
             && turn_limit == 50
             && turn_offset == 0
@@ -522,7 +527,6 @@ fn parses_query_turns_session_scope_command() {
         "repo-abc123",
         "--provider",
         "codex",
-        "--session-id",
         "session-1",
     ])
     .unwrap();
@@ -532,6 +536,7 @@ fn parses_query_turns_session_scope_command() {
             command: QueryCommands::Turns(super::QueryTurnsArgs {
                 project_id,
                 provider,
+                session_id_arg,
                 session_id,
                 view,
                 limit,
@@ -540,7 +545,8 @@ fn parses_query_turns_session_scope_command() {
             }),
         }) if project_id.as_deref() == Some("repo-abc123")
             && matches!(provider, Some(super::ProviderArg::Codex))
-            && session_id == "session-1"
+            && session_id_arg.as_deref() == Some("session-1")
+            && session_id.is_none()
             && matches!(view, super::TurnListViewArg::Full)
             && limit == 50
             && offset == 0
@@ -575,6 +581,7 @@ fn parses_query_search_turns_literal_with_filters() {
                 project_id,
                 mode,
                 query,
+                query_arg,
                 since,
                 until,
                 include_tool_output,
@@ -583,10 +590,42 @@ fn parses_query_search_turns_literal_with_filters() {
             }),
         }) if project_id.as_deref() == Some("repo-abc123")
             && matches!(mode, super::SearchModeArg::Literal)
-            && query == "--output-last-message"
+            && query.as_deref() == Some("--output-last-message")
+            && query_arg.is_none()
             && since.as_deref() == Some("5d")
             && until.as_deref() == Some("2026-04-07T00:00:00Z")
             && include_tool_output
+    ));
+}
+
+#[test]
+fn parses_query_search_turns_default_keyword_positional_query() {
+    let cli = Cli::try_parse_from([
+        "darc",
+        "query",
+        "search",
+        "turns",
+        "--project-id",
+        "repo-abc123",
+        "panic unwrap",
+    ])
+    .unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Query(super::QueryArgs {
+            command: QueryCommands::Search(super::QuerySearchArgs {
+                command: super::QuerySearchCommands::Turns(super::QuerySearchTurnsArgs {
+                    project_id,
+                    mode,
+                    query_arg,
+                    query,
+                    ..
+                }),
+            }),
+        }) if project_id.as_deref() == Some("repo-abc123")
+            && matches!(mode, super::SearchModeArg::Keyword)
+            && query_arg.as_deref() == Some("panic unwrap")
+            && query.is_none()
     ));
 }
 

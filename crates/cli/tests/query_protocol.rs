@@ -414,7 +414,6 @@ fn files_query_path_mode_emits_success_envelope() -> Result<()> {
         root.to_string_lossy().as_ref(),
         "--project-id",
         "repo-abc123",
-        "--path",
         &path,
     ])?;
 
@@ -454,7 +453,6 @@ fn session_files_query_emits_success_envelope() -> Result<()> {
         root.to_string_lossy().as_ref(),
         "--project-id",
         "repo-abc123",
-        "--session-id",
         PRIMARY_SESSION_ID,
     ])?;
 
@@ -485,7 +483,6 @@ fn session_bundle_query_emits_success_envelope() -> Result<()> {
         root.to_string_lossy().as_ref(),
         "--project-id",
         "repo-abc123",
-        "--session-id",
         PRIMARY_SESSION_ID,
         "--view",
         "narrative",
@@ -535,7 +532,6 @@ fn session_scoped_query_requires_provider_for_cross_provider_session_id() -> Res
         root.to_string_lossy().as_ref(),
         "--project-id",
         "repo-abc123",
-        "--session-id",
         PRIMARY_SESSION_ID,
     ])?;
     assert!(!ambiguous_output.status.success());
@@ -556,7 +552,6 @@ fn session_scoped_query_requires_provider_for_cross_provider_session_id() -> Res
         "repo-abc123",
         "--provider",
         "codex",
-        "--session-id",
         PRIMARY_SESSION_ID,
     ])?;
     assert!(provider_output.status.success());
@@ -818,7 +813,6 @@ fn turns_query_emits_success_envelope() -> Result<()> {
         root.to_string_lossy().as_ref(),
         "--project-id",
         "repo-abc123",
-        "--session-id",
         PRIMARY_SESSION_ID,
     ])?;
 
@@ -1235,14 +1229,14 @@ fn turns_query_rejects_removed_grep_flag() -> Result<()> {
 }
 
 #[test]
-fn turns_query_help_marks_session_required_and_provider_optional() -> Result<()> {
+fn turns_query_help_lists_positional_session_and_optional_provider() -> Result<()> {
     let output = run_darc(["query", "turns", "--help"])?;
 
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("--session-id <SESSION_ID>"));
-    assert!(stdout.contains("--provider <PROVIDER>      Provider for the session"));
+    assert!(stdout.contains("--provider <PROVIDER>      Disambiguate a cross-provider session id"));
     assert!(stdout.contains("--session-id <SESSION_ID>  Full session id to list turns for"));
     Ok(())
 }
@@ -1257,9 +1251,7 @@ fn turn_query_emits_success_envelope_and_raw_field() -> Result<()> {
         root.to_string_lossy().as_ref(),
         "--project-id",
         "repo-abc123",
-        "--session-id",
         PRIMARY_SESSION_ID,
-        "--turn-ordinal",
         "0",
         "--include-raw",
     ])?;
@@ -1289,9 +1281,7 @@ fn turn_query_can_embed_derived_insights() -> Result<()> {
         "repo-abc123",
         "--provider",
         "codex",
-        "--session-id",
         PRIMARY_SESSION_ID,
-        "--turn-ordinal",
         "0",
         "--include-insights",
     ])?;
@@ -1394,9 +1384,6 @@ fn search_turns_query_emits_keyword_search_envelope() -> Result<()> {
         root.to_string_lossy().as_ref(),
         "--project-id",
         "repo-abc123",
-        "--mode",
-        "keyword",
-        "--query",
         "Inspect",
     ])?;
 

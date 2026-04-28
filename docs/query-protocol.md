@@ -14,42 +14,52 @@ Query commands emit JSON envelopes on stdout by default.
 
 ### Workspace
 
-- `darc query workspace --root <path>`
+- `darc query workspace [--root <path>]`
 
 ### Sessions, Turns, And Files
 
-- `darc query resolve-session <uuid-or-prefix> --root <path> [--project-id <id>] [--provider <provider>] [--pick-one]`
-- `darc query sessions --root <path> [--project-id <id>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--touched-path <glob>] [--limit <n>] [--offset <n>]`
-- `darc query files --root <path> [--project-id <id>] --path <glob> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>]`
-- `darc query files --root <path> [--project-id <id>] --co-touched-with <path> [--limit <n>] [--offset <n>]`
-- `darc query session-files --root <path> [--project-id <id>] [--provider <provider>] --session-id <id>`
-- `darc query session-bundle --root <path> [--project-id <id>] [--provider <provider>] --session-id <id> [--view <full|narrative>] [--turn-limit <n>] [--turn-offset <n>]`
-- `darc query turns --root <path> [--project-id <id>] [--provider <provider>] --session-id <id> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--view <full|oneline>] [--limit <n>] [--offset <n>]`
-- `darc query turn --root <path> [--project-id <id>] [--provider <provider>] --session-id <id> --turn-ordinal <n> [--view <full|narrative>] [--include-raw] [--include-insights]`
+- `darc query resolve-session <uuid-or-prefix> [--root <path>] [--project-id <id>] [--provider <provider>] [--pick-one]`
+- `darc query sessions [--root <path>] [--project-id <id>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--touched-path <glob>] [--limit <n>] [--offset <n>]`
+- `darc query files [--root <path>] [--project-id <id>] <path-or-glob> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>]`
+- `darc query files [--root <path>] [--project-id <id>] --path <path-or-glob> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>]`
+- `darc query files [--root <path>] [--project-id <id>] --co-touched-with <path> [--limit <n>] [--offset <n>]`
+- `darc query session-files [--root <path>] [--project-id <id>] [--provider <provider>] <session-id>`
+- `darc query session-files [--root <path>] [--project-id <id>] [--provider <provider>] --session-id <session-id>`
+- `darc query session-bundle [--root <path>] [--project-id <id>] [--provider <provider>] <session-id> [--view <full|narrative>] [--turn-limit <n>] [--turn-offset <n>]`
+- `darc query turns [--root <path>] [--project-id <id>] [--provider <provider>] <session-id> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--view <full|oneline>] [--limit <n>] [--offset <n>]`
+- `darc query turn [--root <path>] [--project-id <id>] [--provider <provider>] <session-id> <turn-ordinal> [--view <full|narrative>] [--include-raw] [--include-insights]`
 
 ### Search
 
-- `darc query search turns --root <path> [--project-id <id>] --mode <keyword|literal|regex|file-name|file-path|path-fragment> --query <text|glob|fragment> [--include-tool-output] [--provider <provider>] [--session-id <id>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>]`
+- `darc query search turns [--root <path>] [--project-id <id>] <query> [--mode <keyword|literal|regex|file-name|file-path|path-fragment>] [--include-tool-output] [--provider <provider>] [--session-id <id>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>]`
+- `darc query search turns [--root <path>] [--project-id <id>] --query <query> [--mode <keyword|literal|regex|file-name|file-path|path-fragment>] [--include-tool-output] [--provider <provider>] [--session-id <id>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>]`
 
 ### Insights
 
-- `darc query insights workspace --root <path> --window <days>d`
-- `darc query insights project --root <path> [--project-id <id>] [--turn-limit <n>]`
-- `darc query insights turn --root <path> [--project-id <id>] [--provider <provider>] --session-id <id> --turn-ordinal <n>`
+- `darc query insights workspace [--root <path>] [--window <days>d]`
+- `darc query insights project [--root <path>] [--project-id <id>] [--turn-limit <n>]`
+- `darc query insights turn [--root <path>] [--project-id <id>] [--provider <provider>] <session-id> <turn-ordinal>`
+- `darc query insights turn [--root <path>] [--project-id <id>] [--provider <provider>] --session-id <session-id> --turn-ordinal <n>`
 
 ## Argument rules
 
 - project-scoped queries accept optional `--project-id`; when omitted, Darc resolves the configured project from the current directory
+- project-wide provider filters default to all providers when `--provider` is omitted
 - `darc query resolve-session` accepts either one full UUID or one UUID prefix and returns `project_id`, `provider`, and `session_id` for each match
-- session-scoped commands require `--session-id`; Darc infers `--provider` when that session id is unique within the project
+- `darc query search turns` defaults to `--mode keyword`; pass `--mode` only for literal, regex, or file/path search modes
+- `darc query search turns` accepts query text positionally or with `--query`; use `--query` for query text that begins with `-`
+- `darc query files` treats positional `<path-or-glob>` as path mode; `--path` is the explicit equivalent
+- session-scoped commands accept `<session-id>` positionally or with `--session-id`; Darc infers `--provider` when that session id is unique within the project
+- turn-scoped commands accept `<turn-ordinal>` positionally or with `--turn-ordinal`
+- do not pass both positional and flag forms for the same value
 - pass `--provider` when the same session id exists for multiple providers
-- `darc query files` requires exactly one of `--path` or `--co-touched-with`
-- `--since` and `--until` on `darc query files` require `--path`
+- `darc query files` requires exactly one of positional path, `--path`, or `--co-touched-with`
+- `--since` and `--until` on `darc query files` require path mode
 - `--limit` and `--offset` are accepted by `darc query sessions`, `darc query turns`, `darc query search turns`, and both `darc query files` modes; these row/turn-hit limits default to `--limit 50 --offset 0`
 - `--turn-limit` and `--turn-offset` on `darc query session-bundle` bound embedded turn details and default to `--turn-limit 50 --turn-offset 0`
 - `--turn-limit` on `darc query insights project` is an inspection bound over indexed turns, not response pagination; the previous `--limit` spelling is accepted as a compatibility alias
 - `--include-tool-output` on `darc query search turns` is accepted only with `--mode literal` or `--mode regex`
-- session-scoped data commands require a full UUID `--session-id`; malformed ids return `invalid_session_id`, unknown UUIDs return `unknown_session`, ambiguous cross-provider UUIDs return `ambiguous_session`, and UUID-like prefixes fail explicitly instead of auto-resolving
+- session-scoped data commands require a full UUID session id; malformed ids return `invalid_session_id`, unknown UUIDs return `unknown_session`, ambiguous cross-provider UUIDs return `ambiguous_session`, and UUID-like prefixes fail explicitly instead of auto-resolving
 
 ## Common Workflows
 
@@ -61,8 +71,7 @@ The protocol is intentionally composable. A few common read patterns are now fir
   darc query search turns \
     --root ~/.darc \
     --project-id repo-abc123 \
-    --mode keyword \
-    --query "staged init" \
+    "staged init" \
     --since 14d
   ```
 
@@ -83,7 +92,7 @@ The protocol is intentionally composable. A few common read patterns are now fir
     --root ~/.darc \
     --project-id repo-abc123 \
     --mode regex \
-    --query "panic: .*" \
+    "panic: .*" \
     --include-tool-output
   ```
 
@@ -93,7 +102,7 @@ The protocol is intentionally composable. A few common read patterns are now fir
   darc query files \
     --root ~/.darc \
     --project-id repo-abc123 \
-    --path "src/components/planner.rs" \
+    "src/components/planner.rs" \
     --limit 20
   ```
 
@@ -103,7 +112,7 @@ The protocol is intentionally composable. A few common read patterns are now fir
   darc query session-files \
     --root ~/.darc \
     --project-id repo-abc123 \
-    --session-id 11111111-1111-4111-8111-111111111111
+    11111111-1111-4111-8111-111111111111
   ```
 
 - fetch one session summary, narrative turn detail, and touched files in one call:
@@ -114,7 +123,7 @@ The protocol is intentionally composable. A few common read patterns are now fir
   darc query session-bundle \
     --root ~/.darc \
     --project-id repo-abc123 \
-    --session-id "$ID" \
+    "$ID" \
     --view narrative \
     --turn-limit 20
   ```
@@ -125,7 +134,7 @@ The protocol is intentionally composable. A few common read patterns are now fir
   darc query turns \
     --root ~/.darc \
     --project-id repo-abc123 \
-    --session-id 11111111-1111-4111-8111-111111111111 \
+    11111111-1111-4111-8111-111111111111 \
     --view oneline \
     --limit 50
   ```
@@ -180,7 +189,7 @@ Fields:
 
 Session-id-specific error codes:
 
-- `invalid_session_id`: the supplied resolver query or data-command `--session-id` is not a full UUID or accepted UUID-prefix shape
+- `invalid_session_id`: the supplied resolver query or data-command session id is not a full UUID or accepted UUID-prefix shape
 - `unknown_session`: the full UUID or explicit prefix did not resolve to an indexed session
 - `ambiguous_session`: `darc query resolve-session --pick-one` found more than one candidate
 
@@ -340,7 +349,7 @@ Today:
 - `edited_files` is the distinct `COALESCE(repo_relative_path, path)` list from session-scoped `file_accesses` rows with `access_type` of `edit` or `write`, excluding null or whitespace-only paths and ordered by display path ascending
 - `darc.query.turns.v1` remains session-scoped and keeps non-null top-level `provider` and `session_id`; provider is inferred unless the session id is cross-provider ambiguous
 - session-scoped data commands do not auto-resolve UUID prefixes; callers must expand prefixes explicitly with `darc query resolve-session`
-- `query files --path <glob>` and `--touched-path <glob>` on `query sessions` currently use the Rust `glob` crate syntax, matched case-insensitively against one canonical project-scoped display path per access
+- `query files <glob>` / `query files --path <glob>` and `--touched-path <glob>` on `query sessions` currently use the Rust `glob` crate syntax, matched case-insensitively against one canonical project-scoped display path per access
 - absolute query paths under the configured project root are normalized down to project-relative form before matching, so `/repo/README.md` and `README.md` hit the same indexed access
 - out-of-project paths are not exposed and do not participate in these path-matching filters
 - turn rows include `primary_model`, `total_token_count`, `token_usage`, `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, and `removed_line_count`
@@ -360,7 +369,7 @@ Today:
 - `mode=path` applies `--limit` and `--offset` after ranking the matching sessions
 - `mode=path` session rows report `provider`, `session_id`, `touch_count`, `read_count`, `write_count`, `first_turn_ordinal`, `last_turn_ordinal`, `first_touched_at`, `last_touched_at`, and deterministic `matched_paths`
 - `matched_paths` is the canonical matched file list for that session, ordered by display path ascending
-- `query files --path` currently excludes derived `list` accesses, and obvious directory-only operands are omitted during extraction, so directory listings, search roots, and `mkdir`-style directory writes do not count as file touches
+- `query files` path mode currently excludes derived `list` accesses, and obvious directory-only operands are omitted during extraction, so directory listings, search roots, and `mkdir`-style directory writes do not count as file touches
 - `mode=co_touched_with` treats the seed path as one exact canonical display path, normalizing project-root absolute paths down to project-relative form when possible
 - `mode=co_touched_with` only considers project-scoped in-repo file identities and does not expose or rank external absolute paths
 - `mode=co_touched_with` ranks file rows by higher `co_touch_count`, then `path` ascending
@@ -422,8 +431,8 @@ Today:
 - `mode=keyword` uses SQLite FTS5 over Darc-owned derived per-turn search text
 - keyword search currently indexes `user_message`, `final_answer_text`, and selected derived step text such as commentary, tool names, and delegation summaries
 - keyword search does not currently index raw tool outputs or raw provider payload blobs
-- `mode=literal` treats `--query` as exact plain text and matches it against derived `turn_evidence` rows
-- `mode=regex` treats `--query` as a Rust regular expression and matches it against the same derived `turn_evidence` rows
+- `mode=literal` treats the query text as exact plain text and matches it against derived `turn_evidence` rows
+- `mode=regex` treats the query text as a Rust regular expression and matches it against the same derived `turn_evidence` rows
 - literal and regex search exclude `tool_output` evidence by default because command and tool output is often large and noisy for context-building
 - pass `--include-tool-output` with literal or regex search to include command/tool output evidence for forensic searches such as exact errors, stack traces, logs, or command output
 - `--include-tool-output` is rejected for `keyword`, `file_name`, `file_path`, and `path_fragment` search because those modes do not inspect `turn_evidence.tool_output`
@@ -440,7 +449,7 @@ Today:
 - each literal or regex turn hit returns at most 20 nested `matches`; `matches_truncated=true` means additional matching evidence rows in that turn were omitted from the preview
 - literal and regex search are not content-index backed; narrow provider, session, or time filters for broad audits when latency matters
 - `mode=file_name` searches the derived `file_accesses.file_name` basename field
-- `mode=file_path` treats `--query` as the same case-insensitive project-scoped glob shape used by `darc query files --path`
+- `mode=file_path` treats the query text as the same case-insensitive project-scoped glob shape used by `darc query files`
 - `mode=path_fragment` searches derived path fields from `file_accesses.repo_relative_path` and `file_accesses.path` with exact/prefix/substring ranking
 - all search modes return turn identities, top-level turn metadata, nullable `since` / `until` request echoes, `include_tool_output`, and optional `snippet` / `matched_paths` / `matches` fields plus `matches_truncated`
 - `matched_paths` is empty for keyword search and populated for file-name, file-path, or path-fragment hits
