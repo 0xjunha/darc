@@ -608,7 +608,7 @@ fn session_summaries_compact_view_caps_prompt_only() -> Result<()> {
         &connection,
         IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
     )?;
-    let prompt = "a".repeat(300);
+    let prompt = "a".repeat(600);
     let steps_json = format!(
         "[{}]",
         (0..12)
@@ -676,7 +676,7 @@ fn session_summaries_compact_view_caps_prompt_only() -> Result<()> {
             .expect("prompt should exist")
             .chars()
             .count(),
-        240
+        500
     );
     assert!(compact.sessions[0].first_user_prompt_truncated);
     assert_eq!(compact.sessions[0].edited_files.len(), 12);
@@ -688,7 +688,7 @@ fn session_summaries_compact_view_caps_prompt_only() -> Result<()> {
             .expect("prompt should exist")
             .chars()
             .count(),
-        300
+        600
     );
     assert!(!full.sessions[0].first_user_prompt_truncated);
     assert_eq!(full.sessions[0].edited_files.len(), 12);

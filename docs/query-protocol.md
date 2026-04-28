@@ -362,7 +362,7 @@ Today:
 - each `token_usage.*` session field is `null` unless every indexed turn in that session carried a value for that exact field
 - `total_token_count` and `effective_agent_runtime_ms` are currently `null` on a session row unless every indexed turn in that session carried a value for that field
 - `first_turn_at` and `first_user_prompt` come from the indexed turn with the minimum `turn_ordinal` in that session and are `null` only when the indexed session has no stored turns
-- in `view=compact`, `first_user_prompt` is capped at 240 characters and `first_user_prompt_truncated` reports whether additional prompt text was omitted
+- in `view=compact`, `first_user_prompt` is capped at 500 characters and `first_user_prompt_truncated` reports whether additional prompt text was omitted
 - in `view=full`, `first_user_prompt` is not capped, and `first_user_prompt_truncated` is false
 - `aborted_turn_count` counts indexed turns in that session where `status` is `aborted`
 - `edited_files` is the distinct `COALESCE(repo_relative_path, path)` list from session-scoped `file_accesses` rows with `access_type` of `edit` or `write`, excluding null or whitespace-only paths and ordered by display path ascending

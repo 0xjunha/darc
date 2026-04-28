@@ -219,7 +219,7 @@ const PROJECT_SESSIONS_SQL: &str = "
 ";
 
 const TOUCHED_SESSION_CANDIDATE_BATCH_ROWS: usize = if cfg!(test) { 2 } else { 250 };
-const COMPACT_SESSION_PROMPT_CHARS: usize = 240;
+const COMPACT_SESSION_PROMPT_CHARS: usize = 500;
 const RESOLVE_SESSIONS_SQL: &str = "
     SELECT DISTINCT
         project_id,
