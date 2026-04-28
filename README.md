@@ -82,7 +82,7 @@ darc refresh --all
 - `darc sync` archives matching Claude and Codex sessions for the active project.
 - `darc index` indexes archived sessions into SQLite.
 - `darc query` exposes the machine-readable read protocol for workspace, session, turn, file-pivot, search, and
-  insights data. Query commands currently require `--json`; see [Query protocol](docs/query-protocol.md).
+  insights data. Query commands emit JSON by default; see [Query protocol](docs/query-protocol.md).
 - `darc link`, `darc remove`, and `darc rename-from` manage renamed or merged projects.
 
 ## Session And Turn Stats
@@ -107,15 +107,17 @@ See [Query protocol](docs/query-protocol.md) for the exact payload contract and 
 Darc's read-side query surface now covers project-scoped search, compact turn skims, file/session pivots, and
 single-call session bundles.
 
-- `darc query search turns` handles keyword, literal, regex, file-name, glob-compatible file-path, and path-fragment
-  search with optional provider/session/time filters. Literal and regex search skip bulky tool outputs by default; add
-  `--include-tool-output` for forensic searches over command output, logs, or stack traces.
+- `darc query search turns <query>` defaults to keyword search and also supports literal, regex, file-name,
+  glob-compatible file-path, and path-fragment modes with optional provider/session/time filters. Literal and regex
+  search skip bulky tool outputs by default; add `--include-tool-output` for forensic searches over command output,
+  logs, or stack traces.
 - project-scoped `darc query` commands accept optional `--project-id`; when omitted, Darc resolves the configured
   project from the current directory.
-- `darc query turns` lists one known provider session (`--provider --session-id`, full UUID only) with `--limit` /
-  `--offset`; content discovery lives under `darc query search turns`.
-- `darc query files`, `darc query session-files`, and `darc query session-bundle` let clients pivot between matched
-  files, touched sessions, per-session file summaries, and bounded one-call session detail bundles.
+- `darc query turns` lists one known session by full UUID, inferring the provider unless the id is cross-provider
+  ambiguous; content discovery lives under `darc query search turns`.
+- `darc query files <path>`, `darc query session-files <session-id>`, and
+  `darc query session-bundle <session-id>` let clients pivot between matched files, touched sessions, per-session file
+  summaries, and bounded one-call session detail bundles.
 - `darc query resolve-session` explicitly expands a UUID prefix before you call session-scoped data commands and
   includes `project_id` with each match for multi-project roots.
 Examples:
@@ -123,9 +125,7 @@ Examples:
 ```bash
 darc query search turns \
   --project-id repo-abc123 \
-  --mode keyword \
-  --query "panic unwrap" \
-  --json
+  "panic unwrap"
 ```
 
 ```bash
@@ -133,37 +133,32 @@ darc query search turns \
   --project-id repo-abc123 \
   --mode literal \
   --query "--output-last-message" \
-  --since 14d \
-  --json
+  --since 14d
 ```
 
 ```bash
 darc query search turns \
   --project-id repo-abc123 \
   --mode regex \
-  --query "panic: .*" \
-  --include-tool-output \
-  --json
+  "panic: .*" \
+  --include-tool-output
 ```
 
 ```bash
 darc query files \
   --project-id repo-abc123 \
-  --path "src/components/**/*.rs" \
-  --since 30d \
-  --json
+  "src/components/**/*.rs" \
+  --since 30d
 ```
 
 ```bash
-ID=$(darc query resolve-session 11111111 --pick-one --json | jq -r '.data.match.session_id')
+ID=$(darc query resolve-session 11111111 --pick-one | jq -r '.data.match.session_id')
 
 darc query session-bundle \
   --project-id repo-abc123 \
-  --provider codex \
-  --session-id "$ID" \
+  "$ID" \
   --view narrative \
-  --turn-limit 20 \
-  --json
+  --turn-limit 20
 ```
 
 See [Query protocol](docs/query-protocol.md) for the full command matrix, payload contracts, and filter semantics.

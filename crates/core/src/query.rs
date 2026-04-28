@@ -20,7 +20,7 @@ pub use darc_query::{
     WorkspaceDailyTimeStat, WorkspaceInsights, WorkspaceQueryData,
 };
 use darc_query::{
-    ProjectIndexAggregate, list_project_index_aggregates, lookup_project_session_id,
+    ProjectIndexAggregate, list_project_index_aggregates, lookup_project_session_matches,
     query_project_files, query_project_insights, query_project_session_bundle,
     query_project_session_files, query_project_sessions, query_project_turns as query_index_turns,
     query_resolve_sessions as query_index_resolve_sessions,
@@ -120,6 +120,13 @@ pub fn query_workspace(root: Option<PathBuf>) -> WorkspaceQueryData {
 #[derive(Debug, Clone)]
 pub struct ResolvedQueryProject {
     context: ProjectQueryContext,
+}
+
+/// Stores one resolved project-scoped provider/session identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedQuerySession {
+    pub provider: SourceKind,
+    pub session_id: String,
 }
 
 /// Resolves one database-backed project-scoped query target from an explicit id or the current directory.
@@ -234,6 +241,36 @@ pub fn resolve_query_session_id_for_project(
 ) -> Result<String> {
     let context = &project.context;
     validate_project_session_id(
+        &context.root.database_path,
+        &context.project.id,
+        provider,
+        session_id,
+    )
+}
+
+/// Resolves one strict search session-id filter without forcing cross-provider disambiguation.
+pub fn resolve_query_search_session_id_for_project(
+    project: &ResolvedQueryProject,
+    provider: Option<SourceKind>,
+    session_id: &str,
+) -> Result<String> {
+    let context = &project.context;
+    validate_project_session_filter_id(
+        &context.root.database_path,
+        &context.project.id,
+        provider,
+        session_id,
+    )
+}
+
+/// Resolves one strict `darc query` session id plus provider against one project.
+pub fn resolve_query_session_for_project(
+    project: &ResolvedQueryProject,
+    provider: Option<SourceKind>,
+    session_id: &str,
+) -> Result<ResolvedQuerySession> {
+    let context = &project.context;
+    validate_project_session_ref(
         &context.root.database_path,
         &context.project.id,
         provider,
@@ -599,6 +636,24 @@ impl QueryProtocolError {
             message,
         }
     }
+
+    /// Builds one structured ambiguity error for one strict data command.
+    pub fn ambiguous_data_session(input: &str, matches: Vec<ResolvedSessionMatch>) -> Self {
+        let provider_count = matches
+            .iter()
+            .map(|candidate| candidate.provider)
+            .collect::<BTreeSet<_>>()
+            .len();
+        let message = format!(
+            "Session id `{input}` matched {provider_count} providers in this project. Pass --provider to choose one."
+        );
+        Self::AmbiguousSession {
+            query: input.to_owned(),
+            matches,
+            truncated: false,
+            message,
+        }
+    }
 }
 
 /// Inspects one darc root without requiring the workspace to be initialized.
@@ -808,6 +863,16 @@ fn validate_project_session_id(
     provider: Option<SourceKind>,
     session_id: &str,
 ) -> Result<String> {
+    Ok(validate_project_session_ref(index_db_path, project_id, provider, session_id)?.session_id)
+}
+
+/// Validates one strict session-id filter without rejecting cross-provider matches.
+fn validate_project_session_filter_id(
+    index_db_path: &Path,
+    project_id: &str,
+    provider: Option<SourceKind>,
+    session_id: &str,
+) -> Result<String> {
     let session_id = session_id.trim();
     match classify_strict_session_input(session_id) {
         SessionIdShape::Prefix => {
@@ -818,9 +883,40 @@ fn validate_project_session_id(
         }
         SessionIdShape::FullUuid => {}
     }
-    lookup_project_session_id(index_db_path, project_id, provider, session_id)?
-        .ok_or_else(|| QueryProtocolError::unknown_data_session(session_id, false))
-        .map_err(Into::into)
+    lookup_project_session_matches(index_db_path, project_id, provider, session_id, 1)?
+        .into_iter()
+        .next()
+        .map(|resolved| resolved.session_id)
+        .ok_or_else(|| QueryProtocolError::unknown_data_session(session_id, false).into())
+}
+
+/// Validates one strict session id and resolves its canonical provider/session identity.
+fn validate_project_session_ref(
+    index_db_path: &Path,
+    project_id: &str,
+    provider: Option<SourceKind>,
+    session_id: &str,
+) -> Result<ResolvedQuerySession> {
+    let session_id = session_id.trim();
+    match classify_strict_session_input(session_id) {
+        SessionIdShape::Prefix => {
+            return Err(QueryProtocolError::unknown_data_session(session_id, true).into());
+        }
+        SessionIdShape::Invalid => {
+            return Err(QueryProtocolError::invalid_data_session_id(session_id).into());
+        }
+        SessionIdShape::FullUuid => {}
+    }
+    let matches =
+        lookup_project_session_matches(index_db_path, project_id, provider, session_id, 2)?;
+    match matches.as_slice() {
+        [] => Err(QueryProtocolError::unknown_data_session(session_id, false).into()),
+        [resolved] => Ok(ResolvedQuerySession {
+            provider: resolved.provider,
+            session_id: resolved.session_id.clone(),
+        }),
+        _ => Err(QueryProtocolError::ambiguous_data_session(session_id, matches).into()),
+    }
 }
 
 /// Classifies one data-command session id using the strict full-UUID contract.
