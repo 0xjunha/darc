@@ -393,13 +393,13 @@ struct QueryFilesArgs {
 
     #[arg(
         long,
-        help = "Inclusive started_at lower bound for path mode. Example: `5d` or `2026-04-07T00:00:00Z`"
+        help = "Inclusive started_at lower bound for file pivots. Example: `5d` or `2026-04-07T00:00:00Z`"
     )]
     since: Option<String>,
 
     #[arg(
         long,
-        help = "Exclusive started_at upper bound for path mode. Example: `1d` or `2026-04-08T00:00:00Z`"
+        help = "Exclusive started_at upper bound for file pivots. Example: `1d` or `2026-04-08T00:00:00Z`"
     )]
     until: Option<String>,
 

@@ -443,6 +443,10 @@ fn parses_query_files_co_touched_command() {
         "repo-abc123",
         "--co-touched-with",
         "src/components/planner.rs",
+        "--since",
+        "7d",
+        "--until",
+        "2026-04-08T00:00:00Z",
         "--limit",
         "10",
         "--offset",
@@ -456,6 +460,8 @@ fn parses_query_files_co_touched_command() {
                 project_id,
                 path,
                 co_touched_with,
+                since,
+                until,
                 limit,
                 offset,
                 ..
@@ -463,6 +469,8 @@ fn parses_query_files_co_touched_command() {
         }) if project_id.as_deref() == Some("repo-abc123")
             && path.is_none()
             && co_touched_with.as_deref() == Some("src/components/planner.rs")
+            && since.as_deref() == Some("7d")
+            && until.as_deref() == Some("2026-04-08T00:00:00Z")
             && limit == 10
             && offset == 5
     ));

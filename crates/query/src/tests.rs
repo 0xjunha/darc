@@ -1495,6 +1495,97 @@ fn query_files_co_touched_mode_counts_sessions_and_sorts_ties() -> Result<()> {
 }
 
 #[test]
+fn query_files_co_touched_mode_applies_time_bounds() -> Result<()> {
+    let index_path = test_index_path("query-files-co-touch-time");
+    let connection = open_index_database(&index_path)?;
+
+    for session_id in ["session-1", "session-2"] {
+        insert_indexed_session(
+            &connection,
+            IndexedSessionFixture::new("repo-a", SourceKind::Codex, session_id, "/tmp/repo-a"),
+        )?;
+    }
+
+    for (session_id, turn_ordinal, started_at, steps_json) in [
+        (
+            "session-1",
+            0,
+            "2026-04-06T10:00:00Z",
+            r##"[{"type":"tool_call","timestamp":"2026-04-06T10:00:01Z","call_id":"call-1","name":"Read","arguments":"{\"file\":[\"src/components/planner.rs\",\"src/components/outside-before.rs\"]}"}]"##,
+        ),
+        (
+            "session-1",
+            1,
+            "2026-04-06T12:00:00Z",
+            r##"[{"type":"tool_call","timestamp":"2026-04-06T12:00:01Z","call_id":"call-2","name":"Read","arguments":"{\"file\":[\"src/components/planner.rs\",\"src/components/inside.rs\"]}"}]"##,
+        ),
+        (
+            "session-1",
+            2,
+            "2026-04-06T14:00:00Z",
+            r##"[{"type":"tool_call","timestamp":"2026-04-06T14:00:01Z","call_id":"call-3","name":"Read","arguments":"{\"file\":[\"src/components/outside-after.rs\"]}"}]"##,
+        ),
+        (
+            "session-2",
+            0,
+            "2026-04-06T10:30:00Z",
+            r##"[{"type":"tool_call","timestamp":"2026-04-06T10:30:01Z","call_id":"call-4","name":"Read","arguments":"{\"file\":[\"src/components/planner.rs\",\"src/components/outside-session.rs\"]}"}]"##,
+        ),
+    ] {
+        insert_indexed_turn(
+            &connection,
+            IndexedTurnFixture {
+                step_count: 1,
+                tool_call_count: 1,
+                duration_ms: 3_000,
+                ..IndexedTurnFixture::new(
+                    "repo-a",
+                    SourceKind::Codex,
+                    session_id,
+                    turn_ordinal,
+                    started_at,
+                    "completed",
+                    steps_json,
+                )
+            },
+        )?;
+    }
+
+    let result = query_project_files(
+        &index_path,
+        FilesQueryRequest {
+            project_id: "repo-a",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            provider: None,
+            path: None,
+            co_touched_with: Some("/tmp/repo-a/src/components/planner.rs"),
+            since: Some("2026-04-06T11:00:00Z"),
+            until: Some("2026-04-06T13:00:00Z"),
+            limit: 10,
+            offset: 0,
+        },
+    )?;
+
+    assert_eq!(result.since.as_deref(), Some("2026-04-06T11:00:00Z"));
+    assert_eq!(result.until.as_deref(), Some("2026-04-06T13:00:00Z"));
+    assert_eq!(
+        result
+            .files
+            .iter()
+            .map(|file| (file.path.as_str(), file.co_touch_count))
+            .collect::<Vec<_>>(),
+        vec![("src/components/inside.rs", 1)]
+    );
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
 fn query_session_files_collapses_absolute_and_relative_paths() -> Result<()> {
     let index_path = test_index_path("query-session-files");
     let connection = open_index_database(&index_path)?;

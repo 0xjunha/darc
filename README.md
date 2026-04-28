@@ -120,8 +120,9 @@ single-call session bundles.
   ambiguous; content discovery lives under `darc query search turns`.
 - `darc query files <path>`, `darc query session-files <session-id>`, and
   `darc query session-bundle <session-id>` let clients pivot between matched files, touched sessions, per-session file
-  summaries, and bounded one-call session detail bundles. Turn detail and session bundle reads default to narrative
-  payloads; pass `--view full` or `--include-raw` only when raw tool arguments, outputs, or payload blobs are needed.
+  summaries, and bounded one-call session detail bundles. File pivots accept provider and time filters in both path and
+  co-touch modes. Turn detail and session bundle reads default to narrative payloads; pass `--view full` or
+  `--include-raw` only when raw tool arguments, outputs, or payload blobs are needed.
 - `darc query resolve-session` explicitly expands a UUID prefix before you call session-scoped data commands and
   includes `project_id` with each match for multi-project roots.
 Examples:
@@ -153,6 +154,13 @@ darc query search turns \
 darc query files \
   --project-id repo-abc123 \
   "src/components/**/*.rs" \
+  --since 30d
+```
+
+```bash
+darc query files \
+  --project-id repo-abc123 \
+  --co-touched-with src/components/planner.rs \
   --since 30d
 ```
 

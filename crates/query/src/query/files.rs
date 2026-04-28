@@ -399,17 +399,13 @@ fn build_files_query(
             })
         }
         (None, Some(seed_path)) => {
-            if request.since.is_some() {
-                bail!("--since requires --path");
-            }
-            if request.until.is_some() {
-                bail!("--until requires --path");
-            }
             let files = query_co_touched_files(
                 connection,
                 request.project_id,
                 request.project_root,
                 request.provider,
+                request.since,
+                request.until,
                 seed_path,
             )?;
             let (files, has_more) = paginate_ranked_rows(files, request.limit, request.offset)?;
@@ -419,8 +415,8 @@ fn build_files_query(
                 provider: request.provider,
                 path: None,
                 co_touched_with: Some(seed_path.to_owned()),
-                since: None,
-                until: None,
+                since: request.since.map(str::to_owned),
+                until: request.until.map(str::to_owned),
                 limit: u64::try_from(request.limit).context("query limit exceeds u64 range")?,
                 offset: u64::try_from(request.offset).context("query offset exceeds u64 range")?,
                 has_more,
@@ -581,6 +577,8 @@ fn query_co_touched_files(
     project_id: &str,
     project_root: Option<&Path>,
     provider: Option<SourceKind>,
+    since: Option<&str>,
+    until: Option<&str>,
     seed_path: &str,
 ) -> Result<Vec<CoTouchedFileSummary>> {
     let seed_path = normalize_project_scoped_query_path(project_root, seed_path);
@@ -594,8 +592,8 @@ fn query_co_touched_files(
         SessionFileQueryFilters {
             provider,
             session_id: None,
-            since: None,
-            until: None,
+            since,
+            until,
             path_selector: Some(&seed_selector),
         },
     )?;
@@ -609,8 +607,13 @@ fn query_co_touched_files(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    let aggregates =
-        query_raw_session_file_rows_for_session_keys(connection, project_id, &seed_session_keys)?;
+    let aggregates = query_raw_session_file_rows_for_session_keys(
+        connection,
+        project_id,
+        &seed_session_keys,
+        since,
+        until,
+    )?;
     let aggregates = aggregate_session_file_rows(aggregates, project_root);
 
     let mut files_by_session = BTreeMap::<SessionKey, Vec<AggregatedSessionFileRow>>::new();
@@ -689,6 +692,8 @@ fn query_raw_session_file_rows_for_session_keys(
     connection: &Connection,
     project_id: &str,
     session_keys: &[SessionKey],
+    since: Option<&str>,
+    until: Option<&str>,
 ) -> Result<Vec<RawSessionFileRow>> {
     if session_keys.is_empty() {
         return Ok(Vec::new());
@@ -700,7 +705,9 @@ fn query_raw_session_file_rows_for_session_keys(
         let mut statement = connection
             .prepare(&sql)
             .context("failed to prepare requested session file rows query")?;
-        let params = build_session_key_values_params(project_id, session_chunk.iter())?;
+        let mut params = build_session_key_values_params(project_id, session_chunk.iter())?;
+        params.push(since.map_or(Value::Null, |value| Value::Text(value.to_owned())));
+        params.push(until.map_or(Value::Null, |value| Value::Text(value.to_owned())));
         let chunk_rows = statement
             .query_map(params_from_iter(params), read_raw_session_file_row)
             .context("failed to query requested session file rows")?
@@ -995,8 +1002,14 @@ fn build_session_file_rows_sql(path_selector: Option<&PathQuerySelector>) -> Str
 
 /// Builds one requested-session grouped file-row query SQL.
 fn build_requested_session_file_rows_sql(row_count: usize) -> String {
-    build_session_key_values_query_sql(
-        row_count,
+    let since_param = row_count
+        .checked_mul(2)
+        .and_then(|value| value.checked_add(2))
+        .expect("placeholder index should stay within usize range");
+    let until_param = since_param
+        .checked_add(1)
+        .expect("placeholder index should stay within usize range");
+    let select_sql = format!(
         "
         SELECT
             file_accesses.provider,
@@ -1021,6 +1034,8 @@ fn build_requested_session_file_rows_sql(row_count: usize) -> String {
             AND turns.turn_ordinal = file_accesses.turn_ordinal
         WHERE file_accesses.access_type IN ('read', 'write', 'edit')
             AND NULLIF(TRIM(file_accesses.path), '') IS NOT NULL
+            AND (?{since_param} IS NULL OR turns.started_at >= ?{since_param})
+            AND (?{until_param} IS NULL OR turns.started_at < ?{until_param})
         GROUP BY
             file_accesses.provider,
             file_accesses.session_id,
@@ -1031,8 +1046,9 @@ fn build_requested_session_file_rows_sql(row_count: usize) -> String {
             file_accesses.provider ASC,
             file_accesses.session_id ASC,
             COALESCE(file_accesses.repo_relative_path, file_accesses.path) COLLATE NOCASE ASC
-        ",
-    )
+        "
+    );
+    build_session_key_values_query_sql(row_count, &select_sql)
 }
 
 /// Builds one SQLite parameter list for one grouped file-row query.
