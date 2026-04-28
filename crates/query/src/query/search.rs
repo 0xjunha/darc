@@ -8,8 +8,8 @@ use rusqlite::{Connection, params, params_from_iter, types::Value};
 
 use super::{
     SearchEvidenceField, SearchMode, SearchTurnHit, SearchTurnMatch, SearchTurnsQueryData,
-    SearchTurnsRequest, open_existing_index_database, parse_provider, parse_turn_status,
-    preview_text, sql_count_to_u64,
+    SearchTurnsRequest, apply_matched_path_limit, open_existing_index_database, parse_provider,
+    parse_turn_status, preview_text, sql_count_to_u64,
 };
 use crate::query::files::{
     PathQuerySelector, build_path_query_selector, glob_match_options, normalize_query_path_pattern,
@@ -253,6 +253,7 @@ fn build_search_turns(
     let until = request.until;
     let limit = request.limit;
     let offset = request.offset;
+    let matched_path_limit = request.matched_path_limit;
     let scope = SearchScope {
         project_id,
         provider: provider_filter,
@@ -292,6 +293,10 @@ fn build_search_turns(
                 limit: u64::try_from(limit).context("search limit exceeds u64 range")?,
                 offset: u64::try_from(offset).context("search offset exceeds u64 range")?,
                 has_more,
+                matched_path_limit: matched_path_limit
+                    .map(u64::try_from)
+                    .transpose()
+                    .context("matched path limit exceeds u64 range")?,
                 hits,
             });
         }
@@ -354,6 +359,7 @@ fn build_search_turns(
         .into_iter()
         .skip(offset)
         .take(limit)
+        .map(|hit| apply_search_hit_matched_path_limit(hit, matched_path_limit))
         .collect::<Vec<_>>();
 
     Ok(SearchTurnsQueryData {
@@ -370,8 +376,24 @@ fn build_search_turns(
         limit: u64::try_from(limit).context("search limit exceeds u64 range")?,
         offset: u64::try_from(offset).context("search offset exceeds u64 range")?,
         has_more,
+        matched_path_limit: matched_path_limit
+            .map(u64::try_from)
+            .transpose()
+            .context("matched path limit exceeds u64 range")?,
         hits,
     })
+}
+
+/// Applies the matched-path preview cap to one search hit.
+fn apply_search_hit_matched_path_limit(
+    mut hit: SearchTurnHit,
+    matched_path_limit: Option<usize>,
+) -> SearchTurnHit {
+    let (matched_paths, matched_paths_truncated) =
+        apply_matched_path_limit(hit.matched_paths, matched_path_limit);
+    hit.matched_paths = matched_paths;
+    hit.matched_paths_truncated = matched_paths_truncated;
+    hit
 }
 
 impl EvidenceFieldSelection {
@@ -651,6 +673,7 @@ fn query_keyword_hits(
                         .filter(|value| !value.trim().is_empty())
                         .or_else(|| Some(preview_text(&user_message))),
                     matched_paths: Vec::new(),
+                    matched_paths_truncated: false,
                     matches: Vec::new(),
                     matches_truncated: false,
                 })
@@ -990,6 +1013,7 @@ fn build_evidence_search_hit(
         user_preview: turn.user_preview,
         snippet: None,
         matched_paths: Vec::new(),
+        matched_paths_truncated: false,
         matches,
         matches_truncated,
     }
@@ -1585,6 +1609,7 @@ fn finalize_file_search_hit(accumulator: FileSearchHitAccumulator) -> SearchTurn
         user_preview: accumulator.user_preview,
         snippet: None,
         matched_paths: accumulator.matched_paths.into_iter().collect(),
+        matched_paths_truncated: false,
         matches: Vec::new(),
         matches_truncated: false,
     }

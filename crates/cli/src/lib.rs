@@ -9,10 +9,10 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use darc_core::query::{
-    DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, FilesQueryRequest, QueryProtocolError,
-    ResolveSessionQueryRequest, ResolvedQueryProject, ResolvedSessionMatch, SearchEvidenceField,
-    SearchMode, SearchTurnsRequest, SessionBundleQueryRequest, SessionBundleView,
-    TurnDetailOptions, TurnsQueryRequest, TurnsView, query_files_for_project,
+    DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, FilesQueryRequest,
+    QueryProtocolError, ResolveSessionQueryRequest, ResolvedQueryProject, ResolvedSessionMatch,
+    SearchEvidenceField, SearchMode, SearchTurnsRequest, SessionBundleQueryRequest,
+    SessionBundleView, TurnDetailOptions, TurnsQueryRequest, TurnsView, query_files_for_project,
     query_project_insight_report_for_project, query_resolve_sessions,
     query_search_turns_for_project, query_session_bundle_for_project,
     query_session_files_for_project, query_sessions_for_project, query_turn_for_project,
@@ -412,6 +412,20 @@ struct QueryFilesArgs {
 
     #[arg(long, default_value_t = 0, help = "Number of rows to skip")]
     offset: usize,
+
+    #[arg(
+        long = "matched-path-limit",
+        default_value_t = DEFAULT_MATCHED_PATH_LIMIT,
+        conflicts_with = "include_all_matched_paths",
+        help = "Maximum matched_paths entries per path-mode row"
+    )]
+    matched_path_limit: usize,
+
+    #[arg(
+        long = "include-all-matched-paths",
+        help = "Return every matched path in path-mode rows"
+    )]
+    include_all_matched_paths: bool,
 }
 
 /// Queries one session-scoped per-file access summary payload.
@@ -637,6 +651,20 @@ struct QuerySearchTurnsArgs {
 
     #[arg(long, default_value_t = 0, help = "Number of turn hits to skip")]
     offset: usize,
+
+    #[arg(
+        long = "matched-path-limit",
+        default_value_t = DEFAULT_MATCHED_PATH_LIMIT,
+        conflicts_with = "include_all_matched_paths",
+        help = "Maximum matched_paths entries per file-search hit"
+    )]
+    matched_path_limit: usize,
+
+    #[arg(
+        long = "include-all-matched-paths",
+        help = "Return every matched path in file-search hits"
+    )]
+    include_all_matched_paths: bool,
 }
 
 /// Queries one workspace or project insights payload.
@@ -954,6 +982,10 @@ fn run_query_files(args: QueryFilesArgs) -> Result<()> {
             until: until.as_deref(),
             limit: args.limit,
             offset: args.offset,
+            matched_path_limit: matched_path_limit_arg(
+                args.include_all_matched_paths,
+                args.matched_path_limit,
+            ),
         },
     )?;
     print_json_envelope("darc.query.files.v1", &data)
@@ -1139,6 +1171,10 @@ fn run_query_search_turns(args: QuerySearchTurnsArgs) -> Result<()> {
             until: until.as_deref(),
             limit: args.limit,
             offset: args.offset,
+            matched_path_limit: matched_path_limit_arg(
+                args.include_all_matched_paths,
+                args.matched_path_limit,
+            ),
         },
     )?;
     print_json_envelope("darc.query.search.turns.v1", &data)
@@ -1286,6 +1322,14 @@ fn required_named_or_positional<'a>(
     .ok_or_else(|| {
         anyhow!("query command requires {value_label} as {positional_name} or {flag_name}")
     })
+}
+
+/// Returns the matched-path preview limit selected by CLI flags.
+fn matched_path_limit_arg(
+    include_all_matched_paths: bool,
+    matched_path_limit: usize,
+) -> Option<usize> {
+    (!include_all_matched_paths).then_some(matched_path_limit)
 }
 
 /// Resolves session-id and turn-ordinal values from flag and positional forms.

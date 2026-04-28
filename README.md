@@ -124,6 +124,8 @@ single-call session bundles.
   accept provider and time filters in top-file, path, and co-touch modes. Turn detail and session bundle reads default
   to narrative payloads; pass `--view full` or `--include-raw` only when raw tool arguments, outputs, or payload blobs
   are needed.
+- Broad file/path queries cap each row's `matched_paths` preview by default; use `--matched-path-limit` or
+  `--include-all-matched-paths` when you need more path evidence per result.
 - `darc query resolve-session` explicitly expands a UUID prefix before you call session-scoped data commands and
   includes `project_id` with each match for multi-project roots.
 Examples:

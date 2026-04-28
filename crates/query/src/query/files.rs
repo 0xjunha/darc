@@ -11,8 +11,8 @@ use rusqlite::{Connection, params_from_iter, types::Value};
 
 use super::{
     FilePivotSummary, FileSessionSummary, FilesQueryData, FilesQueryMode, FilesQueryRequest,
-    SessionFileSummary, SessionFilesQueryData, SessionSummary, open_existing_index_database,
-    paginate_ranked_rows, parse_provider, sql_count_to_u64,
+    SessionFileSummary, SessionFilesQueryData, SessionSummary, apply_matched_path_limit,
+    open_existing_index_database, paginate_ranked_rows, parse_provider, sql_count_to_u64,
 };
 
 const MAX_SESSION_KEYS_PER_QUERY: usize = 250;
@@ -402,6 +402,7 @@ fn build_files_query(
                 limit: u64::try_from(request.limit).context("query limit exceeds u64 range")?,
                 offset: u64::try_from(request.offset).context("query offset exceeds u64 range")?,
                 has_more,
+                matched_path_limit: None,
                 sessions: Vec::new(),
                 files,
             })
@@ -418,6 +419,8 @@ fn build_files_query(
             )?;
             let (sessions, has_more) =
                 paginate_ranked_rows(sessions, request.limit, request.offset)?;
+            let sessions =
+                apply_file_session_matched_path_limit(sessions, request.matched_path_limit);
             Ok(FilesQueryData {
                 project_id: request.project_id.to_owned(),
                 mode: FilesQueryMode::Path,
@@ -429,6 +432,11 @@ fn build_files_query(
                 limit: u64::try_from(request.limit).context("query limit exceeds u64 range")?,
                 offset: u64::try_from(request.offset).context("query offset exceeds u64 range")?,
                 has_more,
+                matched_path_limit: request
+                    .matched_path_limit
+                    .map(u64::try_from)
+                    .transpose()
+                    .context("matched path limit exceeds u64 range")?,
                 sessions,
                 files: Vec::new(),
             })
@@ -455,6 +463,7 @@ fn build_files_query(
                 limit: u64::try_from(request.limit).context("query limit exceeds u64 range")?,
                 offset: u64::try_from(request.offset).context("query offset exceeds u64 range")?,
                 has_more,
+                matched_path_limit: None,
                 sessions: Vec::new(),
                 files,
             })
@@ -463,6 +472,23 @@ fn build_files_query(
             bail!("query files requires exactly one of --path or --co-touched-with")
         }
     }
+}
+
+/// Applies the matched-path preview cap to each file-session row.
+fn apply_file_session_matched_path_limit(
+    sessions: Vec<FileSessionSummary>,
+    matched_path_limit: Option<usize>,
+) -> Vec<FileSessionSummary> {
+    sessions
+        .into_iter()
+        .map(|mut session| {
+            let (matched_paths, matched_paths_truncated) =
+                apply_matched_path_limit(session.matched_paths, matched_path_limit);
+            session.matched_paths = matched_paths;
+            session.matched_paths_truncated = matched_paths_truncated;
+            session
+        })
+        .collect()
 }
 
 /// Builds one session-scoped per-file summary payload from canonicalized file touches.
@@ -670,6 +696,7 @@ fn query_file_session_matches(
             first_touched_at: session.first_touched_at,
             last_touched_at: session.last_touched_at,
             matched_paths: session.matched_paths.into_iter().collect(),
+            matched_paths_truncated: false,
         })
         .collect::<Vec<_>>();
     sessions.sort_by(|left, right| {

@@ -22,10 +22,10 @@ use darc_test_utils::{
 use serde_json::to_value;
 
 use crate::query::{
-    FilesQueryMode, FilesQueryRequest, HardDebuggingTurn, LocalDate, ProjectInsights, SearchMode,
-    SearchTurnsRequest, SessionBundleQueryRequest, SessionBundleView, SessionKind,
-    SessionsQueryRequest, TurnDetailOptions, TurnInsights, TurnsQueryRequest, TurnsView,
-    build_project_insights, build_turn_insights, build_workspace_insights,
+    DEFAULT_MATCHED_PATH_LIMIT, FilesQueryMode, FilesQueryRequest, HardDebuggingTurn, LocalDate,
+    ProjectInsights, SearchMode, SearchTurnsRequest, SessionBundleQueryRequest, SessionBundleView,
+    SessionKind, SessionsQueryRequest, TurnDetailOptions, TurnInsights, TurnsQueryRequest,
+    TurnsView, build_project_insights, build_turn_insights, build_workspace_insights,
     open_existing_index_database, parse_session_kind, query_project_files,
     query_project_session_bundle, query_project_session_files, query_project_sessions,
     query_project_turns, query_search_turns, query_session_turn_details, query_turn_detail,
@@ -1259,6 +1259,7 @@ fn query_files_path_mode_ranks_sessions_and_respects_time_bounds() -> Result<()>
             until: None,
             limit: 50,
             offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
         },
     )?;
     let glob = query_project_files(
@@ -1273,6 +1274,7 @@ fn query_files_path_mode_ranks_sessions_and_respects_time_bounds() -> Result<()>
             until: Some("2026-04-07T00:00:00Z"),
             limit: 50,
             offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
         },
     )?;
     let codex_exact = query_project_files(
@@ -1287,6 +1289,22 @@ fn query_files_path_mode_ranks_sessions_and_respects_time_bounds() -> Result<()>
             until: None,
             limit: 50,
             offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
+        },
+    )?;
+    let capped_glob = query_project_files(
+        &index_path,
+        FilesQueryRequest {
+            project_id: "repo-a",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            provider: None,
+            path: Some("/tmp/repo-a/src/components/**/*.rs"),
+            co_touched_with: None,
+            since: Some("2026-04-05T00:00:00Z"),
+            until: Some("2026-04-07T00:00:00Z"),
+            limit: 50,
+            offset: 0,
+            matched_path_limit: Some(1),
         },
     )?;
     let top = query_project_files(
@@ -1301,6 +1319,7 @@ fn query_files_path_mode_ranks_sessions_and_respects_time_bounds() -> Result<()>
             until: None,
             limit: 50,
             offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
         },
     )?;
 
@@ -1382,6 +1401,7 @@ fn query_files_path_mode_ranks_sessions_and_respects_time_bounds() -> Result<()>
             until: None,
             limit: 1,
             offset: 1,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
         },
     )?;
     assert_eq!(paged.limit, 1);
@@ -1420,6 +1440,13 @@ fn query_files_path_mode_ranks_sessions_and_respects_time_bounds() -> Result<()>
             "src/components/planner.rs".to_owned()
         ]
     );
+    assert!(!glob.sessions[0].matched_paths_truncated);
+    assert_eq!(capped_glob.matched_path_limit, Some(1));
+    assert_eq!(
+        capped_glob.sessions[0].matched_paths,
+        vec!["src/components/context.rs".to_owned()]
+    );
+    assert!(capped_glob.sessions[0].matched_paths_truncated);
     assert_eq!(glob.limit, 50);
     assert_eq!(glob.offset, 0);
     assert!(!glob.has_more);
@@ -1491,6 +1518,7 @@ fn query_files_co_touched_mode_counts_sessions_and_sorts_ties() -> Result<()> {
             until: None,
             limit: 10,
             offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
         },
     )?;
 
@@ -1521,6 +1549,7 @@ fn query_files_co_touched_mode_counts_sessions_and_sorts_ties() -> Result<()> {
             until: None,
             limit: 1,
             offset: 1,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
         },
     )?;
     assert_eq!(paged.limit, 1);
@@ -1612,6 +1641,7 @@ fn query_files_co_touched_mode_applies_time_bounds() -> Result<()> {
             until: Some("2026-04-06T13:00:00Z"),
             limit: 10,
             offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
         },
     )?;
 
@@ -1860,6 +1890,7 @@ fn query_session_files_exclude_out_of_project_and_list_only_paths() -> Result<()
             until: None,
             limit: 10,
             offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
         },
     )?;
 
@@ -2936,6 +2967,7 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             until: None,
             limit: 10,
             offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
         },
     )?;
     let secret_result = query_search_turns(
@@ -2954,6 +2986,7 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             until: None,
             limit: 10,
             offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
         },
     )?;
 
@@ -2984,6 +3017,7 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             until: None,
             limit: 10,
             offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
         },
     )?;
     let regex_result = query_search_turns(
@@ -3002,6 +3036,7 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             until: None,
             limit: 10,
             offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
         },
     )?;
     let literal_with_output = query_search_turns(
@@ -3020,6 +3055,7 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             until: None,
             limit: 10,
             offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
         },
     )?;
     let regex_with_output = query_search_turns(
@@ -3038,6 +3074,7 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             until: None,
             limit: 10,
             offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
         },
     )?;
     let shared_literal_result = query_search_turns(
@@ -3056,6 +3093,7 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             until: None,
             limit: 10,
             offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
         },
     )?;
     let shared_regex_result = query_search_turns(
@@ -3074,6 +3112,7 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             until: None,
             limit: 10,
             offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
         },
     )?;
     let content_only_literal_result = query_search_turns(
@@ -3092,6 +3131,7 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             until: None,
             limit: 10,
             offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
         },
     )?;
     let excluded_tool_arguments_result = query_search_turns(
@@ -3110,6 +3150,7 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             until: None,
             limit: 10,
             offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
         },
     )?;
     let tool_output_field_without_opt_in = query_search_turns(
@@ -3128,6 +3169,7 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             until: None,
             limit: 10,
             offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
         },
     );
 
@@ -3304,6 +3346,7 @@ fn search_turns_exact_modes_match_extended_evidence_fields() -> Result<()> {
                 until: None,
                 limit: 10,
                 offset: 0,
+                matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
             },
         )?;
 
@@ -3381,6 +3424,7 @@ fn search_turns_exact_modes_preserve_outer_whitespace() -> Result<()> {
                 until: None,
                 limit: 10,
                 offset: 0,
+                matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
             },
         )?;
 
@@ -3453,6 +3497,7 @@ fn search_turns_exact_modes_cap_nested_matches() -> Result<()> {
             until: None,
             limit: 1,
             offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
         },
     )?;
 
@@ -3537,6 +3582,7 @@ fn search_turns_literal_filters_evidence_before_preview_cap() -> Result<()> {
             until: None,
             limit: 1,
             offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
         },
     )?;
 
@@ -3629,6 +3675,7 @@ fn search_turns_literal_streams_past_legacy_candidate_cap() -> Result<()> {
             until: None,
             limit: 10,
             offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
         },
     )?;
 
@@ -3715,6 +3762,7 @@ fn search_turns_regex_streams_past_legacy_candidate_cap() -> Result<()> {
             until: None,
             limit: 10,
             offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
         },
     )?;
 
@@ -3774,6 +3822,7 @@ fn search_turns_file_modes_match_derived_paths() -> Result<()> {
             until: None,
             limit: 10,
             offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
         },
     )?;
     let file_path_result = query_search_turns(
@@ -3792,6 +3841,7 @@ fn search_turns_file_modes_match_derived_paths() -> Result<()> {
             until: None,
             limit: 10,
             offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
         },
     )?;
     let glob_path_result = query_search_turns(
@@ -3810,6 +3860,7 @@ fn search_turns_file_modes_match_derived_paths() -> Result<()> {
             until: None,
             limit: 10,
             offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
         },
     )?;
     let path_fragment_result = query_search_turns(
@@ -3828,6 +3879,7 @@ fn search_turns_file_modes_match_derived_paths() -> Result<()> {
             until: None,
             limit: 10,
             offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
         },
     )?;
 
@@ -3851,6 +3903,87 @@ fn search_turns_file_modes_match_derived_paths() -> Result<()> {
         path_fragment_result.hits[0].matched_paths,
         vec!["src/main,old.rs"]
     );
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn search_turns_file_modes_cap_matched_paths() -> Result<()> {
+    let index_path = test_index_path("search-file-path-limit");
+    let connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            user_message: "Inspect source files",
+            step_count: 2,
+            tool_call_count: 2,
+            duration_ms: 3_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                0,
+                "2026-04-06T11:00:00Z",
+                "completed",
+                r##"[{"type":"tool_call","timestamp":"2026-04-06T11:00:01Z","call_id":"call-1","name":"Read","arguments":"{\"file_path\":\"src/a.rs\"}"},{"type":"tool_call","timestamp":"2026-04-06T11:00:02Z","call_id":"call-2","name":"Read","arguments":"{\"file_path\":\"src/b.rs\"}"}]"##,
+            )
+        },
+    )?;
+
+    let capped = query_search_turns(
+        &index_path,
+        SearchTurnsRequest {
+            project_id: "repo-a",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            mode: SearchMode::FilePath,
+            query: "src/**",
+            include_tool_output: false,
+            fields: &[],
+            excluded_fields: &[],
+            provider: None,
+            session_id: None,
+            since: None,
+            until: None,
+            limit: 10,
+            offset: 0,
+            matched_path_limit: Some(1),
+        },
+    )?;
+    let uncapped = query_search_turns(
+        &index_path,
+        SearchTurnsRequest {
+            project_id: "repo-a",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            mode: SearchMode::FilePath,
+            query: "src/**",
+            include_tool_output: false,
+            fields: &[],
+            excluded_fields: &[],
+            provider: None,
+            session_id: None,
+            since: None,
+            until: None,
+            limit: 10,
+            offset: 0,
+            matched_path_limit: None,
+        },
+    )?;
+
+    assert_eq!(capped.matched_path_limit, Some(1));
+    assert_eq!(capped.hits[0].matched_paths, vec!["src/a.rs"]);
+    assert!(capped.hits[0].matched_paths_truncated);
+    assert_eq!(uncapped.matched_path_limit, None);
+    assert_eq!(uncapped.hits[0].matched_paths, vec!["src/a.rs", "src/b.rs"]);
+    assert!(!uncapped.hits[0].matched_paths_truncated);
 
     fs::remove_dir_all(
         index_path
@@ -3914,6 +4047,7 @@ fn search_turns_file_modes_dedupe_before_pagination() -> Result<()> {
             until: None,
             limit: 3,
             offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
         },
     )?;
 

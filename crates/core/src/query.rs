@@ -8,15 +8,15 @@ use anyhow::{Context, Result, bail};
 use darc_index::INDEX_DB_FILE_NAME;
 use darc_paths::SourceKind;
 pub use darc_query::{
-    DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, DailyTimeStat, FilePivotSummary, FileSessionSummary,
-    FileUsageStat, FilesQueryData, FilesQueryMode, FilesQueryRequest, HardDebuggingTurn,
-    ProjectInsights, ProjectSummary, ProjectTimeStat, ResolveSessionQueryData,
-    ResolveSessionQueryRequest, ResolvedSessionMatch, RootAvailability, RootInfo,
-    SearchEvidenceField, SearchMode, SearchTurnHit, SearchTurnMatch, SearchTurnsQueryData,
-    SearchTurnsRequest, SessionBundleQueryData, SessionBundleQueryRequest, SessionBundleView,
-    SessionFileSummary, SessionFilesQueryData, SessionKind, SessionRuntimeStat, SessionSummary,
-    SessionsQueryData, SessionsQueryRequest, ShellCommandSummary, ToolUsageStat, TurnDetail,
-    TurnDetailInsights, TurnDetailOptions, TurnInsights, TurnSummary, TurnsQueryData,
+    DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, DailyTimeStat,
+    FilePivotSummary, FileSessionSummary, FileUsageStat, FilesQueryData, FilesQueryMode,
+    FilesQueryRequest, HardDebuggingTurn, ProjectInsights, ProjectSummary, ProjectTimeStat,
+    ResolveSessionQueryData, ResolveSessionQueryRequest, ResolvedSessionMatch, RootAvailability,
+    RootInfo, SearchEvidenceField, SearchMode, SearchTurnHit, SearchTurnMatch,
+    SearchTurnsQueryData, SearchTurnsRequest, SessionBundleQueryData, SessionBundleQueryRequest,
+    SessionBundleView, SessionFileSummary, SessionFilesQueryData, SessionKind, SessionRuntimeStat,
+    SessionSummary, SessionsQueryData, SessionsQueryRequest, ShellCommandSummary, ToolUsageStat,
+    TurnDetail, TurnDetailInsights, TurnDetailOptions, TurnInsights, TurnSummary, TurnsQueryData,
     TurnsQueryRequest, TurnsView, WorkspaceDailyTimeStat, WorkspaceInsights, WorkspaceQueryData,
 };
 use darc_query::{

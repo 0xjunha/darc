@@ -56,8 +56,25 @@ pub(crate) fn paginate_ranked_rows<T>(
     Ok((rows, has_more))
 }
 
+/// Applies one optional matched-path preview cap to an already ordered path list.
+pub(crate) fn apply_matched_path_limit(
+    mut paths: Vec<String>,
+    matched_path_limit: Option<usize>,
+) -> (Vec<String>, bool) {
+    if let Some(limit) = matched_path_limit
+        && paths.len() > limit
+    {
+        paths.truncate(limit);
+        return (paths, true);
+    }
+    (paths, false)
+}
+
 /// Caps `resolve-session` responses to one generous deterministic page.
 pub const DEFAULT_RESOLVE_SESSION_MATCH_LIMIT: usize = 50;
+
+/// Caps per-row matched path previews unless callers opt into all matched paths.
+pub const DEFAULT_MATCHED_PATH_LIMIT: usize = 20;
 
 /// Stores one indexed project aggregate used by the workspace sidebar.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -218,6 +235,7 @@ pub struct FileSessionSummary {
     pub first_touched_at: String,
     pub last_touched_at: String,
     pub matched_paths: Vec<String>,
+    pub matched_paths_truncated: bool,
 }
 
 /// Stores one file row returned by a file-pivot query.
@@ -246,6 +264,7 @@ pub struct FilesQueryData {
     pub limit: u64,
     pub offset: u64,
     pub has_more: bool,
+    pub matched_path_limit: Option<u64>,
     pub sessions: Vec<FileSessionSummary>,
     pub files: Vec<FilePivotSummary>,
 }
@@ -262,6 +281,7 @@ pub struct FilesQueryRequest<'a> {
     pub until: Option<&'a str>,
     pub limit: usize,
     pub offset: usize,
+    pub matched_path_limit: Option<usize>,
 }
 
 /// Stores one session-scoped per-file access summary row.
@@ -385,6 +405,7 @@ pub struct SearchTurnsQueryData {
     pub limit: u64,
     pub offset: u64,
     pub has_more: bool,
+    pub matched_path_limit: Option<u64>,
     pub hits: Vec<SearchTurnHit>,
 }
 
@@ -404,6 +425,7 @@ pub struct SearchTurnsRequest<'a> {
     pub until: Option<&'a str>,
     pub limit: usize,
     pub offset: usize,
+    pub matched_path_limit: Option<usize>,
 }
 
 /// Stores one field-level evidence match nested inside a turn search hit.
@@ -425,6 +447,7 @@ pub struct SearchTurnHit {
     pub user_preview: String,
     pub snippet: Option<String>,
     pub matched_paths: Vec<String>,
+    pub matched_paths_truncated: bool,
     pub matches: Vec<SearchTurnMatch>,
     pub matches_truncated: bool,
 }

@@ -329,6 +329,7 @@ fn sessions_query_defaults_project_id_from_current_directory() -> Result<()> {
     assert_eq!(value["data"]["limit"], 50);
     assert_eq!(value["data"]["offset"], 0);
     assert_eq!(value["data"]["has_more"], false);
+    assert_eq!(value["data"]["matched_path_limit"], 20);
 
     remove_root(&root)?;
     Ok(())
@@ -435,6 +436,10 @@ fn files_query_path_mode_emits_success_envelope() -> Result<()> {
     assert_eq!(
         value["data"]["sessions"][0]["matched_paths"],
         serde_json::json!(["README.md"])
+    );
+    assert_eq!(
+        value["data"]["sessions"][0]["matched_paths_truncated"],
+        false
     );
     assert_eq!(value["data"]["files"], Value::Array(vec![]));
 
@@ -1590,7 +1595,9 @@ fn search_turns_query_emits_file_search_envelope() -> Result<()> {
     let value = parse_json(&output.stdout, "stdout")?;
     assert_eq!(value["schema"], "darc.query.search.turns.v1");
     assert_eq!(value["data"]["mode"], "file_name");
+    assert_eq!(value["data"]["matched_path_limit"], 20);
     assert_eq!(value["data"]["hits"][0]["matched_paths"][0], "README.md");
+    assert_eq!(value["data"]["hits"][0]["matched_paths_truncated"], false);
 
     let path_output = run_darc([
         "query",
