@@ -381,7 +381,7 @@ Today:
 - `total_token_count` and `effective_agent_runtime_ms` are currently `null` on a session row unless every indexed turn in that session carried a value for that field
 - `first_turn_at` and `first_user_prompt` come from the indexed turn with the minimum `turn_ordinal` in that session and are `null` only when the indexed session has no stored turns
 - `final_agent_message` comes from the latest indexed turn in that session and is `null` when that turn has no final answer text
-- in `view=compact`, `first_user_prompt` and `final_agent_message` are capped at 500 normalized characters; `*_chars` is the returned preview length, `*_total_chars` is the normalized source length, and `*_truncated` reports whether additional text was omitted
+- in `view=compact`, `first_user_prompt` and `final_agent_message` are capped at 500 source characters; `*_chars` is the returned character count, `*_total_chars` is the source character count, and `*_truncated` reports whether additional text was omitted
 - in `view=full`, `first_user_prompt` and `final_agent_message` are not capped, their paired `*_truncated` fields are false, and `*_chars` equals `*_total_chars`
 - `aborted_turn_count` counts indexed turns in that session where `status` is `aborted`
 - `edited_files` is the distinct project-scoped display list from session-scoped `file_accesses` rows with `access_type` of `edit` or `write`, preferring repo-relative paths for in-project files, excluding null or whitespace-only paths, and ordering by display path ascending

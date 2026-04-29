@@ -503,7 +503,7 @@ struct QuerySessionBundleArgs {
         long = "session-view",
         value_enum,
         default_value_t = SessionListViewArg::Compact,
-        help = "Return full session prompt or a compact prompt preview"
+        help = "Return full session prompt/final message or compact previews"
     )]
     session_view: SessionListViewArg,
 

@@ -557,6 +557,23 @@ fn parses_query_session_bundle_command() {
 }
 
 #[test]
+fn query_session_bundle_help_mentions_prompt_and_final_message_projection() {
+    let mut command = Cli::command();
+    let query = command
+        .find_subcommand_mut("query")
+        .expect("query subcommand should be present");
+    let help = query
+        .find_subcommand_mut("session-bundle")
+        .expect("session-bundle query subcommand should be present")
+        .render_long_help()
+        .to_string();
+
+    assert!(help.contains("--session-view"));
+    assert!(help.contains("session prompt/final message"));
+    assert!(help.contains("compact previews"));
+}
+
+#[test]
 fn parses_query_turns_session_scope_command() {
     let cli = Cli::try_parse_from([
         "darc",
