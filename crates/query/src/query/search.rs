@@ -255,6 +255,22 @@ pub fn query_search_turns(
     build_search_turns(&connection, request)
 }
 
+/// Returns the first matched byte range for terminal presentation of one search snippet.
+pub fn search_snippet_match_range(
+    mode: SearchMode,
+    query: &str,
+    snippet: &str,
+) -> Result<Option<Range<usize>>> {
+    match mode {
+        SearchMode::Literal => Ok(literal_match_range(snippet, query)),
+        SearchMode::Regex => Ok(build_regex_matcher(query)?.find_match(snippet)),
+        SearchMode::Keyword
+        | SearchMode::FileName
+        | SearchMode::FilePath
+        | SearchMode::PathFragment => Ok(None),
+    }
+}
+
 /// Builds one paginated turn-search response from the indexed search tables.
 fn build_search_turns(
     connection: &Connection,

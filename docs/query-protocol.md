@@ -48,6 +48,7 @@ controls terminal-only ANSI presentation; the default is `--color auto`.
 - project-scoped queries accept optional `--project-id`; when omitted, Darc resolves the configured project from the current directory
 - `--color auto` adds ANSI syntax color only when stdout is a terminal, `NO_COLOR` is unset, and `TERM` is not `dumb`; piped, redirected, and captured output remains plain JSON by default
 - use `--color always` for terminal pagers such as `less -R`, or `--color never` for plain JSON in every environment
+- colored `literal` and `regex` search output may highlight matched substrings inside `data.hits[*].matches[*].snippet`; this is terminal presentation only and does not add response fields
 - project-wide provider filters default to all providers when `--provider` is omitted
 - `darc query sessions` defaults to `--view compact`; pass `--view full` for full `first_user_prompt` and `final_agent_message` text. Preview fields include returned and total character counts. `edited_files` is deduplicated and always complete for each returned session row.
 - `darc query resolve-session` accepts either one full UUID or one UUID prefix and returns `project_id`, `provider`, and `session_id` for each match

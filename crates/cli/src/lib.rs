@@ -14,14 +14,16 @@ use darc_core::query::{
     DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, DEFAULT_SEARCH_MATCH_LIMIT,
     DEFAULT_TURN_STEP_LIMIT, DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT, FilesQueryRequest,
     QueryProtocolError, ResolveSessionQueryRequest, ResolvedQueryProject, ResolvedSessionMatch,
-    SearchEvidenceField, SearchMode, SearchTurnsRequest, SessionBundleQueryRequest,
-    SessionBundleView, SessionsQueryRequest, SessionsView, TurnDetailOptions, TurnsQueryRequest,
-    TurnsView, query_files_for_project, query_project_insight_report_for_project,
-    query_resolve_sessions, query_search_turns_for_project, query_session_bundle_for_project,
+    SearchEvidenceField, SearchMode, SearchTurnsQueryData, SearchTurnsRequest,
+    SessionBundleQueryRequest, SessionBundleView, SessionsQueryRequest, SessionsView,
+    TurnDetailOptions, TurnsQueryRequest, TurnsView, query_files_for_project,
+    query_project_insight_report_for_project, query_resolve_sessions,
+    query_search_turns_for_project, query_session_bundle_for_project,
     query_session_files_for_project, query_sessions_for_project, query_turn_for_project,
     query_turn_insight_report_for_project, query_turns_for_project, query_workspace,
     query_workspace_insight_report, resolve_query_project,
     resolve_query_search_session_id_for_project, resolve_query_session_for_project,
+    search_snippet_match_range,
 };
 use darc_core::{
     IndexOptions, InitDraft, RefreshAllBestEffortReport, RefreshOptions, RefreshProjectAttempt,
@@ -1369,7 +1371,7 @@ fn run_query_search_turns(output: &QueryOutput, args: QuerySearchTurnsArgs) -> R
             match_limit: args.match_limit,
         },
     )?;
-    print_json_envelope(output, "darc.query.search.turns.v1", &data)
+    print_search_turns_json_envelope(output, &data)
 }
 
 /// Dispatches the supported machine-readable insights query commands.
@@ -1435,16 +1437,39 @@ fn print_json_envelope<T: Serialize>(
     schema: &'static str,
     data: &T,
 ) -> Result<()> {
+    let json = render_json_envelope(schema, data)?;
+    print_query_json(output, &json);
+    Ok(())
+}
+
+/// Returns one serialized machine-readable JSON envelope.
+fn render_json_envelope<T: Serialize>(schema: &'static str, data: &T) -> Result<String> {
     let payload = JsonEnvelope {
         schema,
         generated_at: current_utc_timestamp(),
         darc_version: env!("CARGO_PKG_VERSION"),
         data,
     };
-    let json = serde_json::to_string_pretty(&payload)
-        .context("failed to serialize query response JSON")?;
+    serde_json::to_string_pretty(&payload).context("failed to serialize query response JSON")
+}
+
+/// Writes one rendered query JSON document to stdout.
+fn print_query_json(output: &QueryOutput, json: &str) {
     if output.should_color_stdout() {
-        println!("{}", color_json(&json));
+        println!("{}", color_json(json));
+    } else {
+        println!("{json}");
+    }
+}
+
+/// Writes one search-turns envelope with optional snippet match highlighting.
+fn print_search_turns_json_envelope(
+    output: &QueryOutput,
+    data: &SearchTurnsQueryData,
+) -> Result<()> {
+    let json = render_json_envelope("darc.query.search.turns.v1", data)?;
+    if output.should_color_stdout() {
+        println!("{}", color_search_turns_json(&json, data)?);
     } else {
         println!("{json}");
     }
@@ -1473,6 +1498,7 @@ const ANSI_STRING: &str = "\x1b[32m";
 const ANSI_NUMBER: &str = "\x1b[33m";
 const ANSI_BOOLEAN: &str = "\x1b[35m";
 const ANSI_NULL: &str = "\x1b[36m";
+const ANSI_MATCH: &str = "\x1b[1;30;43m";
 
 /// Returns whether one query output stream should include ANSI color.
 fn should_color_output(
@@ -1530,11 +1556,80 @@ fn color_json(json: &str) -> String {
     output
 }
 
+/// Adds ANSI match highlighting to nested search-match snippet strings.
+fn color_search_turns_json(json: &str, data: &SearchTurnsQueryData) -> Result<String> {
+    let mut colored = color_json(json);
+    if !matches!(data.mode, SearchMode::Literal | SearchMode::Regex) {
+        return Ok(colored);
+    }
+
+    let mut cursor = 0;
+    for hit in &data.hits {
+        for matched in &hit.matches {
+            let Some(range) = search_snippet_match_range(data.mode, &data.query, &matched.snippet)?
+            else {
+                continue;
+            };
+            if range.is_empty() {
+                continue;
+            }
+            let Some((value_start, token_len)) =
+                find_colored_snippet_value(&colored, &matched.snippet, cursor)
+            else {
+                continue;
+            };
+            let highlighted = color_json_string_with_match(&matched.snippet, range);
+            colored.replace_range(value_start..value_start + token_len, &highlighted);
+            cursor = value_start + highlighted.len();
+        }
+    }
+    Ok(colored)
+}
+
 /// Appends one ANSI-colored JSON token to the rendered output.
 fn push_colored(output: &mut String, color: &str, token: &str) {
     output.push_str(color);
     output.push_str(token);
     output.push_str(ANSI_RESET);
+}
+
+/// Returns the next colored `snippet` string value from one colored JSON document.
+fn find_colored_snippet_value(
+    colored: &str,
+    snippet: &str,
+    cursor: usize,
+) -> Option<(usize, usize)> {
+    let key_prefix = format!("{ANSI_KEY}\"snippet\"{ANSI_RESET}{ANSI_BOLD}:{ANSI_RESET} ");
+    let token = color_json_string(snippet);
+    let target = format!("{key_prefix}{token}");
+    let value_start = cursor + colored.get(cursor..)?.find(&target)? + key_prefix.len();
+    Some((value_start, token.len()))
+}
+
+/// Returns one syntax-colored JSON string literal.
+fn color_json_string(value: &str) -> String {
+    format!("{ANSI_STRING}{}{ANSI_RESET}", json_string_literal(value))
+}
+
+/// Returns one syntax-colored JSON string literal with a highlighted inner byte range.
+fn color_json_string_with_match(value: &str, range: std::ops::Range<usize>) -> String {
+    let prefix = json_string_inner(&value[..range.start]);
+    let matched = json_string_inner(&value[range.clone()]);
+    let suffix = json_string_inner(&value[range.end..]);
+    format!(
+        "{ANSI_STRING}\"{prefix}{ANSI_MATCH}{matched}{ANSI_RESET}{ANSI_STRING}{suffix}\"{ANSI_RESET}"
+    )
+}
+
+/// Returns one JSON string literal for a known UTF-8 string.
+fn json_string_literal(value: &str) -> String {
+    serde_json::to_string(value).expect("serializing a string should not fail")
+}
+
+/// Returns the unquoted escaped content for one JSON string literal.
+fn json_string_inner(value: &str) -> String {
+    let literal = json_string_literal(value);
+    literal[1..literal.len() - 1].to_owned()
 }
 
 /// Returns the byte index after one JSON string literal.
