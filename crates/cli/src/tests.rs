@@ -289,7 +289,8 @@ fn parses_query_turn_command() {
         Commands::Query(super::QueryArgs {
             command: QueryCommands::Turn(super::QueryTurnArgs {
                 project_id,
-                positional_args,
+                session_id_arg,
+                turn_ordinal_arg,
                 session_id,
                 turn_ordinal,
                 view,
@@ -300,7 +301,8 @@ fn parses_query_turn_command() {
                 ..
             }),
         }) if project_id.as_deref() == Some("repo-abc123")
-            && positional_args == ["session-1", "2"]
+            && session_id_arg.as_deref() == Some("session-1")
+            && turn_ordinal_arg.as_deref() == Some("2")
             && session_id.is_none()
             && turn_ordinal.is_none()
             && matches!(view, Some(super::ViewArg::Narrative))
@@ -736,7 +738,10 @@ fn query_turn_help_mentions_narrative_view_behavior() {
     assert!(help.contains("--view"));
     assert!(help.contains("narrative"));
     assert!(help.contains("tool arguments"));
-    assert!(help.contains("required unless both flags are set"));
+    assert!(help.contains("[SESSION_ID] [TURN_ORDINAL]"));
+    assert!(!help.contains("[TURN_ORDINAL]..."));
+    assert!(help.contains("required unless --session-id is set"));
+    assert!(help.contains("required unless --turn-ordinal is set"));
 }
 
 #[test]
@@ -778,6 +783,7 @@ fn query_search_turns_help_mentions_tool_output_opt_in() {
     assert!(help.contains("--field"));
     assert!(help.contains("--exclude-field"));
     assert!(help.contains("literal and regex"));
+    assert!(help.contains("Accepted fields: user-message, final-answer"));
     assert!(help.contains("path-fragment"));
 }
 
@@ -796,6 +802,7 @@ fn query_files_help_mentions_path_and_co_touch_modes() {
     assert!(help.contains("--path"));
     assert!(help.contains("--co-touched-with"));
     assert!(help.contains("--limit"));
+    assert!(help.contains("most-touched files"));
 }
 
 #[test]

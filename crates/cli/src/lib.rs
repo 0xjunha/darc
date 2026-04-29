@@ -221,10 +221,10 @@ enum QueryCommands {
     ResolveSession(QueryResolveSessionArgs),
     /// Queries the session list for one configured project.
     Sessions(QuerySessionsArgs),
-    /// Lists top files or pivots from one file selector.
+    /// Lists most-touched files or pivots from one file selector.
     #[command(
-        about = "List top files or pivot from one file selector",
-        long_about = "List top files or pivot from one file selector.\n\nWith no PATH, --path, or --co-touched-with, this ranks touched files across the project.\nPass PATH or --path to return sessions that touched matching paths.\nPass --co-touched-with to return files touched in the same sessions as the seed path."
+        about = "List most-touched files or pivot from one file selector",
+        long_about = "List most-touched files or pivot from one file selector.\n\nWith no PATH, --path, or --co-touched-with, this ranks files by touches across the project.\nPass PATH or --path to return sessions that touched matching paths.\nPass --co-touched-with to return files touched in the same sessions as the seed path."
     )]
     Files(QueryFilesArgs),
     /// Queries per-file access summaries for one session.
@@ -290,6 +290,14 @@ struct QuerySessionsArgs {
 
     #[arg(
         long,
+        value_enum,
+        default_value_t = SessionListViewArg::Compact,
+        help = "Return full session prompts and final messages or compact previews"
+    )]
+    view: SessionListViewArg,
+
+    #[arg(
+        long,
         help = "Inclusive latest_turn_at lower bound. Example: `5d` or `2026-04-07T00:00:00Z`"
     )]
     since: Option<String>,
@@ -305,14 +313,6 @@ struct QuerySessionsArgs {
         help = "Only keep sessions that touched a file path matching this glob"
     )]
     touched_path: Option<String>,
-
-    #[arg(
-        long,
-        value_enum,
-        default_value_t = SessionListViewArg::Compact,
-        help = "Return full session prompts or compact prompt previews"
-    )]
-    view: SessionListViewArg,
 
     #[arg(long, default_value_t = 50, help = "Maximum sessions to return")]
     limit: usize,
@@ -351,6 +351,14 @@ struct QueryTurnsArgs {
 
     #[arg(
         long,
+        value_enum,
+        default_value_t = TurnListViewArg::Full,
+        help = "Return full turn summaries or a compact one-line skim"
+    )]
+    view: TurnListViewArg,
+
+    #[arg(
+        long,
         help = "Inclusive started_at lower bound. Example: `5d` or `2026-04-07T00:00:00Z`"
     )]
     since: Option<String>,
@@ -361,14 +369,6 @@ struct QueryTurnsArgs {
     )]
     until: Option<String>,
 
-    #[arg(
-        long,
-        value_enum,
-        default_value_t = TurnListViewArg::Full,
-        help = "Return full turn summaries or a compact one-line skim"
-    )]
-    view: TurnListViewArg,
-
     #[arg(long, default_value_t = 50, help = "Maximum turns to return")]
     limit: usize,
 
@@ -376,7 +376,7 @@ struct QueryTurnsArgs {
     offset: usize,
 }
 
-/// Lists top files or pivots from one file selector.
+/// Lists most-touched files or pivots from one file selector.
 #[derive(Debug, Args)]
 struct QueryFilesArgs {
     #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
@@ -393,19 +393,19 @@ struct QueryFilesArgs {
 
     #[arg(
         long,
-        help = "Return sessions that touched file paths matching this glob instead of top files"
+        help = "Return sessions that touched file paths matching this glob instead of most-touched files"
     )]
     path: Option<String>,
 
     #[arg(
         value_name = "PATH",
-        help = "Return sessions that touched this path or glob instead of top files"
+        help = "Return sessions that touched this path or glob instead of most-touched files"
     )]
     path_arg: Option<String>,
 
     #[arg(
         long = "co-touched-with",
-        help = "Return files touched in the same sessions as this seed path instead of top files"
+        help = "Return files touched in the same sessions as this seed path instead of most-touched files"
     )]
     co_touched_with: Option<String>,
 
@@ -560,11 +560,16 @@ struct QueryTurnArgs {
     provider: Option<ProviderArg>,
 
     #[arg(
-        value_names = ["SESSION_ID", "TURN_ORDINAL"],
-        num_args = 0..=2,
-        help = "Query this session id and turn ordinal; required unless both flags are set"
+        value_name = "SESSION_ID",
+        help = "Query this session id; required unless --session-id is set"
     )]
-    positional_args: Vec<String>,
+    session_id_arg: Option<String>,
+
+    #[arg(
+        value_name = "TURN_ORDINAL",
+        help = "Query this turn ordinal; required unless --turn-ordinal is set"
+    )]
+    turn_ordinal_arg: Option<String>,
 
     #[arg(
         long = "session-id",
@@ -640,6 +645,12 @@ struct QuerySearchTurnsArgs {
     )]
     project_id: Option<String>,
 
+    #[arg(long, value_enum, help = "Restrict search to this provider")]
+    provider: Option<ProviderArg>,
+
+    #[arg(long = "session-id", help = "Restrict search to this session id")]
+    session_id: Option<String>,
+
     #[arg(
         long,
         value_enum,
@@ -664,6 +675,28 @@ struct QuerySearchTurnsArgs {
 
     #[arg(
         long,
+        help = "Include tool output evidence in literal and regex search"
+    )]
+    include_tool_output: bool,
+
+    #[arg(
+        long = "field",
+        value_name = "FIELD",
+        value_parser = parse_search_evidence_field,
+        help = search_evidence_field_include_help()
+    )]
+    fields: Vec<SearchEvidenceField>,
+
+    #[arg(
+        long = "exclude-field",
+        value_name = "FIELD",
+        value_parser = parse_search_evidence_field,
+        help = search_evidence_field_exclude_help()
+    )]
+    excluded_fields: Vec<SearchEvidenceField>,
+
+    #[arg(
+        long,
         help = "Inclusive started_at lower bound. Example: `5d` or `2026-04-07T00:00:00Z`"
     )]
     since: Option<String>,
@@ -673,34 +706,6 @@ struct QuerySearchTurnsArgs {
         help = "Exclusive started_at upper bound. Example: `1d` or `2026-04-08T00:00:00Z`"
     )]
     until: Option<String>,
-
-    #[arg(long, value_enum, help = "Restrict search to this provider")]
-    provider: Option<ProviderArg>,
-
-    #[arg(long = "session-id", help = "Restrict search to this session id")]
-    session_id: Option<String>,
-
-    #[arg(
-        long,
-        help = "Include tool output evidence in literal and regex search"
-    )]
-    include_tool_output: bool,
-
-    #[arg(
-        long = "field",
-        value_name = "FIELD",
-        value_parser = parse_search_evidence_field,
-        help = "Restrict literal and regex search to this evidence field"
-    )]
-    fields: Vec<SearchEvidenceField>,
-
-    #[arg(
-        long = "exclude-field",
-        value_name = "FIELD",
-        value_parser = parse_search_evidence_field,
-        help = "Exclude this evidence field from literal and regex search"
-    )]
-    excluded_fields: Vec<SearchEvidenceField>,
 
     #[arg(long, default_value_t = 50, help = "Maximum turn hits to return")]
     limit: usize,
@@ -810,11 +815,16 @@ struct QueryTurnInsightsArgs {
     provider: Option<ProviderArg>,
 
     #[arg(
-        value_names = ["SESSION_ID", "TURN_ORDINAL"],
-        num_args = 0..=2,
-        help = "Query this session id and turn ordinal; required unless both flags are set"
+        value_name = "SESSION_ID",
+        help = "Query this session id; required unless --session-id is set"
     )]
-    positional_args: Vec<String>,
+    session_id_arg: Option<String>,
+
+    #[arg(
+        value_name = "TURN_ORDINAL",
+        help = "Query this turn ordinal; required unless --turn-ordinal is set"
+    )]
+    turn_ordinal_arg: Option<String>,
 
     #[arg(
         long = "session-id",
@@ -1070,7 +1080,7 @@ fn run_query_sessions(args: QuerySessionsArgs) -> Result<()> {
     print_json_envelope("darc.query.sessions.v1", &data)
 }
 
-/// Lists top files or pivots from one file selector for one configured project.
+/// Lists most-touched files or pivots from one file selector for one configured project.
 fn run_query_files(args: QueryFilesArgs) -> Result<()> {
     let path = optional_named_or_positional(
         "file path",
@@ -1212,7 +1222,8 @@ fn run_query_turn(args: QueryTurnArgs) -> Result<()> {
     let (session_id, turn_ordinal) = resolve_turn_identity_args(
         args.session_id.as_deref(),
         args.turn_ordinal,
-        &args.positional_args,
+        args.session_id_arg.as_deref(),
+        args.turn_ordinal_arg.as_deref(),
     )?;
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
     let session = resolve_query_session_for_project(
@@ -1344,7 +1355,8 @@ fn run_query_turn_insights(args: QueryTurnInsightsArgs) -> Result<()> {
     let (session_id, turn_ordinal) = resolve_turn_identity_args(
         args.session_id.as_deref(),
         args.turn_ordinal,
-        &args.positional_args,
+        args.session_id_arg.as_deref(),
+        args.turn_ordinal_arg.as_deref(),
     )?;
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
     let session = resolve_query_session_for_project(
@@ -1489,27 +1501,30 @@ fn matched_path_limit_arg(
 fn resolve_turn_identity_args<'a>(
     session_id: Option<&'a str>,
     turn_ordinal: Option<u64>,
-    positional_args: &'a [String],
+    session_id_arg: Option<&'a str>,
+    turn_ordinal_arg: Option<&'a str>,
 ) -> Result<(&'a str, u64)> {
-    match (session_id, turn_ordinal, positional_args) {
-        (Some(session_id), Some(turn_ordinal), []) => Ok((session_id, turn_ordinal)),
-        (Some(session_id), None, [turn_ordinal]) => {
-            Ok((session_id, parse_turn_ordinal_arg(turn_ordinal)?))
+    match (session_id, turn_ordinal, session_id_arg, turn_ordinal_arg) {
+        (Some(session_id), Some(turn_ordinal), None, None) => Ok((session_id, turn_ordinal)),
+        (Some(session_id), None, Some(turn_ordinal_arg), None) => {
+            Ok((session_id, parse_turn_ordinal_arg(turn_ordinal_arg)?))
         }
-        (None, Some(turn_ordinal), [session_id]) => Ok((session_id, turn_ordinal)),
-        (None, None, [session_id, turn_ordinal]) => {
-            Ok((session_id, parse_turn_ordinal_arg(turn_ordinal)?))
+        (None, Some(turn_ordinal), Some(session_id_arg), None) => {
+            Ok((session_id_arg, turn_ordinal))
         }
-        (Some(_), Some(_), _) => bail!(
+        (None, None, Some(session_id_arg), Some(turn_ordinal_arg)) => {
+            Ok((session_id_arg, parse_turn_ordinal_arg(turn_ordinal_arg)?))
+        }
+        (Some(_), Some(_), Some(_), _) | (Some(_), Some(_), None, Some(_)) => bail!(
             "pass turn identity either as SESSION_ID TURN_ORDINAL or with --session-id/--turn-ordinal, not both"
         ),
-        (Some(_), None, []) => {
+        (Some(_), None, None, None) => {
             bail!("query command requires turn ordinal as TURN_ORDINAL or --turn-ordinal")
         }
-        (None, Some(_), []) => {
+        (None, Some(_), None, None) => {
             bail!("query command requires session id as SESSION_ID or --session-id")
         }
-        (None, None, []) => bail!(
+        (None, None, None, None) => bail!(
             "query command requires session id and turn ordinal as SESSION_ID TURN_ORDINAL or --session-id/--turn-ordinal"
         ),
         _ => bail!("unexpected extra positional turn identity arguments"),
@@ -1587,6 +1602,22 @@ fn supported_search_evidence_fields() -> String {
         .join(", ")
 }
 
+/// Returns help text for exact-search field inclusion.
+fn search_evidence_field_include_help() -> String {
+    format!(
+        "Restrict literal and regex search to this evidence field. Accepted fields: {}",
+        supported_search_evidence_fields()
+    )
+}
+
+/// Returns help text for exact-search field exclusion.
+fn search_evidence_field_exclude_help() -> String {
+    format!(
+        "Exclude this evidence field from literal and regex search. Accepted fields: {}",
+        supported_search_evidence_fields()
+    )
+}
+
 /// Converts one parsed provider argument back into the shared source kind.
 fn provider_arg_to_source_kind(provider: ProviderArg) -> SourceKind {
     match provider {
@@ -1637,6 +1668,8 @@ struct TurnsOnelineTurnRow {
     turn_ordinal: u64,
     role: &'static str,
     user_preview: String,
+    final_answer_preview: Option<String>,
+    final_answer_preview_truncated: bool,
     step_count: u64,
     tool_call_count: u64,
 }
@@ -1676,6 +1709,8 @@ impl TurnsOnelineQueryData {
                     turn_ordinal: turn.turn_ordinal,
                     role: "user",
                     user_preview: turn.oneline_user_preview.clone(),
+                    final_answer_preview: turn.final_answer_preview.clone(),
+                    final_answer_preview_truncated: turn.final_answer_preview_truncated,
                     step_count: turn.step_count,
                     tool_call_count: turn.tool_call_count,
                 })
