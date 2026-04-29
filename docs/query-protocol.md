@@ -10,7 +10,8 @@ Use it instead of:
 
 ## Commands
 
-Query commands emit JSON envelopes on stdout by default.
+Query commands emit pretty-printed JSON envelopes on stdout. `darc query --color <auto|always|never> ...`
+controls terminal-only ANSI presentation; the default is `--color auto`.
 
 ### Workspace
 
@@ -45,6 +46,8 @@ Query commands emit JSON envelopes on stdout by default.
 ## Argument rules
 
 - project-scoped queries accept optional `--project-id`; when omitted, Darc resolves the configured project from the current directory
+- `--color auto` adds ANSI syntax color only when stdout is a terminal, `NO_COLOR` is unset, and `TERM` is not `dumb`; piped, redirected, and captured output remains plain JSON by default
+- use `--color always` for terminal pagers such as `less -R`, or `--color never` for plain JSON in every environment
 - project-wide provider filters default to all providers when `--provider` is omitted
 - `darc query sessions` defaults to `--view compact`; pass `--view full` for full `first_user_prompt` and `final_agent_message` text. Preview fields include returned and total character counts. `edited_files` is deduplicated and always complete for each returned session row.
 - `darc query resolve-session` accepts either one full UUID or one UUID prefix and returns `project_id`, `provider`, and `session_id` for each match
@@ -85,6 +88,13 @@ The protocol is intentionally composable. A few common read patterns are now fir
   darc query turns 11111111-1111-4111-8111-111111111111 --view oneline --limit 10
   darc query turn 11111111-1111-4111-8111-111111111111 0 --step-limit 10
   darc query session-bundle 11111111-1111-4111-8111-111111111111 --turn-limit 5 --step-limit 10
+  ```
+
+- terminal review with explicit color policy:
+
+  ```bash
+  darc query --color always search turns "staged init" --limit 5 | less -R
+  darc query --color never search turns "staged init" --limit 5
   ```
 
 - find planning turns by content:

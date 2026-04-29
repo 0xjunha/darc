@@ -199,6 +199,33 @@ fn parse_json(bytes: &[u8], stream: &str) -> Result<Value> {
     serde_json::from_slice(bytes).with_context(|| format!("failed to parse {stream} JSON"))
 }
 
+/// Returns whether captured output contains an ANSI control sequence.
+fn contains_ansi(bytes: &[u8]) -> bool {
+    bytes.windows(2).any(|window| window == b"\x1b[")
+}
+
+/// Strips ANSI control sequences from captured process output.
+fn strip_ansi(bytes: &[u8]) -> Vec<u8> {
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'\x1b' && bytes.get(index + 1) == Some(&b'[') {
+            index += 2;
+            while index < bytes.len() {
+                let byte = bytes[index];
+                index += 1;
+                if (0x40..=0x7e).contains(&byte) {
+                    break;
+                }
+            }
+        } else {
+            output.push(bytes[index]);
+            index += 1;
+        }
+    }
+    output
+}
+
 /// Removes one temporary test root after the test finishes.
 fn remove_root(root: &Path) -> Result<()> {
     fs::remove_dir_all(root)
@@ -222,6 +249,63 @@ fn workspace_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["projects"][0]["id"], "repo-abc123");
     assert_eq!(value["data"]["projects"][0]["session_count"], 1);
     assert_eq!(value["data"]["projects"][0]["turn_count"], 1);
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn workspace_query_color_flags_preserve_json_contract() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-color")?;
+    let root_arg = root.to_string_lossy();
+
+    let default_output = run_darc(["query", "workspace", "--root", root_arg.as_ref()])?;
+    assert!(default_output.status.success());
+    assert!(!contains_ansi(&default_output.stdout));
+    let default_value = parse_json(&default_output.stdout, "stdout")?;
+    assert_eq!(default_value["schema"], "darc.query.workspace.v1");
+
+    let never_output = run_darc([
+        "query",
+        "--color",
+        "never",
+        "workspace",
+        "--root",
+        root_arg.as_ref(),
+    ])?;
+    assert!(never_output.status.success());
+    assert!(!contains_ansi(&never_output.stdout));
+    let never_value = parse_json(&never_output.stdout, "stdout")?;
+    assert_eq!(never_value["schema"], "darc.query.workspace.v1");
+
+    let always_output = run_darc([
+        "query",
+        "--color",
+        "always",
+        "workspace",
+        "--root",
+        root_arg.as_ref(),
+    ])?;
+    assert!(always_output.status.success());
+    assert!(contains_ansi(&always_output.stdout));
+    let stripped = strip_ansi(&always_output.stdout);
+    let always_value = parse_json(&stripped, "stripped stdout")?;
+    assert_eq!(always_value["schema"], "darc.query.workspace.v1");
+
+    let always_with_no_color = Command::new(darc_binary())
+        .env("NO_COLOR", "1")
+        .args([
+            "query",
+            "--color",
+            "always",
+            "workspace",
+            "--root",
+            root_arg.as_ref(),
+        ])
+        .output()
+        .context("failed to run compiled darc binary")?;
+    assert!(always_with_no_color.status.success());
+    assert!(contains_ansi(&always_with_no_color.stdout));
 
     remove_root(&root)?;
     Ok(())
@@ -420,7 +504,8 @@ fn query_help_stays_clap_text() -> Result<()> {
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Usage: darc query <COMMAND>"));
+    assert!(stdout.contains("Usage: darc query [OPTIONS] <COMMAND>"));
+    assert!(stdout.contains("--color <COLOR>"));
     assert!(serde_json::from_slice::<Value>(&output.stdout).is_err());
     Ok(())
 }

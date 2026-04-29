@@ -88,7 +88,7 @@ enum Commands {
     /// Index archived sessions from selected providers for the active project into SQLite.
     Index(IndexArgs),
     /// Query darc state through the machine-readable read protocol.
-    Query(QueryArgs),
+    Query(Box<QueryArgs>),
     #[command(
         hide = true,
         about = "Audit Codex rollout schema compatibility against stable release tags",
@@ -208,6 +208,14 @@ struct IndexArgs {
 /// Queries darc state through the machine-readable read protocol.
 #[derive(Debug, Args)]
 struct QueryArgs {
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = ColorArg::Auto,
+        help = "Control ANSI color in query JSON output"
+    )]
+    color: ColorArg,
+
     #[command(subcommand)]
     command: QueryCommands,
 }
@@ -892,6 +900,37 @@ enum SearchModeArg {
     PathFragment,
 }
 
+/// Represents when query JSON output should include ANSI color.
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum ColorArg {
+    Auto,
+    Always,
+    Never,
+}
+
+/// Stores the resolved output behavior for one query invocation.
+#[derive(Debug, Clone, Copy)]
+struct QueryOutput {
+    color: ColorArg,
+}
+
+impl QueryOutput {
+    /// Builds one query output context from parsed CLI arguments.
+    fn new(color: ColorArg) -> Self {
+        Self { color }
+    }
+
+    /// Returns whether stdout JSON should be ANSI-colored.
+    fn should_color_stdout(self) -> bool {
+        should_color_output(
+            self.color,
+            io::stdout().is_terminal(),
+            env::var_os("NO_COLOR").is_some(),
+            env::var("TERM").ok().as_deref(),
+        )
+    }
+}
+
 /// Represents the supported session-list projections.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum SessionListViewArg {
@@ -949,7 +988,7 @@ fn run_cli(cli: Cli) -> i32 {
         Commands::RenameFrom(args) => standard_exit(run_rename_from(args)),
         Commands::Sync(args) => standard_exit(run_sync(args)),
         Commands::Index(args) => standard_exit(run_index(args)),
-        Commands::Query(args) => query_exit(run_query(args)),
+        Commands::Query(args) => query_exit(run_query(*args)),
         Commands::CodexSchemaAudit(args) => run_codex_schema_audit_command(args),
         Commands::ClaudeSchemaAudit(args) => run_claude_schema_audit_command(args),
     }
@@ -1004,27 +1043,32 @@ fn query_exit(result: Result<()>) -> i32 {
 
 /// Dispatches the supported machine-readable query commands.
 fn run_query(args: QueryArgs) -> Result<()> {
+    let output = QueryOutput::new(args.color);
     match args.command {
-        QueryCommands::Workspace(args) => run_query_workspace(args),
-        QueryCommands::ResolveSession(args) => run_query_resolve_session(args),
-        QueryCommands::Sessions(args) => run_query_sessions(args),
-        QueryCommands::Files(args) => run_query_files(args),
-        QueryCommands::SessionFiles(args) => run_query_session_files(args),
-        QueryCommands::SessionBundle(args) => run_query_session_bundle(args),
-        QueryCommands::Turns(args) => run_query_turns(args),
-        QueryCommands::Turn(args) => run_query_turn(args),
-        QueryCommands::Search(args) => run_query_search(args),
-        QueryCommands::Insights(args) => run_query_insights(args),
+        QueryCommands::Workspace(args) => run_query_workspace(&output, args),
+        QueryCommands::ResolveSession(args) => run_query_resolve_session(&output, args),
+        QueryCommands::Sessions(args) => run_query_sessions(&output, args),
+        QueryCommands::Files(args) => run_query_files(&output, args),
+        QueryCommands::SessionFiles(args) => run_query_session_files(&output, args),
+        QueryCommands::SessionBundle(args) => run_query_session_bundle(&output, args),
+        QueryCommands::Turns(args) => run_query_turns(&output, args),
+        QueryCommands::Turn(args) => run_query_turn(&output, args),
+        QueryCommands::Search(args) => run_query_search(&output, args),
+        QueryCommands::Insights(args) => run_query_insights(&output, args),
     }
 }
 
 /// Queries the workspace/sidebar payload for one darc root.
-fn run_query_workspace(args: QueryWorkspaceArgs) -> Result<()> {
-    print_json_envelope("darc.query.workspace.v1", &query_workspace(Some(args.root)))
+fn run_query_workspace(output: &QueryOutput, args: QueryWorkspaceArgs) -> Result<()> {
+    print_json_envelope(
+        output,
+        "darc.query.workspace.v1",
+        &query_workspace(Some(args.root)),
+    )
 }
 
 /// Resolves one full session id or UUID prefix into canonical matches.
-fn run_query_resolve_session(args: QueryResolveSessionArgs) -> Result<()> {
+fn run_query_resolve_session(output: &QueryOutput, args: QueryResolveSessionArgs) -> Result<()> {
     let data = query_resolve_sessions(
         Some(args.root),
         ResolveSessionQueryRequest {
@@ -1038,7 +1082,7 @@ fn run_query_resolve_session(args: QueryResolveSessionArgs) -> Result<()> {
         if data.matches.is_empty() && is_full_uuid_text(&data.query) {
             return Err(QueryProtocolError::unknown_resolve_session(&data.query, false).into());
         }
-        return print_json_envelope("darc.query.resolve_session.v1", &data);
+        return print_json_envelope(output, "darc.query.resolve_session.v1", &data);
     }
 
     match data.matches.as_slice() {
@@ -1048,6 +1092,7 @@ fn run_query_resolve_session(args: QueryResolveSessionArgs) -> Result<()> {
         )
         .into()),
         [resolved] => print_json_envelope(
+            output,
             "darc.query.resolve_session.v1",
             &ResolveSessionPickOneQueryData::new(&data.query, resolved.clone()),
         ),
@@ -1058,7 +1103,7 @@ fn run_query_resolve_session(args: QueryResolveSessionArgs) -> Result<()> {
 }
 
 /// Queries the session list for one configured project.
-fn run_query_sessions(args: QuerySessionsArgs) -> Result<()> {
+fn run_query_sessions(output: &QueryOutput, args: QuerySessionsArgs) -> Result<()> {
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
     let since = args
         .since
@@ -1084,11 +1129,11 @@ fn run_query_sessions(args: QuerySessionsArgs) -> Result<()> {
             offset: args.offset,
         },
     )?;
-    print_json_envelope("darc.query.sessions.v1", &data)
+    print_json_envelope(output, "darc.query.sessions.v1", &data)
 }
 
 /// Lists most-touched files or pivots from one file selector for one configured project.
-fn run_query_files(args: QueryFilesArgs) -> Result<()> {
+fn run_query_files(output: &QueryOutput, args: QueryFilesArgs) -> Result<()> {
     let path = optional_named_or_positional(
         "file path",
         "--path",
@@ -1128,11 +1173,11 @@ fn run_query_files(args: QueryFilesArgs) -> Result<()> {
             ),
         },
     )?;
-    print_json_envelope("darc.query.files.v1", &data)
+    print_json_envelope(output, "darc.query.files.v1", &data)
 }
 
 /// Queries one session-scoped per-file access summary payload.
-fn run_query_session_files(args: QuerySessionFilesArgs) -> Result<()> {
+fn run_query_session_files(output: &QueryOutput, args: QuerySessionFilesArgs) -> Result<()> {
     let session_id = required_named_or_positional(
         "session id",
         "--session-id",
@@ -1147,11 +1192,11 @@ fn run_query_session_files(args: QuerySessionFilesArgs) -> Result<()> {
         session_id,
     )?;
     let data = query_session_files_for_project(&project, session.provider, &session.session_id)?;
-    print_json_envelope("darc.query.session_files.v1", &data)
+    print_json_envelope(output, "darc.query.session_files.v1", &data)
 }
 
 /// Queries one composite session bundle payload.
-fn run_query_session_bundle(args: QuerySessionBundleArgs) -> Result<()> {
+fn run_query_session_bundle(output: &QueryOutput, args: QuerySessionBundleArgs) -> Result<()> {
     let session_id = required_named_or_positional(
         "session id",
         "--session-id",
@@ -1180,11 +1225,11 @@ fn run_query_session_bundle(args: QuerySessionBundleArgs) -> Result<()> {
             step_offset: args.step_offset,
         },
     )?;
-    print_json_envelope("darc.query.session_bundle.v1", &data)
+    print_json_envelope(output, "darc.query.session_bundle.v1", &data)
 }
 
 /// Queries the turn list for one session.
-fn run_query_turns(args: QueryTurnsArgs) -> Result<()> {
+fn run_query_turns(output: &QueryOutput, args: QueryTurnsArgs) -> Result<()> {
     let session_id = required_named_or_positional(
         "session id",
         "--session-id",
@@ -1221,11 +1266,11 @@ fn run_query_turns(args: QueryTurnsArgs) -> Result<()> {
             offset: args.offset,
         },
     )?;
-    print_turns_query_envelope(&data)
+    print_turns_query_envelope(output, &data)
 }
 
 /// Queries one turn detail payload.
-fn run_query_turn(args: QueryTurnArgs) -> Result<()> {
+fn run_query_turn(output: &QueryOutput, args: QueryTurnArgs) -> Result<()> {
     let (session_id, turn_ordinal) = resolve_turn_identity_args(
         args.session_id.as_deref(),
         args.turn_ordinal,
@@ -1259,18 +1304,18 @@ fn run_query_turn(args: QueryTurnArgs) -> Result<()> {
             step_offset: args.step_offset,
         },
     )?;
-    print_json_envelope("darc.query.turn.v1", &data)
+    print_json_envelope(output, "darc.query.turn.v1", &data)
 }
 
 /// Dispatches the supported machine-readable search query commands.
-fn run_query_search(args: QuerySearchArgs) -> Result<()> {
+fn run_query_search(output: &QueryOutput, args: QuerySearchArgs) -> Result<()> {
     match args.command {
-        QuerySearchCommands::Turns(args) => run_query_search_turns(args),
+        QuerySearchCommands::Turns(args) => run_query_search_turns(output, args),
     }
 }
 
 /// Queries one paginated turn-search payload.
-fn run_query_search_turns(args: QuerySearchTurnsArgs) -> Result<()> {
+fn run_query_search_turns(output: &QueryOutput, args: QuerySearchTurnsArgs) -> Result<()> {
     let query = required_named_or_positional(
         "query text",
         "--query",
@@ -1324,42 +1369,45 @@ fn run_query_search_turns(args: QuerySearchTurnsArgs) -> Result<()> {
             match_limit: args.match_limit,
         },
     )?;
-    print_json_envelope("darc.query.search.turns.v1", &data)
+    print_json_envelope(output, "darc.query.search.turns.v1", &data)
 }
 
 /// Dispatches the supported machine-readable insights query commands.
-fn run_query_insights(args: QueryInsightsArgs) -> Result<()> {
+fn run_query_insights(output: &QueryOutput, args: QueryInsightsArgs) -> Result<()> {
     match args.command {
-        QueryInsightsCommands::Workspace(args) => run_query_workspace_insights(args),
-        QueryInsightsCommands::Project(args) => run_query_project_insights(args),
-        QueryInsightsCommands::Turn(args) => run_query_turn_insights(args),
+        QueryInsightsCommands::Workspace(args) => run_query_workspace_insights(output, args),
+        QueryInsightsCommands::Project(args) => run_query_project_insights(output, args),
+        QueryInsightsCommands::Turn(args) => run_query_turn_insights(output, args),
     }
 }
 
 /// Queries the workspace insights payload for one rolling host-local day window.
-fn run_query_workspace_insights(args: QueryWorkspaceInsightsArgs) -> Result<()> {
+fn run_query_workspace_insights(
+    output: &QueryOutput,
+    args: QueryWorkspaceInsightsArgs,
+) -> Result<()> {
     let data = query_workspace_insight_report(
         Some(args.root),
         args.window_days,
         args.recent_session_limit,
         args.recent_session_offset,
     )?;
-    print_json_envelope("darc.query.insights.workspace.v1", &data)
+    print_json_envelope(output, "darc.query.insights.workspace.v1", &data)
 }
 
 /// Queries the project insights payload for one configured project.
-fn run_query_project_insights(args: QueryProjectInsightsArgs) -> Result<()> {
+fn run_query_project_insights(output: &QueryOutput, args: QueryProjectInsightsArgs) -> Result<()> {
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
     let data = query_project_insight_report_for_project(
         &project,
         args.provider.map(provider_arg_to_source_kind),
         args.turn_limit,
     )?;
-    print_json_envelope("darc.query.insights.project.v1", &data)
+    print_json_envelope(output, "darc.query.insights.project.v1", &data)
 }
 
 /// Queries the turn insights payload for one session turn.
-fn run_query_turn_insights(args: QueryTurnInsightsArgs) -> Result<()> {
+fn run_query_turn_insights(output: &QueryOutput, args: QueryTurnInsightsArgs) -> Result<()> {
     let (session_id, turn_ordinal) = resolve_turn_identity_args(
         args.session_id.as_deref(),
         args.turn_ordinal,
@@ -1378,34 +1426,151 @@ fn run_query_turn_insights(args: QueryTurnInsightsArgs) -> Result<()> {
         &session.session_id,
         turn_ordinal,
     )?;
-    print_json_envelope("darc.query.insights.turn.v1", &data)
+    print_json_envelope(output, "darc.query.insights.turn.v1", &data)
 }
 
 /// Writes one machine-readable JSON envelope to stdout.
-fn print_json_envelope<T: Serialize>(schema: &'static str, data: &T) -> Result<()> {
+fn print_json_envelope<T: Serialize>(
+    output: &QueryOutput,
+    schema: &'static str,
+    data: &T,
+) -> Result<()> {
     let payload = JsonEnvelope {
         schema,
         generated_at: current_utc_timestamp(),
         darc_version: env!("CARGO_PKG_VERSION"),
         data,
     };
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&payload)
-            .context("failed to serialize query response JSON")?
-    );
+    let json = serde_json::to_string_pretty(&payload)
+        .context("failed to serialize query response JSON")?;
+    if output.should_color_stdout() {
+        println!("{}", color_json(&json));
+    } else {
+        println!("{json}");
+    }
     Ok(())
 }
 
 /// Writes one `darc.query.turns.v1` envelope, compacting rows when `view` is `oneline`.
-fn print_turns_query_envelope(data: &darc_core::query::TurnsQueryData) -> Result<()> {
+fn print_turns_query_envelope(
+    output: &QueryOutput,
+    data: &darc_core::query::TurnsQueryData,
+) -> Result<()> {
     match data.view {
-        TurnsView::Full => print_json_envelope("darc.query.turns.v1", data),
+        TurnsView::Full => print_json_envelope(output, "darc.query.turns.v1", data),
         TurnsView::Oneline => print_json_envelope(
+            output,
             "darc.query.turns.v1",
             &TurnsOnelineQueryData::from_turns_query(data),
         ),
     }
+}
+
+const ANSI_RESET: &str = "\x1b[0m";
+const ANSI_BOLD: &str = "\x1b[1m";
+const ANSI_KEY: &str = "\x1b[1;34m";
+const ANSI_STRING: &str = "\x1b[32m";
+const ANSI_NUMBER: &str = "\x1b[33m";
+const ANSI_BOOLEAN: &str = "\x1b[35m";
+const ANSI_NULL: &str = "\x1b[36m";
+
+/// Returns whether one query output stream should include ANSI color.
+fn should_color_output(
+    policy: ColorArg,
+    stdout_is_terminal: bool,
+    no_color: bool,
+    term: Option<&str>,
+) -> bool {
+    match policy {
+        ColorArg::Always => true,
+        ColorArg::Never => false,
+        ColorArg::Auto => stdout_is_terminal && !no_color && term != Some("dumb"),
+    }
+}
+
+/// Adds ANSI syntax color to one pretty-printed JSON string.
+fn color_json(json: &str) -> String {
+    let mut output = String::with_capacity(json.len());
+    let mut index = 0;
+    while index < json.len() {
+        let ch = json[index..]
+            .chars()
+            .next()
+            .expect("index should be in bounds");
+        if ch == '"' {
+            let end = json_string_end(json, index);
+            let color = if json_string_is_key(json, end) {
+                ANSI_KEY
+            } else {
+                ANSI_STRING
+            };
+            push_colored(&mut output, color, &json[index..end]);
+            index = end;
+        } else if ch == '-' || ch.is_ascii_digit() {
+            let end = json_number_end(json, index);
+            push_colored(&mut output, ANSI_NUMBER, &json[index..end]);
+            index = end;
+        } else if json[index..].starts_with("true") {
+            push_colored(&mut output, ANSI_BOOLEAN, "true");
+            index += "true".len();
+        } else if json[index..].starts_with("false") {
+            push_colored(&mut output, ANSI_BOOLEAN, "false");
+            index += "false".len();
+        } else if json[index..].starts_with("null") {
+            push_colored(&mut output, ANSI_NULL, "null");
+            index += "null".len();
+        } else if matches!(ch, '{' | '}' | '[' | ']' | ':' | ',') {
+            push_colored(&mut output, ANSI_BOLD, &json[index..index + ch.len_utf8()]);
+            index += ch.len_utf8();
+        } else {
+            output.push(ch);
+            index += ch.len_utf8();
+        }
+    }
+    output
+}
+
+/// Appends one ANSI-colored JSON token to the rendered output.
+fn push_colored(output: &mut String, color: &str, token: &str) {
+    output.push_str(color);
+    output.push_str(token);
+    output.push_str(ANSI_RESET);
+}
+
+/// Returns the byte index after one JSON string literal.
+fn json_string_end(json: &str, start: usize) -> usize {
+    let mut escaped = false;
+    for (offset, ch) in json[start + 1..].char_indices() {
+        if escaped {
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == '"' {
+            return start + 1 + offset + ch.len_utf8();
+        }
+    }
+    json.len()
+}
+
+/// Returns whether one JSON string literal is followed by an object-key colon.
+fn json_string_is_key(json: &str, end: usize) -> bool {
+    json[end..]
+        .chars()
+        .find(|ch| !ch.is_whitespace())
+        .is_some_and(|ch| ch == ':')
+}
+
+/// Returns the byte index after one JSON number token.
+fn json_number_end(json: &str, start: usize) -> usize {
+    let mut end = start;
+    for ch in json[start..].chars() {
+        if matches!(ch, '-' | '+' | '.' | 'e' | 'E') || ch.is_ascii_digit() {
+            end += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    end
 }
 
 /// Returns one machine-readable JSON error envelope string.
