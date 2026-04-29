@@ -368,6 +368,75 @@ fn sessions_query_without_project_id_rejects_unconfigured_current_directory() ->
 }
 
 #[test]
+fn query_parse_errors_emit_structured_json() -> Result<()> {
+    let output = run_darc([
+        "query",
+        "search",
+        "turns",
+        "foo",
+        "--mode",
+        "literal",
+        "--include-all-matched-paths",
+        "--matched-path-limit",
+        "3",
+    ])?;
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let value = parse_json(&output.stderr, "stderr")?;
+    assert_eq!(value["schema"], "darc.error.v1");
+    assert_eq!(value["error"]["code"], "invalid_arguments");
+    assert_eq!(value["error"]["details"]["clap_kind"], "ArgumentConflict");
+    let message = value["error"]["message"]
+        .as_str()
+        .context("error message should be a string")?;
+    assert!(message.contains("--include-all-matched-paths"));
+    assert!(message.contains("--matched-path-limit"));
+    Ok(())
+}
+
+#[test]
+fn query_unknown_arguments_emit_structured_json() -> Result<()> {
+    let output = run_darc(["query", "workspace", "--json"])?;
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let value = parse_json(&output.stderr, "stderr")?;
+    assert_eq!(value["schema"], "darc.error.v1");
+    assert_eq!(value["error"]["code"], "invalid_arguments");
+    assert_eq!(value["error"]["details"]["clap_kind"], "UnknownArgument");
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("unexpected argument '--json'"))
+    );
+    Ok(())
+}
+
+#[test]
+fn query_help_stays_clap_text() -> Result<()> {
+    let output = run_darc(["query", "--help"])?;
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Usage: darc query <COMMAND>"));
+    assert!(serde_json::from_slice::<Value>(&output.stdout).is_err());
+    Ok(())
+}
+
+#[test]
+fn non_query_parse_errors_stay_clap_text() -> Result<()> {
+    let output = run_darc(["refresh", "--bogus"])?;
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unexpected argument '--bogus'"));
+    assert!(serde_json::from_slice::<Value>(&output.stderr).is_err());
+    Ok(())
+}
+
+#[test]
 fn sessions_query_applies_touched_path_filter() -> Result<()> {
     let root = create_query_fixture_root("cli-query-sessions-touched-path")?;
     insert_query_fixture_session(&root, SECONDARY_SESSION_ID, "2026-04-07T10:00:00Z")?;
@@ -1414,7 +1483,15 @@ fn turns_query_rejects_removed_grep_flag() -> Result<()> {
     ])?;
 
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("unexpected argument '--grep'"));
+    assert!(output.stdout.is_empty());
+    let value = parse_json(&output.stderr, "stderr")?;
+    assert_eq!(value["schema"], "darc.error.v1");
+    assert_eq!(value["error"]["code"], "invalid_arguments");
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("unexpected argument '--grep'"))
+    );
 
     remove_root(&root)?;
     Ok(())

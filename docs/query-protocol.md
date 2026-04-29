@@ -192,7 +192,7 @@ Fields:
 
 ## Error envelope
 
-Query failures return non-zero exit status and write a structured error envelope to `stderr`.
+Query runtime failures and query argument parse failures return non-zero exit status and write a structured error envelope to `stderr`.
 
 ```json
 {
@@ -218,8 +218,9 @@ Fields:
 - `error.details`: optional structured metadata for known error codes
 - `error.causes`: causal chain in outer-to-inner order, excluding the top-level message
 
-Session-id-specific error codes:
+Current stable query error codes:
 
+- `invalid_arguments`: the `darc query` arguments were rejected before query dispatch, for example because an option was unknown, required input was missing, or two options conflicted
 - `invalid_session_id`: the supplied resolver query or data-command session id is not a full UUID or accepted UUID-prefix shape
 - `unknown_session`: the full UUID or explicit prefix did not resolve to an indexed session
 - `ambiguous_session`: `darc query resolve-session --pick-one` found more than one candidate, or a session-scoped data command found the same full UUID under multiple providers; pass `--provider` to choose one provider
