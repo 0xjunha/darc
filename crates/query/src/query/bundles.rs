@@ -4,12 +4,12 @@ use anyhow::{Context, Result};
 use rusqlite::{Connection, TransactionBehavior};
 
 use super::{
-    SessionBundleQueryData, SessionBundleQueryRequest, SessionBundleView, TurnDetailOptions,
-    open_existing_index_database,
+    SessionBundleQueryData, SessionBundleQueryRequest, SessionBundleView, SessionsView,
+    TurnDetailOptions, open_existing_index_database,
 };
 use crate::query::{
-    files::build_session_files_query, projects::query_session_summary,
-    turns::build_session_turn_details_page,
+    files::build_session_files_query, projects::compact_session_summary,
+    projects::query_session_summary, turns::build_session_turn_details_page,
 };
 
 /// Queries one composite session bundle from indexed session, turn, and file summaries.
@@ -40,6 +40,10 @@ fn build_session_bundle_query(
         request.provider,
         request.session_id,
     )?;
+    let session = match request.session_view {
+        SessionsView::Compact => compact_session_summary(session),
+        SessionsView::Full => session,
+    };
     let (turns, turns_has_more) = build_session_turn_details_page(
         connection,
         request.project_id,
@@ -64,6 +68,7 @@ fn build_session_bundle_query(
         project_id: request.project_id.to_owned(),
         provider: request.provider,
         session_id: request.session_id.to_owned(),
+        session_view: request.session_view,
         view: request.view,
         turn_limit: u64::try_from(request.turn_limit).context("query limit exceeds u64 range")?,
         turn_offset: u64::try_from(request.turn_offset)

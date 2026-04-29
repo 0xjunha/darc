@@ -389,7 +389,7 @@ fn apply_sessions_view(sessions: Vec<SessionSummary>, view: SessionsView) -> Vec
 }
 
 /// Projects one session summary into the compact browse shape.
-fn compact_session_summary(mut session: SessionSummary) -> SessionSummary {
+pub(crate) fn compact_session_summary(mut session: SessionSummary) -> SessionSummary {
     if let Some(prompt) = session.first_user_prompt.take() {
         let (prompt, truncated) = truncate_chars(prompt, COMPACT_SESSION_PROMPT_CHARS);
         session.first_user_prompt = Some(prompt);

@@ -497,6 +497,14 @@ struct QuerySessionBundleArgs {
     session_id: Option<String>,
 
     #[arg(
+        long = "session-view",
+        value_enum,
+        default_value_t = SessionListViewArg::Compact,
+        help = "Return full session prompt or a compact prompt preview"
+    )]
+    session_view: SessionListViewArg,
+
+    #[arg(
         long,
         value_enum,
         default_value_t = ViewArg::Narrative,
@@ -1061,6 +1069,7 @@ fn run_query_session_bundle(args: QuerySessionBundleArgs) -> Result<()> {
             provider: session.provider,
             session_id: &session.session_id,
             project_root: None,
+            session_view: session_list_view_arg_to_view(args.session_view),
             view: view_arg_to_session_bundle_view(args.view),
             turn_limit: args.turn_limit,
             turn_offset: args.turn_offset,

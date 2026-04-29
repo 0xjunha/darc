@@ -598,11 +598,17 @@ fn session_bundle_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["project_id"], "repo-abc123");
     assert_eq!(value["data"]["provider"], "codex");
     assert_eq!(value["data"]["session_id"], PRIMARY_SESSION_ID);
+    assert_eq!(value["data"]["session_view"], "compact");
     assert_eq!(value["data"]["view"], "narrative");
     assert_eq!(value["data"]["turn_limit"], 50);
     assert_eq!(value["data"]["turn_offset"], 0);
     assert_eq!(value["data"]["turns_has_more"], false);
     assert_eq!(value["data"]["session"]["session_id"], PRIMARY_SESSION_ID);
+    assert!(
+        !value["data"]["session"]["first_user_prompt_truncated"]
+            .as_bool()
+            .unwrap()
+    );
     assert_eq!(value["data"]["turns"][0]["turn_ordinal"], 0);
     assert_eq!(value["data"]["turns"][0]["steps"][0]["type"], "tool_call");
     assert_eq!(value["data"]["turns"][0]["steps"][0]["arguments"], "");

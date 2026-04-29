@@ -529,6 +529,7 @@ fn parses_query_session_bundle_command() {
                 provider,
                 session_id_arg,
                 session_id,
+                session_view,
                 view,
                 turn_limit,
                 turn_offset,
@@ -538,6 +539,7 @@ fn parses_query_session_bundle_command() {
             && matches!(provider, Some(super::ProviderArg::Codex))
             && session_id_arg.as_deref() == Some("session-1")
             && session_id.is_none()
+            && matches!(session_view, super::SessionListViewArg::Compact)
             && matches!(view, super::ViewArg::Narrative)
             && turn_limit == 50
             && turn_offset == 0

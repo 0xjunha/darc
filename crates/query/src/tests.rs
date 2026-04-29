@@ -2107,10 +2107,11 @@ fn query_session_bundle_reuses_session_and_file_shapes_with_narrative_turns() ->
         &connection,
         IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
     )?;
+    let long_prompt = "inspect README and source ".repeat(40);
     insert_indexed_turn(
         &connection,
         IndexedTurnFixture {
-            user_message: "Inspect README",
+            user_message: &long_prompt,
             step_count: 1,
             tool_call_count: 1,
             duration_ms: 3_000,
@@ -2151,6 +2152,7 @@ fn query_session_bundle_reuses_session_and_file_shapes_with_narrative_turns() ->
             provider: SourceKind::Codex,
             session_id: "session-1",
             project_root: Some(Path::new("/tmp/repo-a")),
+            session_view: SessionsView::Compact,
             view: SessionBundleView::Narrative,
             turn_limit: 50,
             turn_offset: 0,
@@ -2160,12 +2162,24 @@ fn query_session_bundle_reuses_session_and_file_shapes_with_narrative_turns() ->
     assert_eq!(result.project_id, "repo-a");
     assert_eq!(result.provider, SourceKind::Codex);
     assert_eq!(result.session_id, "session-1");
+    assert_eq!(result.session_view, SessionsView::Compact);
     assert_eq!(result.view, SessionBundleView::Narrative);
     assert_eq!(result.turn_limit, 50);
     assert_eq!(result.turn_offset, 0);
     assert!(!result.turns_has_more);
     assert_eq!(result.session.session_id, "session-1");
     assert_eq!(result.session.turn_count, 2);
+    assert!(result.session.first_user_prompt_truncated);
+    assert_eq!(
+        result
+            .session
+            .first_user_prompt
+            .as_deref()
+            .expect("missing first prompt")
+            .chars()
+            .count(),
+        500
+    );
     assert_eq!(result.turns.len(), 2);
     assert_eq!(result.turns[0].turn_ordinal, 0);
     assert_eq!(result.turns[1].turn_ordinal, 1);
@@ -2198,6 +2212,7 @@ fn query_session_bundle_reuses_session_and_file_shapes_with_narrative_turns() ->
             provider: SourceKind::Codex,
             session_id: "session-1",
             project_root: Some(Path::new("/tmp/repo-a")),
+            session_view: SessionsView::Compact,
             view: SessionBundleView::Narrative,
             turn_limit: 1,
             turn_offset: 0,
@@ -2214,6 +2229,26 @@ fn query_session_bundle_reuses_session_and_file_shapes_with_narrative_turns() ->
             .map(|turn| turn.turn_ordinal)
             .collect::<Vec<_>>(),
         vec![0]
+    );
+
+    let full_session = query_project_session_bundle(
+        &index_path,
+        SessionBundleQueryRequest {
+            project_id: "repo-a",
+            provider: SourceKind::Codex,
+            session_id: "session-1",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            session_view: SessionsView::Full,
+            view: SessionBundleView::Narrative,
+            turn_limit: 1,
+            turn_offset: 0,
+        },
+    )?;
+    assert_eq!(full_session.session_view, SessionsView::Full);
+    assert!(!full_session.session.first_user_prompt_truncated);
+    assert_eq!(
+        full_session.session.first_user_prompt.as_deref(),
+        Some(long_prompt.as_str())
     );
 
     fs::remove_dir_all(
@@ -2278,6 +2313,7 @@ fn query_session_bundle_ignores_unrelated_invalid_session_rows() -> Result<()> {
             provider: SourceKind::Codex,
             session_id: "session-1",
             project_root: Some(Path::new("/tmp/repo-a")),
+            session_view: SessionsView::Compact,
             view: SessionBundleView::Full,
             turn_limit: 50,
             turn_offset: 0,
