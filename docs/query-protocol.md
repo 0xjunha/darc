@@ -26,9 +26,9 @@ Query commands emit JSON envelopes on stdout by default.
 - `darc query files [--root <path>] [--project-id <id>] [--provider <provider>] --co-touched-with <path> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>]`
 - `darc query session-files [--root <path>] [--project-id <id>] [--provider <provider>] <session-id>`
 - `darc query session-files [--root <path>] [--project-id <id>] [--provider <provider>] --session-id <session-id>`
-- `darc query session-bundle [--root <path>] [--project-id <id>] [--provider <provider>] <session-id> [--view <full|narrative>] [--turn-limit <n>] [--turn-offset <n>]`
+- `darc query session-bundle [--root <path>] [--project-id <id>] [--provider <provider>] <session-id> [--session-view <compact|full>] [--view <full|narrative>] [--turn-limit <n>] [--turn-offset <n>] [--step-limit <n>] [--step-offset <n>]`
 - `darc query turns [--root <path>] [--project-id <id>] [--provider <provider>] <session-id> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--view <full|oneline>] [--limit <n>] [--offset <n>]`
-- `darc query turn [--root <path>] [--project-id <id>] [--provider <provider>] <session-id> <turn-ordinal> [--view <full|narrative>] [--include-raw] [--include-insights]`
+- `darc query turn [--root <path>] [--project-id <id>] [--provider <provider>] <session-id> <turn-ordinal> [--view <full|narrative>] [--step-limit <n>] [--step-offset <n>] [--include-raw] [--include-insights]`
 
 ### Search
 
@@ -37,7 +37,7 @@ Query commands emit JSON envelopes on stdout by default.
 
 ### Insights
 
-- `darc query insights workspace [--root <path>] [--window <days>d]`
+- `darc query insights workspace [--root <path>] [--window <days>d] [--recent-session-limit <n>] [--recent-session-offset <n>]`
 - `darc query insights project [--root <path>] [--project-id <id>] [--provider <provider>] [--turn-limit <n>]`
 - `darc query insights turn [--root <path>] [--project-id <id>] [--provider <provider>] <session-id> <turn-ordinal>`
 - `darc query insights turn [--root <path>] [--project-id <id>] [--provider <provider>] --session-id <session-id> --turn-ordinal <n>`
@@ -60,8 +60,11 @@ Query commands emit JSON envelopes on stdout by default.
 - `--limit` and `--offset` are accepted by `darc query sessions`, `darc query turns`, `darc query search turns`, and every `darc query files` mode; these row/turn-hit limits default to `--limit 50 --offset 0`
 - `--matched-path-limit` caps per-row `matched_paths` previews in `darc query files` path mode and file-search modes; it defaults to `20`, and `--include-all-matched-paths` removes that preview cap
 - `--turn-limit` and `--turn-offset` on `darc query session-bundle` bound embedded turn details and default to `--turn-limit 50 --turn-offset 0`
+- `--session-view` on `darc query session-bundle` defaults to `compact`, which caps the embedded first prompt the same way `darc query sessions --view compact` does; pass `--session-view full` when the complete first prompt is needed
 - `darc query turn` and `darc query session-bundle` default to `--view narrative`; pass `--view full` when raw tool arguments, outputs, or payload blobs are needed
-- `--turn-limit` on `darc query insights project` is an inspection bound over indexed turns, not response pagination; the previous `--limit` spelling is accepted as a compatibility alias
+- `--step-limit` and `--step-offset` on `darc query turn` and `darc query session-bundle` bound returned turn steps and default to `--step-limit 50 --step-offset 0`
+- `--turn-limit` on `darc query insights project` is an inspection bound over indexed turns, not response pagination; the previous `--limit` spelling is accepted as a compatibility alias, and the response echoes `turn_limit`, `inspected_turn_count`, and `turns_has_more`
+- `--recent-session-limit` and `--recent-session-offset` on `darc query insights workspace` bound the `recent_sessions` preview and default to `--recent-session-limit 50 --recent-session-offset 0`
 - `--include-tool-output` on `darc query search turns` is accepted only with `--mode literal` or `--mode regex`
 - `--field` and `--exclude-field` on `darc query search turns` are accepted only with `--mode literal` or `--mode regex`; field values accept CLI kebab-case such as `user-message` and stable protocol snake_case such as `user_message`
 - `--field tool-output` requires `--include-tool-output`
@@ -70,6 +73,17 @@ Query commands emit JSON envelopes on stdout by default.
 ## Common Workflows
 
 The protocol is intentionally composable. A few common read patterns are now first-class:
+
+- compact-first exploration for coding agents:
+
+  ```bash
+  darc query sessions --limit 5
+  darc query files --limit 10
+  darc query search turns "staged init" --limit 5
+  darc query turns 11111111-1111-4111-8111-111111111111 --view oneline --limit 10
+  darc query turn 11111111-1111-4111-8111-111111111111 0 --step-limit 10
+  darc query session-bundle 11111111-1111-4111-8111-111111111111 --turn-limit 5 --step-limit 10
+  ```
 
 - find planning turns by content:
 
@@ -141,7 +155,8 @@ The protocol is intentionally composable. A few common read patterns are now fir
     --root ~/.darc \
     --project-id repo-abc123 \
     "$ID" \
-    --turn-limit 20
+    --turn-limit 20 \
+    --step-limit 20
   ```
 
 - skim one long session as one compact row per turn:
@@ -413,10 +428,12 @@ Today:
 
 Today:
 
-- the top-level payload echoes `project_id`, `provider`, `session_id`, and `view`
+- the top-level payload echoes `project_id`, `provider`, `session_id`, `session_view`, and `view`
 - `session` reuses the exact `darc.query.sessions.v1` session row shape
 - `turns` reuses the exact `darc.query.turn.v1` turn-detail row shape without wrapping each row in its own envelope
 - `turn_limit`, `turn_offset`, and `turns_has_more` describe the embedded turn-detail page
+- `step_limit` and `step_offset` describe the step page applied to each embedded turn detail
+- `session_view=compact` is the default and caps the embedded `session.first_user_prompt` at 500 characters; `session_view=full` keeps the complete first prompt
 - `session_files` reuses the exact `darc.query.session_files.v1` payload shape
 - `view=narrative` applies the same step projection rules as `darc query turn --view narrative`
 - `view=full` keeps the full normalized turn-step payload with `raw_steps_json` still forced to `null`
@@ -431,7 +448,8 @@ Today:
 - without `--pick-one`, the payload includes deterministic `matches`, `total`, and `truncated` fields
 - `matches[*]` rows report `project_id`, `provider`, and canonical `session_id`
 - matches are ordered by `project_id` ascending, then `provider` ascending, then `session_id` ascending
-- results are capped to a generous fixed page and set `truncated=true` when more candidates exist
+- `total` is the true number of matching sessions before the fixed response cap is applied
+- results are capped to a generous fixed page and set `truncated=true` when more candidates exist than returned `matches`
 - with `--pick-one`, the success payload uses one top-level `match` object for convenience
 - a full UUID that does not exist returns `unknown_session`
 - `--pick-one` returns `unknown_session` for zero matches and `ambiguous_session` for multiple matches
@@ -442,6 +460,7 @@ Today:
 
 Today:
 
+- the payload includes `step_count` for the full indexed step count plus non-null `step_limit`, `step_offset`, and `steps_has_more` pagination fields for the returned `steps` page
 - `reasoning` and `commentary` steps keep their full fields
 - `tool_call` keeps `timestamp`, `call_id`, and `name`, but clears `arguments`
 - `tool_call_output` keeps `timestamp` and `call_id`, but clears `output`
@@ -490,6 +509,10 @@ Today:
 ### Hard debugging
 
 `darc.query.insights.project.v1` echoes nullable `provider`; when present, `daily_time`, tool/file rankings, failures, total time, and `hard_debuggings` are computed from that provider's recent turns only.
+
+`turn_limit` echoes the requested inspection bound, `inspected_turn_count` is the number of turns actually included in the aggregate, and `turns_has_more=true` means older matching turns existed beyond the inspected page.
+
+`darc.query.insights.workspace.v1` keeps `active_session_count` as the total active session count in the window, while `recent_sessions` is a bounded preview described by `recent_session_limit`, `recent_session_offset`, and `recent_sessions_has_more`.
 
 `hard_debuggings` is currently provisional.
 
