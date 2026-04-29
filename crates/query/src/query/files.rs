@@ -485,6 +485,8 @@ fn apply_file_session_matched_path_limit(
     sessions
         .into_iter()
         .map(|mut session| {
+            session.matched_paths_count =
+                u64::try_from(session.matched_paths.len()).unwrap_or(u64::MAX);
             let (matched_paths, matched_paths_truncated) =
                 apply_matched_path_limit(session.matched_paths, matched_path_limit);
             session.matched_paths = matched_paths;
@@ -525,10 +527,12 @@ pub(crate) fn build_session_files_query(
         })
         .collect::<Vec<_>>();
     sort_session_file_summaries(&mut files);
+    let file_count = u64::try_from(files.len()).context("session file count exceeds u64 range")?;
     Ok(SessionFilesQueryData {
         project_id: project_id.to_owned(),
         provider,
         session_id: session_id.to_owned(),
+        file_count,
         files,
     })
 }
@@ -715,18 +719,23 @@ fn query_file_session_matches(
 
     let mut sessions = sessions
         .into_iter()
-        .map(|(key, session)| FileSessionSummary {
-            provider: key.provider,
-            session_id: key.session_id,
-            touch_count: session.touch_count,
-            read_count: session.read_count,
-            write_count: session.write_count,
-            first_turn_ordinal: session.first_turn_ordinal,
-            last_turn_ordinal: session.last_turn_ordinal,
-            first_touched_at: session.first_touched_at,
-            last_touched_at: session.last_touched_at,
-            matched_paths: session.matched_paths.into_iter().collect(),
-            matched_paths_truncated: false,
+        .map(|(key, session)| {
+            let matched_paths = session.matched_paths.into_iter().collect::<Vec<_>>();
+            let matched_paths_count = u64::try_from(matched_paths.len()).unwrap_or(u64::MAX);
+            FileSessionSummary {
+                provider: key.provider,
+                session_id: key.session_id,
+                touch_count: session.touch_count,
+                read_count: session.read_count,
+                write_count: session.write_count,
+                first_turn_ordinal: session.first_turn_ordinal,
+                last_turn_ordinal: session.last_turn_ordinal,
+                first_touched_at: session.first_touched_at,
+                last_touched_at: session.last_touched_at,
+                matched_paths,
+                matched_paths_count,
+                matched_paths_truncated: false,
+            }
         })
         .collect::<Vec<_>>();
     sessions.sort_by(|left, right| {

@@ -11,7 +11,7 @@ use super::{
     ResolvedSessionMatch, SessionSummary, SessionsQueryData, SessionsQueryRequest, SessionsView,
     TurnSummary, TurnsQueryData, TurnsQueryRequest, open_existing_index_database,
     optional_sql_count_to_u64, parse_provider, parse_session_kind, parse_turn_status,
-    preview_first_line, preview_text, preview_text_with_truncation, sql_count_to_u64,
+    preview_first_line, preview_text, sql_count_to_u64,
 };
 
 const PROJECT_INDEX_AGGREGATES_SQL: &str = "
@@ -410,16 +410,27 @@ fn apply_sessions_view(sessions: Vec<SessionSummary>, view: SessionsView) -> Vec
 /// Projects one session summary into the compact browse shape.
 pub(crate) fn compact_session_summary(mut session: SessionSummary) -> SessionSummary {
     if let Some(prompt) = session.first_user_prompt.take() {
+        let total_chars = count_chars_u64(&prompt);
         let (prompt, truncated) = truncate_chars(prompt, COMPACT_SESSION_PROMPT_CHARS);
+        session.first_user_prompt_chars = Some(count_chars_u64(&prompt));
+        session.first_user_prompt_total_chars = Some(total_chars);
         session.first_user_prompt = Some(prompt);
         session.first_user_prompt_truncated = truncated;
     }
     if let Some(message) = session.final_agent_message.take() {
+        let total_chars = count_chars_u64(&message);
         let (message, truncated) = truncate_chars(message, COMPACT_SESSION_PROMPT_CHARS);
+        session.final_agent_message_chars = Some(count_chars_u64(&message));
+        session.final_agent_message_total_chars = Some(total_chars);
         session.final_agent_message = Some(message);
         session.final_agent_message_truncated = truncated;
     }
     session
+}
+
+/// Counts Unicode scalar values in one string for preview-size metadata.
+fn count_chars_u64(value: &str) -> u64 {
+    u64::try_from(value.chars().count()).unwrap_or(u64::MAX)
 }
 
 /// Truncates one string by character count without adding marker text.
@@ -771,6 +782,8 @@ pub(crate) fn query_sessions(
                 edited_files_json,
             )|
              -> Result<_> {
+                let first_user_prompt_chars = first_user_prompt.as_deref().map(count_chars_u64);
+                let final_agent_message_chars = final_agent_message.as_deref().map(count_chars_u64);
                 Ok(SessionSummary {
                     project_id,
                     provider: parse_provider(&provider)?,
@@ -804,8 +817,12 @@ pub(crate) fn query_sessions(
                     first_turn_at,
                     first_user_prompt,
                     first_user_prompt_truncated: false,
+                    first_user_prompt_chars,
+                    first_user_prompt_total_chars: first_user_prompt_chars,
                     final_agent_message,
                     final_agent_message_truncated: false,
+                    final_agent_message_chars,
+                    final_agent_message_total_chars: final_agent_message_chars,
                     aborted_turn_count: sql_count_to_u64(aborted_turn_count)?,
                     edited_files: normalize_edited_files(
                         parse_edited_files_json(&edited_files_json)?,
@@ -1045,6 +1062,10 @@ fn read_turn_summary_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawTurnSum
 
 /// Converts one raw SQLite turn-summary row into the public turn-summary payload.
 fn build_turn_summary(row: RawTurnSummaryRow) -> Result<TurnSummary> {
+    let user_prompt_preview = preview_text(&row.8);
+    let oneline_user_prompt_preview = preview_first_line(&row.8);
+    let agent_answer_preview = row.9.as_deref().map(preview_text);
+    let oneline_agent_answer_preview = row.9.as_deref().map(preview_first_line);
     Ok(TurnSummary {
         project_id: row.0,
         provider: parse_provider(&row.1)?,
@@ -1054,16 +1075,36 @@ fn build_turn_summary(row: RawTurnSummaryRow) -> Result<TurnSummary> {
         started_at: row.5,
         completed_at: row.6,
         status: parse_turn_status(&row.7)?,
-        user_preview: preview_text(&row.8),
-        oneline_user_preview: preview_first_line(&row.8),
-        final_answer_preview: row
-            .9
-            .as_deref()
-            .map(|text| preview_text_with_truncation(text).0),
-        final_answer_preview_truncated: row
-            .9
-            .as_deref()
-            .is_some_and(|text| preview_text_with_truncation(text).1),
+        user_prompt_preview: user_prompt_preview.text,
+        user_prompt_preview_truncated: user_prompt_preview.truncated,
+        user_prompt_preview_chars: user_prompt_preview.chars,
+        user_prompt_total_chars: user_prompt_preview.total_chars,
+        oneline_user_prompt_preview: oneline_user_prompt_preview.text,
+        oneline_user_prompt_preview_truncated: oneline_user_prompt_preview.truncated,
+        oneline_user_prompt_preview_chars: oneline_user_prompt_preview.chars,
+        oneline_user_prompt_total_chars: oneline_user_prompt_preview.total_chars,
+        oneline_agent_answer_preview: oneline_agent_answer_preview
+            .as_ref()
+            .map(|preview| preview.text.clone()),
+        oneline_agent_answer_preview_truncated: oneline_agent_answer_preview
+            .as_ref()
+            .is_some_and(|preview| preview.truncated),
+        oneline_agent_answer_preview_chars: oneline_agent_answer_preview
+            .as_ref()
+            .map(|preview| preview.chars),
+        oneline_agent_answer_total_chars: oneline_agent_answer_preview
+            .as_ref()
+            .map(|preview| preview.total_chars),
+        agent_answer_preview: agent_answer_preview
+            .as_ref()
+            .map(|preview| preview.text.clone()),
+        agent_answer_preview_truncated: agent_answer_preview
+            .as_ref()
+            .is_some_and(|preview| preview.truncated),
+        agent_answer_preview_chars: agent_answer_preview.as_ref().map(|preview| preview.chars),
+        agent_answer_total_chars: agent_answer_preview
+            .as_ref()
+            .map(|preview| preview.total_chars),
         has_final_answer: row.10 != 0,
         step_count: sql_count_to_u64(row.11)?,
         tool_call_count: sql_count_to_u64(row.12)?,

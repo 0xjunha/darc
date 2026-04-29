@@ -112,12 +112,14 @@ single-call session bundles.
 - `darc query search turns <query>` defaults to keyword search and also supports literal, regex, file-name,
   glob-compatible file-path, and path-fragment modes with optional provider/session/time filters. Literal and regex
   search skip bulky tool outputs by default; add `--include-tool-output` for forensic searches over command output,
-  logs, or stack traces, and use `--field` / `--exclude-field` to narrow exact evidence fields.
+  logs, or stack traces, use `--field` / `--exclude-field` to narrow exact evidence fields, and use `--match-limit`
+  to cap nested evidence matches per returned turn hit.
 - project-scoped `darc query` commands accept optional `--project-id`; when omitted, Darc resolves the configured
   project from the current directory. Project pivots such as `sessions`, `files`, and `insights project` also accept
   `--provider` when a corpus mixes Codex and Claude history.
 - `darc query sessions` defaults to compact first-prompt and final-message previews for browsing; pass `--view full`
-  when you need the full text pair. Edited file lists are deduplicated and always complete for each returned session.
+  when you need the full text pair. Preview rows include returned and total character counts, and edited file lists are
+  deduplicated and always complete for each returned session.
 - `darc query turns` lists one known session by full UUID, inferring the provider unless the id is cross-provider
   ambiguous; content discovery lives under `darc query search turns`.
 - `darc query files` ranks most-touched files for initial discovery. `darc query files <path>`,
@@ -128,7 +130,8 @@ single-call session bundles.
   session bundle reads default to narrative payloads and bounded step pages; pass `--view full`, `--step-limit`, or
   `--include-raw` only when more detail is needed.
 - Broad file/path queries cap each row's `matched_paths` preview by default; use `--matched-path-limit` or
-  `--include-all-matched-paths` when you need more path evidence per result.
+  `--include-all-matched-paths` when you need more path evidence per result. Search/file payloads expose count fields
+  such as `matched_paths_count`, `matches_count`, and `session_file_count` so agents can estimate returned context.
 - `darc query resolve-session` explicitly expands a UUID prefix before you call session-scoped data commands and
   includes `project_id` with each match for multi-project roots.
 

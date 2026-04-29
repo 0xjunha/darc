@@ -11,13 +11,13 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum, error::ErrorKind};
 use darc_core::query::{
-    DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, DEFAULT_TURN_STEP_LIMIT,
-    DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT, FilesQueryRequest, QueryProtocolError,
-    ResolveSessionQueryRequest, ResolvedQueryProject, ResolvedSessionMatch, SearchEvidenceField,
-    SearchMode, SearchTurnsRequest, SessionBundleQueryRequest, SessionBundleView,
-    SessionsQueryRequest, SessionsView, TurnDetailOptions, TurnsQueryRequest, TurnsView,
-    query_files_for_project, query_project_insight_report_for_project, query_resolve_sessions,
-    query_search_turns_for_project, query_session_bundle_for_project,
+    DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, DEFAULT_SEARCH_MATCH_LIMIT,
+    DEFAULT_TURN_STEP_LIMIT, DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT, FilesQueryRequest,
+    QueryProtocolError, ResolveSessionQueryRequest, ResolvedQueryProject, ResolvedSessionMatch,
+    SearchEvidenceField, SearchMode, SearchTurnsRequest, SessionBundleQueryRequest,
+    SessionBundleView, SessionsQueryRequest, SessionsView, TurnDetailOptions, TurnsQueryRequest,
+    TurnsView, query_files_for_project, query_project_insight_report_for_project,
+    query_resolve_sessions, query_search_turns_for_project, query_session_bundle_for_project,
     query_session_files_for_project, query_sessions_for_project, query_turn_for_project,
     query_turn_insight_report_for_project, query_turns_for_project, query_workspace,
     query_workspace_insight_report, resolve_query_project,
@@ -722,6 +722,13 @@ struct QuerySearchTurnsArgs {
     matched_path_limit: usize,
 
     #[arg(
+        long = "match-limit",
+        value_name = "N",
+        help = search_match_limit_help()
+    )]
+    match_limit: Option<usize>,
+
+    #[arg(
         long = "include-all-matched-paths",
         help = "Return every matched path in file-search hits"
     )]
@@ -1314,6 +1321,7 @@ fn run_query_search_turns(args: QuerySearchTurnsArgs) -> Result<()> {
                 args.include_all_matched_paths,
                 args.matched_path_limit,
             ),
+            match_limit: args.match_limit,
         },
     )?;
     print_json_envelope("darc.query.search.turns.v1", &data)
@@ -1618,6 +1626,13 @@ fn search_evidence_field_exclude_help() -> String {
     )
 }
 
+/// Returns help text for the literal/regex per-hit match preview cap.
+fn search_match_limit_help() -> String {
+    format!(
+        "Maximum nested matches per literal/regex turn hit. Default: {DEFAULT_SEARCH_MATCH_LIMIT}"
+    )
+}
+
 /// Converts one parsed provider argument back into the shared source kind.
 fn provider_arg_to_source_kind(provider: ProviderArg) -> SourceKind {
     match provider {
@@ -1667,9 +1682,14 @@ fn turn_list_view_arg_to_view(view: TurnListViewArg) -> TurnsView {
 struct TurnsOnelineTurnRow {
     turn_ordinal: u64,
     role: &'static str,
-    user_preview: String,
-    final_answer_preview: Option<String>,
-    final_answer_preview_truncated: bool,
+    user_prompt_preview: String,
+    user_prompt_preview_truncated: bool,
+    user_prompt_preview_chars: u64,
+    user_prompt_total_chars: u64,
+    agent_answer_preview: Option<String>,
+    agent_answer_preview_truncated: bool,
+    agent_answer_preview_chars: Option<u64>,
+    agent_answer_total_chars: Option<u64>,
     step_count: u64,
     tool_call_count: u64,
 }
@@ -1708,9 +1728,14 @@ impl TurnsOnelineQueryData {
                 .map(|turn| TurnsOnelineTurnRow {
                     turn_ordinal: turn.turn_ordinal,
                     role: "user",
-                    user_preview: turn.oneline_user_preview.clone(),
-                    final_answer_preview: turn.final_answer_preview.clone(),
-                    final_answer_preview_truncated: turn.final_answer_preview_truncated,
+                    user_prompt_preview: turn.oneline_user_prompt_preview.clone(),
+                    user_prompt_preview_truncated: turn.oneline_user_prompt_preview_truncated,
+                    user_prompt_preview_chars: turn.oneline_user_prompt_preview_chars,
+                    user_prompt_total_chars: turn.oneline_user_prompt_total_chars,
+                    agent_answer_preview: turn.oneline_agent_answer_preview.clone(),
+                    agent_answer_preview_truncated: turn.oneline_agent_answer_preview_truncated,
+                    agent_answer_preview_chars: turn.oneline_agent_answer_preview_chars,
+                    agent_answer_total_chars: turn.oneline_agent_answer_total_chars,
                     step_count: turn.step_count,
                     tool_call_count: turn.tool_call_count,
                 })

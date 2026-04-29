@@ -614,6 +614,8 @@ fn parses_query_search_turns_literal_with_filters() {
         "user-message",
         "--exclude-field",
         "tool_arguments",
+        "--match-limit",
+        "3",
     ])
     .unwrap();
     assert!(matches!(
@@ -630,6 +632,7 @@ fn parses_query_search_turns_literal_with_filters() {
                 include_tool_output,
                 fields,
                 excluded_fields,
+                match_limit,
                 ..
                 }),
             }),
@@ -642,6 +645,7 @@ fn parses_query_search_turns_literal_with_filters() {
             && include_tool_output
             && fields == [super::SearchEvidenceField::UserMessage]
             && excluded_fields == [super::SearchEvidenceField::ToolArguments]
+            && match_limit == Some(3)
     ));
 }
 

@@ -67,6 +67,8 @@ fn build_session_bundle_query(
         request.session_id,
         request.project_root,
     )?;
+    let session_file_count =
+        u64::try_from(session_files.files.len()).context("session file count exceeds u64 range")?;
     let session_files_has_more = session_files.files.len() > DEFAULT_SESSION_BUNDLE_FILE_LIMIT;
     session_files
         .files
@@ -83,6 +85,7 @@ fn build_session_bundle_query(
         turns_has_more,
         session_file_limit: u64::try_from(DEFAULT_SESSION_BUNDLE_FILE_LIMIT)
             .context("query limit exceeds u64 range")?,
+        session_file_count,
         session_files_has_more,
         step_limit: u64::try_from(request.step_limit).context("query limit exceeds u64 range")?,
         step_offset: u64::try_from(request.step_offset)

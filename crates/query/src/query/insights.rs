@@ -81,8 +81,7 @@ const RECENT_PROJECT_TOOL_USAGE_SQL: &str = "
 
 const TURN_FILE_USAGE_SQL: &str = "
     SELECT
-        path,
-        MIN(repo_relative_path) AS repo_relative_path,
+        COALESCE(repo_relative_path, path) AS display_path,
         SUM(CASE WHEN access_type IN ('read', 'list') THEN 1 ELSE 0 END) AS read_count,
         SUM(CASE WHEN access_type IN ('write', 'edit') THEN 1 ELSE 0 END) AS write_count
     FROM file_accesses
@@ -90,7 +89,7 @@ const TURN_FILE_USAGE_SQL: &str = "
         AND provider = ?2
         AND session_id = ?3
         AND turn_ordinal = ?4
-    GROUP BY path
+    GROUP BY COALESCE(repo_relative_path, path)
 ";
 
 const RECENT_PROJECT_FILE_USAGE_SQL: &str = "
@@ -103,8 +102,7 @@ const RECENT_PROJECT_FILE_USAGE_SQL: &str = "
         LIMIT ?3
     )
     SELECT
-        file_accesses.path,
-        MIN(file_accesses.repo_relative_path) AS repo_relative_path,
+        COALESCE(file_accesses.repo_relative_path, file_accesses.path) AS display_path,
         SUM(CASE
             WHEN file_accesses.access_type IN ('read', 'list') THEN 1
             ELSE 0
@@ -119,7 +117,7 @@ const RECENT_PROJECT_FILE_USAGE_SQL: &str = "
         AND file_accesses.provider = recent_turns.provider
         AND file_accesses.session_id = recent_turns.session_id
         AND file_accesses.turn_ordinal = recent_turns.turn_ordinal
-    GROUP BY file_accesses.path
+    GROUP BY COALESCE(file_accesses.repo_relative_path, file_accesses.path)
 ";
 
 const TURN_SHELL_COMMANDS_SQL: &str = "
@@ -591,9 +589,8 @@ pub(crate) fn query_file_usage_stats(
                     |row| {
                         Ok((
                             row.get::<_, String>(0)?,
-                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, i64>(1)?,
                             row.get::<_, i64>(2)?,
-                            row.get::<_, i64>(3)?,
                         ))
                     },
                 )
@@ -616,9 +613,8 @@ pub(crate) fn query_file_usage_stats(
                 .query_map((project_id, provider, limit), |row| {
                     Ok((
                         row.get::<_, String>(0)?,
-                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, i64>(1)?,
                         row.get::<_, i64>(2)?,
-                        row.get::<_, i64>(3)?,
                     ))
                 })
                 .context("failed to query project file usage rows")?
@@ -627,16 +623,13 @@ pub(crate) fn query_file_usage_stats(
         }
     };
     rows.into_iter()
-        .map(
-            |(path, repo_relative_path, read_count, write_count)| -> Result<_> {
-                Ok(FileUsageStat {
-                    path,
-                    repo_relative_path,
-                    read_count: sql_count_to_u64(read_count)?,
-                    write_count: sql_count_to_u64(write_count)?,
-                })
-            },
-        )
+        .map(|(path, read_count, write_count)| -> Result<_> {
+            Ok(FileUsageStat {
+                path,
+                read_count: sql_count_to_u64(read_count)?,
+                write_count: sql_count_to_u64(write_count)?,
+            })
+        })
         .collect()
 }
 

@@ -76,6 +76,9 @@ pub const DEFAULT_RESOLVE_SESSION_MATCH_LIMIT: usize = 50;
 /// Caps per-row matched path previews unless callers opt into all matched paths.
 pub const DEFAULT_MATCHED_PATH_LIMIT: usize = 20;
 
+/// Caps per-hit exact-search evidence match previews unless callers ask for more.
+pub const DEFAULT_SEARCH_MATCH_LIMIT: usize = 20;
+
 /// Caps turn-detail step previews unless callers ask for a larger page.
 pub const DEFAULT_TURN_STEP_LIMIT: usize = 50;
 
@@ -84,6 +87,12 @@ pub const DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT: usize = 50;
 
 /// Caps embedded session-file rows in composite session bundles.
 pub const DEFAULT_SESSION_BUNDLE_FILE_LIMIT: usize = 100;
+
+/// Caps standard user/agent text previews in summary and search rows.
+pub const DEFAULT_TEXT_PREVIEW_CHARS: usize = 500;
+
+/// Caps one-line turn-list previews for quick timeline skims.
+pub const ONELINE_TEXT_PREVIEW_CHARS: usize = 80;
 
 /// Stores one indexed project aggregate used by the workspace sidebar.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -166,8 +175,12 @@ pub struct SessionSummary {
     pub first_turn_at: Option<String>,
     pub first_user_prompt: Option<String>,
     pub first_user_prompt_truncated: bool,
+    pub first_user_prompt_chars: Option<u64>,
+    pub first_user_prompt_total_chars: Option<u64>,
     pub final_agent_message: Option<String>,
     pub final_agent_message_truncated: bool,
+    pub final_agent_message_chars: Option<u64>,
+    pub final_agent_message_total_chars: Option<u64>,
     pub aborted_turn_count: u64,
     pub edited_files: Vec<String>,
 }
@@ -258,6 +271,7 @@ pub struct FileSessionSummary {
     pub first_touched_at: String,
     pub last_touched_at: String,
     pub matched_paths: Vec<String>,
+    pub matched_paths_count: u64,
     pub matched_paths_truncated: bool,
 }
 
@@ -324,6 +338,7 @@ pub struct SessionFilesQueryData {
     pub project_id: String,
     pub provider: SourceKind,
     pub session_id: String,
+    pub file_count: u64,
     pub files: Vec<SessionFileSummary>,
 }
 
@@ -347,12 +362,32 @@ pub struct TurnSummary {
     pub started_at: String,
     pub completed_at: Option<String>,
     pub status: NormalizedTurnStatus,
-    pub user_preview: String,
-    /// Caches the compact first-line preview for CLI `--view oneline` rendering.
+    pub user_prompt_preview: String,
+    pub user_prompt_preview_truncated: bool,
+    pub user_prompt_preview_chars: u64,
+    pub user_prompt_total_chars: u64,
+    /// Caches the compact first-line user preview for CLI `--view oneline` rendering.
     #[serde(skip_serializing)]
-    pub oneline_user_preview: String,
-    pub final_answer_preview: Option<String>,
-    pub final_answer_preview_truncated: bool,
+    pub oneline_user_prompt_preview: String,
+    #[serde(skip_serializing)]
+    pub oneline_user_prompt_preview_truncated: bool,
+    #[serde(skip_serializing)]
+    pub oneline_user_prompt_preview_chars: u64,
+    #[serde(skip_serializing)]
+    pub oneline_user_prompt_total_chars: u64,
+    /// Caches the compact first-line answer preview for CLI `--view oneline` rendering.
+    #[serde(skip_serializing)]
+    pub oneline_agent_answer_preview: Option<String>,
+    #[serde(skip_serializing)]
+    pub oneline_agent_answer_preview_truncated: bool,
+    #[serde(skip_serializing)]
+    pub oneline_agent_answer_preview_chars: Option<u64>,
+    #[serde(skip_serializing)]
+    pub oneline_agent_answer_total_chars: Option<u64>,
+    pub agent_answer_preview: Option<String>,
+    pub agent_answer_preview_truncated: bool,
+    pub agent_answer_preview_chars: Option<u64>,
+    pub agent_answer_total_chars: Option<u64>,
     pub has_final_answer: bool,
     pub step_count: u64,
     pub tool_call_count: u64,
@@ -431,6 +466,7 @@ pub struct SearchTurnsQueryData {
     pub offset: u64,
     pub has_more: bool,
     pub matched_path_limit: Option<u64>,
+    pub match_limit: Option<u64>,
     pub hits: Vec<SearchTurnHit>,
 }
 
@@ -451,6 +487,7 @@ pub struct SearchTurnsRequest<'a> {
     pub limit: usize,
     pub offset: usize,
     pub matched_path_limit: Option<usize>,
+    pub match_limit: Option<usize>,
 }
 
 /// Stores one field-level evidence match nested inside a turn search hit.
@@ -470,13 +507,20 @@ pub struct SearchTurnHit {
     pub started_at: String,
     pub completed_at: Option<String>,
     pub status: NormalizedTurnStatus,
-    pub user_preview: String,
-    pub final_answer_preview: Option<String>,
-    pub final_answer_preview_truncated: bool,
+    pub user_prompt_preview: String,
+    pub user_prompt_preview_truncated: bool,
+    pub user_prompt_preview_chars: u64,
+    pub user_prompt_total_chars: u64,
+    pub agent_answer_preview: Option<String>,
+    pub agent_answer_preview_truncated: bool,
+    pub agent_answer_preview_chars: Option<u64>,
+    pub agent_answer_total_chars: Option<u64>,
     pub snippet: Option<String>,
     pub matched_paths: Vec<String>,
+    pub matched_paths_count: u64,
     pub matched_paths_truncated: bool,
     pub matches: Vec<SearchTurnMatch>,
+    pub matches_count: u64,
     pub matches_truncated: bool,
 }
 
@@ -515,6 +559,7 @@ pub struct SessionBundleQueryData {
     pub turn_offset: u64,
     pub turns_has_more: bool,
     pub session_file_limit: u64,
+    pub session_file_count: u64,
     pub session_files_has_more: bool,
     pub step_limit: u64,
     pub step_offset: u64,
@@ -630,7 +675,6 @@ pub struct ShellCommandSummary {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FileUsageStat {
     pub path: String,
-    pub repo_relative_path: Option<String>,
     pub read_count: u64,
     pub write_count: u64,
 }
@@ -747,23 +791,36 @@ fn optional_sql_count_to_u64(value: Option<i64>) -> Result<Option<u64>> {
     value.map(sql_count_to_u64).transpose()
 }
 
-/// Normalizes one user message into a single-line turn preview.
-fn preview_text(text: &str) -> String {
-    preview_text_with_truncation(text).0
+/// Stores one normalized text preview plus source-size metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TextPreview {
+    text: String,
+    truncated: bool,
+    chars: u64,
+    total_chars: u64,
 }
 
-/// Normalizes one text field into a single-line preview and truncation flag.
-fn preview_text_with_truncation(text: &str) -> (String, bool) {
-    truncate_preview_with_truncation(&normalize_preview_whitespace(text), 126)
+/// Normalizes one text field into a single-line preview with metadata.
+fn preview_text(text: &str) -> TextPreview {
+    preview_text_with_limit(text, DEFAULT_TEXT_PREVIEW_CHARS)
 }
 
-/// Normalizes one user message into a single-line first-line preview for compact lists.
-fn preview_first_line(text: &str) -> String {
-    truncate_preview_with_truncation(
+/// Normalizes one text field into a capped single-line preview with metadata.
+fn preview_text_with_limit(text: &str, max_chars: usize) -> TextPreview {
+    preview_normalized_text(&normalize_preview_whitespace(text), max_chars)
+}
+
+/// Normalizes one text field's first line into a capped single-line preview with metadata.
+fn preview_first_line(text: &str) -> TextPreview {
+    preview_text_first_line_with_limit(text, ONELINE_TEXT_PREVIEW_CHARS)
+}
+
+/// Normalizes one text field's first line into a capped single-line preview with metadata.
+fn preview_text_first_line_with_limit(text: &str, max_chars: usize) -> TextPreview {
+    preview_normalized_text(
         &normalize_preview_whitespace(text.lines().next().unwrap_or_default()),
-        80,
+        max_chars,
     )
-    .0
 }
 
 /// Collapses one preview string's whitespace into single spaces.
@@ -771,17 +828,29 @@ fn normalize_preview_whitespace(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Truncates one normalized preview and reports whether the value was capped.
-fn truncate_preview_with_truncation(text: &str, max_chars: usize) -> (String, bool) {
-    if text.chars().count() <= max_chars {
-        return (text.to_owned(), false);
+/// Builds metadata for one already normalized text preview.
+fn preview_normalized_text(text: &str, max_chars: usize) -> TextPreview {
+    let total_chars = text.chars().count();
+    if total_chars <= max_chars {
+        return TextPreview {
+            text: text.to_owned(),
+            truncated: false,
+            chars: u64::try_from(total_chars).unwrap_or(u64::MAX),
+            total_chars: u64::try_from(total_chars).unwrap_or(u64::MAX),
+        };
     }
     let mut preview = text
         .chars()
         .take(max_chars.saturating_sub(1))
         .collect::<String>();
     preview.push('…');
-    (preview, true)
+    let chars = preview.chars().count();
+    TextPreview {
+        text: preview,
+        truncated: true,
+        chars: u64::try_from(chars).unwrap_or(u64::MAX),
+        total_chars: u64::try_from(total_chars).unwrap_or(u64::MAX),
+    }
 }
 
 /// Stores one internal session aggregate while building workspace insights.

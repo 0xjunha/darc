@@ -1024,9 +1024,9 @@ fn turns_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["turns"][0]["turn_id"], "turn-1");
     assert_eq!(value["data"]["turns"][0]["step_count"], 2);
     assert_eq!(value["data"]["turns"][0]["tool_call_count"], 1);
-    assert_eq!(value["data"]["turns"][0]["final_answer_preview"], "Done.");
+    assert_eq!(value["data"]["turns"][0]["agent_answer_preview"], "Done.");
     assert_eq!(
-        value["data"]["turns"][0]["final_answer_preview_truncated"],
+        value["data"]["turns"][0]["agent_answer_preview_truncated"],
         false
     );
     assert_eq!(value["data"]["turns"][0]["primary_model"], "gpt-5.4");
@@ -1250,10 +1250,22 @@ fn turns_query_oneline_view_emits_compact_rows() -> Result<()> {
     assert_eq!(value["data"]["turns"][0]["turn_ordinal"], 0);
     assert_eq!(value["data"]["turns"][0]["role"], "user");
     assert_eq!(
-        value["data"]["turns"][0]["user_preview"],
+        value["data"]["turns"][0]["user_prompt_preview"],
         "Inspect the repository status"
     );
-    assert_eq!(value["data"]["turns"][0]["final_answer_preview"], "Done.");
+    assert_eq!(
+        value["data"]["turns"][0]["user_prompt_preview_truncated"],
+        false
+    );
+    assert_eq!(value["data"]["turns"][0]["user_prompt_preview_chars"], 29);
+    assert_eq!(value["data"]["turns"][0]["user_prompt_total_chars"], 29);
+    assert_eq!(value["data"]["turns"][0]["agent_answer_preview"], "Done.");
+    assert_eq!(
+        value["data"]["turns"][0]["agent_answer_preview_truncated"],
+        false
+    );
+    assert_eq!(value["data"]["turns"][0]["agent_answer_preview_chars"], 5);
+    assert_eq!(value["data"]["turns"][0]["agent_answer_total_chars"], 5);
     assert_eq!(value["data"]["turns"][0]["step_count"], 2);
     assert_eq!(value["data"]["turns"][0]["tool_call_count"], 1);
     assert!(
@@ -1311,6 +1323,8 @@ fn search_turns_query_emits_literal_evidence_matches() -> Result<()> {
         "literal",
         "--query",
         "--output-last-message",
+        "--match-limit",
+        "1",
         "--since",
         "2026-04-06T00:00:00Z",
         "--until",
@@ -1325,11 +1339,12 @@ fn search_turns_query_emits_literal_evidence_matches() -> Result<()> {
     assert_eq!(value["data"]["include_tool_output"], false);
     assert_eq!(value["data"]["fields"], Value::Array(vec![]));
     assert_eq!(value["data"]["excluded_fields"], Value::Array(vec![]));
+    assert_eq!(value["data"]["match_limit"], 1);
     assert_eq!(value["data"]["since"], "2026-04-06T00:00:00Z");
     assert_eq!(value["data"]["until"], "2026-04-07T00:00:00Z");
     assert_eq!(value["data"]["hits"][0]["turn_ordinal"], 1);
     assert_eq!(
-        value["data"]["hits"][0]["final_answer_preview"],
+        value["data"]["hits"][0]["agent_answer_preview"],
         "Captured the output."
     );
     assert!(
@@ -1341,6 +1356,7 @@ fn search_turns_query_emits_literal_evidence_matches() -> Result<()> {
         value["data"]["hits"][0]["matches"][0]["field"],
         "tool_arguments"
     );
+    assert_eq!(value["data"]["hits"][0]["matches_count"], 1);
     assert!(
         value["data"]["hits"][0]["matches"][0]["snippet"]
             .as_str()
@@ -1697,8 +1713,21 @@ fn search_turns_query_emits_keyword_search_envelope() -> Result<()> {
     let value = parse_json(&output.stdout, "stdout")?;
     assert_eq!(value["schema"], "darc.query.search.turns.v1");
     assert_eq!(value["data"]["mode"], "keyword");
+    assert!(value["data"]["match_limit"].is_null());
     assert_eq!(value["data"]["hits"][0]["session_id"], PRIMARY_SESSION_ID);
-    assert_eq!(value["data"]["hits"][0]["final_answer_preview"], "Done.");
+    assert_eq!(
+        value["data"]["hits"][0]["user_prompt_preview"],
+        "Inspect the repository status"
+    );
+    assert_eq!(
+        value["data"]["hits"][0]["user_prompt_preview_truncated"],
+        false
+    );
+    assert_eq!(value["data"]["hits"][0]["agent_answer_preview"], "Done.");
+    assert_eq!(
+        value["data"]["hits"][0]["agent_answer_preview_truncated"],
+        false
+    );
     assert_eq!(
         value["data"]["hits"][0]["matched_paths"],
         Value::Array(vec![])
@@ -1879,10 +1908,8 @@ fn project_insights_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["turns_has_more"], false);
     assert_eq!(value["data"]["most_common_tools"][0]["name"], "Read");
     assert_eq!(value["data"]["total_time_ms"], 5000);
-    assert_eq!(
-        value["data"]["most_read_files"][0]["repo_relative_path"],
-        "README.md"
-    );
+    assert_eq!(value["data"]["most_read_files"][0]["path"], "README.md");
+    assert!(value["data"]["most_read_files"][0]["repo_relative_path"].is_null());
 
     remove_root(&root)?;
     Ok(())
@@ -1939,7 +1966,7 @@ fn turn_insights_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["tool_output_count"], 1);
     assert_eq!(value["data"]["tools"][0]["name"], "Read");
     assert_eq!(value["data"]["files"][0]["path"], "README.md");
-    assert_eq!(value["data"]["files"][0]["repo_relative_path"], "README.md");
+    assert!(value["data"]["files"][0]["repo_relative_path"].is_null());
     assert_eq!(value["data"]["files"][0]["read_count"], 1);
 
     remove_root(&root)?;
@@ -2127,6 +2154,28 @@ fn search_turns_query_rejects_tool_output_flag_for_keyword_mode() -> Result<()> 
         String::from_utf8_lossy(&output.stderr).contains(
             "--include-tool-output is only supported with --mode literal or --mode regex"
         )
+    );
+
+    let match_limit_output = run_darc([
+        "query",
+        "search",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--mode",
+        "keyword",
+        "--query",
+        "Inspect",
+        "--match-limit",
+        "3",
+    ])?;
+
+    assert!(!match_limit_output.status.success());
+    assert!(
+        String::from_utf8_lossy(&match_limit_output.stderr)
+            .contains("--match-limit is only supported with --mode literal or --mode regex")
     );
 
     remove_root(&root)?;

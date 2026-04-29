@@ -7,9 +7,10 @@ use regex::{Regex, RegexBuilder};
 use rusqlite::{Connection, params, params_from_iter, types::Value};
 
 use super::{
-    SearchEvidenceField, SearchMode, SearchTurnHit, SearchTurnMatch, SearchTurnsQueryData,
-    SearchTurnsRequest, apply_matched_path_limit, open_existing_index_database, parse_provider,
-    parse_turn_status, preview_text, preview_text_with_truncation, sql_count_to_u64,
+    DEFAULT_SEARCH_MATCH_LIMIT, SearchEvidenceField, SearchMode, SearchTurnHit, SearchTurnMatch,
+    SearchTurnsQueryData, SearchTurnsRequest, apply_matched_path_limit,
+    open_existing_index_database, parse_provider, parse_turn_status, preview_text,
+    sql_count_to_u64,
 };
 use crate::query::files::{
     PathQuerySelector, build_path_query_selector, glob_match_options, normalize_query_path_pattern,
@@ -52,7 +53,6 @@ const KEYWORD_SEARCH_SQL: &str = "
 
 const EVIDENCE_SEARCH_TURN_BATCH_ROWS: usize = 1_000;
 const FILE_PATH_GLOB_TURN_BATCH_ROWS: usize = 1_000;
-const MAX_EVIDENCE_MATCHES_PER_TURN: usize = 20;
 const MAX_REGEX_QUERY_CHARS: usize = 1_024;
 const REGEX_SIZE_LIMIT_BYTES: usize = 1_000_000;
 const REGEX_DFA_SIZE_LIMIT_BYTES: usize = 1_000_000;
@@ -82,9 +82,14 @@ struct FileSearchRow {
     started_at: String,
     completed_at: Option<String>,
     status: darc_rollout::model::NormalizedTurnStatus,
-    user_preview: String,
-    final_answer_preview: Option<String>,
-    final_answer_preview_truncated: bool,
+    user_prompt_preview: String,
+    user_prompt_preview_truncated: bool,
+    user_prompt_preview_chars: u64,
+    user_prompt_total_chars: u64,
+    agent_answer_preview: Option<String>,
+    agent_answer_preview_truncated: bool,
+    agent_answer_preview_chars: Option<u64>,
+    agent_answer_total_chars: Option<u64>,
     matched_path: String,
 }
 
@@ -97,9 +102,14 @@ struct FilePathGlobRow {
     started_at: String,
     completed_at: Option<String>,
     status: darc_rollout::model::NormalizedTurnStatus,
-    user_preview: String,
-    final_answer_preview: Option<String>,
-    final_answer_preview_truncated: bool,
+    user_prompt_preview: String,
+    user_prompt_preview_truncated: bool,
+    user_prompt_preview_chars: u64,
+    user_prompt_total_chars: u64,
+    agent_answer_preview: Option<String>,
+    agent_answer_preview_truncated: bool,
+    agent_answer_preview_chars: Option<u64>,
+    agent_answer_total_chars: Option<u64>,
     repo_relative_path: Option<String>,
     path: String,
     matched_path: String,
@@ -114,9 +124,14 @@ struct FileSearchHitAccumulator {
     started_at: String,
     completed_at: Option<String>,
     status: darc_rollout::model::NormalizedTurnStatus,
-    user_preview: String,
-    final_answer_preview: Option<String>,
-    final_answer_preview_truncated: bool,
+    user_prompt_preview: String,
+    user_prompt_preview_truncated: bool,
+    user_prompt_preview_chars: u64,
+    user_prompt_total_chars: u64,
+    agent_answer_preview: Option<String>,
+    agent_answer_preview_truncated: bool,
+    agent_answer_preview_chars: Option<u64>,
+    agent_answer_total_chars: Option<u64>,
     matched_paths: BTreeSet<String>,
 }
 
@@ -158,6 +173,7 @@ struct EvidenceSearchRequest<'a> {
     mode: SearchMode,
     query: &'a str,
     fields: &'a EvidenceFieldSelection,
+    match_limit: usize,
     limit: usize,
     offset: usize,
 }
@@ -205,9 +221,14 @@ struct EvidenceSearchTurn {
     started_at: String,
     completed_at: Option<String>,
     status: darc_rollout::model::NormalizedTurnStatus,
-    user_preview: String,
-    final_answer_preview: Option<String>,
-    final_answer_preview_truncated: bool,
+    user_prompt_preview: String,
+    user_prompt_preview_truncated: bool,
+    user_prompt_preview_chars: u64,
+    user_prompt_total_chars: u64,
+    agent_answer_preview: Option<String>,
+    agent_answer_preview_truncated: bool,
+    agent_answer_preview_chars: Option<u64>,
+    agent_answer_total_chars: Option<u64>,
 }
 
 /// Stores one evidence fragment for in-process exact matching.
@@ -264,6 +285,7 @@ fn build_search_turns(
     let limit = request.limit;
     let offset = request.offset;
     let matched_path_limit = request.matched_path_limit;
+    let match_limit = resolve_match_limit(mode, request.match_limit)?;
     let scope = SearchScope {
         project_id,
         provider: provider_filter,
@@ -307,6 +329,7 @@ fn build_search_turns(
                     .map(u64::try_from)
                     .transpose()
                     .context("matched path limit exceeds u64 range")?,
+                match_limit: None,
                 hits,
             });
         }
@@ -317,6 +340,7 @@ fn build_search_turns(
                 mode,
                 query,
                 fields: &fields,
+                match_limit,
                 limit,
                 offset,
             },
@@ -390,8 +414,22 @@ fn build_search_turns(
             .map(u64::try_from)
             .transpose()
             .context("matched path limit exceeds u64 range")?,
+        match_limit: if matches!(mode, SearchMode::Literal | SearchMode::Regex) {
+            Some(u64::try_from(match_limit).context("match limit exceeds u64 range")?)
+        } else {
+            None
+        },
         hits,
     })
+}
+
+/// Resolves and validates the per-hit exact-search match preview cap.
+fn resolve_match_limit(mode: SearchMode, match_limit: Option<usize>) -> Result<usize> {
+    let uses_evidence_rows = matches!(mode, SearchMode::Literal | SearchMode::Regex);
+    if match_limit.is_some() && !uses_evidence_rows {
+        bail!("--match-limit is only supported with --mode literal or --mode regex");
+    }
+    Ok(match_limit.unwrap_or(DEFAULT_SEARCH_MATCH_LIMIT))
 }
 
 /// Applies the matched-path preview cap to one search hit.
@@ -399,6 +437,7 @@ fn apply_search_hit_matched_path_limit(
     mut hit: SearchTurnHit,
     matched_path_limit: Option<usize>,
 ) -> SearchTurnHit {
+    hit.matched_paths_count = u64::try_from(hit.matched_paths.len()).unwrap_or(u64::MAX);
     let (matched_paths, matched_paths_truncated) =
         apply_matched_path_limit(hit.matched_paths, matched_path_limit);
     hit.matched_paths = matched_paths;
@@ -675,8 +714,9 @@ fn query_keyword_hits(
                 final_answer_text,
                 snippet,
             )| {
-                let (final_answer_preview, final_answer_preview_truncated) =
-                    optional_final_answer_preview(final_answer_text.as_deref());
+                let user_prompt_preview = preview_text(&user_message);
+                let agent_answer_preview =
+                    optional_agent_answer_preview(final_answer_text.as_deref());
                 Ok(SearchTurnHit {
                     provider: parse_provider(&provider)?,
                     session_id,
@@ -684,15 +724,30 @@ fn query_keyword_hits(
                     started_at,
                     completed_at,
                     status: parse_turn_status(&status)?,
-                    user_preview: preview_text(&user_message),
-                    final_answer_preview,
-                    final_answer_preview_truncated,
+                    user_prompt_preview: user_prompt_preview.text.clone(),
+                    user_prompt_preview_truncated: user_prompt_preview.truncated,
+                    user_prompt_preview_chars: user_prompt_preview.chars,
+                    user_prompt_total_chars: user_prompt_preview.total_chars,
+                    agent_answer_preview: agent_answer_preview
+                        .as_ref()
+                        .map(|preview| preview.text.clone()),
+                    agent_answer_preview_truncated: agent_answer_preview
+                        .as_ref()
+                        .is_some_and(|preview| preview.truncated),
+                    agent_answer_preview_chars: agent_answer_preview
+                        .as_ref()
+                        .map(|preview| preview.chars),
+                    agent_answer_total_chars: agent_answer_preview
+                        .as_ref()
+                        .map(|preview| preview.total_chars),
                     snippet: snippet
                         .filter(|value| !value.trim().is_empty())
-                        .or_else(|| Some(preview_text(&user_message))),
+                        .or(Some(user_prompt_preview.text)),
                     matched_paths: Vec::new(),
+                    matched_paths_count: 0,
                     matched_paths_truncated: false,
                     matches: Vec::new(),
+                    matches_count: 0,
                     matches_truncated: false,
                 })
             },
@@ -754,6 +809,7 @@ fn query_regex_evidence_hits_by_turn(
                 turn,
                 matcher,
                 request.fields,
+                request.match_limit,
             )
         },
     )
@@ -793,6 +849,7 @@ fn query_literal_evidence_hits_by_turn(
                 turn,
                 request.query,
                 request.fields,
+                request.match_limit,
             )
         },
     )
@@ -927,8 +984,9 @@ fn query_literal_evidence_hit_for_turn(
     turn: EvidenceSearchTurn,
     query: &str,
     fields: &EvidenceFieldSelection,
+    match_limit: usize,
 ) -> Result<Option<SearchTurnHit>> {
-    let match_limit = i64::try_from(MAX_EVIDENCE_MATCHES_PER_TURN.saturating_add(1))
+    let sql_match_limit = i64::try_from(match_limit.saturating_add(1))
         .context("evidence match preview limit exceeds SQLite INTEGER range")?;
     let mut params = vec![
         Value::Text(project_id.to_owned()),
@@ -938,7 +996,7 @@ fn query_literal_evidence_hit_for_turn(
     ];
     fields.push_params(&mut params);
     params.push(Value::Text(query.to_owned()));
-    params.push(Value::Integer(match_limit));
+    params.push(Value::Integer(sql_match_limit));
     let mut rows = statement
         .query(params_from_iter(params))
         .context("failed to query literal turn evidence rows")?;
@@ -950,7 +1008,7 @@ fn query_literal_evidence_hit_for_turn(
     {
         let evidence = read_evidence_text_row(row)?;
         if let Some(range) = literal_match_range(&evidence.text, query) {
-            if matches.len() >= MAX_EVIDENCE_MATCHES_PER_TURN {
+            if matches.len() >= match_limit {
                 matches_truncated = true;
                 break;
             }
@@ -961,7 +1019,7 @@ fn query_literal_evidence_hit_for_turn(
             });
         }
     }
-    if matches.is_empty() {
+    if matches.is_empty() && !matches_truncated {
         return Ok(None);
     }
 
@@ -979,6 +1037,7 @@ fn query_regex_evidence_hit_for_turn(
     turn: EvidenceSearchTurn,
     matcher: &EvidenceMatcher,
     fields: &EvidenceFieldSelection,
+    match_limit: usize,
 ) -> Result<Option<SearchTurnHit>> {
     let mut params = vec![
         Value::Text(project_id.to_owned()),
@@ -995,7 +1054,7 @@ fn query_regex_evidence_hit_for_turn(
     while let Some(row) = rows.next().context("failed to read turn evidence row")? {
         let evidence = read_evidence_text_row(row)?;
         if let Some(range) = matcher.find_match(&evidence.text) {
-            if matches.len() >= MAX_EVIDENCE_MATCHES_PER_TURN {
+            if matches.len() >= match_limit {
                 matches_truncated = true;
                 break;
             }
@@ -1006,7 +1065,7 @@ fn query_regex_evidence_hit_for_turn(
             });
         }
     }
-    if matches.is_empty() {
+    if matches.is_empty() && !matches_truncated {
         return Ok(None);
     }
 
@@ -1030,12 +1089,19 @@ fn build_evidence_search_hit(
         started_at: turn.started_at,
         completed_at: turn.completed_at,
         status: turn.status,
-        user_preview: turn.user_preview,
-        final_answer_preview: turn.final_answer_preview,
-        final_answer_preview_truncated: turn.final_answer_preview_truncated,
+        user_prompt_preview: turn.user_prompt_preview,
+        user_prompt_preview_truncated: turn.user_prompt_preview_truncated,
+        user_prompt_preview_chars: turn.user_prompt_preview_chars,
+        user_prompt_total_chars: turn.user_prompt_total_chars,
+        agent_answer_preview: turn.agent_answer_preview,
+        agent_answer_preview_truncated: turn.agent_answer_preview_truncated,
+        agent_answer_preview_chars: turn.agent_answer_preview_chars,
+        agent_answer_total_chars: turn.agent_answer_total_chars,
         snippet: None,
         matched_paths: Vec::new(),
+        matched_paths_count: 0,
         matched_paths_truncated: false,
+        matches_count: u64::try_from(matches.len()).unwrap_or(u64::MAX),
         matches,
         matches_truncated,
     }
@@ -1085,8 +1151,8 @@ fn read_evidence_search_turn(row: &rusqlite::Row<'_>) -> Result<EvidenceSearchTu
     let provider_key = row.get::<_, String>(0)?;
     let turn_ordinal_key = row.get::<_, i64>(2)?;
     let final_answer_text = row.get::<_, Option<String>>(7)?;
-    let (final_answer_preview, final_answer_preview_truncated) =
-        optional_final_answer_preview(final_answer_text.as_deref());
+    let user_prompt_preview = preview_text(&row.get::<_, String>(6)?);
+    let agent_answer_preview = optional_agent_answer_preview(final_answer_text.as_deref());
     Ok(EvidenceSearchTurn {
         provider: parse_provider(&provider_key)?,
         provider_key,
@@ -1096,9 +1162,20 @@ fn read_evidence_search_turn(row: &rusqlite::Row<'_>) -> Result<EvidenceSearchTu
         started_at: row.get(3)?,
         completed_at: row.get(4)?,
         status: parse_turn_status(&row.get::<_, String>(5)?)?,
-        user_preview: preview_text(&row.get::<_, String>(6)?),
-        final_answer_preview,
-        final_answer_preview_truncated,
+        user_prompt_preview: user_prompt_preview.text,
+        user_prompt_preview_truncated: user_prompt_preview.truncated,
+        user_prompt_preview_chars: user_prompt_preview.chars,
+        user_prompt_total_chars: user_prompt_preview.total_chars,
+        agent_answer_preview: agent_answer_preview
+            .as_ref()
+            .map(|preview| preview.text.clone()),
+        agent_answer_preview_truncated: agent_answer_preview
+            .as_ref()
+            .is_some_and(|preview| preview.truncated),
+        agent_answer_preview_chars: agent_answer_preview.as_ref().map(|preview| preview.chars),
+        agent_answer_total_chars: agent_answer_preview
+            .as_ref()
+            .map(|preview| preview.total_chars),
     })
 }
 
@@ -1265,8 +1342,9 @@ fn query_file_path_glob_turn_batch(
             )| {
                 let provider = parse_provider(&provider)?;
                 let turn_ordinal = sql_count_to_u64(turn_ordinal)?;
-                let (final_answer_preview, final_answer_preview_truncated) =
-                    optional_final_answer_preview(final_answer_text.as_deref());
+                let user_prompt_preview = preview_text(&user_message);
+                let agent_answer_preview =
+                    optional_agent_answer_preview(final_answer_text.as_deref());
                 candidate_turns.insert((provider, session_id.clone(), turn_ordinal));
                 Ok(FilePathGlobRow {
                     provider,
@@ -1275,9 +1353,22 @@ fn query_file_path_glob_turn_batch(
                     started_at,
                     completed_at,
                     status: parse_turn_status(&status)?,
-                    user_preview: preview_text(&user_message),
-                    final_answer_preview,
-                    final_answer_preview_truncated,
+                    user_prompt_preview: user_prompt_preview.text,
+                    user_prompt_preview_truncated: user_prompt_preview.truncated,
+                    user_prompt_preview_chars: user_prompt_preview.chars,
+                    user_prompt_total_chars: user_prompt_preview.total_chars,
+                    agent_answer_preview: agent_answer_preview
+                        .as_ref()
+                        .map(|preview| preview.text.clone()),
+                    agent_answer_preview_truncated: agent_answer_preview
+                        .as_ref()
+                        .is_some_and(|preview| preview.truncated),
+                    agent_answer_preview_chars: agent_answer_preview
+                        .as_ref()
+                        .map(|preview| preview.chars),
+                    agent_answer_total_chars: agent_answer_preview
+                        .as_ref()
+                        .map(|preview| preview.total_chars),
                     repo_relative_path,
                     path,
                     matched_path,
@@ -1297,11 +1388,9 @@ fn optional_text_value(value: Option<&str>) -> Value {
     value.map_or(Value::Null, |value| Value::Text(value.to_owned()))
 }
 
-/// Builds one optional final-answer preview with its truncation flag.
-fn optional_final_answer_preview(text: Option<&str>) -> (Option<String>, bool) {
-    text.map(preview_text_with_truncation)
-        .map(|(preview, truncated)| (Some(preview), truncated))
-        .unwrap_or((None, false))
+/// Builds one optional agent-answer preview with its size metadata.
+fn optional_agent_answer_preview(text: Option<&str>) -> Option<super::TextPreview> {
+    text.map(preview_text)
 }
 
 /// Groups glob-verified path rows back into turn hits.
@@ -1343,9 +1432,14 @@ fn start_file_path_glob_hit(row: &FilePathGlobRow) -> FileSearchHitAccumulator {
         started_at: row.started_at.clone(),
         completed_at: row.completed_at.clone(),
         status: row.status,
-        user_preview: row.user_preview.clone(),
-        final_answer_preview: row.final_answer_preview.clone(),
-        final_answer_preview_truncated: row.final_answer_preview_truncated,
+        user_prompt_preview: row.user_prompt_preview.clone(),
+        user_prompt_preview_truncated: row.user_prompt_preview_truncated,
+        user_prompt_preview_chars: row.user_prompt_preview_chars,
+        user_prompt_total_chars: row.user_prompt_total_chars,
+        agent_answer_preview: row.agent_answer_preview.clone(),
+        agent_answer_preview_truncated: row.agent_answer_preview_truncated,
+        agent_answer_preview_chars: row.agent_answer_preview_chars,
+        agent_answer_total_chars: row.agent_answer_total_chars,
         matched_paths: BTreeSet::new(),
     }
 }
@@ -1580,8 +1674,9 @@ fn query_file_hits_stage(
                 final_answer_text,
                 matched_path,
             )| {
-                let (final_answer_preview, final_answer_preview_truncated) =
-                    optional_final_answer_preview(final_answer_text.as_deref());
+                let user_prompt_preview = preview_text(&user_message);
+                let agent_answer_preview =
+                    optional_agent_answer_preview(final_answer_text.as_deref());
                 Ok(FileSearchRow {
                     provider: parse_provider(&provider)?,
                     session_id,
@@ -1589,9 +1684,22 @@ fn query_file_hits_stage(
                     started_at,
                     completed_at,
                     status: parse_turn_status(&status)?,
-                    user_preview: preview_text(&user_message),
-                    final_answer_preview,
-                    final_answer_preview_truncated,
+                    user_prompt_preview: user_prompt_preview.text,
+                    user_prompt_preview_truncated: user_prompt_preview.truncated,
+                    user_prompt_preview_chars: user_prompt_preview.chars,
+                    user_prompt_total_chars: user_prompt_preview.total_chars,
+                    agent_answer_preview: agent_answer_preview
+                        .as_ref()
+                        .map(|preview| preview.text.clone()),
+                    agent_answer_preview_truncated: agent_answer_preview
+                        .as_ref()
+                        .is_some_and(|preview| preview.truncated),
+                    agent_answer_preview_chars: agent_answer_preview
+                        .as_ref()
+                        .map(|preview| preview.chars),
+                    agent_answer_total_chars: agent_answer_preview
+                        .as_ref()
+                        .map(|preview| preview.total_chars),
                     matched_path,
                 })
             },
@@ -1644,15 +1752,22 @@ fn start_file_search_hit(row: FileSearchRow) -> FileSearchHitAccumulator {
         started_at: row.started_at,
         completed_at: row.completed_at,
         status: row.status,
-        user_preview: row.user_preview,
-        final_answer_preview: row.final_answer_preview,
-        final_answer_preview_truncated: row.final_answer_preview_truncated,
+        user_prompt_preview: row.user_prompt_preview,
+        user_prompt_preview_truncated: row.user_prompt_preview_truncated,
+        user_prompt_preview_chars: row.user_prompt_preview_chars,
+        user_prompt_total_chars: row.user_prompt_total_chars,
+        agent_answer_preview: row.agent_answer_preview,
+        agent_answer_preview_truncated: row.agent_answer_preview_truncated,
+        agent_answer_preview_chars: row.agent_answer_preview_chars,
+        agent_answer_total_chars: row.agent_answer_total_chars,
         matched_paths,
     }
 }
 
 /// Finalizes one grouped file-search hit after every matching path has been collected.
 fn finalize_file_search_hit(accumulator: FileSearchHitAccumulator) -> SearchTurnHit {
+    let matched_paths = accumulator.matched_paths.into_iter().collect::<Vec<_>>();
+    let matched_paths_count = u64::try_from(matched_paths.len()).unwrap_or(u64::MAX);
     SearchTurnHit {
         provider: accumulator.provider,
         session_id: accumulator.session_id,
@@ -1660,13 +1775,20 @@ fn finalize_file_search_hit(accumulator: FileSearchHitAccumulator) -> SearchTurn
         started_at: accumulator.started_at,
         completed_at: accumulator.completed_at,
         status: accumulator.status,
-        user_preview: accumulator.user_preview,
-        final_answer_preview: accumulator.final_answer_preview,
-        final_answer_preview_truncated: accumulator.final_answer_preview_truncated,
+        user_prompt_preview: accumulator.user_prompt_preview,
+        user_prompt_preview_truncated: accumulator.user_prompt_preview_truncated,
+        user_prompt_preview_chars: accumulator.user_prompt_preview_chars,
+        user_prompt_total_chars: accumulator.user_prompt_total_chars,
+        agent_answer_preview: accumulator.agent_answer_preview,
+        agent_answer_preview_truncated: accumulator.agent_answer_preview_truncated,
+        agent_answer_preview_chars: accumulator.agent_answer_preview_chars,
+        agent_answer_total_chars: accumulator.agent_answer_total_chars,
         snippet: None,
-        matched_paths: accumulator.matched_paths.into_iter().collect(),
+        matched_paths,
+        matched_paths_count,
         matched_paths_truncated: false,
         matches: Vec::new(),
+        matches_count: 0,
         matches_truncated: false,
     }
 }
