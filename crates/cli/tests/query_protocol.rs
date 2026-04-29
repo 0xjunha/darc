@@ -603,6 +603,8 @@ fn session_bundle_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["turn_limit"], 50);
     assert_eq!(value["data"]["turn_offset"], 0);
     assert_eq!(value["data"]["turns_has_more"], false);
+    assert_eq!(value["data"]["step_limit"], 50);
+    assert_eq!(value["data"]["step_offset"], 0);
     assert_eq!(value["data"]["session"]["session_id"], PRIMARY_SESSION_ID);
     assert!(
         !value["data"]["session"]["first_user_prompt_truncated"]
@@ -1451,6 +1453,9 @@ fn turn_query_emits_success_envelope_and_raw_field() -> Result<()> {
     let value = parse_json(&output.stdout, "stdout")?;
     assert_eq!(value["schema"], "darc.query.turn.v1");
     assert_eq!(value["data"]["session_id"], PRIMARY_SESSION_ID);
+    assert_eq!(value["data"]["step_limit"], 50);
+    assert_eq!(value["data"]["step_offset"], 0);
+    assert_eq!(value["data"]["steps_has_more"], false);
     assert_eq!(value["data"]["steps"][0]["type"], "tool_call");
     assert_eq!(
         value["data"]["steps"][0]["arguments"],
@@ -1486,6 +1491,9 @@ fn turn_query_can_embed_derived_insights() -> Result<()> {
     let value = parse_json(&output.stdout, "stdout")?;
     assert_eq!(value["schema"], "darc.query.turn.v1");
     assert_eq!(value["data"]["step_count"], 2);
+    assert_eq!(value["data"]["step_limit"], 50);
+    assert_eq!(value["data"]["step_offset"], 0);
+    assert_eq!(value["data"]["steps_has_more"], false);
     assert_eq!(value["data"]["insights"]["primary_model"], "gpt-5.4");
     assert_eq!(value["data"]["insights"]["duration_ms"], 5_000);
     assert_eq!(

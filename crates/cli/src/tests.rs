@@ -295,6 +295,8 @@ fn parses_query_turn_command() {
                 view,
                 include_raw,
                 include_insights,
+                step_limit,
+                step_offset,
                 ..
             }),
         }) if project_id.as_deref() == Some("repo-abc123")
@@ -304,6 +306,8 @@ fn parses_query_turn_command() {
             && matches!(view, Some(super::ViewArg::Narrative))
             && include_raw
             && include_insights
+            && step_limit == darc_core::query::DEFAULT_TURN_STEP_LIMIT
+            && step_offset == 0
     ));
 }
 
@@ -533,6 +537,8 @@ fn parses_query_session_bundle_command() {
                 view,
                 turn_limit,
                 turn_offset,
+                step_limit,
+                step_offset,
                 ..
             }),
         }) if project_id.as_deref() == Some("repo-abc123")
@@ -543,6 +549,8 @@ fn parses_query_session_bundle_command() {
             && matches!(view, super::ViewArg::Narrative)
             && turn_limit == 50
             && turn_offset == 0
+            && step_limit == darc_core::query::DEFAULT_TURN_STEP_LIMIT
+            && step_offset == 0
     ));
 }
 

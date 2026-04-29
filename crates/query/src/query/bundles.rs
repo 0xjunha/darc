@@ -53,6 +53,8 @@ fn build_session_bundle_query(
             include_raw: false,
             include_insights: false,
             narrative: matches!(request.view, SessionBundleView::Narrative),
+            step_limit: request.step_limit,
+            step_offset: request.step_offset,
         },
         request.turn_limit,
         request.turn_offset,
@@ -74,6 +76,9 @@ fn build_session_bundle_query(
         turn_offset: u64::try_from(request.turn_offset)
             .context("query offset exceeds u64 range")?,
         turns_has_more,
+        step_limit: u64::try_from(request.step_limit).context("query limit exceeds u64 range")?,
+        step_offset: u64::try_from(request.step_offset)
+            .context("query offset exceeds u64 range")?,
         session,
         turns,
         session_files,

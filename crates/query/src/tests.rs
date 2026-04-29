@@ -22,14 +22,14 @@ use darc_test_utils::{
 use serde_json::to_value;
 
 use crate::query::{
-    DEFAULT_MATCHED_PATH_LIMIT, FilesQueryMode, FilesQueryRequest, HardDebuggingTurn, LocalDate,
-    ProjectInsights, SearchMode, SearchTurnsRequest, SessionBundleQueryRequest, SessionBundleView,
-    SessionKind, SessionsQueryRequest, SessionsView, TurnDetailOptions, TurnInsights,
-    TurnsQueryRequest, TurnsView, build_project_insights, build_turn_insights,
-    build_workspace_insights, open_existing_index_database, parse_session_kind,
-    query_project_files, query_project_session_bundle, query_project_session_files,
-    query_project_sessions, query_project_turns, query_search_turns, query_session_turn_details,
-    query_turn_detail, query_turn_exists, smoke_test_sql,
+    DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_TURN_STEP_LIMIT, FilesQueryMode, FilesQueryRequest,
+    HardDebuggingTurn, LocalDate, ProjectInsights, SearchMode, SearchTurnsRequest,
+    SessionBundleQueryRequest, SessionBundleView, SessionKind, SessionsQueryRequest, SessionsView,
+    TurnDetailOptions, TurnInsights, TurnsQueryRequest, TurnsView, build_project_insights,
+    build_turn_insights, build_workspace_insights, open_existing_index_database,
+    parse_session_kind, query_project_files, query_project_session_bundle,
+    query_project_session_files, query_project_sessions, query_project_turns, query_search_turns,
+    query_session_turn_details, query_turn_detail, query_turn_exists, smoke_test_sql,
 };
 
 /// Builds one temporary SQLite index path for query tests.
@@ -2112,8 +2112,8 @@ fn query_session_bundle_reuses_session_and_file_shapes_with_narrative_turns() ->
         &connection,
         IndexedTurnFixture {
             user_message: &long_prompt,
-            step_count: 1,
-            tool_call_count: 1,
+            step_count: 2,
+            tool_call_count: 2,
             duration_ms: 3_000,
             ..IndexedTurnFixture::new(
                 "repo-a",
@@ -2122,7 +2122,7 @@ fn query_session_bundle_reuses_session_and_file_shapes_with_narrative_turns() ->
                 0,
                 "2026-04-06T10:00:00Z",
                 "completed",
-                r##"[{"type":"tool_call","timestamp":"2026-04-06T10:00:01Z","call_id":"call-1","name":"Read","arguments":"{\"file_path\":\"README.md\"}"}]"##,
+                r##"[{"type":"tool_call","timestamp":"2026-04-06T10:00:01Z","call_id":"call-1","name":"Read","arguments":"{\"file_path\":\"README.md\"}"},{"type":"tool_call","timestamp":"2026-04-06T10:00:02Z","call_id":"call-2","name":"List","arguments":"{\"path\":\"src\"}"}]"##,
             )
         },
     )?;
@@ -2156,6 +2156,8 @@ fn query_session_bundle_reuses_session_and_file_shapes_with_narrative_turns() ->
             view: SessionBundleView::Narrative,
             turn_limit: 50,
             turn_offset: 0,
+            step_limit: DEFAULT_TURN_STEP_LIMIT,
+            step_offset: 0,
         },
     )?;
 
@@ -2167,6 +2169,8 @@ fn query_session_bundle_reuses_session_and_file_shapes_with_narrative_turns() ->
     assert_eq!(result.turn_limit, 50);
     assert_eq!(result.turn_offset, 0);
     assert!(!result.turns_has_more);
+    assert_eq!(result.step_limit, DEFAULT_TURN_STEP_LIMIT as u64);
+    assert_eq!(result.step_offset, 0);
     assert_eq!(result.session.session_id, "session-1");
     assert_eq!(result.session.turn_count, 2);
     assert!(result.session.first_user_prompt_truncated);
@@ -2181,6 +2185,10 @@ fn query_session_bundle_reuses_session_and_file_shapes_with_narrative_turns() ->
         500
     );
     assert_eq!(result.turns.len(), 2);
+    assert_eq!(result.turns[0].step_limit, DEFAULT_TURN_STEP_LIMIT as u64);
+    assert_eq!(result.turns[0].step_offset, 0);
+    assert!(!result.turns[0].steps_has_more);
+    assert_eq!(result.turns[0].steps.len(), 2);
     assert_eq!(result.turns[0].turn_ordinal, 0);
     assert_eq!(result.turns[1].turn_ordinal, 1);
     assert!(matches!(
@@ -2216,13 +2224,19 @@ fn query_session_bundle_reuses_session_and_file_shapes_with_narrative_turns() ->
             view: SessionBundleView::Narrative,
             turn_limit: 1,
             turn_offset: 0,
+            step_limit: 1,
+            step_offset: 0,
         },
     )?;
 
     assert_eq!(page.turn_limit, 1);
     assert_eq!(page.turn_offset, 0);
     assert!(page.turns_has_more);
+    assert_eq!(page.step_limit, 1);
+    assert_eq!(page.step_offset, 0);
     assert_eq!(page.session.turn_count, 2);
+    assert!(page.turns[0].steps_has_more);
+    assert_eq!(page.turns[0].steps.len(), 1);
     assert_eq!(
         page.turns
             .iter()
@@ -2242,6 +2256,8 @@ fn query_session_bundle_reuses_session_and_file_shapes_with_narrative_turns() ->
             view: SessionBundleView::Narrative,
             turn_limit: 1,
             turn_offset: 0,
+            step_limit: DEFAULT_TURN_STEP_LIMIT,
+            step_offset: 0,
         },
     )?;
     assert_eq!(full_session.session_view, SessionsView::Full);
@@ -2317,6 +2333,8 @@ fn query_session_bundle_ignores_unrelated_invalid_session_rows() -> Result<()> {
             view: SessionBundleView::Full,
             turn_limit: 50,
             turn_offset: 0,
+            step_limit: DEFAULT_TURN_STEP_LIMIT,
+            step_offset: 0,
         },
     )?;
 
@@ -2372,9 +2390,14 @@ fn turn_detail_narrative_view_strips_bulky_step_fields() -> Result<()> {
             include_raw: false,
             include_insights: false,
             narrative: true,
+            step_limit: DEFAULT_TURN_STEP_LIMIT,
+            step_offset: 0,
         },
     )?;
 
+    assert_eq!(detail.step_limit, DEFAULT_TURN_STEP_LIMIT as u64);
+    assert_eq!(detail.step_offset, 0);
+    assert!(!detail.steps_has_more);
     assert_eq!(detail.steps.len(), 8);
     assert_eq!(detail.raw_steps_json, None);
     assert!(matches!(
@@ -2426,6 +2449,31 @@ fn turn_detail_narrative_view_strips_bulky_step_fields() -> Result<()> {
         } if payload_json.is_empty() && item_type == "web_search_call"
     ));
 
+    let page = query_turn_detail(
+        &index_path,
+        "repo-a",
+        SourceKind::Codex,
+        "session-1",
+        0,
+        TurnDetailOptions {
+            include_raw: false,
+            include_insights: false,
+            narrative: true,
+            step_limit: 3,
+            step_offset: 2,
+        },
+    )?;
+
+    assert_eq!(page.step_count, 8);
+    assert_eq!(page.step_limit, 3);
+    assert_eq!(page.step_offset, 2);
+    assert!(page.steps_has_more);
+    assert_eq!(page.steps.len(), 3);
+    assert!(matches!(
+        &page.steps[0],
+        NormalizedTurnStep::ToolCall { arguments, .. } if arguments.is_empty()
+    ));
+
     let error = query_turn_detail(
         &index_path,
         "repo-a",
@@ -2436,6 +2484,8 @@ fn turn_detail_narrative_view_strips_bulky_step_fields() -> Result<()> {
             include_raw: true,
             include_insights: false,
             narrative: true,
+            step_limit: DEFAULT_TURN_STEP_LIMIT,
+            step_offset: 0,
         },
     )
     .unwrap_err();
@@ -2586,6 +2636,8 @@ fn session_turn_details_reuse_one_session_query_shape() -> Result<()> {
             include_raw: false,
             include_insights: false,
             narrative: true,
+            step_limit: DEFAULT_TURN_STEP_LIMIT,
+            step_offset: 0,
         },
     )?;
 
