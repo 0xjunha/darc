@@ -1738,6 +1738,9 @@ fn workspace_insights_query_emits_success_envelope() -> Result<()> {
     assert!(output.stderr.is_empty());
     let value = parse_json(&output.stdout, "stdout")?;
     assert_eq!(value["schema"], "darc.query.insights.workspace.v1");
+    assert_eq!(value["data"]["recent_session_limit"], 50);
+    assert_eq!(value["data"]["recent_session_offset"], 0);
+    assert_eq!(value["data"]["recent_sessions_has_more"], false);
     assert_eq!(value["data"]["active_session_count"], 1);
     assert_eq!(value["data"]["included_turn_count"], 1);
 
@@ -1767,6 +1770,9 @@ fn project_insights_query_emits_success_envelope() -> Result<()> {
     let value = parse_json(&output.stdout, "stdout")?;
     assert_eq!(value["schema"], "darc.query.insights.project.v1");
     assert_eq!(value["data"]["provider"], "codex");
+    assert_eq!(value["data"]["turn_limit"], 1000);
+    assert_eq!(value["data"]["inspected_turn_count"], 1);
+    assert_eq!(value["data"]["turns_has_more"], false);
     assert_eq!(value["data"]["most_common_tools"][0]["name"], "Read");
     assert_eq!(value["data"]["total_time_ms"], 5000);
     assert_eq!(

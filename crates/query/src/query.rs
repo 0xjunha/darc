@@ -79,6 +79,9 @@ pub const DEFAULT_MATCHED_PATH_LIMIT: usize = 20;
 /// Caps turn-detail step previews unless callers ask for a larger page.
 pub const DEFAULT_TURN_STEP_LIMIT: usize = 50;
 
+/// Caps workspace-insight recent session previews unless callers ask for a larger page.
+pub const DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT: usize = 50;
+
 /// Stores one indexed project aggregate used by the workspace sidebar.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ProjectIndexAggregate {
@@ -698,6 +701,9 @@ impl HardDebuggingCandidate for HardDebuggingTurn {
 pub struct WorkspaceInsights {
     pub window_start: String,
     pub window_end: String,
+    pub recent_session_limit: u64,
+    pub recent_session_offset: u64,
+    pub recent_sessions_has_more: bool,
     pub daily_time: Vec<WorkspaceDailyTimeStat>,
     pub recent_sessions: Vec<SessionRuntimeStat>,
     pub active_session_count: u64,
@@ -710,6 +716,9 @@ pub struct WorkspaceInsights {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ProjectInsights {
     pub provider: Option<SourceKind>,
+    pub turn_limit: u64,
+    pub inspected_turn_count: u64,
+    pub turns_has_more: bool,
     pub daily_time: Vec<DailyTimeStat>,
     pub most_common_tools: Vec<ToolUsageStat>,
     pub most_read_files: Vec<FileUsageStat>,

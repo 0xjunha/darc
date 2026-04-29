@@ -22,14 +22,15 @@ use darc_test_utils::{
 use serde_json::to_value;
 
 use crate::query::{
-    DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_TURN_STEP_LIMIT, FilesQueryMode, FilesQueryRequest,
-    HardDebuggingTurn, LocalDate, ProjectInsights, SearchMode, SearchTurnsRequest,
-    SessionBundleQueryRequest, SessionBundleView, SessionKind, SessionsQueryRequest, SessionsView,
-    TurnDetailOptions, TurnInsights, TurnsQueryRequest, TurnsView, build_project_insights,
-    build_turn_insights, build_workspace_insights, open_existing_index_database,
-    parse_session_kind, query_project_files, query_project_session_bundle,
-    query_project_session_files, query_project_sessions, query_project_turns, query_search_turns,
-    query_session_turn_details, query_turn_detail, query_turn_exists, smoke_test_sql,
+    DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_TURN_STEP_LIMIT, DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT,
+    FilesQueryMode, FilesQueryRequest, HardDebuggingTurn, LocalDate, ProjectInsights, SearchMode,
+    SearchTurnsRequest, SessionBundleQueryRequest, SessionBundleView, SessionKind,
+    SessionsQueryRequest, SessionsView, TurnDetailOptions, TurnInsights, TurnsQueryRequest,
+    TurnsView, build_project_insights, build_turn_insights, build_workspace_insights,
+    open_existing_index_database, parse_session_kind, query_project_files,
+    query_project_session_bundle, query_project_session_files, query_project_sessions,
+    query_project_turns, query_search_turns, query_session_turn_details, query_turn_detail,
+    query_turn_exists, smoke_test_sql,
 };
 
 /// Builds one temporary SQLite index path for query tests.
@@ -509,18 +510,31 @@ fn workspace_insights_filter_short_and_failed_turns() -> Result<()> {
         },
     )?;
 
-    let insights = build_workspace_insights(&connection, 7)?;
+    let insights =
+        build_workspace_insights(&connection, 7, DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT, 0)?;
 
     assert_eq!(
         insights.window_end,
         sqlite_local_date(&connection, "2026-04-06T08:00:00Z")?
     );
+    assert_eq!(
+        insights.recent_session_limit,
+        DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT as u64
+    );
+    assert_eq!(insights.recent_session_offset, 0);
+    assert!(!insights.recent_sessions_has_more);
     assert_eq!(insights.active_session_count, 1);
     assert_eq!(insights.included_turn_count, 1);
     assert_eq!(insights.excluded_turn_count, 2);
     assert_eq!(insights.total_time_ms, 3_000);
     assert_eq!(insights.recent_sessions.len(), 1);
     assert_eq!(insights.recent_sessions[0].project_id, "repo-a");
+
+    let empty_page = build_workspace_insights(&connection, 7, 0, 0)?;
+    assert_eq!(empty_page.active_session_count, 1);
+    assert_eq!(empty_page.recent_session_limit, 0);
+    assert!(empty_page.recent_sessions_has_more);
+    assert!(empty_page.recent_sessions.is_empty());
 
     fs::remove_dir_all(
         index_path
@@ -2765,6 +2779,9 @@ fn project_insights_collect_tool_and_file_stats() -> Result<()> {
     let insights: ProjectInsights = build_project_insights(&connection, "repo-a", None, 1000)?;
 
     assert_eq!(insights.provider, None);
+    assert_eq!(insights.turn_limit, 1000);
+    assert_eq!(insights.inspected_turn_count, 2);
+    assert!(!insights.turns_has_more);
     assert_eq!(insights.failure_count, 1);
     assert_eq!(insights.total_time_ms, 5_000);
     assert_eq!(insights.most_common_tools[0].name, "Edit");
@@ -2782,6 +2799,10 @@ fn project_insights_collect_tool_and_file_stats() -> Result<()> {
         insights.hard_debuggings[0],
         HardDebuggingTurn { step_count: 55, .. }
     ));
+    let limited_insights: ProjectInsights = build_project_insights(&connection, "repo-a", None, 1)?;
+    assert_eq!(limited_insights.turn_limit, 1);
+    assert_eq!(limited_insights.inspected_turn_count, 1);
+    assert!(limited_insights.turns_has_more);
 
     insert_indexed_session(
         &connection,

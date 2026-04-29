@@ -14,8 +14,8 @@ use super::{
     DailyTimeStat, FileUsageScope, FileUsageStat, HardDebuggingTurn, InsightTurnRow, LocalDate,
     ProjectInsightRow, ProjectInsights, ProjectTimeStat, SessionAggregate, SessionRuntimeStat,
     ShellCommandSummary, ToolUsageScope, ToolUsageStat, WorkspaceDailyTimeStat, WorkspaceInsights,
-    open_existing_index_database, parse_provider, parse_turn_status, sort_tool_usage_stats,
-    sql_count_to_u64,
+    open_existing_index_database, paginate_ranked_rows, parse_provider, parse_turn_status,
+    sort_tool_usage_stats, sql_count_to_u64,
 };
 
 const LATEST_LOCAL_DATE_SQL: &str = "SELECT MAX(DATE(started_at, 'localtime')) FROM turns";
@@ -141,9 +141,16 @@ const TURN_SHELL_COMMANDS_SQL: &str = "
 pub fn query_workspace_insights(
     index_db_path: &Path,
     window_days: u32,
+    recent_session_limit: usize,
+    recent_session_offset: usize,
 ) -> Result<WorkspaceInsights> {
     let connection = open_existing_index_database(index_db_path)?;
-    build_workspace_insights(&connection, window_days)
+    build_workspace_insights(
+        &connection,
+        window_days,
+        recent_session_limit,
+        recent_session_offset,
+    )
 }
 
 /// Queries one project insights payload for one indexed project.
@@ -161,6 +168,8 @@ pub fn query_project_insights(
 pub(crate) fn build_workspace_insights(
     connection: &Connection,
     window_days: u32,
+    recent_session_limit: usize,
+    recent_session_offset: usize,
 ) -> Result<WorkspaceInsights> {
     let window_days = window_days.max(1);
     let anchor_date = query_latest_local_date(connection)?
@@ -256,10 +265,18 @@ pub(crate) fn build_workspace_insights(
             .then_with(|| left.provider.cmp(&right.provider))
             .then_with(|| left.session_id.cmp(&right.session_id))
     });
+    let active_session_count = u64::try_from(recent_sessions.len()).unwrap_or(u64::MAX);
+    let (recent_sessions, recent_sessions_has_more) =
+        paginate_ranked_rows(recent_sessions, recent_session_limit, recent_session_offset)?;
 
     Ok(WorkspaceInsights {
         window_start: start_date.to_string(),
         window_end: anchor_date.to_string(),
+        recent_session_limit: u64::try_from(recent_session_limit)
+            .context("query limit exceeds u64 range")?,
+        recent_session_offset: u64::try_from(recent_session_offset)
+            .context("query offset exceeds u64 range")?,
+        recent_sessions_has_more,
         daily_time: date_keys
             .into_iter()
             .map(|date| WorkspaceDailyTimeStat {
@@ -276,7 +293,7 @@ pub(crate) fn build_workspace_insights(
                 date,
             })
             .collect(),
-        active_session_count: u64::try_from(recent_sessions.len()).unwrap_or(u64::MAX),
+        active_session_count,
         recent_sessions,
         included_turn_count,
         excluded_turn_count,
@@ -291,7 +308,9 @@ pub(crate) fn build_project_insights(
     provider: Option<SourceKind>,
     limit: usize,
 ) -> Result<ProjectInsights> {
-    let rows = query_project_insight_rows(connection, project_id, provider, limit)?;
+    let (rows, turns_has_more) =
+        query_project_insight_rows(connection, project_id, provider, limit)?;
+    let inspected_turn_count = u64::try_from(rows.len()).unwrap_or(u64::MAX);
     let all_files = query_file_usage_stats(
         connection,
         FileUsageScope::RecentProject {
@@ -366,6 +385,9 @@ pub(crate) fn build_project_insights(
 
     Ok(ProjectInsights {
         provider,
+        turn_limit: u64::try_from(limit).context("project insights limit exceeds u64 range")?,
+        inspected_turn_count,
+        turns_has_more,
         daily_time: daily_time_map
             .into_iter()
             .map(|(date, active_time_ms)| DailyTimeStat {
@@ -446,15 +468,18 @@ fn query_project_insight_rows(
     project_id: &str,
     provider: Option<SourceKind>,
     limit: usize,
-) -> Result<Vec<ProjectInsightRow>> {
-    let limit =
-        i64::try_from(limit).context("project insights limit exceeds SQLite INTEGER range")?;
+) -> Result<(Vec<ProjectInsightRow>, bool)> {
+    let page_limit = limit
+        .checked_add(1)
+        .context("project insights limit exceeds usize range")?;
+    let page_limit =
+        i64::try_from(page_limit).context("project insights limit exceeds SQLite INTEGER range")?;
     let provider = provider.map(SourceKind::directory_name);
     let mut statement = connection
         .prepare(PROJECT_INSIGHT_ROWS_SQL)
         .context("failed to prepare project insights query")?;
-    let rows = statement
-        .query_map((project_id, provider, limit), |row| {
+    let mut rows = statement
+        .query_map((project_id, provider, page_limit), |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
@@ -469,7 +494,10 @@ fn query_project_insight_rows(
         .context("failed to query project insight rows")?
         .collect::<rusqlite::Result<Vec<_>>>()
         .context("failed to read project insight rows")?;
-    rows.into_iter()
+    let has_more = rows.len() > limit;
+    rows.truncate(limit);
+    let rows = rows
+        .into_iter()
         .map(
             |(
                 project_id,
@@ -494,7 +522,8 @@ fn query_project_insight_rows(
                 })
             },
         )
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    Ok((rows, has_more))
 }
 
 /// Queries grouped tool usage stats for one query scope.

@@ -10,11 +10,11 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use darc_core::query::{
     DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, DEFAULT_TURN_STEP_LIMIT,
-    FilesQueryRequest, QueryProtocolError, ResolveSessionQueryRequest, ResolvedQueryProject,
-    ResolvedSessionMatch, SearchEvidenceField, SearchMode, SearchTurnsRequest,
-    SessionBundleQueryRequest, SessionBundleView, SessionsQueryRequest, SessionsView,
-    TurnDetailOptions, TurnsQueryRequest, TurnsView, query_files_for_project,
-    query_project_insight_report_for_project, query_resolve_sessions,
+    DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT, FilesQueryRequest, QueryProtocolError,
+    ResolveSessionQueryRequest, ResolvedQueryProject, ResolvedSessionMatch, SearchEvidenceField,
+    SearchMode, SearchTurnsRequest, SessionBundleQueryRequest, SessionBundleView,
+    SessionsQueryRequest, SessionsView, TurnDetailOptions, TurnsQueryRequest, TurnsView,
+    query_files_for_project, query_project_insight_report_for_project, query_resolve_sessions,
     query_search_turns_for_project, query_session_bundle_for_project,
     query_session_files_for_project, query_sessions_for_project, query_turn_for_project,
     query_turn_insight_report_for_project, query_turns_for_project, query_workspace,
@@ -752,6 +752,20 @@ struct QueryWorkspaceInsightsArgs {
         help = "Rolling host-local day window in `<days>d` format"
     )]
     window_days: u32,
+
+    #[arg(
+        long = "recent-session-limit",
+        default_value_t = DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT,
+        help = "Maximum recent sessions to return"
+    )]
+    recent_session_limit: usize,
+
+    #[arg(
+        long = "recent-session-offset",
+        default_value_t = 0,
+        help = "Number of recent sessions to skip"
+    )]
+    recent_session_offset: usize,
 }
 
 /// Queries the project insights payload for one configured project.
@@ -1262,7 +1276,12 @@ fn run_query_insights(args: QueryInsightsArgs) -> Result<()> {
 
 /// Queries the workspace insights payload for one rolling host-local day window.
 fn run_query_workspace_insights(args: QueryWorkspaceInsightsArgs) -> Result<()> {
-    let data = query_workspace_insight_report(Some(args.root), args.window_days)?;
+    let data = query_workspace_insight_report(
+        Some(args.root),
+        args.window_days,
+        args.recent_session_limit,
+        args.recent_session_offset,
+    )?;
     print_json_envelope("darc.query.insights.workspace.v1", &data)
 }
 

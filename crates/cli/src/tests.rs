@@ -808,10 +808,14 @@ fn parses_query_workspace_insights_command() {
             command: QueryCommands::Insights(super::QueryInsightsArgs {
                 command: QueryInsightsCommands::Workspace(super::QueryWorkspaceInsightsArgs {
                     window_days,
+                    recent_session_limit,
+                    recent_session_offset,
                     ..
                 }),
             }),
         }) if window_days == 14
+            && recent_session_limit == darc_core::query::DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT
+            && recent_session_offset == 0
     ));
 }
 
