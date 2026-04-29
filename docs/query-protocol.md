@@ -19,7 +19,7 @@ Query commands emit JSON envelopes on stdout by default.
 ### Sessions, Turns, And Files
 
 - `darc query resolve-session <uuid-or-prefix> [--root <path>] [--project-id <id>] [--provider <provider>] [--pick-one]`
-- `darc query sessions [--root <path>] [--project-id <id>] [--provider <provider>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--touched-path <glob>] [--view <compact|full>] [--limit <n>] [--offset <n>]`
+- `darc query sessions [--root <path>] [--project-id <id>] [--provider <provider>] [--view <compact|full>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--touched-path <glob>] [--limit <n>] [--offset <n>]`
 - `darc query files [--root <path>] [--project-id <id>] [--provider <provider>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>]`
 - `darc query files [--root <path>] [--project-id <id>] [--provider <provider>] <path-or-glob> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>] [--matched-path-limit <n>|--include-all-matched-paths]`
 - `darc query files [--root <path>] [--project-id <id>] [--provider <provider>] --path <path-or-glob> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>] [--matched-path-limit <n>|--include-all-matched-paths]`
@@ -27,13 +27,13 @@ Query commands emit JSON envelopes on stdout by default.
 - `darc query session-files [--root <path>] [--project-id <id>] [--provider <provider>] <session-id>`
 - `darc query session-files [--root <path>] [--project-id <id>] [--provider <provider>] --session-id <session-id>`
 - `darc query session-bundle [--root <path>] [--project-id <id>] [--provider <provider>] <session-id> [--session-view <compact|full>] [--view <full|narrative>] [--turn-limit <n>] [--turn-offset <n>] [--step-limit <n>] [--step-offset <n>]`
-- `darc query turns [--root <path>] [--project-id <id>] [--provider <provider>] <session-id> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--view <full|oneline>] [--limit <n>] [--offset <n>]`
+- `darc query turns [--root <path>] [--project-id <id>] [--provider <provider>] <session-id> [--view <full|oneline>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>]`
 - `darc query turn [--root <path>] [--project-id <id>] [--provider <provider>] <session-id> <turn-ordinal> [--view <full|narrative>] [--step-limit <n>] [--step-offset <n>] [--include-raw] [--include-insights]`
 
 ### Search
 
-- `darc query search turns [--root <path>] [--project-id <id>] <query> [--mode <keyword|literal|regex|file-name|file-path|path-fragment>] [--include-tool-output] [--field <field>] [--exclude-field <field>] [--provider <provider>] [--session-id <id>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>] [--matched-path-limit <n>|--include-all-matched-paths]`
-- `darc query search turns [--root <path>] [--project-id <id>] --query <query> [--mode <keyword|literal|regex|file-name|file-path|path-fragment>] [--include-tool-output] [--field <field>] [--exclude-field <field>] [--provider <provider>] [--session-id <id>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>] [--matched-path-limit <n>|--include-all-matched-paths]`
+- `darc query search turns [--root <path>] [--project-id <id>] [--provider <provider>] [--session-id <id>] <query> [--mode <keyword|literal|regex|file-name|file-path|path-fragment>] [--include-tool-output] [--field <field>] [--exclude-field <field>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>] [--matched-path-limit <n>|--include-all-matched-paths]`
+- `darc query search turns [--root <path>] [--project-id <id>] [--provider <provider>] [--session-id <id>] --query <query> [--mode <keyword|literal|regex|file-name|file-path|path-fragment>] [--include-tool-output] [--field <field>] [--exclude-field <field>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>] [--matched-path-limit <n>|--include-all-matched-paths]`
 
 ### Insights
 
@@ -46,21 +46,22 @@ Query commands emit JSON envelopes on stdout by default.
 
 - project-scoped queries accept optional `--project-id`; when omitted, Darc resolves the configured project from the current directory
 - project-wide provider filters default to all providers when `--provider` is omitted
-- `darc query sessions` defaults to `--view compact`; pass `--view full` for full `first_user_prompt` text. `edited_files` is always complete.
+- `darc query sessions` defaults to `--view compact`; pass `--view full` for full `first_user_prompt` and `final_agent_message` text. `edited_files` is deduplicated and always complete for each returned session row.
 - `darc query resolve-session` accepts either one full UUID or one UUID prefix and returns `project_id`, `provider`, and `session_id` for each match
 - `darc query search turns` defaults to `--mode keyword`; pass `--mode` only for literal, regex, or file/path search modes
 - `darc query search turns` accepts query text positionally or with `--query`; use `--query` for query text that begins with `-`
-- `darc query files` with no path selector ranks top touched files; positional `<path-or-glob>` uses path mode, and `--path` is the explicit equivalent
+- `darc query files` with no path selector ranks most-touched files; positional `<path-or-glob>` uses path mode, and `--path` is the explicit equivalent
 - session-scoped commands require a session id supplied either positionally or with `--session-id`; Darc infers `--provider` when that session id is unique within the project
 - turn-scoped commands require a turn ordinal supplied either positionally or with `--turn-ordinal`
 - do not pass both positional and flag forms for the same value
 - pass `--provider` when the same session id exists for multiple providers
-- `darc query files` accepts at most one of positional path, `--path`, or `--co-touched-with`; omit all three for top-file mode
-- `--since` and `--until` on `darc query files` apply to top-file, path, and co-touch modes
+- `darc query files` accepts at most one of positional path, `--path`, or `--co-touched-with`; omit all three for most-touched mode (`mode=top`)
+- `--since` and `--until` on `darc query files` apply to most-touched (`mode=top`), path, and co-touch modes
 - `--limit` and `--offset` are accepted by `darc query sessions`, `darc query turns`, `darc query search turns`, and every `darc query files` mode; these row/turn-hit limits default to `--limit 50 --offset 0`
 - `--matched-path-limit` caps per-row `matched_paths` previews in `darc query files` path mode and file-search modes; it defaults to `20`, and `--include-all-matched-paths` removes that preview cap
 - `--turn-limit` and `--turn-offset` on `darc query session-bundle` bound embedded turn details and default to `--turn-limit 50 --turn-offset 0`
 - `--session-view` on `darc query session-bundle` defaults to `compact`, which caps the embedded first prompt the same way `darc query sessions --view compact` does; pass `--session-view full` when the complete first prompt is needed
+- embedded `session_files` in `darc query session-bundle` is capped at 100 file rows; use `darc query session-files` when a caller needs the standalone full file list
 - `darc query turn` and `darc query session-bundle` default to `--view narrative`; pass `--view full` when raw tool arguments, outputs, or payload blobs are needed
 - `--step-limit` and `--step-offset` on `darc query turn` and `darc query session-bundle` bound returned turn steps and default to `--step-limit 50 --step-offset 0`
 - `--turn-limit` on `darc query insights project` is an inspection bound over indexed turns, not response pagination; the previous `--limit` spelling is accepted as a compatibility alias, and the response echoes `turn_limit`, `inspected_turn_count`, and `turns_has_more`
@@ -117,7 +118,7 @@ The protocol is intentionally composable. A few common read patterns are now fir
     --include-tool-output
   ```
 
-- list top touched files for initial discovery:
+- list most-touched files for initial discovery:
 
   ```bash
   darc query files \
@@ -368,7 +369,7 @@ Today:
 Today:
 
 - session-list payloads include `view`, which is `compact` by default and `full` when `--view full` is supplied
-- session rows include `primary_model`, `total_token_count`, `token_usage`, `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, `removed_line_count`, `first_turn_at`, `first_user_prompt`, `first_user_prompt_truncated`, `aborted_turn_count`, and `edited_files`
+- session rows include `primary_model`, `total_token_count`, `token_usage`, `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, `removed_line_count`, `first_turn_at`, `first_user_prompt`, `first_user_prompt_truncated`, `final_agent_message`, `final_agent_message_truncated`, `aborted_turn_count`, and `edited_files`
 - session totals are rollups across the indexed turns in that session
 - top-level session-list payloads additionally echo the resolved `provider`, `since`, `until`, and `touched_path` request filters as nullable fields, plus non-null `limit`, `offset`, and `has_more` pagination fields
 - top-level turn-list payloads echo nullable `since` and `until` filters plus non-null `limit`, `offset`, and `has_more` pagination fields
@@ -378,16 +379,17 @@ Today:
 - each `token_usage.*` session field is `null` unless every indexed turn in that session carried a value for that exact field
 - `total_token_count` and `effective_agent_runtime_ms` are currently `null` on a session row unless every indexed turn in that session carried a value for that field
 - `first_turn_at` and `first_user_prompt` come from the indexed turn with the minimum `turn_ordinal` in that session and are `null` only when the indexed session has no stored turns
-- in `view=compact`, `first_user_prompt` is capped at 500 characters and `first_user_prompt_truncated` reports whether additional prompt text was omitted
-- in `view=full`, `first_user_prompt` is not capped, and `first_user_prompt_truncated` is false
+- `final_agent_message` comes from the latest indexed turn in that session and is `null` when that turn has no final answer text
+- in `view=compact`, `first_user_prompt` and `final_agent_message` are capped at 500 characters, and their paired `*_truncated` fields report whether additional text was omitted
+- in `view=full`, `first_user_prompt` and `final_agent_message` are not capped, and their paired `*_truncated` fields are false
 - `aborted_turn_count` counts indexed turns in that session where `status` is `aborted`
-- `edited_files` is the distinct `COALESCE(repo_relative_path, path)` list from session-scoped `file_accesses` rows with `access_type` of `edit` or `write`, excluding null or whitespace-only paths and ordered by display path ascending
+- `edited_files` is the distinct project-scoped display list from session-scoped `file_accesses` rows with `access_type` of `edit` or `write`, preferring repo-relative paths for in-project files, excluding null or whitespace-only paths, and ordering by display path ascending
 - `darc.query.turns.v1` remains session-scoped and keeps non-null top-level `provider` and `session_id`; provider is inferred unless the session id is cross-provider ambiguous
 - session-scoped data commands do not auto-resolve UUID prefixes; callers must expand prefixes explicitly with `darc query resolve-session`
 - `query files <glob>` / `query files --path <glob>` and `--touched-path <glob>` on `query sessions` currently use the Rust `glob` crate syntax, matched case-insensitively against one canonical project-scoped display path per access
 - absolute query paths under the configured project root are normalized down to project-relative form before matching, so `/repo/README.md` and `README.md` hit the same indexed access
 - out-of-project paths are not exposed and do not participate in these path-matching filters
-- turn rows include `primary_model`, `total_token_count`, `token_usage`, `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, and `removed_line_count`
+- turn rows include `final_answer_preview`, `final_answer_preview_truncated`, `primary_model`, `total_token_count`, `token_usage`, `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, and `removed_line_count`
 - `primary_model`, `total_token_count`, `token_usage`, and `effective_agent_runtime_ms` may be `null` when the archived provider transcript did not report stable values, or until older projects are re-indexed after additive schema upgrades
 
 ### File pivots
@@ -403,7 +405,7 @@ Today:
 - `mode=top` applies `--since` and `--until` to touched turns using `turns.started_at`, with inclusive lower-bound and exclusive upper-bound semantics
 - `mode=top` ranks file rows by higher `touch_count`, then higher `session_count`, then newer `last_touched_at`, then `path` ascending
 - `mode=top` applies `--limit` and `--offset` after ranking the project-wide touched files
-- `mode=top` file rows report `path`, nullable `co_touch_count`, `touch_count`, `session_count`, `read_count`, `write_count`, `first_touched_at`, and `last_touched_at`; `co_touch_count` is `null` in top mode
+- `mode=top` file rows report `path`, nullable `co_touch_count`, `touch_count`, `session_count`, `read_count`, `write_count`, `first_touched_at`, and `last_touched_at`; `co_touch_count` is `null` in `mode=top`
 - `mode=path` applies `--since` and `--until` to touched turns using `turns.started_at`, with inclusive lower-bound and exclusive upper-bound semantics
 - `mode=path` ranks session rows by higher `touch_count`, then newer `last_touched_at`, then `provider`, then `session_id`
 - `mode=path` applies `--limit` and `--offset` after ranking the matching sessions
@@ -434,8 +436,9 @@ Today:
 - `turns` reuses the exact `darc.query.turn.v1` turn-detail row shape without wrapping each row in its own envelope
 - `turn_limit`, `turn_offset`, and `turns_has_more` describe the embedded turn-detail page
 - `step_limit` and `step_offset` describe the step page applied to each embedded turn detail
-- `session_view=compact` is the default and caps the embedded `session.first_user_prompt` at 500 characters; `session_view=full` keeps the complete first prompt
-- `session_files` reuses the exact `darc.query.session_files.v1` payload shape
+- `session_view=compact` is the default and caps the embedded `session.first_user_prompt` and `session.final_agent_message` at 500 characters; `session_view=full` keeps both complete fields
+- `session_file_limit` is currently `100`; `session_files_has_more=true` means more session file rows existed than the embedded preview returned
+- `session_files` reuses the `darc.query.session_files.v1` payload shape, bounded by `session_file_limit`
 - `view=narrative` applies the same step projection rules as `darc query turn --view narrative`
 - `view=full` keeps the full normalized turn-step payload with `raw_steps_json` still forced to `null`
 
@@ -493,13 +496,13 @@ Today:
 - literal search uses SQLite exact substring predicates to discard nonmatching evidence rows before Darc builds match previews
 - regex search scans derived evidence rows in process because SQLite does not evaluate Darc's Rust regular expressions
 - literal and regex search stop after finding `offset + limit + 1` matching turn hits or after exhausting the filtered turn corpus, so rare or absent exact queries may scan the full filtered project scope
-- literal and regex search return turn hits with nested `matches` entries containing `field` and a bounded `snippet`
+- literal and regex search return turn hits with nested `matches` entries containing `evidence_ordinal`, `field`, and a bounded `snippet`
 - each literal or regex turn hit returns at most 20 nested `matches`; `matches_truncated=true` means additional matching evidence rows in that turn were omitted from the preview
 - literal and regex search are not content-index backed; narrow provider, session, or time filters for broad audits when latency matters
 - `mode=file_name` searches the derived `file_accesses.file_name` basename field
 - `mode=file_path` treats the query text as the same case-insensitive project-scoped glob shape used by `darc query files`
 - `mode=path_fragment` searches derived path fields from `file_accesses.repo_relative_path` and `file_accesses.path` with exact/prefix/substring ranking
-- all search modes return turn identities, top-level turn metadata, nullable `since` / `until` request echoes, nullable `matched_path_limit`, `include_tool_output`, `fields`, `excluded_fields`, and optional `snippet` / `matched_paths` / `matches` fields plus `matched_paths_truncated` and `matches_truncated`
+- all search modes return turn identities, top-level turn metadata, `user_preview`, nullable `final_answer_preview`, `final_answer_preview_truncated`, nullable `since` / `until` request echoes, nullable `matched_path_limit`, `include_tool_output`, `fields`, `excluded_fields`, and optional `snippet` / `matched_paths` / `matches` fields plus `matched_paths_truncated` and `matches_truncated`
 - `matched_paths` is empty for keyword search and populated for file-name, file-path, or path-fragment hits
 - `matched_paths_truncated=true` means additional file-search paths were omitted from that hit's preview; pass `--matched-path-limit <n>` to raise the cap or `--include-all-matched-paths` to remove it
 - `matches` is empty for keyword and file search and populated for literal or regex hits
@@ -507,23 +510,13 @@ Today:
 - file-name and path-fragment search use case-insensitive exact/prefix/substring ranking and deduplicate turn hits before applying final pagination
 - keyword search currently uses FTS ranking before recency tie-breaks
 
-### Hard debugging
+### Project insights
 
-`darc.query.insights.project.v1` echoes nullable `provider`; when present, `daily_time`, tool/file rankings, failures, total time, and `hard_debuggings` are computed from that provider's recent turns only.
+`darc.query.insights.project.v1` echoes nullable `provider`; when present, `daily_time`, tool/file rankings, failures, and total time are computed from that provider's recent turns only.
 
 `turn_limit` echoes the requested inspection bound, `inspected_turn_count` is the number of turns actually included in the aggregate, and `turns_has_more=true` means older matching turns existed beyond the inspected page.
 
 `darc.query.insights.workspace.v1` keeps `active_session_count` as the total active session count in the window, while `recent_sessions` is a bounded preview described by `recent_session_limit`, `recent_session_offset`, and `recent_sessions_has_more`.
-
-`hard_debuggings` is currently provisional.
-
-Today it is ranked by:
-
-- higher `step_count` first
-- then higher `duration_ms`
-- then stable identity tie-breaks
-
-This should be treated as a temporary ranking policy until Darc adopts a more explicit debugging score.
 
 ## Raw and debug fields
 
