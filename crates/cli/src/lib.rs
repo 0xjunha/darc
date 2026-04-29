@@ -723,7 +723,7 @@ struct QuerySearchTurnsArgs {
 
     #[arg(
         long = "match-limit",
-        value_name = "N",
+        value_name = "MATCH_LIMIT",
         help = search_match_limit_help()
     )]
     match_limit: Option<usize>,
@@ -1629,7 +1629,7 @@ fn search_evidence_field_exclude_help() -> String {
 /// Returns help text for the literal/regex per-hit match preview cap.
 fn search_match_limit_help() -> String {
     format!(
-        "Maximum nested matches per literal/regex turn hit. Default: {DEFAULT_SEARCH_MATCH_LIMIT}"
+        "Maximum nested matches per literal/regex turn hit [default: {DEFAULT_SEARCH_MATCH_LIMIT}]"
     )
 }
 
@@ -1683,11 +1683,9 @@ struct TurnsOnelineTurnRow {
     turn_ordinal: u64,
     role: &'static str,
     user_prompt_preview: String,
-    user_prompt_preview_truncated: bool,
     user_prompt_preview_chars: u64,
     user_prompt_total_chars: u64,
     agent_answer_preview: Option<String>,
-    agent_answer_preview_truncated: bool,
     agent_answer_preview_chars: Option<u64>,
     agent_answer_total_chars: Option<u64>,
     step_count: u64,
@@ -1729,11 +1727,9 @@ impl TurnsOnelineQueryData {
                     turn_ordinal: turn.turn_ordinal,
                     role: "user",
                     user_prompt_preview: turn.oneline_user_prompt_preview.clone(),
-                    user_prompt_preview_truncated: turn.oneline_user_prompt_preview_truncated,
                     user_prompt_preview_chars: turn.oneline_user_prompt_preview_chars,
                     user_prompt_total_chars: turn.oneline_user_prompt_total_chars,
                     agent_answer_preview: turn.oneline_agent_answer_preview.clone(),
-                    agent_answer_preview_truncated: turn.oneline_agent_answer_preview_truncated,
                     agent_answer_preview_chars: turn.oneline_agent_answer_preview_chars,
                     agent_answer_total_chars: turn.oneline_agent_answer_total_chars,
                     step_count: turn.step_count,

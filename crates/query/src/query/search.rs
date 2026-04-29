@@ -83,11 +83,9 @@ struct FileSearchRow {
     completed_at: Option<String>,
     status: darc_rollout::model::NormalizedTurnStatus,
     user_prompt_preview: String,
-    user_prompt_preview_truncated: bool,
     user_prompt_preview_chars: u64,
     user_prompt_total_chars: u64,
     agent_answer_preview: Option<String>,
-    agent_answer_preview_truncated: bool,
     agent_answer_preview_chars: Option<u64>,
     agent_answer_total_chars: Option<u64>,
     matched_path: String,
@@ -103,11 +101,9 @@ struct FilePathGlobRow {
     completed_at: Option<String>,
     status: darc_rollout::model::NormalizedTurnStatus,
     user_prompt_preview: String,
-    user_prompt_preview_truncated: bool,
     user_prompt_preview_chars: u64,
     user_prompt_total_chars: u64,
     agent_answer_preview: Option<String>,
-    agent_answer_preview_truncated: bool,
     agent_answer_preview_chars: Option<u64>,
     agent_answer_total_chars: Option<u64>,
     repo_relative_path: Option<String>,
@@ -125,11 +121,9 @@ struct FileSearchHitAccumulator {
     completed_at: Option<String>,
     status: darc_rollout::model::NormalizedTurnStatus,
     user_prompt_preview: String,
-    user_prompt_preview_truncated: bool,
     user_prompt_preview_chars: u64,
     user_prompt_total_chars: u64,
     agent_answer_preview: Option<String>,
-    agent_answer_preview_truncated: bool,
     agent_answer_preview_chars: Option<u64>,
     agent_answer_total_chars: Option<u64>,
     matched_paths: BTreeSet<String>,
@@ -222,11 +216,9 @@ struct EvidenceSearchTurn {
     completed_at: Option<String>,
     status: darc_rollout::model::NormalizedTurnStatus,
     user_prompt_preview: String,
-    user_prompt_preview_truncated: bool,
     user_prompt_preview_chars: u64,
     user_prompt_total_chars: u64,
     agent_answer_preview: Option<String>,
-    agent_answer_preview_truncated: bool,
     agent_answer_preview_chars: Option<u64>,
     agent_answer_total_chars: Option<u64>,
 }
@@ -725,15 +717,11 @@ fn query_keyword_hits(
                     completed_at,
                     status: parse_turn_status(&status)?,
                     user_prompt_preview: user_prompt_preview.text.clone(),
-                    user_prompt_preview_truncated: user_prompt_preview.truncated,
                     user_prompt_preview_chars: user_prompt_preview.chars,
                     user_prompt_total_chars: user_prompt_preview.total_chars,
                     agent_answer_preview: agent_answer_preview
                         .as_ref()
                         .map(|preview| preview.text.clone()),
-                    agent_answer_preview_truncated: agent_answer_preview
-                        .as_ref()
-                        .is_some_and(|preview| preview.truncated),
                     agent_answer_preview_chars: agent_answer_preview
                         .as_ref()
                         .map(|preview| preview.chars),
@@ -1090,11 +1078,9 @@ fn build_evidence_search_hit(
         completed_at: turn.completed_at,
         status: turn.status,
         user_prompt_preview: turn.user_prompt_preview,
-        user_prompt_preview_truncated: turn.user_prompt_preview_truncated,
         user_prompt_preview_chars: turn.user_prompt_preview_chars,
         user_prompt_total_chars: turn.user_prompt_total_chars,
         agent_answer_preview: turn.agent_answer_preview,
-        agent_answer_preview_truncated: turn.agent_answer_preview_truncated,
         agent_answer_preview_chars: turn.agent_answer_preview_chars,
         agent_answer_total_chars: turn.agent_answer_total_chars,
         snippet: None,
@@ -1163,15 +1149,11 @@ fn read_evidence_search_turn(row: &rusqlite::Row<'_>) -> Result<EvidenceSearchTu
         completed_at: row.get(4)?,
         status: parse_turn_status(&row.get::<_, String>(5)?)?,
         user_prompt_preview: user_prompt_preview.text,
-        user_prompt_preview_truncated: user_prompt_preview.truncated,
         user_prompt_preview_chars: user_prompt_preview.chars,
         user_prompt_total_chars: user_prompt_preview.total_chars,
         agent_answer_preview: agent_answer_preview
             .as_ref()
             .map(|preview| preview.text.clone()),
-        agent_answer_preview_truncated: agent_answer_preview
-            .as_ref()
-            .is_some_and(|preview| preview.truncated),
         agent_answer_preview_chars: agent_answer_preview.as_ref().map(|preview| preview.chars),
         agent_answer_total_chars: agent_answer_preview
             .as_ref()
@@ -1354,15 +1336,11 @@ fn query_file_path_glob_turn_batch(
                     completed_at,
                     status: parse_turn_status(&status)?,
                     user_prompt_preview: user_prompt_preview.text,
-                    user_prompt_preview_truncated: user_prompt_preview.truncated,
                     user_prompt_preview_chars: user_prompt_preview.chars,
                     user_prompt_total_chars: user_prompt_preview.total_chars,
                     agent_answer_preview: agent_answer_preview
                         .as_ref()
                         .map(|preview| preview.text.clone()),
-                    agent_answer_preview_truncated: agent_answer_preview
-                        .as_ref()
-                        .is_some_and(|preview| preview.truncated),
                     agent_answer_preview_chars: agent_answer_preview
                         .as_ref()
                         .map(|preview| preview.chars),
@@ -1433,11 +1411,9 @@ fn start_file_path_glob_hit(row: &FilePathGlobRow) -> FileSearchHitAccumulator {
         completed_at: row.completed_at.clone(),
         status: row.status,
         user_prompt_preview: row.user_prompt_preview.clone(),
-        user_prompt_preview_truncated: row.user_prompt_preview_truncated,
         user_prompt_preview_chars: row.user_prompt_preview_chars,
         user_prompt_total_chars: row.user_prompt_total_chars,
         agent_answer_preview: row.agent_answer_preview.clone(),
-        agent_answer_preview_truncated: row.agent_answer_preview_truncated,
         agent_answer_preview_chars: row.agent_answer_preview_chars,
         agent_answer_total_chars: row.agent_answer_total_chars,
         matched_paths: BTreeSet::new(),
@@ -1685,15 +1661,11 @@ fn query_file_hits_stage(
                     completed_at,
                     status: parse_turn_status(&status)?,
                     user_prompt_preview: user_prompt_preview.text,
-                    user_prompt_preview_truncated: user_prompt_preview.truncated,
                     user_prompt_preview_chars: user_prompt_preview.chars,
                     user_prompt_total_chars: user_prompt_preview.total_chars,
                     agent_answer_preview: agent_answer_preview
                         .as_ref()
                         .map(|preview| preview.text.clone()),
-                    agent_answer_preview_truncated: agent_answer_preview
-                        .as_ref()
-                        .is_some_and(|preview| preview.truncated),
                     agent_answer_preview_chars: agent_answer_preview
                         .as_ref()
                         .map(|preview| preview.chars),
@@ -1753,11 +1725,9 @@ fn start_file_search_hit(row: FileSearchRow) -> FileSearchHitAccumulator {
         completed_at: row.completed_at,
         status: row.status,
         user_prompt_preview: row.user_prompt_preview,
-        user_prompt_preview_truncated: row.user_prompt_preview_truncated,
         user_prompt_preview_chars: row.user_prompt_preview_chars,
         user_prompt_total_chars: row.user_prompt_total_chars,
         agent_answer_preview: row.agent_answer_preview,
-        agent_answer_preview_truncated: row.agent_answer_preview_truncated,
         agent_answer_preview_chars: row.agent_answer_preview_chars,
         agent_answer_total_chars: row.agent_answer_total_chars,
         matched_paths,
@@ -1776,11 +1746,9 @@ fn finalize_file_search_hit(accumulator: FileSearchHitAccumulator) -> SearchTurn
         completed_at: accumulator.completed_at,
         status: accumulator.status,
         user_prompt_preview: accumulator.user_prompt_preview,
-        user_prompt_preview_truncated: accumulator.user_prompt_preview_truncated,
         user_prompt_preview_chars: accumulator.user_prompt_preview_chars,
         user_prompt_total_chars: accumulator.user_prompt_total_chars,
         agent_answer_preview: accumulator.agent_answer_preview,
-        agent_answer_preview_truncated: accumulator.agent_answer_preview_truncated,
         agent_answer_preview_chars: accumulator.agent_answer_preview_chars,
         agent_answer_total_chars: accumulator.agent_answer_total_chars,
         snippet: None,

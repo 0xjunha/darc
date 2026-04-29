@@ -252,7 +252,7 @@ Clients should branch on `schema`, not on `darc_version`.
 - `view: "full"` keeps the full turn-summary object and includes 500-character user/agent previews plus stats fields such as `tool_call_count`, tokens, runtime, and patch counts
 - `view: "oneline"` returns a smaller per-turn object with `turn_ordinal`, `role`, first-line `user_prompt_preview`, first-line `agent_answer_preview`, preview size metadata, `step_count`, and `tool_call_count`
 - both projections include `limit`, `offset`, and `has_more`, and default to the first 50 turns
-- `oneline` previews are derived from the first source line and capped at 80 characters
+- `oneline` previews are derived from the first source line and capped at 300 characters
 - session-scoped oneline rows currently emit `role: "user"` because the preview always comes from the first user message line
 
 ## Stability rules
@@ -390,8 +390,9 @@ Today:
 - `query files <glob>` / `query files --path <glob>` and `--touched-path <glob>` on `query sessions` currently use the Rust `glob` crate syntax, matched case-insensitively against one canonical project-scoped display path per access
 - absolute query paths under the configured project root are normalized down to project-relative form before matching, so `/repo/README.md` and `README.md` hit the same indexed access
 - out-of-project paths are not exposed and do not participate in these path-matching filters
-- turn rows include `user_prompt_preview`, `user_prompt_preview_truncated`, `user_prompt_preview_chars`, `user_prompt_total_chars`, `agent_answer_preview`, `agent_answer_preview_truncated`, `agent_answer_preview_chars`, `agent_answer_total_chars`, `primary_model`, `total_token_count`, `token_usage`, `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, and `removed_line_count`
-- in `view=full`, turn previews are capped at 500 normalized characters; in `view=oneline`, previews are first-line summaries capped at 80 normalized characters
+- turn rows include `user_prompt_preview`, `user_prompt_preview_chars`, `user_prompt_total_chars`, `agent_answer_preview`, `agent_answer_preview_chars`, `agent_answer_total_chars`, `primary_model`, `total_token_count`, `token_usage`, `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, and `removed_line_count`
+- in `view=full`, turn previews are capped at 500 normalized characters; in `view=oneline`, previews are first-line summaries capped at 300 normalized characters
+- preview truncation is represented by the returned and total character counts; a preview was truncated when `*_preview_chars` is lower than `*_total_chars`
 - `primary_model`, `total_token_count`, `token_usage`, and `effective_agent_runtime_ms` may be `null` when the archived provider transcript did not report stable values, or until older projects are re-indexed after additive schema upgrades
 
 ### File pivots
@@ -504,7 +505,7 @@ Today:
 - `mode=file_name` searches the derived `file_accesses.file_name` basename field
 - `mode=file_path` treats the query text as the same case-insensitive project-scoped glob shape used by `darc query files`
 - `mode=path_fragment` searches derived path fields from `file_accesses.repo_relative_path` and `file_accesses.path` with exact/prefix/substring ranking
-- all search modes return turn identities, top-level turn metadata, `user_prompt_preview`, `user_prompt_preview_truncated`, `user_prompt_preview_chars`, `user_prompt_total_chars`, nullable `agent_answer_preview`, `agent_answer_preview_truncated`, nullable `agent_answer_preview_chars`, nullable `agent_answer_total_chars`, nullable `since` / `until` request echoes, nullable `matched_path_limit`, nullable `match_limit`, `include_tool_output`, `fields`, `excluded_fields`, and optional `snippet` / `matched_paths` / `matches` fields plus `matched_paths_count`, `matched_paths_truncated`, `matches_count`, and `matches_truncated`
+- all search modes return turn identities, top-level turn metadata, `user_prompt_preview`, `user_prompt_preview_chars`, `user_prompt_total_chars`, nullable `agent_answer_preview`, nullable `agent_answer_preview_chars`, nullable `agent_answer_total_chars`, nullable `since` / `until` request echoes, nullable `matched_path_limit`, nullable `match_limit`, `include_tool_output`, `fields`, `excluded_fields`, and optional `snippet` / `matched_paths` / `matches` fields plus `matched_paths_count`, `matched_paths_truncated`, `matches_count`, and `matches_truncated`
 - `matched_paths` is empty for keyword search and populated for file-name, file-path, or path-fragment hits
 - `matched_paths_count` is the total matched path count collected for that hit before `matched_path_limit`; `matched_paths_truncated=true` means additional file-search paths were omitted from that hit's preview; pass `--matched-path-limit <n>` to raise the cap or `--include-all-matched-paths` to remove it
 - `matches` is empty for keyword and file search and populated for literal or regex hits

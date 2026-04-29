@@ -3444,7 +3444,10 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
         result.hits[0].agent_answer_preview.as_deref(),
         Some("The inspection is complete.")
     );
-    assert!(!result.hits[0].agent_answer_preview_truncated);
+    assert_eq!(
+        result.hits[0].agent_answer_preview_chars,
+        result.hits[0].agent_answer_total_chars
+    );
     assert!(secret_result.hits.is_empty());
 
     let literal_result = query_search_turns(

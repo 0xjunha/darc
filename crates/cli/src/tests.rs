@@ -786,6 +786,8 @@ fn query_search_turns_help_mentions_tool_output_opt_in() {
     assert!(help.contains("--include-tool-output"));
     assert!(help.contains("--field"));
     assert!(help.contains("--exclude-field"));
+    assert!(help.contains("--match-limit <MATCH_LIMIT>"));
+    assert!(help.contains("Maximum nested matches per literal/regex turn hit [default: 20]"));
     assert!(help.contains("literal and regex"));
     assert!(help.contains("Accepted fields: user-message, final-answer"));
     assert!(help.contains("path-fragment"));

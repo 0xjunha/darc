@@ -92,7 +92,7 @@ pub const DEFAULT_SESSION_BUNDLE_FILE_LIMIT: usize = 100;
 pub const DEFAULT_TEXT_PREVIEW_CHARS: usize = 500;
 
 /// Caps one-line turn-list previews for quick timeline skims.
-pub const ONELINE_TEXT_PREVIEW_CHARS: usize = 80;
+pub const ONELINE_TEXT_PREVIEW_CHARS: usize = 300;
 
 /// Stores one indexed project aggregate used by the workspace sidebar.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -363,14 +363,11 @@ pub struct TurnSummary {
     pub completed_at: Option<String>,
     pub status: NormalizedTurnStatus,
     pub user_prompt_preview: String,
-    pub user_prompt_preview_truncated: bool,
     pub user_prompt_preview_chars: u64,
     pub user_prompt_total_chars: u64,
     /// Caches the compact first-line user preview for CLI `--view oneline` rendering.
     #[serde(skip_serializing)]
     pub oneline_user_prompt_preview: String,
-    #[serde(skip_serializing)]
-    pub oneline_user_prompt_preview_truncated: bool,
     #[serde(skip_serializing)]
     pub oneline_user_prompt_preview_chars: u64,
     #[serde(skip_serializing)]
@@ -379,13 +376,10 @@ pub struct TurnSummary {
     #[serde(skip_serializing)]
     pub oneline_agent_answer_preview: Option<String>,
     #[serde(skip_serializing)]
-    pub oneline_agent_answer_preview_truncated: bool,
-    #[serde(skip_serializing)]
     pub oneline_agent_answer_preview_chars: Option<u64>,
     #[serde(skip_serializing)]
     pub oneline_agent_answer_total_chars: Option<u64>,
     pub agent_answer_preview: Option<String>,
-    pub agent_answer_preview_truncated: bool,
     pub agent_answer_preview_chars: Option<u64>,
     pub agent_answer_total_chars: Option<u64>,
     pub has_final_answer: bool,
@@ -508,11 +502,9 @@ pub struct SearchTurnHit {
     pub completed_at: Option<String>,
     pub status: NormalizedTurnStatus,
     pub user_prompt_preview: String,
-    pub user_prompt_preview_truncated: bool,
     pub user_prompt_preview_chars: u64,
     pub user_prompt_total_chars: u64,
     pub agent_answer_preview: Option<String>,
-    pub agent_answer_preview_truncated: bool,
     pub agent_answer_preview_chars: Option<u64>,
     pub agent_answer_total_chars: Option<u64>,
     pub snippet: Option<String>,

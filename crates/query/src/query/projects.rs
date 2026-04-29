@@ -1076,19 +1076,14 @@ fn build_turn_summary(row: RawTurnSummaryRow) -> Result<TurnSummary> {
         completed_at: row.6,
         status: parse_turn_status(&row.7)?,
         user_prompt_preview: user_prompt_preview.text,
-        user_prompt_preview_truncated: user_prompt_preview.truncated,
         user_prompt_preview_chars: user_prompt_preview.chars,
         user_prompt_total_chars: user_prompt_preview.total_chars,
         oneline_user_prompt_preview: oneline_user_prompt_preview.text,
-        oneline_user_prompt_preview_truncated: oneline_user_prompt_preview.truncated,
         oneline_user_prompt_preview_chars: oneline_user_prompt_preview.chars,
         oneline_user_prompt_total_chars: oneline_user_prompt_preview.total_chars,
         oneline_agent_answer_preview: oneline_agent_answer_preview
             .as_ref()
             .map(|preview| preview.text.clone()),
-        oneline_agent_answer_preview_truncated: oneline_agent_answer_preview
-            .as_ref()
-            .is_some_and(|preview| preview.truncated),
         oneline_agent_answer_preview_chars: oneline_agent_answer_preview
             .as_ref()
             .map(|preview| preview.chars),
@@ -1098,9 +1093,6 @@ fn build_turn_summary(row: RawTurnSummaryRow) -> Result<TurnSummary> {
         agent_answer_preview: agent_answer_preview
             .as_ref()
             .map(|preview| preview.text.clone()),
-        agent_answer_preview_truncated: agent_answer_preview
-            .as_ref()
-            .is_some_and(|preview| preview.truncated),
         agent_answer_preview_chars: agent_answer_preview.as_ref().map(|preview| preview.chars),
         agent_answer_total_chars: agent_answer_preview
             .as_ref()

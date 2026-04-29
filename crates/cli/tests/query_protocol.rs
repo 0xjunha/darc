@@ -1025,9 +1025,11 @@ fn turns_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["turns"][0]["step_count"], 2);
     assert_eq!(value["data"]["turns"][0]["tool_call_count"], 1);
     assert_eq!(value["data"]["turns"][0]["agent_answer_preview"], "Done.");
-    assert_eq!(
-        value["data"]["turns"][0]["agent_answer_preview_truncated"],
-        false
+    assert!(
+        !value["data"]["turns"][0]
+            .as_object()
+            .unwrap()
+            .contains_key("agent_answer_preview_truncated")
     );
     assert_eq!(value["data"]["turns"][0]["primary_model"], "gpt-5.4");
     assert_eq!(value["data"]["turns"][0]["total_token_count"], 321);
@@ -1253,16 +1255,20 @@ fn turns_query_oneline_view_emits_compact_rows() -> Result<()> {
         value["data"]["turns"][0]["user_prompt_preview"],
         "Inspect the repository status"
     );
-    assert_eq!(
-        value["data"]["turns"][0]["user_prompt_preview_truncated"],
-        false
+    assert!(
+        !value["data"]["turns"][0]
+            .as_object()
+            .unwrap()
+            .contains_key("user_prompt_preview_truncated")
     );
     assert_eq!(value["data"]["turns"][0]["user_prompt_preview_chars"], 29);
     assert_eq!(value["data"]["turns"][0]["user_prompt_total_chars"], 29);
     assert_eq!(value["data"]["turns"][0]["agent_answer_preview"], "Done.");
-    assert_eq!(
-        value["data"]["turns"][0]["agent_answer_preview_truncated"],
-        false
+    assert!(
+        !value["data"]["turns"][0]
+            .as_object()
+            .unwrap()
+            .contains_key("agent_answer_preview_truncated")
     );
     assert_eq!(value["data"]["turns"][0]["agent_answer_preview_chars"], 5);
     assert_eq!(value["data"]["turns"][0]["agent_answer_total_chars"], 5);
@@ -1719,14 +1725,18 @@ fn search_turns_query_emits_keyword_search_envelope() -> Result<()> {
         value["data"]["hits"][0]["user_prompt_preview"],
         "Inspect the repository status"
     );
-    assert_eq!(
-        value["data"]["hits"][0]["user_prompt_preview_truncated"],
-        false
+    assert!(
+        !value["data"]["hits"][0]
+            .as_object()
+            .unwrap()
+            .contains_key("user_prompt_preview_truncated")
     );
     assert_eq!(value["data"]["hits"][0]["agent_answer_preview"], "Done.");
-    assert_eq!(
-        value["data"]["hits"][0]["agent_answer_preview_truncated"],
-        false
+    assert!(
+        !value["data"]["hits"][0]
+            .as_object()
+            .unwrap()
+            .contains_key("agent_answer_preview_truncated")
     );
     assert_eq!(
         value["data"]["hits"][0]["matched_paths"],
