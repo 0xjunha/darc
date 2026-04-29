@@ -295,6 +295,8 @@ fn parses_query_turn_command() {
                 view,
                 include_raw,
                 include_insights,
+                step_limit,
+                step_offset,
                 ..
             }),
         }) if project_id.as_deref() == Some("repo-abc123")
@@ -304,6 +306,8 @@ fn parses_query_turn_command() {
             && matches!(view, Some(super::ViewArg::Narrative))
             && include_raw
             && include_insights
+            && step_limit == darc_core::query::DEFAULT_TURN_STEP_LIMIT
+            && step_offset == 0
     ));
 }
 
@@ -529,18 +533,24 @@ fn parses_query_session_bundle_command() {
                 provider,
                 session_id_arg,
                 session_id,
+                session_view,
                 view,
                 turn_limit,
                 turn_offset,
+                step_limit,
+                step_offset,
                 ..
             }),
         }) if project_id.as_deref() == Some("repo-abc123")
             && matches!(provider, Some(super::ProviderArg::Codex))
             && session_id_arg.as_deref() == Some("session-1")
             && session_id.is_none()
+            && matches!(session_view, super::SessionListViewArg::Compact)
             && matches!(view, super::ViewArg::Narrative)
             && turn_limit == 50
             && turn_offset == 0
+            && step_limit == darc_core::query::DEFAULT_TURN_STEP_LIMIT
+            && step_offset == 0
     ));
 }
 
@@ -798,10 +808,14 @@ fn parses_query_workspace_insights_command() {
             command: QueryCommands::Insights(super::QueryInsightsArgs {
                 command: QueryInsightsCommands::Workspace(super::QueryWorkspaceInsightsArgs {
                     window_days,
+                    recent_session_limit,
+                    recent_session_offset,
                     ..
                 }),
             }),
         }) if window_days == 14
+            && recent_session_limit == darc_core::query::DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT
+            && recent_session_offset == 0
     ));
 }
 

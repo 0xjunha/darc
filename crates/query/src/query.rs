@@ -76,6 +76,12 @@ pub const DEFAULT_RESOLVE_SESSION_MATCH_LIMIT: usize = 50;
 /// Caps per-row matched path previews unless callers opt into all matched paths.
 pub const DEFAULT_MATCHED_PATH_LIMIT: usize = 20;
 
+/// Caps turn-detail step previews unless callers ask for a larger page.
+pub const DEFAULT_TURN_STEP_LIMIT: usize = 50;
+
+/// Caps workspace-insight recent session previews unless callers ask for a larger page.
+pub const DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT: usize = 50;
+
 /// Stores one indexed project aggregate used by the workspace sidebar.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ProjectIndexAggregate {
@@ -479,6 +485,9 @@ pub struct TurnDetail {
     pub final_answer_at: Option<String>,
     pub final_answer_text: Option<String>,
     pub step_count: u64,
+    pub step_limit: u64,
+    pub step_offset: u64,
+    pub steps_has_more: bool,
     pub steps: Vec<NormalizedTurnStep>,
     pub raw_steps_json: Option<String>,
     pub insights: Option<TurnDetailInsights>,
@@ -490,10 +499,13 @@ pub struct SessionBundleQueryData {
     pub project_id: String,
     pub provider: SourceKind,
     pub session_id: String,
+    pub session_view: SessionsView,
     pub view: SessionBundleView,
     pub turn_limit: u64,
     pub turn_offset: u64,
     pub turns_has_more: bool,
+    pub step_limit: u64,
+    pub step_offset: u64,
     pub session: SessionSummary,
     pub turns: Vec<TurnDetail>,
     pub session_files: SessionFilesQueryData,
@@ -506,17 +518,34 @@ pub struct SessionBundleQueryRequest<'a> {
     pub provider: SourceKind,
     pub session_id: &'a str,
     pub project_root: Option<&'a Path>,
+    pub session_view: SessionsView,
     pub view: SessionBundleView,
     pub turn_limit: usize,
     pub turn_offset: usize,
+    pub step_limit: usize,
+    pub step_offset: usize,
 }
 
 /// Stores one turn-detail projection and enrichment configuration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TurnDetailOptions {
     pub include_raw: bool,
     pub include_insights: bool,
     pub narrative: bool,
+    pub step_limit: usize,
+    pub step_offset: usize,
+}
+
+impl Default for TurnDetailOptions {
+    fn default() -> Self {
+        Self {
+            include_raw: false,
+            include_insights: false,
+            narrative: false,
+            step_limit: DEFAULT_TURN_STEP_LIMIT,
+            step_offset: 0,
+        }
+    }
 }
 
 /// Stores one optional derived insights block embedded in a turn detail payload.
@@ -672,6 +701,9 @@ impl HardDebuggingCandidate for HardDebuggingTurn {
 pub struct WorkspaceInsights {
     pub window_start: String,
     pub window_end: String,
+    pub recent_session_limit: u64,
+    pub recent_session_offset: u64,
+    pub recent_sessions_has_more: bool,
     pub daily_time: Vec<WorkspaceDailyTimeStat>,
     pub recent_sessions: Vec<SessionRuntimeStat>,
     pub active_session_count: u64,
@@ -684,6 +716,9 @@ pub struct WorkspaceInsights {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ProjectInsights {
     pub provider: Option<SourceKind>,
+    pub turn_limit: u64,
+    pub inspected_turn_count: u64,
+    pub turns_has_more: bool,
     pub daily_time: Vec<DailyTimeStat>,
     pub most_common_tools: Vec<ToolUsageStat>,
     pub most_read_files: Vec<FileUsageStat>,
@@ -852,6 +887,7 @@ impl IndexedTurnRow {
         }
         let steps = serde_json::from_str::<Vec<NormalizedTurnStep>>(&self.steps_json)
             .context("failed to parse stored normalized turn steps")?;
+        let (steps, steps_has_more) = page_turn_steps(steps, options)?;
         let steps = if options.narrative {
             steps.into_iter().map(to_narrative_turn_step).collect()
         } else {
@@ -870,6 +906,11 @@ impl IndexedTurnRow {
             final_answer_at: self.final_answer_at,
             final_answer_text: self.final_answer_text,
             step_count: self.step_count,
+            step_limit: u64::try_from(options.step_limit)
+                .context("query limit exceeds u64 range")?,
+            step_offset: u64::try_from(options.step_offset)
+                .context("query offset exceeds u64 range")?,
+            steps_has_more,
             steps,
             raw_steps_json: (options.include_raw && !options.narrative).then_some(self.steps_json),
             insights,
@@ -910,6 +951,24 @@ impl IndexedTurnRow {
             files: insights.files,
         }
     }
+}
+
+/// Applies step-level pagination to one parsed turn-detail step list.
+fn page_turn_steps(
+    steps: Vec<NormalizedTurnStep>,
+    options: TurnDetailOptions,
+) -> Result<(Vec<NormalizedTurnStep>, bool)> {
+    let page_end = options
+        .step_offset
+        .checked_add(options.step_limit)
+        .context("query pagination exceeds usize range")?;
+    let has_more = steps.len() > page_end;
+    let steps = steps
+        .into_iter()
+        .skip(options.step_offset)
+        .take(options.step_limit)
+        .collect();
+    Ok((steps, has_more))
 }
 
 /// Projects one normalized turn step into one narrative-only view.

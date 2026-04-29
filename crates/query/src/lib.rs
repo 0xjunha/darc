@@ -3,11 +3,12 @@ mod query;
 mod tests;
 
 pub use query::{
-    DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, DailyTimeStat,
-    FilePivotSummary, FileSessionSummary, FileUsageStat, FilesQueryData, FilesQueryMode,
-    FilesQueryRequest, HardDebuggingTurn, ProjectIndexAggregate, ProjectInsights, ProjectSummary,
-    ProjectTimeStat, ResolveSessionQueryData, ResolveSessionQueryRequest, ResolvedSessionMatch,
-    RootAvailability, RootInfo, SearchEvidenceField, SearchMode, SearchTurnHit, SearchTurnMatch,
+    DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, DEFAULT_TURN_STEP_LIMIT,
+    DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT, DailyTimeStat, FilePivotSummary, FileSessionSummary,
+    FileUsageStat, FilesQueryData, FilesQueryMode, FilesQueryRequest, HardDebuggingTurn,
+    ProjectIndexAggregate, ProjectInsights, ProjectSummary, ProjectTimeStat,
+    ResolveSessionQueryData, ResolveSessionQueryRequest, ResolvedSessionMatch, RootAvailability,
+    RootInfo, SearchEvidenceField, SearchMode, SearchTurnHit, SearchTurnMatch,
     SearchTurnsQueryData, SearchTurnsRequest, SessionBundleQueryData, SessionBundleQueryRequest,
     SessionBundleView, SessionFileSummary, SessionFilesQueryData, SessionKind, SessionRuntimeStat,
     SessionSummary, SessionsQueryData, SessionsQueryRequest, SessionsView, ShellCommandSummary,

@@ -8,17 +8,17 @@ use anyhow::{Context, Result, bail};
 use darc_index::INDEX_DB_FILE_NAME;
 use darc_paths::SourceKind;
 pub use darc_query::{
-    DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, DailyTimeStat,
-    FilePivotSummary, FileSessionSummary, FileUsageStat, FilesQueryData, FilesQueryMode,
-    FilesQueryRequest, HardDebuggingTurn, ProjectInsights, ProjectSummary, ProjectTimeStat,
-    ResolveSessionQueryData, ResolveSessionQueryRequest, ResolvedSessionMatch, RootAvailability,
-    RootInfo, SearchEvidenceField, SearchMode, SearchTurnHit, SearchTurnMatch,
-    SearchTurnsQueryData, SearchTurnsRequest, SessionBundleQueryData, SessionBundleQueryRequest,
-    SessionBundleView, SessionFileSummary, SessionFilesQueryData, SessionKind, SessionRuntimeStat,
-    SessionSummary, SessionsQueryData, SessionsQueryRequest, SessionsView, ShellCommandSummary,
-    ToolUsageStat, TurnDetail, TurnDetailInsights, TurnDetailOptions, TurnInsights, TurnSummary,
-    TurnsQueryData, TurnsQueryRequest, TurnsView, WorkspaceDailyTimeStat, WorkspaceInsights,
-    WorkspaceQueryData,
+    DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, DEFAULT_TURN_STEP_LIMIT,
+    DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT, DailyTimeStat, FilePivotSummary, FileSessionSummary,
+    FileUsageStat, FilesQueryData, FilesQueryMode, FilesQueryRequest, HardDebuggingTurn,
+    ProjectInsights, ProjectSummary, ProjectTimeStat, ResolveSessionQueryData,
+    ResolveSessionQueryRequest, ResolvedSessionMatch, RootAvailability, RootInfo,
+    SearchEvidenceField, SearchMode, SearchTurnHit, SearchTurnMatch, SearchTurnsQueryData,
+    SearchTurnsRequest, SessionBundleQueryData, SessionBundleQueryRequest, SessionBundleView,
+    SessionFileSummary, SessionFilesQueryData, SessionKind, SessionRuntimeStat, SessionSummary,
+    SessionsQueryData, SessionsQueryRequest, SessionsView, ShellCommandSummary, ToolUsageStat,
+    TurnDetail, TurnDetailInsights, TurnDetailOptions, TurnInsights, TurnSummary, TurnsQueryData,
+    TurnsQueryRequest, TurnsView, WorkspaceDailyTimeStat, WorkspaceInsights, WorkspaceQueryData,
 };
 use darc_query::{
     ProjectIndexAggregate, list_project_index_aggregates, lookup_project_session_matches,
@@ -452,10 +452,17 @@ pub fn query_search_turns(
 pub fn query_workspace_insight_report(
     root: Option<PathBuf>,
     window_days: u32,
+    recent_session_limit: usize,
+    recent_session_offset: usize,
 ) -> Result<WorkspaceInsights> {
     let root_info = inspect_root(root);
     ensure_database_exists(&root_info)?;
-    query_workspace_insights(&root_info.database_path, window_days)
+    query_workspace_insights(
+        &root_info.database_path,
+        window_days,
+        recent_session_limit,
+        recent_session_offset,
+    )
 }
 
 /// Queries the project insights payload for one already-resolved configured project.

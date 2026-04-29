@@ -124,12 +124,24 @@ single-call session bundles.
   `darc query session-files <session-id>`, and `darc query session-bundle <session-id>` let clients pivot between
   matched files, touched sessions, per-session file summaries, and bounded one-call session detail bundles. File pivots
   accept provider and time filters in top-file, path, and co-touch modes. Turn detail and session bundle reads default
-  to narrative payloads; pass `--view full` or `--include-raw` only when raw tool arguments, outputs, or payload blobs
-  are needed.
+  to narrative payloads and bounded step pages; pass `--view full`, `--step-limit`, or `--include-raw` only when more
+  detail is needed.
 - Broad file/path queries cap each row's `matched_paths` preview by default; use `--matched-path-limit` or
   `--include-all-matched-paths` when you need more path evidence per result.
 - `darc query resolve-session` explicitly expands a UUID prefix before you call session-scoped data commands and
   includes `project_id` with each match for multi-project roots.
+
+For compact-first agent exploration, start with small list/search pages, then drill down:
+
+```bash
+darc query sessions --limit 5
+darc query files --limit 10
+darc query search turns "panic unwrap" --limit 5
+darc query turns "$ID" --view oneline --limit 10
+darc query turn "$ID" 0 --step-limit 10
+darc query session-bundle "$ID" --turn-limit 5 --step-limit 10
+```
+
 Examples:
 
 ```bash
@@ -182,7 +194,8 @@ ID=$(darc query resolve-session 11111111 --pick-one | jq -r '.data.match.session
 darc query session-bundle \
   --project-id repo-abc123 \
   "$ID" \
-  --turn-limit 20
+  --turn-limit 20 \
+  --step-limit 20
 ```
 
 See [Query protocol](docs/query-protocol.md) for the full command matrix, payload contracts, and filter semantics.

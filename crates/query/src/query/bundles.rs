@@ -4,12 +4,12 @@ use anyhow::{Context, Result};
 use rusqlite::{Connection, TransactionBehavior};
 
 use super::{
-    SessionBundleQueryData, SessionBundleQueryRequest, SessionBundleView, TurnDetailOptions,
-    open_existing_index_database,
+    SessionBundleQueryData, SessionBundleQueryRequest, SessionBundleView, SessionsView,
+    TurnDetailOptions, open_existing_index_database,
 };
 use crate::query::{
-    files::build_session_files_query, projects::query_session_summary,
-    turns::build_session_turn_details_page,
+    files::build_session_files_query, projects::compact_session_summary,
+    projects::query_session_summary, turns::build_session_turn_details_page,
 };
 
 /// Queries one composite session bundle from indexed session, turn, and file summaries.
@@ -40,6 +40,10 @@ fn build_session_bundle_query(
         request.provider,
         request.session_id,
     )?;
+    let session = match request.session_view {
+        SessionsView::Compact => compact_session_summary(session),
+        SessionsView::Full => session,
+    };
     let (turns, turns_has_more) = build_session_turn_details_page(
         connection,
         request.project_id,
@@ -49,6 +53,8 @@ fn build_session_bundle_query(
             include_raw: false,
             include_insights: false,
             narrative: matches!(request.view, SessionBundleView::Narrative),
+            step_limit: request.step_limit,
+            step_offset: request.step_offset,
         },
         request.turn_limit,
         request.turn_offset,
@@ -64,11 +70,15 @@ fn build_session_bundle_query(
         project_id: request.project_id.to_owned(),
         provider: request.provider,
         session_id: request.session_id.to_owned(),
+        session_view: request.session_view,
         view: request.view,
         turn_limit: u64::try_from(request.turn_limit).context("query limit exceeds u64 range")?,
         turn_offset: u64::try_from(request.turn_offset)
             .context("query offset exceeds u64 range")?,
         turns_has_more,
+        step_limit: u64::try_from(request.step_limit).context("query limit exceeds u64 range")?,
+        step_offset: u64::try_from(request.step_offset)
+            .context("query offset exceeds u64 range")?,
         session,
         turns,
         session_files,

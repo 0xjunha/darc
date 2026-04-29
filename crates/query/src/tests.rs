@@ -22,14 +22,15 @@ use darc_test_utils::{
 use serde_json::to_value;
 
 use crate::query::{
-    DEFAULT_MATCHED_PATH_LIMIT, FilesQueryMode, FilesQueryRequest, HardDebuggingTurn, LocalDate,
-    ProjectInsights, SearchMode, SearchTurnsRequest, SessionBundleQueryRequest, SessionBundleView,
-    SessionKind, SessionsQueryRequest, SessionsView, TurnDetailOptions, TurnInsights,
-    TurnsQueryRequest, TurnsView, build_project_insights, build_turn_insights,
-    build_workspace_insights, open_existing_index_database, parse_session_kind,
-    query_project_files, query_project_session_bundle, query_project_session_files,
-    query_project_sessions, query_project_turns, query_search_turns, query_session_turn_details,
-    query_turn_detail, query_turn_exists, smoke_test_sql,
+    DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_TURN_STEP_LIMIT, DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT,
+    FilesQueryMode, FilesQueryRequest, HardDebuggingTurn, LocalDate, ProjectInsights, SearchMode,
+    SearchTurnsRequest, SessionBundleQueryRequest, SessionBundleView, SessionKind,
+    SessionsQueryRequest, SessionsView, TurnDetailOptions, TurnInsights, TurnsQueryRequest,
+    TurnsView, build_project_insights, build_turn_insights, build_workspace_insights,
+    open_existing_index_database, parse_session_kind, query_project_files,
+    query_project_session_bundle, query_project_session_files, query_project_sessions,
+    query_project_turns, query_search_turns, query_session_turn_details, query_turn_detail,
+    query_turn_exists, smoke_test_sql,
 };
 
 /// Builds one temporary SQLite index path for query tests.
@@ -509,18 +510,31 @@ fn workspace_insights_filter_short_and_failed_turns() -> Result<()> {
         },
     )?;
 
-    let insights = build_workspace_insights(&connection, 7)?;
+    let insights =
+        build_workspace_insights(&connection, 7, DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT, 0)?;
 
     assert_eq!(
         insights.window_end,
         sqlite_local_date(&connection, "2026-04-06T08:00:00Z")?
     );
+    assert_eq!(
+        insights.recent_session_limit,
+        DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT as u64
+    );
+    assert_eq!(insights.recent_session_offset, 0);
+    assert!(!insights.recent_sessions_has_more);
     assert_eq!(insights.active_session_count, 1);
     assert_eq!(insights.included_turn_count, 1);
     assert_eq!(insights.excluded_turn_count, 2);
     assert_eq!(insights.total_time_ms, 3_000);
     assert_eq!(insights.recent_sessions.len(), 1);
     assert_eq!(insights.recent_sessions[0].project_id, "repo-a");
+
+    let empty_page = build_workspace_insights(&connection, 7, 0, 0)?;
+    assert_eq!(empty_page.active_session_count, 1);
+    assert_eq!(empty_page.recent_session_limit, 0);
+    assert!(empty_page.recent_sessions_has_more);
+    assert!(empty_page.recent_sessions.is_empty());
 
     fs::remove_dir_all(
         index_path
@@ -2107,12 +2121,13 @@ fn query_session_bundle_reuses_session_and_file_shapes_with_narrative_turns() ->
         &connection,
         IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
     )?;
+    let long_prompt = "inspect README and source ".repeat(40);
     insert_indexed_turn(
         &connection,
         IndexedTurnFixture {
-            user_message: "Inspect README",
-            step_count: 1,
-            tool_call_count: 1,
+            user_message: &long_prompt,
+            step_count: 2,
+            tool_call_count: 2,
             duration_ms: 3_000,
             ..IndexedTurnFixture::new(
                 "repo-a",
@@ -2121,7 +2136,7 @@ fn query_session_bundle_reuses_session_and_file_shapes_with_narrative_turns() ->
                 0,
                 "2026-04-06T10:00:00Z",
                 "completed",
-                r##"[{"type":"tool_call","timestamp":"2026-04-06T10:00:01Z","call_id":"call-1","name":"Read","arguments":"{\"file_path\":\"README.md\"}"}]"##,
+                r##"[{"type":"tool_call","timestamp":"2026-04-06T10:00:01Z","call_id":"call-1","name":"Read","arguments":"{\"file_path\":\"README.md\"}"},{"type":"tool_call","timestamp":"2026-04-06T10:00:02Z","call_id":"call-2","name":"List","arguments":"{\"path\":\"src\"}"}]"##,
             )
         },
     )?;
@@ -2151,22 +2166,43 @@ fn query_session_bundle_reuses_session_and_file_shapes_with_narrative_turns() ->
             provider: SourceKind::Codex,
             session_id: "session-1",
             project_root: Some(Path::new("/tmp/repo-a")),
+            session_view: SessionsView::Compact,
             view: SessionBundleView::Narrative,
             turn_limit: 50,
             turn_offset: 0,
+            step_limit: DEFAULT_TURN_STEP_LIMIT,
+            step_offset: 0,
         },
     )?;
 
     assert_eq!(result.project_id, "repo-a");
     assert_eq!(result.provider, SourceKind::Codex);
     assert_eq!(result.session_id, "session-1");
+    assert_eq!(result.session_view, SessionsView::Compact);
     assert_eq!(result.view, SessionBundleView::Narrative);
     assert_eq!(result.turn_limit, 50);
     assert_eq!(result.turn_offset, 0);
     assert!(!result.turns_has_more);
+    assert_eq!(result.step_limit, DEFAULT_TURN_STEP_LIMIT as u64);
+    assert_eq!(result.step_offset, 0);
     assert_eq!(result.session.session_id, "session-1");
     assert_eq!(result.session.turn_count, 2);
+    assert!(result.session.first_user_prompt_truncated);
+    assert_eq!(
+        result
+            .session
+            .first_user_prompt
+            .as_deref()
+            .expect("missing first prompt")
+            .chars()
+            .count(),
+        500
+    );
     assert_eq!(result.turns.len(), 2);
+    assert_eq!(result.turns[0].step_limit, DEFAULT_TURN_STEP_LIMIT as u64);
+    assert_eq!(result.turns[0].step_offset, 0);
+    assert!(!result.turns[0].steps_has_more);
+    assert_eq!(result.turns[0].steps.len(), 2);
     assert_eq!(result.turns[0].turn_ordinal, 0);
     assert_eq!(result.turns[1].turn_ordinal, 1);
     assert!(matches!(
@@ -2198,22 +2234,51 @@ fn query_session_bundle_reuses_session_and_file_shapes_with_narrative_turns() ->
             provider: SourceKind::Codex,
             session_id: "session-1",
             project_root: Some(Path::new("/tmp/repo-a")),
+            session_view: SessionsView::Compact,
             view: SessionBundleView::Narrative,
             turn_limit: 1,
             turn_offset: 0,
+            step_limit: 1,
+            step_offset: 0,
         },
     )?;
 
     assert_eq!(page.turn_limit, 1);
     assert_eq!(page.turn_offset, 0);
     assert!(page.turns_has_more);
+    assert_eq!(page.step_limit, 1);
+    assert_eq!(page.step_offset, 0);
     assert_eq!(page.session.turn_count, 2);
+    assert!(page.turns[0].steps_has_more);
+    assert_eq!(page.turns[0].steps.len(), 1);
     assert_eq!(
         page.turns
             .iter()
             .map(|turn| turn.turn_ordinal)
             .collect::<Vec<_>>(),
         vec![0]
+    );
+
+    let full_session = query_project_session_bundle(
+        &index_path,
+        SessionBundleQueryRequest {
+            project_id: "repo-a",
+            provider: SourceKind::Codex,
+            session_id: "session-1",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            session_view: SessionsView::Full,
+            view: SessionBundleView::Narrative,
+            turn_limit: 1,
+            turn_offset: 0,
+            step_limit: DEFAULT_TURN_STEP_LIMIT,
+            step_offset: 0,
+        },
+    )?;
+    assert_eq!(full_session.session_view, SessionsView::Full);
+    assert!(!full_session.session.first_user_prompt_truncated);
+    assert_eq!(
+        full_session.session.first_user_prompt.as_deref(),
+        Some(long_prompt.as_str())
     );
 
     fs::remove_dir_all(
@@ -2278,9 +2343,12 @@ fn query_session_bundle_ignores_unrelated_invalid_session_rows() -> Result<()> {
             provider: SourceKind::Codex,
             session_id: "session-1",
             project_root: Some(Path::new("/tmp/repo-a")),
+            session_view: SessionsView::Compact,
             view: SessionBundleView::Full,
             turn_limit: 50,
             turn_offset: 0,
+            step_limit: DEFAULT_TURN_STEP_LIMIT,
+            step_offset: 0,
         },
     )?;
 
@@ -2336,9 +2404,14 @@ fn turn_detail_narrative_view_strips_bulky_step_fields() -> Result<()> {
             include_raw: false,
             include_insights: false,
             narrative: true,
+            step_limit: DEFAULT_TURN_STEP_LIMIT,
+            step_offset: 0,
         },
     )?;
 
+    assert_eq!(detail.step_limit, DEFAULT_TURN_STEP_LIMIT as u64);
+    assert_eq!(detail.step_offset, 0);
+    assert!(!detail.steps_has_more);
     assert_eq!(detail.steps.len(), 8);
     assert_eq!(detail.raw_steps_json, None);
     assert!(matches!(
@@ -2390,6 +2463,31 @@ fn turn_detail_narrative_view_strips_bulky_step_fields() -> Result<()> {
         } if payload_json.is_empty() && item_type == "web_search_call"
     ));
 
+    let page = query_turn_detail(
+        &index_path,
+        "repo-a",
+        SourceKind::Codex,
+        "session-1",
+        0,
+        TurnDetailOptions {
+            include_raw: false,
+            include_insights: false,
+            narrative: true,
+            step_limit: 3,
+            step_offset: 2,
+        },
+    )?;
+
+    assert_eq!(page.step_count, 8);
+    assert_eq!(page.step_limit, 3);
+    assert_eq!(page.step_offset, 2);
+    assert!(page.steps_has_more);
+    assert_eq!(page.steps.len(), 3);
+    assert!(matches!(
+        &page.steps[0],
+        NormalizedTurnStep::ToolCall { arguments, .. } if arguments.is_empty()
+    ));
+
     let error = query_turn_detail(
         &index_path,
         "repo-a",
@@ -2400,6 +2498,8 @@ fn turn_detail_narrative_view_strips_bulky_step_fields() -> Result<()> {
             include_raw: true,
             include_insights: false,
             narrative: true,
+            step_limit: DEFAULT_TURN_STEP_LIMIT,
+            step_offset: 0,
         },
     )
     .unwrap_err();
@@ -2550,6 +2650,8 @@ fn session_turn_details_reuse_one_session_query_shape() -> Result<()> {
             include_raw: false,
             include_insights: false,
             narrative: true,
+            step_limit: DEFAULT_TURN_STEP_LIMIT,
+            step_offset: 0,
         },
     )?;
 
@@ -2677,6 +2779,9 @@ fn project_insights_collect_tool_and_file_stats() -> Result<()> {
     let insights: ProjectInsights = build_project_insights(&connection, "repo-a", None, 1000)?;
 
     assert_eq!(insights.provider, None);
+    assert_eq!(insights.turn_limit, 1000);
+    assert_eq!(insights.inspected_turn_count, 2);
+    assert!(!insights.turns_has_more);
     assert_eq!(insights.failure_count, 1);
     assert_eq!(insights.total_time_ms, 5_000);
     assert_eq!(insights.most_common_tools[0].name, "Edit");
@@ -2694,6 +2799,10 @@ fn project_insights_collect_tool_and_file_stats() -> Result<()> {
         insights.hard_debuggings[0],
         HardDebuggingTurn { step_count: 55, .. }
     ));
+    let limited_insights: ProjectInsights = build_project_insights(&connection, "repo-a", None, 1)?;
+    assert_eq!(limited_insights.turn_limit, 1);
+    assert_eq!(limited_insights.inspected_turn_count, 1);
+    assert!(limited_insights.turns_has_more);
 
     insert_indexed_session(
         &connection,

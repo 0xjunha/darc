@@ -9,12 +9,13 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use darc_core::query::{
-    DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, FilesQueryRequest,
-    QueryProtocolError, ResolveSessionQueryRequest, ResolvedQueryProject, ResolvedSessionMatch,
-    SearchEvidenceField, SearchMode, SearchTurnsRequest, SessionBundleQueryRequest,
-    SessionBundleView, SessionsQueryRequest, SessionsView, TurnDetailOptions, TurnsQueryRequest,
-    TurnsView, query_files_for_project, query_project_insight_report_for_project,
-    query_resolve_sessions, query_search_turns_for_project, query_session_bundle_for_project,
+    DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, DEFAULT_TURN_STEP_LIMIT,
+    DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT, FilesQueryRequest, QueryProtocolError,
+    ResolveSessionQueryRequest, ResolvedQueryProject, ResolvedSessionMatch, SearchEvidenceField,
+    SearchMode, SearchTurnsRequest, SessionBundleQueryRequest, SessionBundleView,
+    SessionsQueryRequest, SessionsView, TurnDetailOptions, TurnsQueryRequest, TurnsView,
+    query_files_for_project, query_project_insight_report_for_project, query_resolve_sessions,
+    query_search_turns_for_project, query_session_bundle_for_project,
     query_session_files_for_project, query_sessions_for_project, query_turn_for_project,
     query_turn_insight_report_for_project, query_turns_for_project, query_workspace,
     query_workspace_insight_report, resolve_query_project,
@@ -497,6 +498,14 @@ struct QuerySessionBundleArgs {
     session_id: Option<String>,
 
     #[arg(
+        long = "session-view",
+        value_enum,
+        default_value_t = SessionListViewArg::Compact,
+        help = "Return full session prompt or a compact prompt preview"
+    )]
+    session_view: SessionListViewArg,
+
+    #[arg(
         long,
         value_enum,
         default_value_t = ViewArg::Narrative,
@@ -517,6 +526,20 @@ struct QuerySessionBundleArgs {
         help = "Number of turn details to skip"
     )]
     turn_offset: usize,
+
+    #[arg(
+        long = "step-limit",
+        default_value_t = DEFAULT_TURN_STEP_LIMIT,
+        help = "Maximum steps to return per turn detail"
+    )]
+    step_limit: usize,
+
+    #[arg(
+        long = "step-offset",
+        default_value_t = 0,
+        help = "Number of steps to skip per turn detail"
+    )]
+    step_offset: usize,
 }
 
 /// Queries one turn detail payload.
@@ -573,6 +596,20 @@ struct QueryTurnArgs {
         help = "Include one derived insights block with metrics plus tool and file analytics"
     )]
     include_insights: bool,
+
+    #[arg(
+        long = "step-limit",
+        default_value_t = DEFAULT_TURN_STEP_LIMIT,
+        help = "Maximum steps to return"
+    )]
+    step_limit: usize,
+
+    #[arg(
+        long = "step-offset",
+        default_value_t = 0,
+        help = "Number of steps to skip"
+    )]
+    step_offset: usize,
 }
 
 /// Queries one search payload.
@@ -715,6 +752,20 @@ struct QueryWorkspaceInsightsArgs {
         help = "Rolling host-local day window in `<days>d` format"
     )]
     window_days: u32,
+
+    #[arg(
+        long = "recent-session-limit",
+        default_value_t = DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT,
+        help = "Maximum recent sessions to return"
+    )]
+    recent_session_limit: usize,
+
+    #[arg(
+        long = "recent-session-offset",
+        default_value_t = 0,
+        help = "Number of recent sessions to skip"
+    )]
+    recent_session_offset: usize,
 }
 
 /// Queries the project insights payload for one configured project.
@@ -1061,9 +1112,12 @@ fn run_query_session_bundle(args: QuerySessionBundleArgs) -> Result<()> {
             provider: session.provider,
             session_id: &session.session_id,
             project_root: None,
+            session_view: session_list_view_arg_to_view(args.session_view),
             view: view_arg_to_session_bundle_view(args.view),
             turn_limit: args.turn_limit,
             turn_offset: args.turn_offset,
+            step_limit: args.step_limit,
+            step_offset: args.step_offset,
         },
     )?;
     print_json_envelope("darc.query.session_bundle.v1", &data)
@@ -1140,6 +1194,8 @@ fn run_query_turn(args: QueryTurnArgs) -> Result<()> {
             include_raw: args.include_raw,
             include_insights: args.include_insights,
             narrative: matches!(view, ViewArg::Narrative),
+            step_limit: args.step_limit,
+            step_offset: args.step_offset,
         },
     )?;
     print_json_envelope("darc.query.turn.v1", &data)
@@ -1220,7 +1276,12 @@ fn run_query_insights(args: QueryInsightsArgs) -> Result<()> {
 
 /// Queries the workspace insights payload for one rolling host-local day window.
 fn run_query_workspace_insights(args: QueryWorkspaceInsightsArgs) -> Result<()> {
-    let data = query_workspace_insight_report(Some(args.root), args.window_days)?;
+    let data = query_workspace_insight_report(
+        Some(args.root),
+        args.window_days,
+        args.recent_session_limit,
+        args.recent_session_offset,
+    )?;
     print_json_envelope("darc.query.insights.workspace.v1", &data)
 }
 
