@@ -18,7 +18,7 @@ darc codex-schema-audit --cache-dir /path/to/cache
 
 What the audit checks:
 
-- Darc's current exact Codex rollout support boundary is defined in `crates/core/src/rollout/codex/version.rs` by `latest_exact_supported_codex_cli_version()`.
+- Darc's current exact Codex rollout support boundary is defined in `crates/rollout/src/codex/version.rs` by `latest_exact_supported_codex_cli_version()`.
 - The audit queries Codex GitHub Releases and walks stable release tags from the latest stable tag down to that exact-support boundary.
 - For each audited tag, it downloads that release's published platform binary package, caches it locally, runs `codex app-server generate-internal-json-schema`, and compares the exported `RolloutLine.json` schema against the boundary tag's schema.
 - If the schema is unchanged across the audited range, the command reports compatibility. It does not update code or docs automatically.
@@ -49,7 +49,11 @@ the published release catalog no longer contains the exact-support boundary tag 
 
 ## Claude schema audit
 
-Run the hidden Claude rollout schema audit when the Claude rollout parser may need a compatibility review:
+The hidden Claude rollout schema audit command exists, but the live end-to-end pipeline is currently tracked as
+untrusted in [Backlog](todo.md). Until that backlog item is closed, treat manual runs as investigative diagnostics,
+not release-gating compatibility proof.
+
+Run the command when reproducing or revalidating the Claude audit pipeline:
 
 ```bash
 darc claude-schema-audit --use-host-auth
@@ -63,7 +67,7 @@ darc claude-schema-audit --use-host-auth --cache-dir /path/to/cache
 
 What the Claude audit checks:
 
-- Darc's current exact Claude rollout support boundary is defined in `crates/core/src/rollout/claude/version.rs` by `latest_exact_supported_claude_cli_version()`.
+- Darc's current exact Claude rollout support boundary is defined in `crates/rollout/src/claude/version.rs` by `latest_exact_supported_claude_cli_version()`.
 - The audit queries the npm registry for published `@anthropic-ai/claude-code` releases and walks stable package versions from the latest published version down to that exact-support boundary.
 - For each audited version, it downloads the published package tarball, caches it locally, runs deterministic fixture prompts against the released CLI, and derives a normalized transcript schema manifest from the emitted local transcript JSONL plus hook and stream-json output.
 - Darc does not provide an OS-level sandbox for executing published Claude packages. The audit therefore requires explicit `--use-host-auth` opt-in and runs the released CLI with your host Claude login state plus an allowlist of Claude/cloud auth environment variables, not your full shell environment.
