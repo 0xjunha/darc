@@ -607,7 +607,7 @@ fn query_top_touched_files(
     paginate_top_touched_files(&mut files, request.limit, request.offset)
 }
 
-/// Applies top-file pagination after sorting only the prefix needed for the requested page.
+/// Applies most-touched pagination after sorting only the prefix needed for the requested page.
 fn paginate_top_touched_files(
     files: &mut Vec<FilePivotSummary>,
     limit: usize,
@@ -628,7 +628,7 @@ fn paginate_top_touched_files(
     Ok((files.drain(..).skip(offset).take(limit).collect(), has_more))
 }
 
-/// Compares top-file rows by rank descending and path ascending.
+/// Compares most-touched rows by rank descending and path ascending.
 fn compare_top_touched_files(left: &FilePivotSummary, right: &FilePivotSummary) -> Ordering {
     right
         .touch_count

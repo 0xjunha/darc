@@ -9,7 +9,7 @@ use rusqlite::{Connection, params, params_from_iter, types::Value};
 use super::{
     SearchEvidenceField, SearchMode, SearchTurnHit, SearchTurnMatch, SearchTurnsQueryData,
     SearchTurnsRequest, apply_matched_path_limit, open_existing_index_database, parse_provider,
-    parse_turn_status, preview_text, sql_count_to_u64,
+    parse_turn_status, preview_text, preview_text_with_truncation, sql_count_to_u64,
 };
 use crate::query::files::{
     PathQuerySelector, build_path_query_selector, glob_match_options, normalize_query_path_pattern,
@@ -25,6 +25,7 @@ const KEYWORD_SEARCH_SQL: &str = "
         turns.completed_at,
         turns.status,
         turns.user_message,
+        turns.final_answer_text,
         NULLIF(snippet(turn_search_fts, -1, '', '', '…', 16), '')
     FROM turn_search_fts
     INNER JOIN turn_search
@@ -82,6 +83,8 @@ struct FileSearchRow {
     completed_at: Option<String>,
     status: darc_rollout::model::NormalizedTurnStatus,
     user_preview: String,
+    final_answer_preview: Option<String>,
+    final_answer_preview_truncated: bool,
     matched_path: String,
 }
 
@@ -95,6 +98,8 @@ struct FilePathGlobRow {
     completed_at: Option<String>,
     status: darc_rollout::model::NormalizedTurnStatus,
     user_preview: String,
+    final_answer_preview: Option<String>,
+    final_answer_preview_truncated: bool,
     repo_relative_path: Option<String>,
     path: String,
     matched_path: String,
@@ -110,6 +115,8 @@ struct FileSearchHitAccumulator {
     completed_at: Option<String>,
     status: darc_rollout::model::NormalizedTurnStatus,
     user_preview: String,
+    final_answer_preview: Option<String>,
+    final_answer_preview_truncated: bool,
     matched_paths: BTreeSet<String>,
 }
 
@@ -199,11 +206,14 @@ struct EvidenceSearchTurn {
     completed_at: Option<String>,
     status: darc_rollout::model::NormalizedTurnStatus,
     user_preview: String,
+    final_answer_preview: Option<String>,
+    final_answer_preview_truncated: bool,
 }
 
 /// Stores one evidence fragment for in-process exact matching.
 #[derive(Debug, Clone)]
 struct EvidenceTextRow {
+    evidence_ordinal: u64,
     field: String,
     text: String,
 }
@@ -536,7 +546,8 @@ fn evidence_search_turns_sql(fields: &EvidenceFieldSelection, literal: bool) -> 
         started_at,
         completed_at,
         status,
-        user_message
+        user_message,
+        final_answer_text
     FROM turns
     WHERE project_id = ?
         AND (? IS NULL OR provider = ?)
@@ -593,6 +604,7 @@ fn turn_evidence_rows_sql(fields: &EvidenceFieldSelection, literal: bool) -> Str
     format!(
         "
     SELECT
+        evidence_ordinal,
         field,
         text
     FROM turn_evidence
@@ -642,6 +654,7 @@ fn query_keyword_hits(
                     row.get::<_, String>(5)?,
                     row.get::<_, String>(6)?,
                     row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
                 ))
             },
         )
@@ -659,8 +672,11 @@ fn query_keyword_hits(
                 completed_at,
                 status,
                 user_message,
+                final_answer_text,
                 snippet,
             )| {
+                let (final_answer_preview, final_answer_preview_truncated) =
+                    optional_final_answer_preview(final_answer_text.as_deref());
                 Ok(SearchTurnHit {
                     provider: parse_provider(&provider)?,
                     session_id,
@@ -669,6 +685,8 @@ fn query_keyword_hits(
                     completed_at,
                     status: parse_turn_status(&status)?,
                     user_preview: preview_text(&user_message),
+                    final_answer_preview,
+                    final_answer_preview_truncated,
                     snippet: snippet
                         .filter(|value| !value.trim().is_empty())
                         .or_else(|| Some(preview_text(&user_message))),
@@ -937,6 +955,7 @@ fn query_literal_evidence_hit_for_turn(
                 break;
             }
             matches.push(SearchTurnMatch {
+                evidence_ordinal: evidence.evidence_ordinal,
                 field: evidence.field,
                 snippet: evidence_snippet(&evidence.text, range),
             });
@@ -981,6 +1000,7 @@ fn query_regex_evidence_hit_for_turn(
                 break;
             }
             matches.push(SearchTurnMatch {
+                evidence_ordinal: evidence.evidence_ordinal,
                 field: evidence.field,
                 snippet: evidence_snippet(&evidence.text, range),
             });
@@ -1011,6 +1031,8 @@ fn build_evidence_search_hit(
         completed_at: turn.completed_at,
         status: turn.status,
         user_preview: turn.user_preview,
+        final_answer_preview: turn.final_answer_preview,
+        final_answer_preview_truncated: turn.final_answer_preview_truncated,
         snippet: None,
         matched_paths: Vec::new(),
         matched_paths_truncated: false,
@@ -1062,6 +1084,9 @@ fn literal_match_range(text: &str, query: &str) -> Option<Range<usize>> {
 fn read_evidence_search_turn(row: &rusqlite::Row<'_>) -> Result<EvidenceSearchTurn> {
     let provider_key = row.get::<_, String>(0)?;
     let turn_ordinal_key = row.get::<_, i64>(2)?;
+    let final_answer_text = row.get::<_, Option<String>>(7)?;
+    let (final_answer_preview, final_answer_preview_truncated) =
+        optional_final_answer_preview(final_answer_text.as_deref());
     Ok(EvidenceSearchTurn {
         provider: parse_provider(&provider_key)?,
         provider_key,
@@ -1072,14 +1097,17 @@ fn read_evidence_search_turn(row: &rusqlite::Row<'_>) -> Result<EvidenceSearchTu
         completed_at: row.get(4)?,
         status: parse_turn_status(&row.get::<_, String>(5)?)?,
         user_preview: preview_text(&row.get::<_, String>(6)?),
+        final_answer_preview,
+        final_answer_preview_truncated,
     })
 }
 
 /// Reads one evidence text row for exact matching.
 fn read_evidence_text_row(row: &rusqlite::Row<'_>) -> Result<EvidenceTextRow> {
     Ok(EvidenceTextRow {
-        field: row.get(0)?,
-        text: row.get(1)?,
+        evidence_ordinal: sql_count_to_u64(row.get::<_, i64>(0)?)?,
+        field: row.get(1)?,
+        text: row.get(2)?,
     })
 }
 
@@ -1209,8 +1237,9 @@ fn query_file_path_glob_turn_batch(
                 row.get::<_, String>(5)?,
                 row.get::<_, String>(6)?,
                 row.get::<_, Option<String>>(7)?,
-                row.get::<_, String>(8)?,
+                row.get::<_, Option<String>>(8)?,
                 row.get::<_, String>(9)?,
+                row.get::<_, String>(10)?,
             ))
         })
         .context("failed to query file-path glob search rows")?
@@ -1229,12 +1258,15 @@ fn query_file_path_glob_turn_batch(
                 completed_at,
                 status,
                 user_message,
+                final_answer_text,
                 repo_relative_path,
                 path,
                 matched_path,
             )| {
                 let provider = parse_provider(&provider)?;
                 let turn_ordinal = sql_count_to_u64(turn_ordinal)?;
+                let (final_answer_preview, final_answer_preview_truncated) =
+                    optional_final_answer_preview(final_answer_text.as_deref());
                 candidate_turns.insert((provider, session_id.clone(), turn_ordinal));
                 Ok(FilePathGlobRow {
                     provider,
@@ -1244,6 +1276,8 @@ fn query_file_path_glob_turn_batch(
                     completed_at,
                     status: parse_turn_status(&status)?,
                     user_preview: preview_text(&user_message),
+                    final_answer_preview,
+                    final_answer_preview_truncated,
                     repo_relative_path,
                     path,
                     matched_path,
@@ -1261,6 +1295,13 @@ fn query_file_path_glob_turn_batch(
 /// Converts optional string filters into SQLite values for dynamic query assembly.
 fn optional_text_value(value: Option<&str>) -> Value {
     value.map_or(Value::Null, |value| Value::Text(value.to_owned()))
+}
+
+/// Builds one optional final-answer preview with its truncation flag.
+fn optional_final_answer_preview(text: Option<&str>) -> (Option<String>, bool) {
+    text.map(preview_text_with_truncation)
+        .map(|(preview, truncated)| (Some(preview), truncated))
+        .unwrap_or((None, false))
 }
 
 /// Groups glob-verified path rows back into turn hits.
@@ -1303,6 +1344,8 @@ fn start_file_path_glob_hit(row: &FilePathGlobRow) -> FileSearchHitAccumulator {
         completed_at: row.completed_at.clone(),
         status: row.status,
         user_preview: row.user_preview.clone(),
+        final_answer_preview: row.final_answer_preview.clone(),
+        final_answer_preview_truncated: row.final_answer_preview_truncated,
         matched_paths: BTreeSet::new(),
     }
 }
@@ -1367,7 +1410,8 @@ fn build_file_path_glob_turn_batch_sql(path_selector: &PathQuerySelector) -> Str
                 turns.started_at,
                 turns.completed_at,
                 turns.status,
-                turns.user_message
+                turns.user_message,
+                turns.final_answer_text
             FROM file_accesses
             INNER JOIN turns
                 ON turns.project_id = file_accesses.project_id
@@ -1387,7 +1431,8 @@ fn build_file_path_glob_turn_batch_sql(path_selector: &PathQuerySelector) -> Str
                 turns.started_at,
                 turns.completed_at,
                 turns.status,
-                turns.user_message
+                turns.user_message,
+                turns.final_answer_text
             ORDER BY
                 turns.started_at DESC,
                 turns.provider ASC,
@@ -1403,6 +1448,7 @@ fn build_file_path_glob_turn_batch_sql(path_selector: &PathQuerySelector) -> Str
             candidate_turns.completed_at,
             candidate_turns.status,
             candidate_turns.user_message,
+            candidate_turns.final_answer_text,
             file_accesses.repo_relative_path,
             file_accesses.path,
             {matched_path} AS matched_path
@@ -1512,7 +1558,8 @@ fn query_file_hits_stage(
                     row.get::<_, Option<String>>(4)?,
                     row.get::<_, String>(5)?,
                     row.get::<_, String>(6)?,
-                    row.get::<_, String>(7)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, String>(8)?,
                 ))
             },
         )
@@ -1530,8 +1577,11 @@ fn query_file_hits_stage(
                 completed_at,
                 status,
                 user_message,
+                final_answer_text,
                 matched_path,
             )| {
+                let (final_answer_preview, final_answer_preview_truncated) =
+                    optional_final_answer_preview(final_answer_text.as_deref());
                 Ok(FileSearchRow {
                     provider: parse_provider(&provider)?,
                     session_id,
@@ -1540,6 +1590,8 @@ fn query_file_hits_stage(
                     completed_at,
                     status: parse_turn_status(&status)?,
                     user_preview: preview_text(&user_message),
+                    final_answer_preview,
+                    final_answer_preview_truncated,
                     matched_path,
                 })
             },
@@ -1593,6 +1645,8 @@ fn start_file_search_hit(row: FileSearchRow) -> FileSearchHitAccumulator {
         completed_at: row.completed_at,
         status: row.status,
         user_preview: row.user_preview,
+        final_answer_preview: row.final_answer_preview,
+        final_answer_preview_truncated: row.final_answer_preview_truncated,
         matched_paths,
     }
 }
@@ -1607,6 +1661,8 @@ fn finalize_file_search_hit(accumulator: FileSearchHitAccumulator) -> SearchTurn
         completed_at: accumulator.completed_at,
         status: accumulator.status,
         user_preview: accumulator.user_preview,
+        final_answer_preview: accumulator.final_answer_preview,
+        final_answer_preview_truncated: accumulator.final_answer_preview_truncated,
         snippet: None,
         matched_paths: accumulator.matched_paths.into_iter().collect(),
         matched_paths_truncated: false,
@@ -1631,7 +1687,8 @@ fn build_file_search_stage_sql(kind: FileSearchKind, stage: FileSearchStage) -> 
                 turns.started_at,
                 turns.completed_at,
                 turns.status,
-                turns.user_message
+                turns.user_message,
+                turns.final_answer_text
             FROM file_accesses
             INNER JOIN turns
                 ON turns.project_id = file_accesses.project_id
@@ -1652,7 +1709,8 @@ fn build_file_search_stage_sql(kind: FileSearchKind, stage: FileSearchStage) -> 
                 turns.started_at,
                 turns.completed_at,
                 turns.status,
-                turns.user_message
+                turns.user_message,
+                turns.final_answer_text
             ORDER BY
                 turns.started_at DESC,
                 turns.provider ASC,
@@ -1668,6 +1726,7 @@ fn build_file_search_stage_sql(kind: FileSearchKind, stage: FileSearchStage) -> 
             matched_turns.completed_at,
             matched_turns.status,
             matched_turns.user_message,
+            matched_turns.final_answer_text,
             {matched_path} AS matched_path
         FROM matched_turns
         INNER JOIN file_accesses

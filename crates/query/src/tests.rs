@@ -23,14 +23,13 @@ use serde_json::to_value;
 
 use crate::query::{
     DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_TURN_STEP_LIMIT, DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT,
-    FilesQueryMode, FilesQueryRequest, HardDebuggingTurn, LocalDate, ProjectInsights, SearchMode,
-    SearchTurnsRequest, SessionBundleQueryRequest, SessionBundleView, SessionKind,
-    SessionsQueryRequest, SessionsView, TurnDetailOptions, TurnInsights, TurnsQueryRequest,
-    TurnsView, build_project_insights, build_turn_insights, build_workspace_insights,
-    open_existing_index_database, parse_session_kind, query_project_files,
-    query_project_session_bundle, query_project_session_files, query_project_sessions,
-    query_project_turns, query_search_turns, query_session_turn_details, query_turn_detail,
-    query_turn_exists, smoke_test_sql,
+    FilesQueryMode, FilesQueryRequest, LocalDate, ProjectInsights, SearchMode, SearchTurnsRequest,
+    SessionBundleQueryRequest, SessionBundleView, SessionKind, SessionsQueryRequest, SessionsView,
+    TurnDetailOptions, TurnInsights, TurnsQueryRequest, TurnsView, build_project_insights,
+    build_turn_insights, build_workspace_insights, open_existing_index_database,
+    parse_session_kind, query_project_files, query_project_session_bundle,
+    query_project_session_files, query_project_sessions, query_project_turns, query_search_turns,
+    query_session_turn_details, query_turn_detail, query_turn_exists, smoke_test_sql,
 };
 
 /// Builds one temporary SQLite index path for query tests.
@@ -615,7 +614,7 @@ fn session_summaries_leave_partial_token_and_runtime_totals_null() -> Result<()>
 }
 
 #[test]
-fn session_summaries_compact_view_caps_prompt_only() -> Result<()> {
+fn session_summaries_compact_view_caps_prompt_and_final_message() -> Result<()> {
     let index_path = test_index_path("session-compact-view");
     let connection = open_index_database(&index_path)?;
     insert_indexed_session(
@@ -623,6 +622,7 @@ fn session_summaries_compact_view_caps_prompt_only() -> Result<()> {
         IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
     )?;
     let prompt = "a".repeat(600);
+    let final_message = "b".repeat(600);
     let steps_json = format!(
         "[{}]",
         (0..12)
@@ -638,8 +638,10 @@ fn session_summaries_compact_view_caps_prompt_only() -> Result<()> {
         &connection,
         IndexedTurnFixture {
             user_message: &prompt,
+            final_answer_text: Some(&final_message),
             step_count: 12,
             tool_call_count: 12,
+            has_final_answer: true,
             duration_ms: 3_000,
             ..IndexedTurnFixture::new(
                 "repo-a",
@@ -693,6 +695,16 @@ fn session_summaries_compact_view_caps_prompt_only() -> Result<()> {
         500
     );
     assert!(compact.sessions[0].first_user_prompt_truncated);
+    assert_eq!(
+        compact.sessions[0]
+            .final_agent_message
+            .as_ref()
+            .expect("final message should exist")
+            .chars()
+            .count(),
+        500
+    );
+    assert!(compact.sessions[0].final_agent_message_truncated);
     assert_eq!(compact.sessions[0].edited_files.len(), 12);
     assert_eq!(full.view, SessionsView::Full);
     assert_eq!(
@@ -705,7 +717,68 @@ fn session_summaries_compact_view_caps_prompt_only() -> Result<()> {
         600
     );
     assert!(!full.sessions[0].first_user_prompt_truncated);
+    assert_eq!(
+        full.sessions[0]
+            .final_agent_message
+            .as_ref()
+            .expect("final message should exist")
+            .chars()
+            .count(),
+        600
+    );
+    assert!(!full.sessions[0].final_agent_message_truncated);
     assert_eq!(full.sessions[0].edited_files.len(), 12);
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn session_summaries_deduplicate_absolute_and_relative_edited_files() -> Result<()> {
+    let index_path = test_index_path("session-edited-files-dedupe");
+    let connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            step_count: 2,
+            tool_call_count: 2,
+            duration_ms: 3_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                0,
+                "2026-04-05T12:00:00Z",
+                "completed",
+                r##"[{"type":"tool_call","timestamp":"2026-04-05T12:00:01Z","call_id":"call-1","name":"Edit","arguments":"{\"path\":\"src/lib.rs\"}"},{"type":"tool_call","timestamp":"2026-04-05T12:00:02Z","call_id":"call-2","name":"Edit","arguments":"{\"path\":\"/tmp/repo-a/src/lib.rs\"}"}]"##,
+            )
+        },
+    )?;
+
+    let sessions = query_project_sessions(
+        &index_path,
+        SessionsQueryRequest {
+            project_id: "repo-a",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            provider: None,
+            since: None,
+            until: None,
+            touched_path: None,
+            view: SessionsView::Compact,
+            limit: 50,
+            offset: 0,
+        },
+    )?;
+
+    assert_eq!(sessions.sessions[0].edited_files, vec!["src/lib.rs"]);
 
     fs::remove_dir_all(
         index_path
@@ -2185,6 +2258,8 @@ fn query_session_bundle_reuses_session_and_file_shapes_with_narrative_turns() ->
     assert!(!result.turns_has_more);
     assert_eq!(result.step_limit, DEFAULT_TURN_STEP_LIMIT as u64);
     assert_eq!(result.step_offset, 0);
+    assert_eq!(result.session_file_limit, 100);
+    assert!(!result.session_files_has_more);
     assert_eq!(result.session.session_id, "session-1");
     assert_eq!(result.session.turn_count, 2);
     assert!(result.session.first_user_prompt_truncated);
@@ -2280,6 +2355,71 @@ fn query_session_bundle_reuses_session_and_file_shapes_with_narrative_turns() ->
         full_session.session.first_user_prompt.as_deref(),
         Some(long_prompt.as_str())
     );
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn query_session_bundle_caps_embedded_session_files() -> Result<()> {
+    let index_path = test_index_path("query-session-bundle-file-cap");
+    let connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
+    )?;
+    let steps_json = format!(
+        "[{}]",
+        (0..101)
+            .map(|index| {
+                format!(
+                    r#"{{"type":"tool_call","timestamp":"2026-04-06T10:00:00Z","call_id":"call-{index}","name":"Edit","arguments":"{{\"path\":\"src/file-{index:03}.rs\"}}"}}"#
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            step_count: 101,
+            tool_call_count: 101,
+            duration_ms: 3_000,
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                0,
+                "2026-04-06T10:00:00Z",
+                "completed",
+                &steps_json,
+            )
+        },
+    )?;
+
+    let result = query_project_session_bundle(
+        &index_path,
+        SessionBundleQueryRequest {
+            project_id: "repo-a",
+            provider: SourceKind::Codex,
+            session_id: "session-1",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            session_view: SessionsView::Compact,
+            view: SessionBundleView::Narrative,
+            turn_limit: 50,
+            turn_offset: 0,
+            step_limit: DEFAULT_TURN_STEP_LIMIT,
+            step_offset: 0,
+        },
+    )?;
+
+    assert_eq!(result.session_file_limit, 100);
+    assert!(result.session_files_has_more);
+    assert_eq!(result.session_files.files.len(), 100);
 
     fs::remove_dir_all(
         index_path
@@ -2795,10 +2935,6 @@ fn project_insights_collect_tool_and_file_stats() -> Result<()> {
             && stat.repo_relative_path.as_deref() == Some("src/main.rs")
             && stat.write_count == 1
     }));
-    assert!(matches!(
-        insights.hard_debuggings[0],
-        HardDebuggingTurn { step_count: 55, .. }
-    ));
     let limited_insights: ProjectInsights = build_project_insights(&connection, "repo-a", None, 1)?;
     assert_eq!(limited_insights.turn_limit, 1);
     assert_eq!(limited_insights.inspected_turn_count, 1);
@@ -3193,9 +3329,11 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
         &connection,
         IndexedTurnFixture {
             user_message: "Inspect the repository heading",
+            final_answer_text: Some("The inspection is complete."),
             step_count: 2,
             tool_call_count: 1,
             tool_output_count: 1,
+            has_final_answer: true,
             duration_ms: 5_000,
             ..IndexedTurnFixture::new(
                 "repo-a",
@@ -3295,6 +3433,11 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             .as_deref()
             .is_some_and(|snippet| snippet.contains("Inspect"))
     );
+    assert_eq!(
+        result.hits[0].final_answer_preview.as_deref(),
+        Some("The inspection is complete.")
+    );
+    assert!(!result.hits[0].final_answer_preview_truncated);
     assert!(secret_result.hits.is_empty());
 
     let literal_result = query_search_turns(
@@ -3726,6 +3869,7 @@ fn search_turns_exact_modes_preserve_outer_whitespace() -> Result<()> {
 
         assert_eq!(result.hits.len(), 1);
         assert_eq!(result.hits[0].turn_ordinal, 1);
+        assert!(result.hits[0].matches[0].evidence_ordinal > 0);
         assert_eq!(result.hits[0].matches[0].snippet, " error ");
     }
 

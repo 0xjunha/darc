@@ -1,4 +1,4 @@
-use std::{fmt::Write, path::Path, sync::OnceLock};
+use std::{collections::BTreeSet, fmt::Write, path::Path, sync::OnceLock};
 
 use anyhow::{Context, Result};
 use darc_paths::SourceKind;
@@ -11,7 +11,7 @@ use super::{
     ResolvedSessionMatch, SessionSummary, SessionsQueryData, SessionsQueryRequest, SessionsView,
     TurnSummary, TurnsQueryData, TurnsQueryRequest, open_existing_index_database,
     optional_sql_count_to_u64, parse_provider, parse_session_kind, parse_turn_status,
-    preview_first_line, preview_text, sql_count_to_u64,
+    preview_first_line, preview_text, preview_text_with_truncation, sql_count_to_u64,
 };
 
 const PROJECT_INDEX_AGGREGATES_SQL: &str = "
@@ -121,6 +121,7 @@ const PROJECT_SESSIONS_SQL: &str = "
             COALESCE(turn_stats.removed_line_count, 0) AS removed_line_count,
             first_turn.started_at AS first_turn_at,
             first_turn.user_message AS first_user_prompt,
+            latest.final_answer_text AS final_agent_message,
             COALESCE(turn_stats.aborted_turn_count, 0) AS aborted_turn_count
         FROM sessions AS s
         LEFT JOIN turn_stats
@@ -204,6 +205,7 @@ const PROJECT_SESSIONS_SQL: &str = "
         paged_sessions.removed_line_count,
         paged_sessions.first_turn_at,
         paged_sessions.first_user_prompt,
+        paged_sessions.final_agent_message,
         paged_sessions.aborted_turn_count,
         COALESCE(session_edited_files.edited_files_json, '[]')
     FROM paged_sessions
@@ -286,6 +288,7 @@ pub(crate) struct SessionSummaryQuery<'a> {
     until: Option<&'a str>,
     provider: Option<SourceKind>,
     session_id: Option<&'a str>,
+    project_root: Option<&'a Path>,
     limit: usize,
     offset: usize,
 }
@@ -300,6 +303,7 @@ const TURN_SUMMARY_COLUMNS: &[&str] = &[
     "completed_at",
     "status",
     "user_message",
+    "final_answer_text",
     "has_final_answer",
     "step_count",
     "tool_call_count",
@@ -327,6 +331,7 @@ type RawTurnSummaryRow = (
     Option<String>,
     String,
     String,
+    Option<String>,
     i64,
     i64,
     i64,
@@ -409,6 +414,11 @@ pub(crate) fn compact_session_summary(mut session: SessionSummary) -> SessionSum
         session.first_user_prompt = Some(prompt);
         session.first_user_prompt_truncated = truncated;
     }
+    if let Some(message) = session.final_agent_message.take() {
+        let (message, truncated) = truncate_chars(message, COMPACT_SESSION_PROMPT_CHARS);
+        session.final_agent_message = Some(message);
+        session.final_agent_message_truncated = truncated;
+    }
     session
 }
 
@@ -437,6 +447,7 @@ fn query_session_page(
             until: request.until,
             provider: request.provider,
             session_id: None,
+            project_root: request.project_root,
             limit: page_limit,
             offset: request.offset,
         },
@@ -469,6 +480,7 @@ fn query_touched_path_session_page(
                 until: request.until,
                 provider: request.provider,
                 session_id: None,
+                project_root: request.project_root,
                 limit: TOUCHED_SESSION_CANDIDATE_BATCH_ROWS,
                 offset: candidate_offset,
             },
@@ -719,8 +731,9 @@ pub(crate) fn query_sessions(
                     row.get::<_, i64>(20)?,
                     row.get::<_, Option<String>>(21)?,
                     row.get::<_, Option<String>>(22)?,
-                    row.get::<_, i64>(23)?,
-                    row.get::<_, String>(24)?,
+                    row.get::<_, Option<String>>(23)?,
+                    row.get::<_, i64>(24)?,
+                    row.get::<_, String>(25)?,
                 ))
             },
         )
@@ -753,6 +766,7 @@ pub(crate) fn query_sessions(
                 removed_line_count,
                 first_turn_at,
                 first_user_prompt,
+                final_agent_message,
                 aborted_turn_count,
                 edited_files_json,
             )|
@@ -790,8 +804,13 @@ pub(crate) fn query_sessions(
                     first_turn_at,
                     first_user_prompt,
                     first_user_prompt_truncated: false,
+                    final_agent_message,
+                    final_agent_message_truncated: false,
                     aborted_turn_count: sql_count_to_u64(aborted_turn_count)?,
-                    edited_files: parse_edited_files_json(&edited_files_json)?,
+                    edited_files: normalize_edited_files(
+                        parse_edited_files_json(&edited_files_json)?,
+                        request.project_root,
+                    ),
                 })
             },
         )
@@ -804,6 +823,7 @@ pub(crate) fn query_session_summary(
     project_id: &str,
     provider: SourceKind,
     session_id: &str,
+    project_root: Option<&Path>,
 ) -> Result<SessionSummary> {
     let session_ref = format!("{}:{session_id}", provider.directory_name());
     query_sessions(
@@ -814,6 +834,7 @@ pub(crate) fn query_session_summary(
             until: None,
             provider: Some(provider),
             session_id: Some(session_id),
+            project_root,
             limit: 1,
             offset: 0,
         },
@@ -896,6 +917,34 @@ fn parse_edited_files_json(value: &str) -> Result<Vec<String>> {
         .with_context(|| format!("failed to parse session edited-files JSON `{value}`"))
 }
 
+/// Normalizes edited-file display paths and deduplicates absolute/project-relative twins.
+fn normalize_edited_files(paths: Vec<String>, project_root: Option<&Path>) -> Vec<String> {
+    paths
+        .into_iter()
+        .map(|path| normalize_edited_file_path(&path, project_root))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+/// Converts one in-project absolute display path to a project-relative path.
+fn normalize_edited_file_path(path: &str, project_root: Option<&Path>) -> String {
+    let trimmed = path.trim();
+    let Some(project_root) = project_root else {
+        return trimmed.to_owned();
+    };
+    let candidate = Path::new(trimmed);
+    if !candidate.is_absolute() {
+        return trimmed.to_owned();
+    }
+    candidate
+        .strip_prefix(project_root)
+        .ok()
+        .filter(|relative| !relative.as_os_str().is_empty())
+        .map(|relative| relative.to_string_lossy().into_owned())
+        .unwrap_or_else(|| trimmed.to_owned())
+}
+
 /// Queries the indexed turns for one provider session.
 fn query_session_turn_summaries(
     connection: &Connection,
@@ -975,11 +1024,11 @@ fn read_turn_summary_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawTurnSum
         row.get::<_, Option<String>>(6)?,
         row.get::<_, String>(7)?,
         row.get::<_, String>(8)?,
-        row.get::<_, i64>(9)?,
+        row.get::<_, Option<String>>(9)?,
         row.get::<_, i64>(10)?,
         row.get::<_, i64>(11)?,
-        row.get::<_, Option<String>>(12)?,
-        row.get::<_, Option<i64>>(13)?,
+        row.get::<_, i64>(12)?,
+        row.get::<_, Option<String>>(13)?,
         row.get::<_, Option<i64>>(14)?,
         row.get::<_, Option<i64>>(15)?,
         row.get::<_, Option<i64>>(16)?,
@@ -987,9 +1036,10 @@ fn read_turn_summary_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawTurnSum
         row.get::<_, Option<i64>>(18)?,
         row.get::<_, Option<i64>>(19)?,
         row.get::<_, Option<i64>>(20)?,
-        row.get::<_, i64>(21)?,
+        row.get::<_, Option<i64>>(21)?,
         row.get::<_, i64>(22)?,
         row.get::<_, i64>(23)?,
+        row.get::<_, i64>(24)?,
     ))
 }
 
@@ -1006,16 +1056,24 @@ fn build_turn_summary(row: RawTurnSummaryRow) -> Result<TurnSummary> {
         status: parse_turn_status(&row.7)?,
         user_preview: preview_text(&row.8),
         oneline_user_preview: preview_first_line(&row.8),
-        has_final_answer: row.9 != 0,
-        step_count: sql_count_to_u64(row.10)?,
-        tool_call_count: sql_count_to_u64(row.11)?,
-        primary_model: row.12,
-        token_usage: build_token_usage(row.14, row.15, row.16, row.17, row.18, row.19, row.13)?,
-        total_token_count: optional_sql_count_to_u64(row.13)?,
-        effective_agent_runtime_ms: optional_sql_count_to_u64(row.20)?,
-        changed_file_count: sql_count_to_u64(row.21)?,
-        added_line_count: sql_count_to_u64(row.22)?,
-        removed_line_count: sql_count_to_u64(row.23)?,
+        final_answer_preview: row
+            .9
+            .as_deref()
+            .map(|text| preview_text_with_truncation(text).0),
+        final_answer_preview_truncated: row
+            .9
+            .as_deref()
+            .is_some_and(|text| preview_text_with_truncation(text).1),
+        has_final_answer: row.10 != 0,
+        step_count: sql_count_to_u64(row.11)?,
+        tool_call_count: sql_count_to_u64(row.12)?,
+        primary_model: row.13,
+        token_usage: build_token_usage(row.15, row.16, row.17, row.18, row.19, row.20, row.14)?,
+        total_token_count: optional_sql_count_to_u64(row.14)?,
+        effective_agent_runtime_ms: optional_sql_count_to_u64(row.21)?,
+        changed_file_count: sql_count_to_u64(row.22)?,
+        added_line_count: sql_count_to_u64(row.23)?,
+        removed_line_count: sql_count_to_u64(row.24)?,
     })
 }
 

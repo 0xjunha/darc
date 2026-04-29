@@ -4,16 +4,14 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use darc_index::policy::{
-    extract_shell_command, rank_hard_debuggings, should_include_turn_in_active_time,
-};
+use darc_index::policy::{extract_shell_command, should_include_turn_in_active_time};
 use darc_paths::SourceKind;
 use rusqlite::Connection;
 
 use super::{
-    DailyTimeStat, FileUsageScope, FileUsageStat, HardDebuggingTurn, InsightTurnRow, LocalDate,
-    ProjectInsightRow, ProjectInsights, ProjectTimeStat, SessionAggregate, SessionRuntimeStat,
-    ShellCommandSummary, ToolUsageScope, ToolUsageStat, WorkspaceDailyTimeStat, WorkspaceInsights,
+    DailyTimeStat, FileUsageScope, FileUsageStat, InsightTurnRow, LocalDate, ProjectInsightRow,
+    ProjectInsights, ProjectTimeStat, SessionAggregate, SessionRuntimeStat, ShellCommandSummary,
+    ToolUsageScope, ToolUsageStat, WorkspaceDailyTimeStat, WorkspaceInsights,
     open_existing_index_database, paginate_ranked_rows, parse_provider, parse_turn_status,
     sort_tool_usage_stats, sql_count_to_u64,
 };
@@ -42,7 +40,6 @@ const PROJECT_INSIGHT_ROWS_SQL: &str = "
         turn_ordinal,
         DATE(started_at, 'localtime'),
         status,
-        COALESCE(step_count, 0),
         COALESCE(duration_ms, 0)
     FROM turns
     WHERE project_id = ?1
@@ -332,7 +329,6 @@ pub(crate) fn build_project_insights(
     let mut daily_time_map = BTreeMap::<String, u64>::new();
     let mut failure_count = 0_u64;
     let mut total_time_ms = 0_u64;
-    let mut hard_debuggings = Vec::new();
 
     for row in rows {
         if row.status != darc_rollout::model::NormalizedTurnStatus::Completed {
@@ -344,19 +340,7 @@ pub(crate) fn build_project_insights(
             let total = daily_time_map.entry(row.local_date.clone()).or_insert(0);
             *total = total.saturating_add(row.duration_ms);
         }
-
-        hard_debuggings.push(HardDebuggingTurn {
-            project_id: row.project_id.clone(),
-            provider: row.provider,
-            session_id: row.session_id.clone(),
-            turn_ordinal: row.turn_ordinal,
-            step_count: row.step_count,
-            duration_ms: row.duration_ms,
-            status: row.status,
-        });
     }
-
-    rank_hard_debuggings(&mut hard_debuggings);
 
     let mut most_read_files = all_files
         .iter()
@@ -398,7 +382,6 @@ pub(crate) fn build_project_insights(
         most_common_tools,
         most_read_files,
         most_written_files,
-        hard_debuggings,
         failure_count,
         total_time_ms,
     })
@@ -488,7 +471,6 @@ fn query_project_insight_rows(
                 row.get::<_, String>(4)?,
                 row.get::<_, String>(5)?,
                 row.get::<_, i64>(6)?,
-                row.get::<_, i64>(7)?,
             ))
         })
         .context("failed to query project insight rows")?
@@ -500,24 +482,18 @@ fn query_project_insight_rows(
         .into_iter()
         .map(
             |(
-                project_id,
-                provider,
-                session_id,
-                turn_ordinal,
+                _project_id,
+                _provider,
+                _session_id,
+                _turn_ordinal,
                 local_date,
                 status,
-                step_count,
                 duration_ms,
             )|
              -> Result<_> {
                 Ok(ProjectInsightRow {
-                    project_id,
-                    provider: parse_provider(&provider)?,
-                    session_id,
-                    turn_ordinal: sql_count_to_u64(turn_ordinal)?,
                     local_date,
                     status: parse_turn_status(&status)?,
-                    step_count: sql_count_to_u64(step_count)?,
                     duration_ms: sql_count_to_u64(duration_ms)?,
                 })
             },

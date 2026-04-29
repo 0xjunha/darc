@@ -10,14 +10,14 @@ use darc_paths::SourceKind;
 pub use darc_query::{
     DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, DEFAULT_TURN_STEP_LIMIT,
     DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT, DailyTimeStat, FilePivotSummary, FileSessionSummary,
-    FileUsageStat, FilesQueryData, FilesQueryMode, FilesQueryRequest, HardDebuggingTurn,
-    ProjectInsights, ProjectSummary, ProjectTimeStat, ResolveSessionQueryData,
-    ResolveSessionQueryRequest, ResolvedSessionMatch, RootAvailability, RootInfo,
-    SearchEvidenceField, SearchMode, SearchTurnHit, SearchTurnMatch, SearchTurnsQueryData,
-    SearchTurnsRequest, SessionBundleQueryData, SessionBundleQueryRequest, SessionBundleView,
-    SessionFileSummary, SessionFilesQueryData, SessionKind, SessionRuntimeStat, SessionSummary,
-    SessionsQueryData, SessionsQueryRequest, SessionsView, ShellCommandSummary, ToolUsageStat,
-    TurnDetail, TurnDetailInsights, TurnDetailOptions, TurnInsights, TurnSummary, TurnsQueryData,
+    FileUsageStat, FilesQueryData, FilesQueryMode, FilesQueryRequest, ProjectInsights,
+    ProjectSummary, ProjectTimeStat, ResolveSessionQueryData, ResolveSessionQueryRequest,
+    ResolvedSessionMatch, RootAvailability, RootInfo, SearchEvidenceField, SearchMode,
+    SearchTurnHit, SearchTurnMatch, SearchTurnsQueryData, SearchTurnsRequest,
+    SessionBundleQueryData, SessionBundleQueryRequest, SessionBundleView, SessionFileSummary,
+    SessionFilesQueryData, SessionKind, SessionRuntimeStat, SessionSummary, SessionsQueryData,
+    SessionsQueryRequest, SessionsView, ShellCommandSummary, ToolUsageStat, TurnDetail,
+    TurnDetailInsights, TurnDetailOptions, TurnInsights, TurnSummary, TurnsQueryData,
     TurnsQueryRequest, TurnsView, WorkspaceDailyTimeStat, WorkspaceInsights, WorkspaceQueryData,
 };
 use darc_query::{
