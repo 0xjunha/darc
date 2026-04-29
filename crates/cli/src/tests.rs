@@ -289,7 +289,8 @@ fn parses_query_turn_command() {
         Commands::Query(super::QueryArgs {
             command: QueryCommands::Turn(super::QueryTurnArgs {
                 project_id,
-                positional_args,
+                session_id_arg,
+                turn_ordinal_arg,
                 session_id,
                 turn_ordinal,
                 view,
@@ -300,7 +301,8 @@ fn parses_query_turn_command() {
                 ..
             }),
         }) if project_id.as_deref() == Some("repo-abc123")
-            && positional_args == ["session-1", "2"]
+            && session_id_arg.as_deref() == Some("session-1")
+            && turn_ordinal_arg.as_deref() == Some("2")
             && session_id.is_none()
             && turn_ordinal.is_none()
             && matches!(view, Some(super::ViewArg::Narrative))
@@ -555,6 +557,23 @@ fn parses_query_session_bundle_command() {
 }
 
 #[test]
+fn query_session_bundle_help_mentions_prompt_and_final_message_projection() {
+    let mut command = Cli::command();
+    let query = command
+        .find_subcommand_mut("query")
+        .expect("query subcommand should be present");
+    let help = query
+        .find_subcommand_mut("session-bundle")
+        .expect("session-bundle query subcommand should be present")
+        .render_long_help()
+        .to_string();
+
+    assert!(help.contains("--session-view"));
+    assert!(help.contains("session prompt/final message"));
+    assert!(help.contains("compact previews"));
+}
+
+#[test]
 fn parses_query_turns_session_scope_command() {
     let cli = Cli::try_parse_from([
         "darc",
@@ -612,6 +631,8 @@ fn parses_query_search_turns_literal_with_filters() {
         "user-message",
         "--exclude-field",
         "tool_arguments",
+        "--match-limit",
+        "3",
     ])
     .unwrap();
     assert!(matches!(
@@ -628,6 +649,7 @@ fn parses_query_search_turns_literal_with_filters() {
                 include_tool_output,
                 fields,
                 excluded_fields,
+                match_limit,
                 ..
                 }),
             }),
@@ -640,6 +662,7 @@ fn parses_query_search_turns_literal_with_filters() {
             && include_tool_output
             && fields == [super::SearchEvidenceField::UserMessage]
             && excluded_fields == [super::SearchEvidenceField::ToolArguments]
+            && match_limit == Some(3)
     ));
 }
 
@@ -736,7 +759,10 @@ fn query_turn_help_mentions_narrative_view_behavior() {
     assert!(help.contains("--view"));
     assert!(help.contains("narrative"));
     assert!(help.contains("tool arguments"));
-    assert!(help.contains("required unless both flags are set"));
+    assert!(help.contains("[SESSION_ID] [TURN_ORDINAL]"));
+    assert!(!help.contains("[TURN_ORDINAL]..."));
+    assert!(help.contains("required unless --session-id is set"));
+    assert!(help.contains("required unless --turn-ordinal is set"));
 }
 
 #[test]
@@ -777,7 +803,10 @@ fn query_search_turns_help_mentions_tool_output_opt_in() {
     assert!(help.contains("--include-tool-output"));
     assert!(help.contains("--field"));
     assert!(help.contains("--exclude-field"));
+    assert!(help.contains("--match-limit <MATCH_LIMIT>"));
+    assert!(help.contains("Maximum nested matches per literal/regex turn hit [default: 20]"));
     assert!(help.contains("literal and regex"));
+    assert!(help.contains("Accepted fields: user-message, final-answer"));
     assert!(help.contains("path-fragment"));
 }
 
@@ -796,6 +825,7 @@ fn query_files_help_mentions_path_and_co_touch_modes() {
     assert!(help.contains("--path"));
     assert!(help.contains("--co-touched-with"));
     assert!(help.contains("--limit"));
+    assert!(help.contains("most-touched files"));
 }
 
 #[test]

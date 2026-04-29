@@ -521,7 +521,7 @@ fn files_query_path_mode_emits_success_envelope() -> Result<()> {
 }
 
 #[test]
-fn files_query_without_selector_emits_top_files() -> Result<()> {
+fn files_query_without_selector_emits_most_touched_files() -> Result<()> {
     let root = create_query_fixture_root("cli-query-files-top")?;
 
     let output = run_darc([
@@ -674,6 +674,8 @@ fn session_bundle_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["turns_has_more"], false);
     assert_eq!(value["data"]["step_limit"], 50);
     assert_eq!(value["data"]["step_offset"], 0);
+    assert_eq!(value["data"]["session_file_limit"], 100);
+    assert_eq!(value["data"]["session_files_has_more"], false);
     assert_eq!(value["data"]["session"]["session_id"], PRIMARY_SESSION_ID);
     assert!(
         !value["data"]["session"]["first_user_prompt_truncated"]
@@ -860,6 +862,7 @@ fn sessions_query_includes_first_turn_abort_counts_and_edited_files() -> Result<
             step_count: 4,
             tool_call_count: 4,
             duration_ms: 5_000,
+            final_answer_text: Some("Follow-up patch done."),
             has_final_answer: true,
             ..IndexedTurnFixture::new(
                 "repo-abc123",
@@ -897,6 +900,14 @@ fn sessions_query_includes_first_turn_abort_counts_and_edited_files() -> Result<
     assert_eq!(
         value["data"]["sessions"][0]["first_user_prompt"],
         "Inspect the repository status"
+    );
+    assert_eq!(
+        value["data"]["sessions"][0]["final_agent_message"],
+        "Follow-up patch done."
+    );
+    assert_eq!(
+        value["data"]["sessions"][0]["final_agent_message_truncated"],
+        false
     );
     assert_eq!(value["data"]["sessions"][0]["aborted_turn_count"], 1);
     assert_eq!(
@@ -1013,6 +1024,13 @@ fn turns_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["turns"][0]["turn_id"], "turn-1");
     assert_eq!(value["data"]["turns"][0]["step_count"], 2);
     assert_eq!(value["data"]["turns"][0]["tool_call_count"], 1);
+    assert_eq!(value["data"]["turns"][0]["agent_answer_preview"], "Done.");
+    assert!(
+        !value["data"]["turns"][0]
+            .as_object()
+            .unwrap()
+            .contains_key("agent_answer_preview_truncated")
+    );
     assert_eq!(value["data"]["turns"][0]["primary_model"], "gpt-5.4");
     assert_eq!(value["data"]["turns"][0]["total_token_count"], 321);
     assert_eq!(
@@ -1234,9 +1252,26 @@ fn turns_query_oneline_view_emits_compact_rows() -> Result<()> {
     assert_eq!(value["data"]["turns"][0]["turn_ordinal"], 0);
     assert_eq!(value["data"]["turns"][0]["role"], "user");
     assert_eq!(
-        value["data"]["turns"][0]["user_preview"],
+        value["data"]["turns"][0]["user_prompt_preview"],
         "Inspect the repository status"
     );
+    assert!(
+        !value["data"]["turns"][0]
+            .as_object()
+            .unwrap()
+            .contains_key("user_prompt_preview_truncated")
+    );
+    assert_eq!(value["data"]["turns"][0]["user_prompt_preview_chars"], 29);
+    assert_eq!(value["data"]["turns"][0]["user_prompt_total_chars"], 29);
+    assert_eq!(value["data"]["turns"][0]["agent_answer_preview"], "Done.");
+    assert!(
+        !value["data"]["turns"][0]
+            .as_object()
+            .unwrap()
+            .contains_key("agent_answer_preview_truncated")
+    );
+    assert_eq!(value["data"]["turns"][0]["agent_answer_preview_chars"], 5);
+    assert_eq!(value["data"]["turns"][0]["agent_answer_total_chars"], 5);
     assert_eq!(value["data"]["turns"][0]["step_count"], 2);
     assert_eq!(value["data"]["turns"][0]["tool_call_count"], 1);
     assert!(
@@ -1294,6 +1329,8 @@ fn search_turns_query_emits_literal_evidence_matches() -> Result<()> {
         "literal",
         "--query",
         "--output-last-message",
+        "--match-limit",
+        "1",
         "--since",
         "2026-04-06T00:00:00Z",
         "--until",
@@ -1308,13 +1345,24 @@ fn search_turns_query_emits_literal_evidence_matches() -> Result<()> {
     assert_eq!(value["data"]["include_tool_output"], false);
     assert_eq!(value["data"]["fields"], Value::Array(vec![]));
     assert_eq!(value["data"]["excluded_fields"], Value::Array(vec![]));
+    assert_eq!(value["data"]["match_limit"], 1);
     assert_eq!(value["data"]["since"], "2026-04-06T00:00:00Z");
     assert_eq!(value["data"]["until"], "2026-04-07T00:00:00Z");
     assert_eq!(value["data"]["hits"][0]["turn_ordinal"], 1);
     assert_eq!(
+        value["data"]["hits"][0]["agent_answer_preview"],
+        "Captured the output."
+    );
+    assert!(
+        value["data"]["hits"][0]["matches"][0]["evidence_ordinal"]
+            .as_u64()
+            .is_some_and(|ordinal| ordinal > 0)
+    );
+    assert_eq!(
         value["data"]["hits"][0]["matches"][0]["field"],
         "tool_arguments"
     );
+    assert_eq!(value["data"]["hits"][0]["matches_count"], 1);
     assert!(
         value["data"]["hits"][0]["matches"][0]["snippet"]
             .as_str()
@@ -1671,7 +1719,25 @@ fn search_turns_query_emits_keyword_search_envelope() -> Result<()> {
     let value = parse_json(&output.stdout, "stdout")?;
     assert_eq!(value["schema"], "darc.query.search.turns.v1");
     assert_eq!(value["data"]["mode"], "keyword");
+    assert!(value["data"]["match_limit"].is_null());
     assert_eq!(value["data"]["hits"][0]["session_id"], PRIMARY_SESSION_ID);
+    assert_eq!(
+        value["data"]["hits"][0]["user_prompt_preview"],
+        "Inspect the repository status"
+    );
+    assert!(
+        !value["data"]["hits"][0]
+            .as_object()
+            .unwrap()
+            .contains_key("user_prompt_preview_truncated")
+    );
+    assert_eq!(value["data"]["hits"][0]["agent_answer_preview"], "Done.");
+    assert!(
+        !value["data"]["hits"][0]
+            .as_object()
+            .unwrap()
+            .contains_key("agent_answer_preview_truncated")
+    );
     assert_eq!(
         value["data"]["hits"][0]["matched_paths"],
         Value::Array(vec![])
@@ -1852,10 +1918,8 @@ fn project_insights_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["turns_has_more"], false);
     assert_eq!(value["data"]["most_common_tools"][0]["name"], "Read");
     assert_eq!(value["data"]["total_time_ms"], 5000);
-    assert_eq!(
-        value["data"]["most_read_files"][0]["repo_relative_path"],
-        "README.md"
-    );
+    assert_eq!(value["data"]["most_read_files"][0]["path"], "README.md");
+    assert!(value["data"]["most_read_files"][0]["repo_relative_path"].is_null());
 
     remove_root(&root)?;
     Ok(())
@@ -1912,7 +1976,7 @@ fn turn_insights_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["tool_output_count"], 1);
     assert_eq!(value["data"]["tools"][0]["name"], "Read");
     assert_eq!(value["data"]["files"][0]["path"], "README.md");
-    assert_eq!(value["data"]["files"][0]["repo_relative_path"], "README.md");
+    assert!(value["data"]["files"][0]["repo_relative_path"].is_null());
     assert_eq!(value["data"]["files"][0]["read_count"], 1);
 
     remove_root(&root)?;
@@ -2100,6 +2164,28 @@ fn search_turns_query_rejects_tool_output_flag_for_keyword_mode() -> Result<()> 
         String::from_utf8_lossy(&output.stderr).contains(
             "--include-tool-output is only supported with --mode literal or --mode regex"
         )
+    );
+
+    let match_limit_output = run_darc([
+        "query",
+        "search",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--mode",
+        "keyword",
+        "--query",
+        "Inspect",
+        "--match-limit",
+        "3",
+    ])?;
+
+    assert!(!match_limit_output.status.success());
+    assert!(
+        String::from_utf8_lossy(&match_limit_output.stderr)
+            .contains("--match-limit is only supported with --mode literal or --mode regex")
     );
 
     remove_root(&root)?;
