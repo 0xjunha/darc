@@ -20,8 +20,8 @@ use serde_json::Value;
 use super::{
     Cli, Commands, QueryCommands, QueryInsightsCommands, claude_schema_audit_exit_code,
     codex_schema_audit_exit_code, format_claude_schema_audit_report,
-    format_codex_schema_audit_report, format_query_error, parse_window_days,
-    resolve_query_time_bound_at,
+    format_codex_schema_audit_report, format_query_clap_error, format_query_error,
+    parse_window_days, resolve_query_time_bound_at,
 };
 
 fn compatible_report() -> CodexSchemaAuditReport {
@@ -866,6 +866,22 @@ fn formats_structured_query_errors_with_code_and_details() {
     assert_eq!(value["error"]["code"], "unknown_session");
     assert_eq!(value["error"]["details"]["session"], "11111111");
     assert_eq!(value["error"]["details"]["looks_like_prefix"], true);
+}
+
+#[test]
+fn formats_query_clap_errors_as_json() {
+    let error = Cli::try_parse_from(["darc", "query", "workspace", "--json"]).unwrap_err();
+    let payload = format_query_clap_error(&error);
+    let value: Value = serde_json::from_str(&payload).unwrap();
+
+    assert_eq!(value["schema"], "darc.error.v1");
+    assert_eq!(value["error"]["code"], "invalid_arguments");
+    assert_eq!(value["error"]["details"]["clap_kind"], "UnknownArgument");
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("unexpected argument '--json'"))
+    );
 }
 
 #[test]

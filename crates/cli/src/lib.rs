@@ -2,12 +2,14 @@
 mod tests;
 
 use std::{
+    env,
+    ffi::OsString,
     io::{self, IsTerminal},
     path::PathBuf,
 };
 
 use anyhow::{Context, Result, anyhow, bail};
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum, error::ErrorKind};
 use darc_core::query::{
     DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, DEFAULT_TURN_STEP_LIMIT,
     DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT, FilesQueryRequest, QueryProtocolError,
@@ -41,7 +43,7 @@ use darc_rollout_audit::codex::{
     run_codex_schema_audit_with_progress,
 };
 use serde::Serialize;
-use serde_json::Value as JsonValue;
+use serde_json::{Value as JsonValue, json};
 
 #[derive(Debug, Parser)]
 #[command(name = "darc", version, about = "Darc CLI")]
@@ -903,7 +905,24 @@ enum ClaudeSurveyModeArg {
 
 /// Parses CLI arguments and dispatches the selected command.
 pub fn run() -> i32 {
-    let cli = Cli::parse();
+    run_from(env::args_os())
+}
+
+/// Parses the provided CLI arguments and dispatches the selected command.
+fn run_from<I, T>(args: I) -> i32
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString>,
+{
+    let args = args.into_iter().map(Into::into).collect::<Vec<_>>();
+    match Cli::try_parse_from(args.clone()) {
+        Ok(cli) => run_cli(cli),
+        Err(error) => clap_error_exit(error, &args),
+    }
+}
+
+/// Dispatches one already parsed CLI command.
+fn run_cli(cli: Cli) -> i32 {
     match cli.command {
         Commands::Init(args) => standard_exit(run_init(args)),
         Commands::Refresh(args) => standard_exit(run_refresh(args)),
@@ -917,6 +936,30 @@ pub fn run() -> i32 {
         Commands::CodexSchemaAudit(args) => run_codex_schema_audit_command(args),
         Commands::ClaudeSchemaAudit(args) => run_claude_schema_audit_command(args),
     }
+}
+
+/// Maps Clap parse errors to the correct command-family output format.
+fn clap_error_exit(error: clap::Error, args: &[OsString]) -> i32 {
+    if is_query_invocation(args) && !is_clap_display_request(error.kind()) {
+        eprintln!("{}", format_query_clap_error(&error));
+        return error.exit_code();
+    }
+
+    if let Err(print_error) = error.print() {
+        eprintln!("error: failed to write CLI error: {print_error}");
+        return 1;
+    }
+    error.exit_code()
+}
+
+/// Returns whether the raw CLI arguments target the query protocol surface.
+fn is_query_invocation(args: &[OsString]) -> bool {
+    args.get(1).and_then(|arg| arg.to_str()) == Some("query")
+}
+
+/// Returns whether Clap is carrying a normal display request instead of an error.
+fn is_clap_display_request(kind: ErrorKind) -> bool {
+    matches!(kind, ErrorKind::DisplayHelp | ErrorKind::DisplayVersion)
 }
 
 /// Maps standard command results to the default CLI exit code convention.
@@ -1362,6 +1405,26 @@ fn format_query_error(error: &anyhow::Error) -> String {
             code: structured.map(QueryProtocolError::code),
             details: structured.map(QueryProtocolError::details),
             causes,
+        },
+    };
+    serde_json::to_string_pretty(&payload).unwrap_or_else(|serialization_error| {
+        format!(r#"{{"schema":"darc.error.v1","error":"{serialization_error}"}}"#)
+    })
+}
+
+/// Returns one machine-readable JSON error envelope string for query parse failures.
+fn format_query_clap_error(error: &clap::Error) -> String {
+    let payload = QueryErrorEnvelope {
+        schema: "darc.error.v1",
+        generated_at: current_utc_timestamp(),
+        darc_version: env!("CARGO_PKG_VERSION"),
+        error: QueryErrorData {
+            message: error.to_string().trim_end().to_owned(),
+            code: Some("invalid_arguments"),
+            details: Some(json!({
+                "clap_kind": format!("{:?}", error.kind()),
+            })),
+            causes: Vec::new(),
         },
     };
     serde_json::to_string_pretty(&payload).unwrap_or_else(|serialization_error| {
