@@ -2281,7 +2281,7 @@ fn resolve_session_query_reports_truncation() -> Result<()> {
     assert!(output.status.success());
     let value = parse_json(&output.stdout, "stdout")?;
     assert_eq!(value["schema"], "darc.query.resolve_session.v1");
-    assert_eq!(value["data"]["total"], 50);
+    assert_eq!(value["data"]["total"], 61);
     assert_eq!(value["data"]["truncated"], true);
     assert_eq!(value["data"]["matches"].as_array().unwrap().len(), 50);
 

@@ -236,6 +236,20 @@ const RESOLVE_SESSIONS_SQL: &str = "
     LIMIT ?4
 ";
 
+const RESOLVE_SESSIONS_COUNT_SQL: &str = "
+    SELECT COUNT(*)
+    FROM (
+        SELECT DISTINCT
+            project_id,
+            provider,
+            session_id
+        FROM sessions
+        WHERE (?1 IS NULL OR project_id = ?1)
+            AND (?2 IS NULL OR provider = ?2)
+            AND session_id LIKE ?3 || '%' COLLATE NOCASE
+    )
+";
+
 const PROJECT_SESSION_ID_SQL: &str = "
     SELECT
         session_id
@@ -560,12 +574,11 @@ fn build_resolve_sessions_query(
     connection: &Connection,
     request: ResolveSessionQueryRequest<'_>,
 ) -> Result<ResolveSessionQueryData> {
-    let limit = request
-        .limit
-        .checked_add(1)
-        .context("resolve-session limit exceeds usize range")?;
-    let limit = i64::try_from(limit).context("resolve-session limit exceeds SQLite range")?;
+    let limit =
+        i64::try_from(request.limit).context("resolve-session limit exceeds SQLite range")?;
     let provider = request.provider.map(SourceKind::directory_name);
+    let total =
+        query_resolve_sessions_total(connection, request.project_id, provider, request.query)?;
     let mut statement = connection
         .prepare(RESOLVE_SESSIONS_SQL)
         .context("failed to prepare resolve-session query")?;
@@ -583,10 +596,8 @@ fn build_resolve_sessions_query(
         .context("failed to query session resolution matches")?
         .collect::<rusqlite::Result<Vec<_>>>()
         .context("failed to read session resolution rows")?;
-    let truncated = rows.len() > request.limit;
     let matches = rows
         .into_iter()
-        .take(request.limit)
         .map(|(project_id, provider, session_id)| -> Result<_> {
             Ok(ResolvedSessionMatch {
                 project_id,
@@ -595,12 +606,31 @@ fn build_resolve_sessions_query(
             })
         })
         .collect::<Result<Vec<_>>>()?;
+    let returned_count =
+        u64::try_from(request.limit).context("resolve-session limit exceeds u64 range")?;
     Ok(ResolveSessionQueryData {
         query: request.query.to_owned(),
-        total: u64::try_from(matches.len()).context("resolve-session match count exceeds u64")?,
-        truncated,
+        total,
+        truncated: total > returned_count,
         matches,
     })
+}
+
+/// Queries the true total match count for one session-resolution request.
+fn query_resolve_sessions_total(
+    connection: &Connection,
+    project_id: Option<&str>,
+    provider: Option<&str>,
+    query: &str,
+) -> Result<u64> {
+    let total = connection
+        .query_row(
+            RESOLVE_SESSIONS_COUNT_SQL,
+            params![project_id, provider, query],
+            |row| row.get::<_, i64>(0),
+        )
+        .context("failed to query session resolution match count")?;
+    sql_count_to_u64(total)
 }
 
 /// Builds one session-scoped turn-list response.
@@ -999,6 +1029,7 @@ pub(super) fn smoke_test_sql(connection: &Connection) -> Result<()> {
         ),
         ("project sessions query", PROJECT_SESSIONS_SQL),
         ("resolve sessions query", RESOLVE_SESSIONS_SQL),
+        ("resolve sessions count query", RESOLVE_SESSIONS_COUNT_SQL),
         ("project session id query", PROJECT_SESSION_ID_SQL),
         ("project session matches query", PROJECT_SESSION_MATCHES_SQL),
         ("session turns query", session_turns_sql()),
