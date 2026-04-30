@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::anyhow;
-use clap::{CommandFactory, Parser};
+use clap::{ColorChoice, CommandFactory, Parser};
 use darc_core::{
     IndexReport, RefreshAllBestEffortReport, RefreshProjectAttempt, RefreshProjectFailure,
     RefreshReport, SourceKind, SyncReport,
@@ -18,10 +18,10 @@ use darc_rollout_audit::{claude::ClaudeSchemaAuditOutcome, codex::CodexSchemaAud
 use serde_json::Value;
 
 use super::{
-    Cli, Commands, QueryCommands, QueryInsightsCommands, claude_schema_audit_exit_code,
-    codex_schema_audit_exit_code, format_claude_schema_audit_report,
+    Cli, ColorArg, Commands, HELP_STYLES, QueryCommands, QueryInsightsCommands,
+    claude_schema_audit_exit_code, codex_schema_audit_exit_code, format_claude_schema_audit_report,
     format_codex_schema_audit_report, format_query_clap_error, format_query_error,
-    parse_window_days, resolve_query_time_bound_at,
+    parse_window_days, resolve_query_time_bound_at, should_auto_color_output, should_color_output,
 };
 
 fn compatible_report() -> CodexSchemaAuditReport {
@@ -33,6 +33,26 @@ fn compatible_report() -> CodexSchemaAuditReport {
         audited_tags: vec!["rust-v0.118.0".to_owned()],
         outcome: CodexSchemaAuditOutcome::Compatible,
     }
+}
+
+/// Extracts query arguments from a parsed CLI for focused parser assertions.
+fn query_args(cli: Cli) -> super::QueryArgs {
+    match cli.command {
+        Commands::Query(args) => *args,
+        command => panic!("expected query command, got {command:?}"),
+    }
+}
+
+/// Renders long help for one nested command path.
+fn help_for_command_path(path: &[&str]) -> String {
+    let mut command = Cli::command();
+    let mut current = &mut command;
+    for name in path {
+        current = current
+            .find_subcommand_mut(name)
+            .unwrap_or_else(|| panic!("subcommand `{name}` should be present"));
+    }
+    current.render_long_help().to_string()
 }
 
 fn compatible_claude_report() -> ClaudeSchemaAuditReport {
@@ -101,6 +121,45 @@ fn parses_hidden_codex_schema_audit_command() {
 }
 
 #[test]
+fn top_level_help_points_to_common_workflows() {
+    let help = Cli::command().render_long_help().to_string();
+
+    assert!(help.contains("Archive, index, and query coding-agent sessions"));
+    assert!(help.contains("Common workflows:"));
+    assert!(help.contains("darc status"));
+    assert!(help.contains("darc query search turns \"panic\" --limit 5"));
+    assert!(help.contains("darc help <command>"));
+}
+
+#[test]
+fn help_uses_terminal_color_auto() {
+    let mut command = Cli::command();
+    command.build();
+
+    assert_eq!(command.get_color(), ColorChoice::Auto);
+    assert_eq!(
+        *command.get_styles().get_header(),
+        *HELP_STYLES.get_header()
+    );
+
+    let query = command
+        .find_subcommand("query")
+        .expect("query subcommand should be present");
+    assert_eq!(*query.get_styles().get_header(), *HELP_STYLES.get_header());
+}
+
+#[test]
+fn rendered_help_is_plain_but_carries_ansi_styles() {
+    let styled = Cli::command().render_long_help();
+    let plain = styled.to_string();
+    let ansi = styled.ansi().to_string();
+
+    assert!(!plain.contains("\x1b["));
+    assert!(ansi.contains("\x1b["));
+    assert_eq!(strip_ansi_text(&ansi), plain);
+}
+
+#[test]
 fn parses_hidden_claude_schema_audit_command() {
     let cli = Cli::try_parse_from([
         "darc",
@@ -150,6 +209,21 @@ fn status_command_accepts_workspace_and_check_flags() {
             ..
         })
     ));
+}
+
+#[test]
+fn human_command_help_groups_options() {
+    let status_help = help_for_command_path(&["status"]);
+    assert!(status_help.contains("Workspace:"));
+    assert!(status_help.contains("Scope:"));
+    assert!(status_help.contains("Mode:"));
+
+    let sync_help = help_for_command_path(&["sync"]);
+    assert!(sync_help.contains("Workspace:"));
+    assert!(sync_help.contains("Mode:"));
+    assert!(sync_help.contains("Selection:"));
+    assert!(sync_help.contains("Preview pending copies without writing files"));
+    assert!(sync_help.contains("darc sync --dry-run"));
 }
 
 #[test]
@@ -221,10 +295,25 @@ fn parses_rename_command() {
 fn parses_query_workspace_command() {
     let cli = Cli::try_parse_from(["darc", "query", "workspace"]).unwrap();
     assert!(matches!(
-        cli.command,
-        Commands::Query(super::QueryArgs {
+        query_args(cli),
+        super::QueryArgs {
+            color,
             command: QueryCommands::Workspace(super::QueryWorkspaceArgs { .. }),
-        })
+            ..
+        } if matches!(color, ColorArg::Auto)
+    ));
+}
+
+#[test]
+fn parses_query_color_argument() {
+    let cli = Cli::try_parse_from(["darc", "query", "--color", "always", "workspace"]).unwrap();
+    assert!(matches!(
+        query_args(cli),
+        super::QueryArgs {
+            color,
+            command: QueryCommands::Workspace(super::QueryWorkspaceArgs { .. }),
+            ..
+        } if matches!(color, ColorArg::Always)
     ));
 }
 
@@ -243,8 +332,8 @@ fn parses_query_resolve_session_command() {
     ])
     .unwrap();
     assert!(matches!(
-        cli.command,
-        Commands::Query(super::QueryArgs {
+        query_args(cli),
+        super::QueryArgs {
             command: QueryCommands::ResolveSession(super::QueryResolveSessionArgs {
                 input,
                 project_id,
@@ -252,7 +341,8 @@ fn parses_query_resolve_session_command() {
                 pick_one,
                 ..
             }),
-        }) if input == "11111111"
+            ..
+        } if input == "11111111"
             && project_id.as_deref() == Some("repo-abc123")
             && matches!(provider, Some(super::ProviderArg::Codex))
             && pick_one
@@ -285,8 +375,8 @@ fn parses_query_turn_command() {
     ])
     .unwrap();
     assert!(matches!(
-        cli.command,
-        Commands::Query(super::QueryArgs {
+        query_args(cli),
+        super::QueryArgs {
             command: QueryCommands::Turn(super::QueryTurnArgs {
                 project_id,
                 session_id_arg,
@@ -300,7 +390,8 @@ fn parses_query_turn_command() {
                 step_offset,
                 ..
             }),
-        }) if project_id.as_deref() == Some("repo-abc123")
+            ..
+        } if project_id.as_deref() == Some("repo-abc123")
             && session_id_arg.as_deref() == Some("session-1")
             && turn_ordinal_arg.as_deref() == Some("2")
             && session_id.is_none()
@@ -330,8 +421,8 @@ fn parses_query_sessions_with_time_bounds() {
     ])
     .unwrap();
     assert!(matches!(
-        cli.command,
-        Commands::Query(super::QueryArgs {
+        query_args(cli),
+        super::QueryArgs {
             command: QueryCommands::Sessions(super::QuerySessionsArgs {
                 project_id,
                 provider,
@@ -340,7 +431,8 @@ fn parses_query_sessions_with_time_bounds() {
                 touched_path,
                 ..
             }),
-        }) if project_id.as_deref() == Some("repo-abc123")
+            ..
+        } if project_id.as_deref() == Some("repo-abc123")
             && matches!(provider, Some(super::ProviderArg::Codex))
             && since.as_deref() == Some("5d")
             && until.as_deref() == Some("2026-04-07T00:00:00Z")
@@ -352,13 +444,14 @@ fn parses_query_sessions_with_time_bounds() {
 fn parses_query_sessions_without_project_id() {
     let cli = Cli::try_parse_from(["darc", "query", "sessions"]).unwrap();
     assert!(matches!(
-        cli.command,
-        Commands::Query(super::QueryArgs {
+        query_args(cli),
+        super::QueryArgs {
             command: QueryCommands::Sessions(super::QuerySessionsArgs {
                 project_id,
                 ..
             }),
-        }) if project_id.is_none()
+            ..
+        } if project_id.is_none()
     ));
 }
 
@@ -379,8 +472,8 @@ fn parses_query_sessions_touched_path_filter() {
     ])
     .unwrap();
     assert!(matches!(
-        cli.command,
-        Commands::Query(super::QueryArgs {
+        query_args(cli),
+        super::QueryArgs {
             command: QueryCommands::Sessions(super::QuerySessionsArgs {
                 project_id,
                 touched_path,
@@ -388,7 +481,8 @@ fn parses_query_sessions_touched_path_filter() {
                 offset,
                 ..
             }),
-        }) if project_id.as_deref() == Some("repo-abc123")
+            ..
+        } if project_id.as_deref() == Some("repo-abc123")
             && touched_path.as_deref() == Some("src/components/**")
             && limit == 25
             && offset == 50
@@ -413,8 +507,8 @@ fn parses_query_files_path_command() {
     ])
     .unwrap();
     assert!(matches!(
-        cli.command,
-        Commands::Query(super::QueryArgs {
+        query_args(cli),
+        super::QueryArgs {
             command: QueryCommands::Files(super::QueryFilesArgs {
                 project_id,
                 provider,
@@ -427,7 +521,8 @@ fn parses_query_files_path_command() {
                 offset,
                 ..
             }),
-        }) if project_id.as_deref() == Some("repo-abc123")
+            ..
+        } if project_id.as_deref() == Some("repo-abc123")
             && matches!(provider, Some(super::ProviderArg::Claude))
             && path.is_none()
             && path_arg.as_deref() == Some("src/components/**/*.rs")
@@ -460,8 +555,8 @@ fn parses_query_files_co_touched_command() {
     ])
     .unwrap();
     assert!(matches!(
-        cli.command,
-        Commands::Query(super::QueryArgs {
+        query_args(cli),
+        super::QueryArgs {
             command: QueryCommands::Files(super::QueryFilesArgs {
                 project_id,
                 path,
@@ -472,7 +567,8 @@ fn parses_query_files_co_touched_command() {
                 offset,
                 ..
             }),
-        }) if project_id.as_deref() == Some("repo-abc123")
+            ..
+        } if project_id.as_deref() == Some("repo-abc123")
             && path.is_none()
             && co_touched_with.as_deref() == Some("src/components/planner.rs")
             && since.as_deref() == Some("7d")
@@ -496,8 +592,8 @@ fn parses_query_session_files_command() {
     ])
     .unwrap();
     assert!(matches!(
-        cli.command,
-        Commands::Query(super::QueryArgs {
+        query_args(cli),
+        super::QueryArgs {
             command: QueryCommands::SessionFiles(super::QuerySessionFilesArgs {
                 project_id,
                 provider,
@@ -505,7 +601,8 @@ fn parses_query_session_files_command() {
                 session_id,
                 ..
             }),
-        }) if project_id.as_deref() == Some("repo-abc123")
+            ..
+        } if project_id.as_deref() == Some("repo-abc123")
             && matches!(provider, Some(super::ProviderArg::Codex))
             && session_id_arg.as_deref() == Some("session-1")
             && session_id.is_none()
@@ -528,8 +625,8 @@ fn parses_query_session_bundle_command() {
     ])
     .unwrap();
     assert!(matches!(
-        cli.command,
-        Commands::Query(super::QueryArgs {
+        query_args(cli),
+        super::QueryArgs {
             command: QueryCommands::SessionBundle(super::QuerySessionBundleArgs {
                 project_id,
                 provider,
@@ -543,7 +640,8 @@ fn parses_query_session_bundle_command() {
                 step_offset,
                 ..
             }),
-        }) if project_id.as_deref() == Some("repo-abc123")
+            ..
+        } if project_id.as_deref() == Some("repo-abc123")
             && matches!(provider, Some(super::ProviderArg::Codex))
             && session_id_arg.as_deref() == Some("session-1")
             && session_id.is_none()
@@ -558,19 +656,15 @@ fn parses_query_session_bundle_command() {
 
 #[test]
 fn query_session_bundle_help_mentions_prompt_and_final_message_projection() {
-    let mut command = Cli::command();
-    let query = command
-        .find_subcommand_mut("query")
-        .expect("query subcommand should be present");
-    let help = query
-        .find_subcommand_mut("session-bundle")
-        .expect("session-bundle query subcommand should be present")
-        .render_long_help()
-        .to_string();
+    let help = help_for_command_path(&["query", "session-bundle"]);
 
     assert!(help.contains("--session-view"));
     assert!(help.contains("session prompt/final message"));
     assert!(help.contains("compact previews"));
+    assert!(help.contains("Identity:"));
+    assert!(help.contains("Output:"));
+    assert!(help.contains("Result Size:"));
+    assert!(help.contains("darc query session-bundle <SESSION_ID>"));
 }
 
 #[test]
@@ -587,8 +681,8 @@ fn parses_query_turns_session_scope_command() {
     ])
     .unwrap();
     assert!(matches!(
-        cli.command,
-        Commands::Query(super::QueryArgs {
+        query_args(cli),
+        super::QueryArgs {
             command: QueryCommands::Turns(super::QueryTurnsArgs {
                 project_id,
                 provider,
@@ -599,7 +693,8 @@ fn parses_query_turns_session_scope_command() {
                 offset,
                 ..
             }),
-        }) if project_id.as_deref() == Some("repo-abc123")
+            ..
+        } if project_id.as_deref() == Some("repo-abc123")
             && matches!(provider, Some(super::ProviderArg::Codex))
             && session_id_arg.as_deref() == Some("session-1")
             && session_id.is_none()
@@ -636,8 +731,8 @@ fn parses_query_search_turns_literal_with_filters() {
     ])
     .unwrap();
     assert!(matches!(
-        cli.command,
-        Commands::Query(super::QueryArgs {
+        query_args(cli),
+        super::QueryArgs {
             command: QueryCommands::Search(super::QuerySearchArgs {
                 command: super::QuerySearchCommands::Turns(super::QuerySearchTurnsArgs {
                 project_id,
@@ -653,7 +748,8 @@ fn parses_query_search_turns_literal_with_filters() {
                 ..
                 }),
             }),
-        }) if project_id.as_deref() == Some("repo-abc123")
+            ..
+        } if project_id.as_deref() == Some("repo-abc123")
             && matches!(mode, super::SearchModeArg::Literal)
             && query.as_deref() == Some("--output-last-message")
             && query_arg.is_none()
@@ -679,8 +775,8 @@ fn parses_query_search_turns_default_keyword_positional_query() {
     ])
     .unwrap();
     assert!(matches!(
-        cli.command,
-        Commands::Query(super::QueryArgs {
+        query_args(cli),
+        super::QueryArgs {
             command: QueryCommands::Search(super::QuerySearchArgs {
                 command: super::QuerySearchCommands::Turns(super::QuerySearchTurnsArgs {
                     project_id,
@@ -690,7 +786,8 @@ fn parses_query_search_turns_default_keyword_positional_query() {
                     ..
                 }),
             }),
-        }) if project_id.as_deref() == Some("repo-abc123")
+            ..
+        } if project_id.as_deref() == Some("repo-abc123")
             && matches!(mode, super::SearchModeArg::Keyword)
             && query_arg.as_deref() == Some("panic unwrap")
             && query.is_none()
@@ -699,14 +796,84 @@ fn parses_query_search_turns_default_keyword_positional_query() {
 
 #[test]
 fn query_help_mentions_machine_protocol() {
-    let mut command = Cli::command();
-    let help = command
-        .find_subcommand_mut("query")
-        .expect("query subcommand should be present")
-        .render_long_help()
-        .to_string();
+    let help = help_for_command_path(&["query"]);
 
     assert!(help.contains("machine-readable"));
+    assert!(help.contains("--color"));
+    assert!(help.contains("Output:"));
+    assert!(help.contains("darc query sessions --limit 5"));
+}
+
+#[test]
+fn query_color_policy_respects_terminal_environment() {
+    assert!(should_color_output(ColorArg::Auto, true, false, None));
+    assert!(should_color_output(
+        ColorArg::Auto,
+        true,
+        false,
+        Some("xterm-256color"),
+    ));
+    assert!(!should_color_output(ColorArg::Auto, false, false, None));
+    assert!(!should_color_output(ColorArg::Auto, true, true, None));
+    assert!(!should_color_output(
+        ColorArg::Auto,
+        true,
+        false,
+        Some("dumb"),
+    ));
+    assert!(should_color_output(
+        ColorArg::Always,
+        false,
+        true,
+        Some("dumb"),
+    ));
+    assert!(!should_color_output(
+        ColorArg::Never,
+        true,
+        false,
+        Some("xterm-256color"),
+    ));
+}
+
+#[test]
+fn auto_color_policy_respects_terminal_environment() {
+    assert!(should_auto_color_output(true, false, None));
+    assert!(should_auto_color_output(
+        true,
+        false,
+        Some("xterm-256color"),
+    ));
+    assert!(!should_auto_color_output(false, false, None));
+    assert!(!should_auto_color_output(true, true, None));
+    assert!(!should_auto_color_output(true, false, Some("dumb")));
+}
+
+#[test]
+fn query_json_coloring_strips_to_original_json() {
+    let json = "{\n  \"schema\": \"darc.query.workspace.v1\",\n  \"data\": {\n    \"count\": 1,\n    \"enabled\": true,\n    \"missing\": null,\n    \"escaped\": \"quote \\\" ok\"\n  }\n}";
+    let colored = super::color_json(json);
+
+    assert!(colored.contains("\x1b["));
+    assert_eq!(strip_ansi_text(&colored), json);
+}
+
+/// Strips ANSI control sequences from rendered text for unit assertions.
+fn strip_ansi_text(input: &str) -> String {
+    let mut output = String::new();
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' && chars.peek() == Some(&'[') {
+            chars.next();
+            for ch in chars.by_ref() {
+                if ('@'..='~').contains(&ch) {
+                    break;
+                }
+            }
+        } else {
+            output.push(ch);
+        }
+    }
+    output
 }
 
 #[test]
@@ -787,18 +954,7 @@ fn query_turns_help_omits_removed_grep_surface() {
 
 #[test]
 fn query_search_turns_help_mentions_tool_output_opt_in() {
-    let mut command = Cli::command();
-    let query = command
-        .find_subcommand_mut("query")
-        .expect("query subcommand should be present");
-    let search = query
-        .find_subcommand_mut("search")
-        .expect("search query subcommand should be present");
-    let help = search
-        .find_subcommand_mut("turns")
-        .expect("turn search subcommand should be present")
-        .render_long_help()
-        .to_string();
+    let help = help_for_command_path(&["query", "search", "turns"]);
 
     assert!(help.contains("--include-tool-output"));
     assert!(help.contains("--field"));
@@ -806,26 +962,29 @@ fn query_search_turns_help_mentions_tool_output_opt_in() {
     assert!(help.contains("--match-limit <MATCH_LIMIT>"));
     assert!(help.contains("Maximum nested matches per literal/regex turn hit [default: 20]"));
     assert!(help.contains("literal and regex"));
-    assert!(help.contains("Accepted fields: user-message, final-answer"));
+    assert!(help.contains("Accepted fields:"));
+    assert!(help.contains("messages: user-message, final-answer"));
     assert!(help.contains("path-fragment"));
+    assert!(help.contains("Workspace:"));
+    assert!(help.contains("Scope:"));
+    assert!(help.contains("Search:"));
+    assert!(help.contains("Evidence:"));
+    assert!(help.contains("Time Filters:"));
+    assert!(help.contains("Result Size:"));
+    assert!(help.contains("darc query search turns \"panic\" --limit 5"));
 }
 
 #[test]
 fn query_files_help_mentions_path_and_co_touch_modes() {
-    let mut command = Cli::command();
-    let query = command
-        .find_subcommand_mut("query")
-        .expect("query subcommand should be present");
-    let help = query
-        .find_subcommand_mut("files")
-        .expect("files query subcommand should be present")
-        .render_long_help()
-        .to_string();
+    let help = help_for_command_path(&["query", "files"]);
 
     assert!(help.contains("--path"));
     assert!(help.contains("--co-touched-with"));
     assert!(help.contains("--limit"));
     assert!(help.contains("most-touched files"));
+    assert!(help.contains("Selection:"));
+    assert!(help.contains("Time Filters:"));
+    assert!(help.contains("Result Size:"));
 }
 
 #[test]
@@ -833,8 +992,8 @@ fn parses_query_workspace_insights_command() {
     let cli =
         Cli::try_parse_from(["darc", "query", "insights", "workspace", "--window", "14d"]).unwrap();
     assert!(matches!(
-        cli.command,
-        Commands::Query(super::QueryArgs {
+        query_args(cli),
+        super::QueryArgs {
             command: QueryCommands::Insights(super::QueryInsightsArgs {
                 command: QueryInsightsCommands::Workspace(super::QueryWorkspaceInsightsArgs {
                     window_days,
@@ -843,7 +1002,8 @@ fn parses_query_workspace_insights_command() {
                     ..
                 }),
             }),
-        }) if window_days == 14
+            ..
+        } if window_days == 14
             && recent_session_limit == darc_core::query::DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT
             && recent_session_offset == 0
     ));

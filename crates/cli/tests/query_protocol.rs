@@ -199,6 +199,38 @@ fn parse_json(bytes: &[u8], stream: &str) -> Result<Value> {
     serde_json::from_slice(bytes).with_context(|| format!("failed to parse {stream} JSON"))
 }
 
+/// Returns whether captured output contains an ANSI control sequence.
+fn contains_ansi(bytes: &[u8]) -> bool {
+    bytes.windows(2).any(|window| window == b"\x1b[")
+}
+
+/// Returns whether captured output highlights one visible search-match string.
+fn contains_highlighted_text(bytes: &[u8], text: &str) -> bool {
+    String::from_utf8_lossy(bytes).contains(&format!("\x1b[1;95m{text}\x1b[0m\x1b[32m"))
+}
+
+/// Strips ANSI control sequences from captured process output.
+fn strip_ansi(bytes: &[u8]) -> Vec<u8> {
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'\x1b' && bytes.get(index + 1) == Some(&b'[') {
+            index += 2;
+            while index < bytes.len() {
+                let byte = bytes[index];
+                index += 1;
+                if (0x40..=0x7e).contains(&byte) {
+                    break;
+                }
+            }
+        } else {
+            output.push(bytes[index]);
+            index += 1;
+        }
+    }
+    output
+}
+
 /// Removes one temporary test root after the test finishes.
 fn remove_root(root: &Path) -> Result<()> {
     fs::remove_dir_all(root)
@@ -222,6 +254,63 @@ fn workspace_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["projects"][0]["id"], "repo-abc123");
     assert_eq!(value["data"]["projects"][0]["session_count"], 1);
     assert_eq!(value["data"]["projects"][0]["turn_count"], 1);
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn workspace_query_color_flags_preserve_json_contract() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-color")?;
+    let root_arg = root.to_string_lossy();
+
+    let default_output = run_darc(["query", "workspace", "--root", root_arg.as_ref()])?;
+    assert!(default_output.status.success());
+    assert!(!contains_ansi(&default_output.stdout));
+    let default_value = parse_json(&default_output.stdout, "stdout")?;
+    assert_eq!(default_value["schema"], "darc.query.workspace.v1");
+
+    let never_output = run_darc([
+        "query",
+        "--color",
+        "never",
+        "workspace",
+        "--root",
+        root_arg.as_ref(),
+    ])?;
+    assert!(never_output.status.success());
+    assert!(!contains_ansi(&never_output.stdout));
+    let never_value = parse_json(&never_output.stdout, "stdout")?;
+    assert_eq!(never_value["schema"], "darc.query.workspace.v1");
+
+    let always_output = run_darc([
+        "query",
+        "--color",
+        "always",
+        "workspace",
+        "--root",
+        root_arg.as_ref(),
+    ])?;
+    assert!(always_output.status.success());
+    assert!(contains_ansi(&always_output.stdout));
+    let stripped = strip_ansi(&always_output.stdout);
+    let always_value = parse_json(&stripped, "stripped stdout")?;
+    assert_eq!(always_value["schema"], "darc.query.workspace.v1");
+
+    let always_with_no_color = Command::new(darc_binary())
+        .env("NO_COLOR", "1")
+        .args([
+            "query",
+            "--color",
+            "always",
+            "workspace",
+            "--root",
+            root_arg.as_ref(),
+        ])
+        .output()
+        .context("failed to run compiled darc binary")?;
+    assert!(always_with_no_color.status.success());
+    assert!(contains_ansi(&always_with_no_color.stdout));
 
     remove_root(&root)?;
     Ok(())
@@ -420,7 +509,8 @@ fn query_help_stays_clap_text() -> Result<()> {
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Usage: darc query <COMMAND>"));
+    assert!(stdout.contains("Usage: darc query [OPTIONS] <COMMAND>"));
+    assert!(stdout.contains("--color <COLOR>"));
     assert!(serde_json::from_slice::<Value>(&output.stdout).is_err());
     Ok(())
 }
@@ -1369,6 +1459,41 @@ fn search_turns_query_emits_literal_evidence_matches() -> Result<()> {
             .is_some_and(|snippet| snippet.contains("--output-last-message"))
     );
 
+    let literal_colored = run_darc([
+        "query",
+        "--color",
+        "always",
+        "search",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--mode",
+        "literal",
+        "--query",
+        "--output-last-message",
+        "--match-limit",
+        "1",
+        "--since",
+        "2026-04-06T00:00:00Z",
+        "--until",
+        "2026-04-07T00:00:00Z",
+    ])?;
+
+    assert!(literal_colored.status.success());
+    assert!(contains_ansi(&literal_colored.stdout));
+    assert!(contains_highlighted_text(
+        &literal_colored.stdout,
+        "--output-last-message"
+    ));
+    let literal_stripped = strip_ansi(&literal_colored.stdout);
+    let literal_colored_value = parse_json(&literal_stripped, "stripped stdout")?;
+    assert_eq!(
+        literal_colored_value["data"]["hits"][0]["matches"][0]["snippet"],
+        value["data"]["hits"][0]["matches"][0]["snippet"]
+    );
+
     let literal_content_only = run_darc([
         "query",
         "search",
@@ -1418,6 +1543,37 @@ fn search_turns_query_emits_literal_evidence_matches() -> Result<()> {
     assert_eq!(
         regex_perl_space_value["data"]["hits"][0]["matches"][0]["field"],
         "user_message"
+    );
+
+    let regex_colored = run_darc([
+        "query",
+        "--color",
+        "always",
+        "search",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--mode",
+        "regex",
+        "--query",
+        r"Run\s+the\s+CLI",
+        "--field",
+        "user-message",
+    ])?;
+
+    assert!(regex_colored.status.success());
+    assert!(contains_ansi(&regex_colored.stdout));
+    assert!(contains_highlighted_text(
+        &regex_colored.stdout,
+        "Run the CLI"
+    ));
+    let regex_stripped = strip_ansi(&regex_colored.stdout);
+    let regex_colored_value = parse_json(&regex_stripped, "stripped stdout")?;
+    assert_eq!(
+        regex_colored_value["data"]["hits"][0]["matches"][0]["snippet"],
+        regex_perl_space_value["data"]["hits"][0]["matches"][0]["snippet"]
     );
 
     let literal_without_tool_args = run_darc([

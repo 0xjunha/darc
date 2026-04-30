@@ -9,27 +9,32 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
-use clap::{Args, Parser, Subcommand, ValueEnum, error::ErrorKind};
+use clap::{
+    Args, ColorChoice, Parser, Subcommand, ValueEnum,
+    builder::styling::{AnsiColor, Styles},
+    error::ErrorKind,
+};
 use darc_core::query::{
     DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, DEFAULT_SEARCH_MATCH_LIMIT,
     DEFAULT_TURN_STEP_LIMIT, DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT, FilesQueryRequest,
     QueryProtocolError, ResolveSessionQueryRequest, ResolvedQueryProject, ResolvedSessionMatch,
-    SearchEvidenceField, SearchMode, SearchTurnsRequest, SessionBundleQueryRequest,
-    SessionBundleView, SessionsQueryRequest, SessionsView, TurnDetailOptions, TurnsQueryRequest,
-    TurnsView, query_files_for_project, query_project_insight_report_for_project,
-    query_resolve_sessions, query_search_turns_for_project, query_session_bundle_for_project,
+    SearchEvidenceField, SearchMode, SearchSnippetMatcher, SearchTurnsQueryData,
+    SearchTurnsRequest, SessionBundleQueryRequest, SessionBundleView, SessionsQueryRequest,
+    SessionsView, TurnDetailOptions, TurnsQueryRequest, TurnsView, query_files_for_project,
+    query_project_insight_report_for_project, query_resolve_sessions,
+    query_search_turns_for_project, query_session_bundle_for_project,
     query_session_files_for_project, query_sessions_for_project, query_turn_for_project,
     query_turn_insight_report_for_project, query_turns_for_project, query_workspace,
     query_workspace_insight_report, resolve_query_project,
     resolve_query_search_session_id_for_project, resolve_query_session_for_project,
 };
 use darc_core::{
-    IndexOptions, InitDraft, RefreshAllBestEffortReport, RefreshOptions, RefreshProjectAttempt,
-    RefreshProjectFailure, RefreshReport, SkippedRollout, SourceKind, StatusProject, StatusSource,
-    StatusSyncCheck, StatusSyncPlan, SyncOptions, WorkspaceStatusReport, default_root_path,
-    execute_sync, index_project_sessions, link_project, prepare_init, prepare_sync,
-    refresh_all_projects_best_effort, refresh_project, remove_project, rename_project,
-    status_project, status_workspace, write_init,
+    IndexOptions, IndexReport, InitDraft, RefreshAllBestEffortReport, RefreshOptions,
+    RefreshProjectAttempt, RefreshProjectFailure, RefreshReport, SkippedRollout, SourceKind,
+    StatusProject, StatusSource, StatusSyncCheck, StatusSyncPlan, SyncOptions, SyncReport,
+    WorkspaceStatusReport, default_root_path, execute_sync, index_project_sessions, link_project,
+    prepare_init, prepare_sync, refresh_all_projects_best_effort, refresh_project, remove_project,
+    rename_project, status_project, status_workspace, write_init,
 };
 use darc_paths::{
     current_utc_timestamp, resolve_query_time_bound as resolve_shared_query_time_bound,
@@ -45,8 +50,25 @@ use darc_rollout_audit::codex::{
 use serde::Serialize;
 use serde_json::{Value as JsonValue, json};
 
+/// Terminal styles for Clap-rendered help reference pages.
+const HELP_STYLES: Styles = Styles::styled()
+    .header(AnsiColor::BrightGreen.on_default().bold())
+    .usage(AnsiColor::BrightGreen.on_default().bold())
+    .literal(AnsiColor::BrightWhite.on_default().bold())
+    .placeholder(AnsiColor::BrightBlue.on_default())
+    .error(AnsiColor::BrightRed.on_default().bold())
+    .valid(AnsiColor::BrightGreen.on_default())
+    .invalid(AnsiColor::BrightYellow.on_default());
+
 #[derive(Debug, Parser)]
-#[command(name = "darc", version, about = "Darc CLI")]
+#[command(
+    name = "darc",
+    version,
+    about = "Archive, index, and query coding-agent sessions",
+    color = ColorChoice::Auto,
+    styles = HELP_STYLES,
+    after_help = "Common workflows:\n  darc status\n  darc refresh\n  darc query search turns \"panic\" --limit 5\n\nRun `darc help <command>` for details on a specific command."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -83,12 +105,24 @@ enum Commands {
         long_about = "Rebuild one old project's history into the current renamed project.\n\nUse this when you just renamed a project from one name to another.\nRun the command from the new project directory, and pass the old project name.\n\nExample:\n- Darc config still contains a project named `old-project`.\n- You renamed the checkout to `/path/to/new-project`.\n- Run `cd /path/to/new-project && darc rename-from old-project`.\n\nThis command bootstraps or reuses the current project as the target, links the old project's paths into it, runs `darc refresh`, and removes the old source project after those steps succeed.\n\nIn other words, it is the safe built-in workflow for:\n`darc link <old-project> && darc refresh && darc remove <old-project>`\n\nIf ~/.darc/config.toml does not exist yet, run `darc init` first."
     )]
     RenameFrom(RenameArgs),
-    /// Sync matching Claude and Codex sessions into the project archive.
+    #[command(
+        about = "Sync matching Claude and Codex sessions into the project archive",
+        long_about = "Sync matching Claude and Codex sessions into the active project's Darc archive.\n\nUse `--dry-run` to preview pending copies without writing archive files, manifests, or config.",
+        after_help = "Examples:\n  darc sync --dry-run\n  darc sync --provider codex"
+    )]
     Sync(SyncArgs),
-    /// Index archived sessions from selected providers for the active project into SQLite.
+    #[command(
+        about = "Index archived sessions for the active project into SQLite",
+        long_about = "Index archived sessions for the active project into the shared Darc SQLite database.\n\nRun this after `darc sync` when you want to rebuild searchable/queryable state without copying new archive files.",
+        after_help = "Examples:\n  darc index\n  darc index --provider claude"
+    )]
     Index(IndexArgs),
-    /// Query darc state through the machine-readable read protocol.
-    Query(QueryArgs),
+    #[command(
+        about = "Query Darc state through the machine-readable read protocol",
+        long_about = "Query Darc state through the machine-readable read protocol.\n\nQuery commands emit JSON envelopes on stdout. The JSON contract is stable for scripts and agents; terminal color is presentation-only and controlled by `--color`.",
+        after_help = "Examples:\n  darc query sessions --limit 5\n  darc query turn <SESSION_ID> 0 --view narrative\n  darc query --color always search turns \"panic\" --limit 5 | less -R"
+    )]
+    Query(Box<QueryArgs>),
     #[command(
         hide = true,
         about = "Audit Codex rollout schema compatibility against stable release tags",
@@ -106,28 +140,44 @@ enum Commands {
 /// Detect local sources and create the shared darc config.
 #[derive(Debug, Args)]
 struct InitArgs {
-    #[arg(long, default_value_os_t = default_root_path())]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Create or update config under this Darc root"
+    )]
     root: PathBuf,
 
-    #[arg(long)]
+    #[arg(
+        long,
+        help_heading = "Mode",
+        help = "Show what would be written without changing files"
+    )]
     dry_run: bool,
 }
 
 /// Syncs then indexes archived sessions for one or all projects.
 #[derive(Debug, Args)]
 struct RefreshArgs {
-    #[arg(long, default_value_os_t = default_root_path())]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Use this Darc root instead of the default"
+    )]
     root: PathBuf,
 
     #[arg(
         long = "provider",
         value_enum,
+        help_heading = "Selection",
         help = "Limit both sync and index to the selected providers"
     )]
     provider: Vec<ProviderArg>,
 
     #[arg(
         long,
+        help_heading = "Scope",
         help = "Refresh every registered project, continue past per-project failures, and summarize the results"
     )]
     all: bool,
@@ -136,17 +186,24 @@ struct RefreshArgs {
 /// Shows Darc status for the active project or workspace.
 #[derive(Debug, Args)]
 struct StatusArgs {
-    #[arg(long, default_value_os_t = default_root_path())]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Use this Darc root instead of the default"
+    )]
     root: PathBuf,
 
     #[arg(
         long,
+        help_heading = "Scope",
         help = "Show status for the shared Darc workspace instead of the active project"
     )]
     workspace: bool,
 
     #[arg(
         long,
+        help_heading = "Mode",
         help = "Run sync planning without writing manifests, config, archives, or SQLite"
     )]
     check: bool,
@@ -155,20 +212,39 @@ struct StatusArgs {
 /// Sync matching Claude and Codex sessions into the project archive.
 #[derive(Debug, Args)]
 struct SyncArgs {
-    #[arg(long, default_value_os_t = default_root_path())]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Use this Darc root instead of the default"
+    )]
     root: PathBuf,
 
-    #[arg(long)]
+    #[arg(
+        long,
+        help_heading = "Mode",
+        help = "Preview pending copies without writing files"
+    )]
     dry_run: bool,
 
-    #[arg(long = "provider", value_enum)]
+    #[arg(
+        long = "provider",
+        value_enum,
+        help_heading = "Selection",
+        help = "Limit sync to the selected providers"
+    )]
     provider: Vec<ProviderArg>,
 }
 
 /// Link one configured project's historical paths into the active project.
 #[derive(Debug, Args)]
 struct LinkArgs {
-    #[arg(long, default_value_os_t = default_root_path())]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Use this Darc root instead of the default"
+    )]
     root: PathBuf,
 
     #[arg(value_name = "PROJECT")]
@@ -178,7 +254,12 @@ struct LinkArgs {
 /// Remove one configured project and its archived/indexed data.
 #[derive(Debug, Args)]
 struct RemoveArgs {
-    #[arg(long, default_value_os_t = default_root_path())]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Use this Darc root instead of the default"
+    )]
     root: PathBuf,
 
     #[arg(value_name = "PROJECT")]
@@ -188,7 +269,12 @@ struct RemoveArgs {
 /// Rebuild one configured project's history under the active project's id, then remove the old project.
 #[derive(Debug, Args)]
 struct RenameArgs {
-    #[arg(long, default_value_os_t = default_root_path())]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Use this Darc root instead of the default"
+    )]
     root: PathBuf,
 
     #[arg(value_name = "PROJECT")]
@@ -198,16 +284,35 @@ struct RenameArgs {
 /// Index archived sessions from selected providers for the active project into SQLite.
 #[derive(Debug, Args)]
 struct IndexArgs {
-    #[arg(long, default_value_os_t = default_root_path())]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Use this Darc root instead of the default"
+    )]
     root: PathBuf,
 
-    #[arg(long = "provider", value_enum)]
+    #[arg(
+        long = "provider",
+        value_enum,
+        help_heading = "Selection",
+        help = "Limit indexing to the selected providers"
+    )]
     provider: Vec<ProviderArg>,
 }
 
 /// Queries darc state through the machine-readable read protocol.
 #[derive(Debug, Args)]
 struct QueryArgs {
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = ColorArg::Auto,
+        help_heading = "Output",
+        help = "Control ANSI color in query JSON output"
+    )]
+    color: ColorArg,
+
     #[command(subcommand)]
     command: QueryCommands,
 }
@@ -224,16 +329,25 @@ enum QueryCommands {
     /// Lists most-touched files or pivots from one file selector.
     #[command(
         about = "List most-touched files or pivot from one file selector",
-        long_about = "List most-touched files or pivot from one file selector.\n\nWith no PATH, --path, or --co-touched-with, this ranks files by touches across the project.\nPass PATH or --path to return sessions that touched matching paths.\nPass --co-touched-with to return files touched in the same sessions as the seed path."
+        long_about = "List most-touched files or pivot from one file selector.\n\nWith no PATH, --path, or --co-touched-with, this ranks files by touches across the project.\nPass PATH or --path to return sessions that touched matching paths.\nPass --co-touched-with to return files touched in the same sessions as the seed path.",
+        after_help = "Examples:\n  darc query files --limit 20\n  darc query files src/lib.rs\n  darc query files --co-touched-with src/lib.rs --limit 10"
     )]
     Files(QueryFilesArgs),
     /// Queries per-file access summaries for one session.
     SessionFiles(QuerySessionFilesArgs),
-    /// Queries one composite session bundle for one session.
+    #[command(
+        about = "Query one composite session bundle for one session",
+        long_about = "Query one composite session bundle for one session.\n\nThis combines the session summary, touched files, and paginated turn details into one JSON envelope. Compact session view keeps prompt/final-message previews bounded for agent context.",
+        after_help = "Examples:\n  darc query session-bundle <SESSION_ID>\n  darc query session-bundle <SESSION_ID> --view full --turn-limit 10\n  darc query session-bundle --session-id <SESSION_ID> --session-view full"
+    )]
     SessionBundle(QuerySessionBundleArgs),
     /// Queries the turn list for one session.
     Turns(QueryTurnsArgs),
-    /// Queries one turn detail payload.
+    #[command(
+        about = "Query one turn detail payload",
+        long_about = "Query one turn detail payload.\n\nNarrative view keeps bulky tool arguments, outputs, and raw payload blobs out of the response. Use `--include-raw` when you need debug fields such as `raw_steps_json`.",
+        after_help = "Examples:\n  darc query turn <SESSION_ID> 0\n  darc query turn <SESSION_ID> 0 --include-insights\n  darc query turn --session-id <SESSION_ID> --turn-ordinal 0 --include-raw"
+    )]
     Turn(QueryTurnArgs),
     /// Queries one paginated search payload.
     Search(QuerySearchArgs),
@@ -244,14 +358,24 @@ enum QueryCommands {
 /// Queries the workspace/sidebar payload for one darc root.
 #[derive(Debug, Args)]
 struct QueryWorkspaceArgs {
-    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Read from this darc root"
+    )]
     root: PathBuf,
 }
 
 /// Resolves one full session id or UUID prefix into canonical project/provider/session matches.
 #[derive(Debug, Args)]
 struct QueryResolveSessionArgs {
-    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Read from this darc root"
+    )]
     root: PathBuf,
 
     #[arg(help = "Resolve this full UUID or UUID prefix")]
@@ -259,15 +383,22 @@ struct QueryResolveSessionArgs {
 
     #[arg(
         long = "project-id",
+        help_heading = "Scope",
         help = "Restrict matches to this configured project id"
     )]
     project_id: Option<String>,
 
-    #[arg(long, value_enum, help = "Restrict matches to this provider")]
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Scope",
+        help = "Restrict matches to this provider"
+    )]
     provider: Option<ProviderArg>,
 
     #[arg(
         long,
+        help_heading = "Output",
         help = "Require exactly one match and return it as one convenience object"
     )]
     pick_one: bool,
@@ -276,64 +407,100 @@ struct QueryResolveSessionArgs {
 /// Queries the session list for one configured project.
 #[derive(Debug, Args)]
 struct QuerySessionsArgs {
-    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Read from this darc root"
+    )]
     root: PathBuf,
 
     #[arg(
         long = "project-id",
+        help_heading = "Scope",
         help = "Query this configured project id. Defaults to the project resolved from the current directory"
     )]
     project_id: Option<String>,
 
-    #[arg(long, value_enum, help = "Restrict sessions to this provider")]
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Scope",
+        help = "Restrict sessions to this provider"
+    )]
     provider: Option<ProviderArg>,
 
     #[arg(
         long,
         value_enum,
         default_value_t = SessionListViewArg::Compact,
+        help_heading = "Output",
         help = "Return full session prompts and final messages or compact previews"
     )]
     view: SessionListViewArg,
 
     #[arg(
         long,
+        help_heading = "Time Filters",
         help = "Inclusive latest_turn_at lower bound. Example: `5d` or `2026-04-07T00:00:00Z`"
     )]
     since: Option<String>,
 
     #[arg(
         long,
+        help_heading = "Time Filters",
         help = "Exclusive latest_turn_at upper bound. Example: `1d` or `2026-04-08T00:00:00Z`"
     )]
     until: Option<String>,
 
     #[arg(
         long = "touched-path",
+        help_heading = "Selection",
         help = "Only keep sessions that touched a file path matching this glob"
     )]
     touched_path: Option<String>,
 
-    #[arg(long, default_value_t = 50, help = "Maximum sessions to return")]
+    #[arg(
+        long,
+        default_value_t = 50,
+        help_heading = "Result Size",
+        help = "Maximum sessions to return"
+    )]
     limit: usize,
 
-    #[arg(long, default_value_t = 0, help = "Number of sessions to skip")]
+    #[arg(
+        long,
+        default_value_t = 0,
+        help_heading = "Result Size",
+        help = "Number of sessions to skip"
+    )]
     offset: usize,
 }
 
 /// Queries the turn list for one session.
 #[derive(Debug, Args)]
 struct QueryTurnsArgs {
-    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Read from this darc root"
+    )]
     root: PathBuf,
 
     #[arg(
         long = "project-id",
+        help_heading = "Scope",
         help = "Query this configured project id. Defaults to the project resolved from the current directory"
     )]
     project_id: Option<String>,
 
-    #[arg(long, value_enum, help = "Disambiguate a cross-provider session id")]
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Scope",
+        help = "Disambiguate a cross-provider session id"
+    )]
     provider: Option<ProviderArg>,
 
     #[arg(
@@ -345,6 +512,7 @@ struct QueryTurnsArgs {
     #[arg(
         long = "session-id",
         value_name = "SESSION_ID",
+        help_heading = "Identity",
         help = "Full session id to list turns for; alternative to positional SESSION_ID"
     )]
     session_id: Option<String>,
@@ -353,46 +521,71 @@ struct QueryTurnsArgs {
         long,
         value_enum,
         default_value_t = TurnListViewArg::Full,
+        help_heading = "Output",
         help = "Return full turn summaries or a compact one-line skim"
     )]
     view: TurnListViewArg,
 
     #[arg(
         long,
+        help_heading = "Time Filters",
         help = "Inclusive started_at lower bound. Example: `5d` or `2026-04-07T00:00:00Z`"
     )]
     since: Option<String>,
 
     #[arg(
         long,
+        help_heading = "Time Filters",
         help = "Exclusive started_at upper bound. Example: `1d` or `2026-04-08T00:00:00Z`"
     )]
     until: Option<String>,
 
-    #[arg(long, default_value_t = 50, help = "Maximum turns to return")]
+    #[arg(
+        long,
+        default_value_t = 50,
+        help_heading = "Result Size",
+        help = "Maximum turns to return"
+    )]
     limit: usize,
 
-    #[arg(long, default_value_t = 0, help = "Number of turns to skip")]
+    #[arg(
+        long,
+        default_value_t = 0,
+        help_heading = "Result Size",
+        help = "Number of turns to skip"
+    )]
     offset: usize,
 }
 
 /// Lists most-touched files or pivots from one file selector.
 #[derive(Debug, Args)]
 struct QueryFilesArgs {
-    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Read from this darc root"
+    )]
     root: PathBuf,
 
     #[arg(
         long = "project-id",
+        help_heading = "Scope",
         help = "Query this configured project id. Defaults to the project resolved from the current directory"
     )]
     project_id: Option<String>,
 
-    #[arg(long, value_enum, help = "Restrict file pivots to this provider")]
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Scope",
+        help = "Restrict file pivots to this provider"
+    )]
     provider: Option<ProviderArg>,
 
     #[arg(
         long,
+        help_heading = "Selection",
         help = "Return sessions that touched file paths matching this glob instead of most-touched files"
     )]
     path: Option<String>,
@@ -405,38 +598,53 @@ struct QueryFilesArgs {
 
     #[arg(
         long = "co-touched-with",
+        help_heading = "Selection",
         help = "Return files touched in the same sessions as this seed path instead of most-touched files"
     )]
     co_touched_with: Option<String>,
 
     #[arg(
         long,
+        help_heading = "Time Filters",
         help = "Inclusive started_at lower bound for file pivots. Example: `5d` or `2026-04-07T00:00:00Z`"
     )]
     since: Option<String>,
 
     #[arg(
         long,
+        help_heading = "Time Filters",
         help = "Exclusive started_at upper bound for file pivots. Example: `1d` or `2026-04-08T00:00:00Z`"
     )]
     until: Option<String>,
 
-    #[arg(long, default_value_t = 50, help = "Maximum rows to return")]
+    #[arg(
+        long,
+        default_value_t = 50,
+        help_heading = "Result Size",
+        help = "Maximum rows to return"
+    )]
     limit: usize,
 
-    #[arg(long, default_value_t = 0, help = "Number of rows to skip")]
+    #[arg(
+        long,
+        default_value_t = 0,
+        help_heading = "Result Size",
+        help = "Number of rows to skip"
+    )]
     offset: usize,
 
     #[arg(
         long = "matched-path-limit",
         default_value_t = DEFAULT_MATCHED_PATH_LIMIT,
         conflicts_with = "include_all_matched_paths",
+        help_heading = "Result Size",
         help = "Maximum matched_paths entries per path-mode row"
     )]
     matched_path_limit: usize,
 
     #[arg(
         long = "include-all-matched-paths",
+        help_heading = "Result Size",
         help = "Return every matched path in path-mode rows"
     )]
     include_all_matched_paths: bool,
@@ -445,16 +653,27 @@ struct QueryFilesArgs {
 /// Queries one session-scoped per-file access summary payload.
 #[derive(Debug, Args)]
 struct QuerySessionFilesArgs {
-    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Read from this darc root"
+    )]
     root: PathBuf,
 
     #[arg(
         long = "project-id",
+        help_heading = "Scope",
         help = "Query this configured project id. Defaults to the project resolved from the current directory"
     )]
     project_id: Option<String>,
 
-    #[arg(long, value_enum, help = "Disambiguate a cross-provider session id")]
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Scope",
+        help = "Disambiguate a cross-provider session id"
+    )]
     provider: Option<ProviderArg>,
 
     #[arg(
@@ -466,6 +685,7 @@ struct QuerySessionFilesArgs {
     #[arg(
         long = "session-id",
         value_name = "SESSION_ID",
+        help_heading = "Identity",
         help = "Query this session id; alternative to positional SESSION_ID"
     )]
     session_id: Option<String>,
@@ -474,16 +694,27 @@ struct QuerySessionFilesArgs {
 /// Queries one composite session bundle payload.
 #[derive(Debug, Args)]
 struct QuerySessionBundleArgs {
-    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Read from this darc root"
+    )]
     root: PathBuf,
 
     #[arg(
         long = "project-id",
+        help_heading = "Scope",
         help = "Query this configured project id. Defaults to the project resolved from the current directory"
     )]
     project_id: Option<String>,
 
-    #[arg(long, value_enum, help = "Disambiguate a cross-provider session id")]
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Scope",
+        help = "Disambiguate a cross-provider session id"
+    )]
     provider: Option<ProviderArg>,
 
     #[arg(
@@ -495,6 +726,7 @@ struct QuerySessionBundleArgs {
     #[arg(
         long = "session-id",
         value_name = "SESSION_ID",
+        help_heading = "Identity",
         help = "Query this session id; alternative to positional SESSION_ID"
     )]
     session_id: Option<String>,
@@ -503,6 +735,7 @@ struct QuerySessionBundleArgs {
         long = "session-view",
         value_enum,
         default_value_t = SessionListViewArg::Compact,
+        help_heading = "Output",
         help = "Return full session prompt/final message or compact previews"
     )]
     session_view: SessionListViewArg,
@@ -511,6 +744,7 @@ struct QuerySessionBundleArgs {
         long,
         value_enum,
         default_value_t = ViewArg::Narrative,
+        help_heading = "Output",
         help = "Turn detail level. `narrative` omits tool arguments, outputs, and payload blobs"
     )]
     view: ViewArg,
@@ -518,6 +752,7 @@ struct QuerySessionBundleArgs {
     #[arg(
         long = "turn-limit",
         default_value_t = 50,
+        help_heading = "Result Size",
         help = "Maximum turn details to return"
     )]
     turn_limit: usize,
@@ -525,6 +760,7 @@ struct QuerySessionBundleArgs {
     #[arg(
         long = "turn-offset",
         default_value_t = 0,
+        help_heading = "Result Size",
         help = "Number of turn details to skip"
     )]
     turn_offset: usize,
@@ -532,6 +768,7 @@ struct QuerySessionBundleArgs {
     #[arg(
         long = "step-limit",
         default_value_t = DEFAULT_TURN_STEP_LIMIT,
+        help_heading = "Result Size",
         help = "Maximum steps to return per turn detail"
     )]
     step_limit: usize,
@@ -539,6 +776,7 @@ struct QuerySessionBundleArgs {
     #[arg(
         long = "step-offset",
         default_value_t = 0,
+        help_heading = "Result Size",
         help = "Number of steps to skip per turn detail"
     )]
     step_offset: usize,
@@ -547,16 +785,27 @@ struct QuerySessionBundleArgs {
 /// Queries one turn detail payload.
 #[derive(Debug, Args)]
 struct QueryTurnArgs {
-    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Read from this darc root"
+    )]
     root: PathBuf,
 
     #[arg(
         long = "project-id",
+        help_heading = "Scope",
         help = "Query this configured project id. Defaults to the project resolved from the current directory"
     )]
     project_id: Option<String>,
 
-    #[arg(long, value_enum, help = "Disambiguate a cross-provider session id")]
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Scope",
+        help = "Disambiguate a cross-provider session id"
+    )]
     provider: Option<ProviderArg>,
 
     #[arg(
@@ -574,6 +823,7 @@ struct QueryTurnArgs {
     #[arg(
         long = "session-id",
         value_name = "SESSION_ID",
+        help_heading = "Identity",
         help = "Query this session id; alternative to positional SESSION_ID"
     )]
     session_id: Option<String>,
@@ -581,6 +831,7 @@ struct QueryTurnArgs {
     #[arg(
         long = "turn-ordinal",
         value_name = "TURN_ORDINAL",
+        help_heading = "Identity",
         help = "Query this turn ordinal; alternative to positional TURN_ORDINAL"
     )]
     turn_ordinal: Option<u64>,
@@ -588,18 +839,21 @@ struct QueryTurnArgs {
     #[arg(
         long,
         value_enum,
+        help_heading = "Output",
         help = "Step detail level. Defaults to narrative unless --include-raw is set; `narrative` omits tool arguments, outputs, and payload blobs"
     )]
     view: Option<ViewArg>,
 
     #[arg(
         long,
+        help_heading = "Output",
         help = "Include optional raw/debug fields such as raw_steps_json"
     )]
     include_raw: bool,
 
     #[arg(
         long,
+        help_heading = "Output",
         help = "Include one derived insights block with metrics plus tool and file analytics"
     )]
     include_insights: bool,
@@ -607,6 +861,7 @@ struct QueryTurnArgs {
     #[arg(
         long = "step-limit",
         default_value_t = DEFAULT_TURN_STEP_LIMIT,
+        help_heading = "Result Size",
         help = "Maximum steps to return"
     )]
     step_limit: usize,
@@ -614,6 +869,7 @@ struct QueryTurnArgs {
     #[arg(
         long = "step-offset",
         default_value_t = 0,
+        help_heading = "Result Size",
         help = "Number of steps to skip"
     )]
     step_offset: usize,
@@ -629,32 +885,52 @@ struct QuerySearchArgs {
 /// Represents the supported machine-readable search query commands.
 #[derive(Debug, Subcommand)]
 enum QuerySearchCommands {
-    /// Queries paginated turn search results for one configured project.
+    #[command(
+        about = "Search indexed turns for one configured project",
+        long_about = "Search indexed turns for one configured project.\n\nKeyword mode uses the SQLite full-text index. Literal and regex modes scan indexed turn evidence, excluding bulky tool output unless `--include-tool-output` or field filters opt into it. File modes search touched paths rather than message text.",
+        after_help = "Examples:\n  darc query search turns \"panic\" --limit 5\n  darc query search turns --mode literal \"staged init\" --field user-message\n  darc query --color always search turns --mode regex \"Process exited with code [0-9]+\" | less -R"
+    )]
     Turns(QuerySearchTurnsArgs),
 }
 
 /// Queries paginated turn search results for one configured project.
 #[derive(Debug, Args)]
 struct QuerySearchTurnsArgs {
-    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Read from this darc root"
+    )]
     root: PathBuf,
 
     #[arg(
         long = "project-id",
+        help_heading = "Scope",
         help = "Query this configured project id. Defaults to the project resolved from the current directory"
     )]
     project_id: Option<String>,
 
-    #[arg(long, value_enum, help = "Restrict search to this provider")]
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Scope",
+        help = "Restrict search to this provider"
+    )]
     provider: Option<ProviderArg>,
 
-    #[arg(long = "session-id", help = "Restrict search to this session id")]
+    #[arg(
+        long = "session-id",
+        help_heading = "Scope",
+        help = "Restrict search to this session id"
+    )]
     session_id: Option<String>,
 
     #[arg(
         long,
         value_enum,
         default_value_t = SearchModeArg::Keyword,
+        help_heading = "Search",
         help = "Search in this mode"
     )]
     mode: SearchModeArg,
@@ -669,12 +945,14 @@ struct QuerySearchTurnsArgs {
         long,
         allow_hyphen_values = true,
         value_name = "QUERY",
+        help_heading = "Search",
         help = "Search for this text, file glob, or path fragment"
     )]
     query: Option<String>,
 
     #[arg(
         long,
+        help_heading = "Evidence",
         help = "Include tool output evidence in literal and regex search"
     )]
     include_tool_output: bool,
@@ -683,6 +961,7 @@ struct QuerySearchTurnsArgs {
         long = "field",
         value_name = "FIELD",
         value_parser = parse_search_evidence_field,
+        help_heading = "Evidence",
         help = search_evidence_field_include_help()
     )]
     fields: Vec<SearchEvidenceField>,
@@ -691,32 +970,46 @@ struct QuerySearchTurnsArgs {
         long = "exclude-field",
         value_name = "FIELD",
         value_parser = parse_search_evidence_field,
+        help_heading = "Evidence",
         help = search_evidence_field_exclude_help()
     )]
     excluded_fields: Vec<SearchEvidenceField>,
 
     #[arg(
         long,
+        help_heading = "Time Filters",
         help = "Inclusive started_at lower bound. Example: `5d` or `2026-04-07T00:00:00Z`"
     )]
     since: Option<String>,
 
     #[arg(
         long,
+        help_heading = "Time Filters",
         help = "Exclusive started_at upper bound. Example: `1d` or `2026-04-08T00:00:00Z`"
     )]
     until: Option<String>,
 
-    #[arg(long, default_value_t = 50, help = "Maximum turn hits to return")]
+    #[arg(
+        long,
+        default_value_t = 50,
+        help_heading = "Result Size",
+        help = "Maximum turn hits to return"
+    )]
     limit: usize,
 
-    #[arg(long, default_value_t = 0, help = "Number of turn hits to skip")]
+    #[arg(
+        long,
+        default_value_t = 0,
+        help_heading = "Result Size",
+        help = "Number of turn hits to skip"
+    )]
     offset: usize,
 
     #[arg(
         long = "matched-path-limit",
         default_value_t = DEFAULT_MATCHED_PATH_LIMIT,
         conflicts_with = "include_all_matched_paths",
+        help_heading = "Result Size",
         help = "Maximum matched_paths entries per file-search hit"
     )]
     matched_path_limit: usize,
@@ -724,12 +1017,14 @@ struct QuerySearchTurnsArgs {
     #[arg(
         long = "match-limit",
         value_name = "MATCH_LIMIT",
+        help_heading = "Result Size",
         help = search_match_limit_help()
     )]
     match_limit: Option<usize>,
 
     #[arg(
         long = "include-all-matched-paths",
+        help_heading = "Result Size",
         help = "Return every matched path in file-search hits"
     )]
     include_all_matched_paths: bool,
@@ -756,13 +1051,19 @@ enum QueryInsightsCommands {
 /// Queries the workspace insights payload for one rolling day window.
 #[derive(Debug, Args)]
 struct QueryWorkspaceInsightsArgs {
-    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Read from this darc root"
+    )]
     root: PathBuf,
 
     #[arg(
         long = "window",
         default_value = "7d",
         value_parser = parse_window_days,
+        help_heading = "Time Window",
         help = "Rolling host-local day window in `<days>d` format"
     )]
     window_days: u32,
@@ -770,6 +1071,7 @@ struct QueryWorkspaceInsightsArgs {
     #[arg(
         long = "recent-session-limit",
         default_value_t = DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT,
+        help_heading = "Result Size",
         help = "Maximum recent sessions to return"
     )]
     recent_session_limit: usize,
@@ -777,6 +1079,7 @@ struct QueryWorkspaceInsightsArgs {
     #[arg(
         long = "recent-session-offset",
         default_value_t = 0,
+        help_heading = "Result Size",
         help = "Number of recent sessions to skip"
     )]
     recent_session_offset: usize,
@@ -785,22 +1088,34 @@ struct QueryWorkspaceInsightsArgs {
 /// Queries the project insights payload for one configured project.
 #[derive(Debug, Args)]
 struct QueryProjectInsightsArgs {
-    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Read from this darc root"
+    )]
     root: PathBuf,
 
     #[arg(
         long = "project-id",
+        help_heading = "Scope",
         help = "Query this configured project id. Defaults to the project resolved from the current directory"
     )]
     project_id: Option<String>,
 
-    #[arg(long, value_enum, help = "Restrict project insights to this provider")]
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Scope",
+        help = "Restrict project insights to this provider"
+    )]
     provider: Option<ProviderArg>,
 
     #[arg(
         long = "turn-limit",
         alias = "limit",
         default_value_t = 1000,
+        help_heading = "Result Size",
         help = "Maximum indexed turns to inspect"
     )]
     turn_limit: usize,
@@ -809,16 +1124,27 @@ struct QueryProjectInsightsArgs {
 /// Queries one turn insights payload.
 #[derive(Debug, Args)]
 struct QueryTurnInsightsArgs {
-    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Read from this darc root"
+    )]
     root: PathBuf,
 
     #[arg(
         long = "project-id",
+        help_heading = "Scope",
         help = "Query this configured project id. Defaults to the project resolved from the current directory"
     )]
     project_id: Option<String>,
 
-    #[arg(long, value_enum, help = "Disambiguate a cross-provider session id")]
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Scope",
+        help = "Disambiguate a cross-provider session id"
+    )]
     provider: Option<ProviderArg>,
 
     #[arg(
@@ -836,6 +1162,7 @@ struct QueryTurnInsightsArgs {
     #[arg(
         long = "session-id",
         value_name = "SESSION_ID",
+        help_heading = "Identity",
         help = "Query this session id; alternative to positional SESSION_ID"
     )]
     session_id: Option<String>,
@@ -843,6 +1170,7 @@ struct QueryTurnInsightsArgs {
     #[arg(
         long = "turn-ordinal",
         value_name = "TURN_ORDINAL",
+        help_heading = "Identity",
         help = "Query this turn ordinal; alternative to positional TURN_ORDINAL"
     )]
     turn_ordinal: Option<u64>,
@@ -851,26 +1179,31 @@ struct QueryTurnInsightsArgs {
 /// Audit Codex rollout schema compatibility against stable release tags.
 #[derive(Debug, Args)]
 struct CodexSchemaAuditArgs {
-    #[arg(long, value_name = "DIR")]
+    #[arg(long, value_name = "DIR", help_heading = "Cache")]
     cache_dir: Option<PathBuf>,
 }
 
 /// Audit Claude rollout transcript compatibility against published npm releases.
 #[derive(Debug, Args)]
 struct ClaudeSchemaAuditArgs {
-    #[arg(long, value_name = "DIR")]
+    #[arg(long, value_name = "DIR", help_heading = "Cache")]
     cache_dir: Option<PathBuf>,
 
-    #[arg(long, default_value_t = 1, value_name = "N")]
+    #[arg(long, default_value_t = 1, value_name = "N", help_heading = "Sampling")]
     sample_stride: usize,
 
-    #[arg(long)]
+    #[arg(long, help_heading = "Runtime")]
     use_host_auth: bool,
 
-    #[arg(long, value_name = "VERSION")]
+    #[arg(long, value_name = "VERSION", help_heading = "Scope")]
     from_version: Option<String>,
 
-    #[arg(long, value_enum, default_value_t = ClaudeSurveyModeArg::Refine)]
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = ClaudeSurveyModeArg::Refine,
+        help_heading = "Mode"
+    )]
     survey_mode: ClaudeSurveyModeArg,
 }
 
@@ -890,6 +1223,37 @@ enum SearchModeArg {
     FileName,
     FilePath,
     PathFragment,
+}
+
+/// Represents when query JSON output should include ANSI color.
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum ColorArg {
+    Auto,
+    Always,
+    Never,
+}
+
+/// Stores the resolved output behavior for one query invocation.
+#[derive(Debug, Clone, Copy)]
+struct QueryOutput {
+    color: ColorArg,
+}
+
+impl QueryOutput {
+    /// Builds one query output context from parsed CLI arguments.
+    fn new(color: ColorArg) -> Self {
+        Self { color }
+    }
+
+    /// Returns whether stdout JSON should be ANSI-colored.
+    fn should_color_stdout(self) -> bool {
+        should_color_output(
+            self.color,
+            io::stdout().is_terminal(),
+            env::var_os("NO_COLOR").is_some(),
+            env::var("TERM").ok().as_deref(),
+        )
+    }
 }
 
 /// Represents the supported session-list projections.
@@ -949,7 +1313,7 @@ fn run_cli(cli: Cli) -> i32 {
         Commands::RenameFrom(args) => standard_exit(run_rename_from(args)),
         Commands::Sync(args) => standard_exit(run_sync(args)),
         Commands::Index(args) => standard_exit(run_index(args)),
-        Commands::Query(args) => query_exit(run_query(args)),
+        Commands::Query(args) => query_exit(run_query(*args)),
         Commands::CodexSchemaAudit(args) => run_codex_schema_audit_command(args),
         Commands::ClaudeSchemaAudit(args) => run_claude_schema_audit_command(args),
     }
@@ -1004,27 +1368,32 @@ fn query_exit(result: Result<()>) -> i32 {
 
 /// Dispatches the supported machine-readable query commands.
 fn run_query(args: QueryArgs) -> Result<()> {
+    let output = QueryOutput::new(args.color);
     match args.command {
-        QueryCommands::Workspace(args) => run_query_workspace(args),
-        QueryCommands::ResolveSession(args) => run_query_resolve_session(args),
-        QueryCommands::Sessions(args) => run_query_sessions(args),
-        QueryCommands::Files(args) => run_query_files(args),
-        QueryCommands::SessionFiles(args) => run_query_session_files(args),
-        QueryCommands::SessionBundle(args) => run_query_session_bundle(args),
-        QueryCommands::Turns(args) => run_query_turns(args),
-        QueryCommands::Turn(args) => run_query_turn(args),
-        QueryCommands::Search(args) => run_query_search(args),
-        QueryCommands::Insights(args) => run_query_insights(args),
+        QueryCommands::Workspace(args) => run_query_workspace(&output, args),
+        QueryCommands::ResolveSession(args) => run_query_resolve_session(&output, args),
+        QueryCommands::Sessions(args) => run_query_sessions(&output, args),
+        QueryCommands::Files(args) => run_query_files(&output, args),
+        QueryCommands::SessionFiles(args) => run_query_session_files(&output, args),
+        QueryCommands::SessionBundle(args) => run_query_session_bundle(&output, args),
+        QueryCommands::Turns(args) => run_query_turns(&output, args),
+        QueryCommands::Turn(args) => run_query_turn(&output, args),
+        QueryCommands::Search(args) => run_query_search(&output, args),
+        QueryCommands::Insights(args) => run_query_insights(&output, args),
     }
 }
 
 /// Queries the workspace/sidebar payload for one darc root.
-fn run_query_workspace(args: QueryWorkspaceArgs) -> Result<()> {
-    print_json_envelope("darc.query.workspace.v1", &query_workspace(Some(args.root)))
+fn run_query_workspace(output: &QueryOutput, args: QueryWorkspaceArgs) -> Result<()> {
+    print_json_envelope(
+        output,
+        "darc.query.workspace.v1",
+        &query_workspace(Some(args.root)),
+    )
 }
 
 /// Resolves one full session id or UUID prefix into canonical matches.
-fn run_query_resolve_session(args: QueryResolveSessionArgs) -> Result<()> {
+fn run_query_resolve_session(output: &QueryOutput, args: QueryResolveSessionArgs) -> Result<()> {
     let data = query_resolve_sessions(
         Some(args.root),
         ResolveSessionQueryRequest {
@@ -1038,7 +1407,7 @@ fn run_query_resolve_session(args: QueryResolveSessionArgs) -> Result<()> {
         if data.matches.is_empty() && is_full_uuid_text(&data.query) {
             return Err(QueryProtocolError::unknown_resolve_session(&data.query, false).into());
         }
-        return print_json_envelope("darc.query.resolve_session.v1", &data);
+        return print_json_envelope(output, "darc.query.resolve_session.v1", &data);
     }
 
     match data.matches.as_slice() {
@@ -1048,6 +1417,7 @@ fn run_query_resolve_session(args: QueryResolveSessionArgs) -> Result<()> {
         )
         .into()),
         [resolved] => print_json_envelope(
+            output,
             "darc.query.resolve_session.v1",
             &ResolveSessionPickOneQueryData::new(&data.query, resolved.clone()),
         ),
@@ -1058,7 +1428,7 @@ fn run_query_resolve_session(args: QueryResolveSessionArgs) -> Result<()> {
 }
 
 /// Queries the session list for one configured project.
-fn run_query_sessions(args: QuerySessionsArgs) -> Result<()> {
+fn run_query_sessions(output: &QueryOutput, args: QuerySessionsArgs) -> Result<()> {
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
     let since = args
         .since
@@ -1084,11 +1454,11 @@ fn run_query_sessions(args: QuerySessionsArgs) -> Result<()> {
             offset: args.offset,
         },
     )?;
-    print_json_envelope("darc.query.sessions.v1", &data)
+    print_json_envelope(output, "darc.query.sessions.v1", &data)
 }
 
 /// Lists most-touched files or pivots from one file selector for one configured project.
-fn run_query_files(args: QueryFilesArgs) -> Result<()> {
+fn run_query_files(output: &QueryOutput, args: QueryFilesArgs) -> Result<()> {
     let path = optional_named_or_positional(
         "file path",
         "--path",
@@ -1128,11 +1498,11 @@ fn run_query_files(args: QueryFilesArgs) -> Result<()> {
             ),
         },
     )?;
-    print_json_envelope("darc.query.files.v1", &data)
+    print_json_envelope(output, "darc.query.files.v1", &data)
 }
 
 /// Queries one session-scoped per-file access summary payload.
-fn run_query_session_files(args: QuerySessionFilesArgs) -> Result<()> {
+fn run_query_session_files(output: &QueryOutput, args: QuerySessionFilesArgs) -> Result<()> {
     let session_id = required_named_or_positional(
         "session id",
         "--session-id",
@@ -1147,11 +1517,11 @@ fn run_query_session_files(args: QuerySessionFilesArgs) -> Result<()> {
         session_id,
     )?;
     let data = query_session_files_for_project(&project, session.provider, &session.session_id)?;
-    print_json_envelope("darc.query.session_files.v1", &data)
+    print_json_envelope(output, "darc.query.session_files.v1", &data)
 }
 
 /// Queries one composite session bundle payload.
-fn run_query_session_bundle(args: QuerySessionBundleArgs) -> Result<()> {
+fn run_query_session_bundle(output: &QueryOutput, args: QuerySessionBundleArgs) -> Result<()> {
     let session_id = required_named_or_positional(
         "session id",
         "--session-id",
@@ -1180,11 +1550,11 @@ fn run_query_session_bundle(args: QuerySessionBundleArgs) -> Result<()> {
             step_offset: args.step_offset,
         },
     )?;
-    print_json_envelope("darc.query.session_bundle.v1", &data)
+    print_json_envelope(output, "darc.query.session_bundle.v1", &data)
 }
 
 /// Queries the turn list for one session.
-fn run_query_turns(args: QueryTurnsArgs) -> Result<()> {
+fn run_query_turns(output: &QueryOutput, args: QueryTurnsArgs) -> Result<()> {
     let session_id = required_named_or_positional(
         "session id",
         "--session-id",
@@ -1221,11 +1591,11 @@ fn run_query_turns(args: QueryTurnsArgs) -> Result<()> {
             offset: args.offset,
         },
     )?;
-    print_turns_query_envelope(&data)
+    print_turns_query_envelope(output, &data)
 }
 
 /// Queries one turn detail payload.
-fn run_query_turn(args: QueryTurnArgs) -> Result<()> {
+fn run_query_turn(output: &QueryOutput, args: QueryTurnArgs) -> Result<()> {
     let (session_id, turn_ordinal) = resolve_turn_identity_args(
         args.session_id.as_deref(),
         args.turn_ordinal,
@@ -1259,18 +1629,18 @@ fn run_query_turn(args: QueryTurnArgs) -> Result<()> {
             step_offset: args.step_offset,
         },
     )?;
-    print_json_envelope("darc.query.turn.v1", &data)
+    print_json_envelope(output, "darc.query.turn.v1", &data)
 }
 
 /// Dispatches the supported machine-readable search query commands.
-fn run_query_search(args: QuerySearchArgs) -> Result<()> {
+fn run_query_search(output: &QueryOutput, args: QuerySearchArgs) -> Result<()> {
     match args.command {
-        QuerySearchCommands::Turns(args) => run_query_search_turns(args),
+        QuerySearchCommands::Turns(args) => run_query_search_turns(output, args),
     }
 }
 
 /// Queries one paginated turn-search payload.
-fn run_query_search_turns(args: QuerySearchTurnsArgs) -> Result<()> {
+fn run_query_search_turns(output: &QueryOutput, args: QuerySearchTurnsArgs) -> Result<()> {
     let query = required_named_or_positional(
         "query text",
         "--query",
@@ -1324,42 +1694,45 @@ fn run_query_search_turns(args: QuerySearchTurnsArgs) -> Result<()> {
             match_limit: args.match_limit,
         },
     )?;
-    print_json_envelope("darc.query.search.turns.v1", &data)
+    print_search_turns_json_envelope(output, &data)
 }
 
 /// Dispatches the supported machine-readable insights query commands.
-fn run_query_insights(args: QueryInsightsArgs) -> Result<()> {
+fn run_query_insights(output: &QueryOutput, args: QueryInsightsArgs) -> Result<()> {
     match args.command {
-        QueryInsightsCommands::Workspace(args) => run_query_workspace_insights(args),
-        QueryInsightsCommands::Project(args) => run_query_project_insights(args),
-        QueryInsightsCommands::Turn(args) => run_query_turn_insights(args),
+        QueryInsightsCommands::Workspace(args) => run_query_workspace_insights(output, args),
+        QueryInsightsCommands::Project(args) => run_query_project_insights(output, args),
+        QueryInsightsCommands::Turn(args) => run_query_turn_insights(output, args),
     }
 }
 
 /// Queries the workspace insights payload for one rolling host-local day window.
-fn run_query_workspace_insights(args: QueryWorkspaceInsightsArgs) -> Result<()> {
+fn run_query_workspace_insights(
+    output: &QueryOutput,
+    args: QueryWorkspaceInsightsArgs,
+) -> Result<()> {
     let data = query_workspace_insight_report(
         Some(args.root),
         args.window_days,
         args.recent_session_limit,
         args.recent_session_offset,
     )?;
-    print_json_envelope("darc.query.insights.workspace.v1", &data)
+    print_json_envelope(output, "darc.query.insights.workspace.v1", &data)
 }
 
 /// Queries the project insights payload for one configured project.
-fn run_query_project_insights(args: QueryProjectInsightsArgs) -> Result<()> {
+fn run_query_project_insights(output: &QueryOutput, args: QueryProjectInsightsArgs) -> Result<()> {
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
     let data = query_project_insight_report_for_project(
         &project,
         args.provider.map(provider_arg_to_source_kind),
         args.turn_limit,
     )?;
-    print_json_envelope("darc.query.insights.project.v1", &data)
+    print_json_envelope(output, "darc.query.insights.project.v1", &data)
 }
 
 /// Queries the turn insights payload for one session turn.
-fn run_query_turn_insights(args: QueryTurnInsightsArgs) -> Result<()> {
+fn run_query_turn_insights(output: &QueryOutput, args: QueryTurnInsightsArgs) -> Result<()> {
     let (session_id, turn_ordinal) = resolve_turn_identity_args(
         args.session_id.as_deref(),
         args.turn_ordinal,
@@ -1378,34 +1751,340 @@ fn run_query_turn_insights(args: QueryTurnInsightsArgs) -> Result<()> {
         &session.session_id,
         turn_ordinal,
     )?;
-    print_json_envelope("darc.query.insights.turn.v1", &data)
+    print_json_envelope(output, "darc.query.insights.turn.v1", &data)
 }
 
 /// Writes one machine-readable JSON envelope to stdout.
-fn print_json_envelope<T: Serialize>(schema: &'static str, data: &T) -> Result<()> {
+fn print_json_envelope<T: Serialize>(
+    output: &QueryOutput,
+    schema: &'static str,
+    data: &T,
+) -> Result<()> {
+    let json = render_json_envelope(schema, data)?;
+    print_query_json(output, &json);
+    Ok(())
+}
+
+/// Returns one serialized machine-readable JSON envelope.
+fn render_json_envelope<T: Serialize>(schema: &'static str, data: &T) -> Result<String> {
     let payload = JsonEnvelope {
         schema,
         generated_at: current_utc_timestamp(),
         darc_version: env!("CARGO_PKG_VERSION"),
         data,
     };
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&payload)
-            .context("failed to serialize query response JSON")?
-    );
+    serde_json::to_string_pretty(&payload).context("failed to serialize query response JSON")
+}
+
+/// Writes one rendered query JSON document to stdout.
+fn print_query_json(output: &QueryOutput, json: &str) {
+    if output.should_color_stdout() {
+        println!("{}", color_json(json));
+    } else {
+        println!("{json}");
+    }
+}
+
+/// Writes one search-turns envelope with optional snippet match highlighting.
+fn print_search_turns_json_envelope(
+    output: &QueryOutput,
+    data: &SearchTurnsQueryData,
+) -> Result<()> {
+    let json = render_json_envelope("darc.query.search.turns.v1", data)?;
+    if output.should_color_stdout() {
+        println!("{}", color_search_turns_json(&json, data)?);
+    } else {
+        println!("{json}");
+    }
     Ok(())
 }
 
 /// Writes one `darc.query.turns.v1` envelope, compacting rows when `view` is `oneline`.
-fn print_turns_query_envelope(data: &darc_core::query::TurnsQueryData) -> Result<()> {
+fn print_turns_query_envelope(
+    output: &QueryOutput,
+    data: &darc_core::query::TurnsQueryData,
+) -> Result<()> {
     match data.view {
-        TurnsView::Full => print_json_envelope("darc.query.turns.v1", data),
+        TurnsView::Full => print_json_envelope(output, "darc.query.turns.v1", data),
         TurnsView::Oneline => print_json_envelope(
+            output,
             "darc.query.turns.v1",
             &TurnsOnelineQueryData::from_turns_query(data),
         ),
     }
+}
+
+const ANSI_RESET: &str = "\x1b[0m";
+const ANSI_BOLD: &str = "\x1b[1m";
+
+// JSON syntax colors intentionally stay separate from human report colors.
+const ANSI_KEY: &str = "\x1b[1;34m";
+const ANSI_STRING: &str = "\x1b[32m";
+const ANSI_NUMBER: &str = "\x1b[33m";
+const ANSI_BOOLEAN: &str = "\x1b[35m";
+const ANSI_NULL: &str = "\x1b[36m";
+const ANSI_MATCH: &str = "\x1b[1;95m";
+
+// Runtime report colors keep structure quiet and reserve hues for state.
+const ANSI_RED: &str = "\x1b[31m";
+const ANSI_DIM: &str = "\x1b[2m";
+const ANSI_GREEN: &str = ANSI_STRING;
+const ANSI_YELLOW: &str = ANSI_NUMBER;
+const ANSI_CYAN: &str = ANSI_NULL;
+
+/// Stores whether human-oriented CLI output should use terminal styling.
+#[derive(Debug, Clone, Copy)]
+struct HumanStyle {
+    enabled: bool,
+}
+
+impl HumanStyle {
+    /// Builds one style context for stdout.
+    fn stdout() -> Self {
+        Self::new(
+            io::stdout().is_terminal(),
+            env::var_os("NO_COLOR").is_some(),
+            env::var("TERM").ok().as_deref(),
+        )
+    }
+
+    /// Builds one style context for stderr.
+    fn stderr() -> Self {
+        Self::new(
+            io::stderr().is_terminal(),
+            env::var_os("NO_COLOR").is_some(),
+            env::var("TERM").ok().as_deref(),
+        )
+    }
+
+    /// Builds one style context from resolved terminal environment facts.
+    fn new(is_terminal: bool, no_color: bool, term: Option<&str>) -> Self {
+        Self {
+            enabled: should_auto_color_output(is_terminal, no_color, term),
+        }
+    }
+
+    /// Returns one string wrapped with an ANSI style when styling is enabled.
+    fn color(self, code: &str, value: impl std::fmt::Display) -> String {
+        if self.enabled {
+            format!("{code}{value}{ANSI_RESET}")
+        } else {
+            value.to_string()
+        }
+    }
+
+    /// Returns one bold display string.
+    fn bold(self, value: impl std::fmt::Display) -> String {
+        self.color(ANSI_BOLD, value)
+    }
+
+    /// Returns one field label display string.
+    fn label(self, value: impl std::fmt::Display) -> String {
+        self.bold(value)
+    }
+
+    /// Returns one success display string.
+    fn ok(self, value: impl std::fmt::Display) -> String {
+        self.color(ANSI_GREEN, value)
+    }
+
+    /// Returns one warning display string.
+    fn warn(self, value: impl std::fmt::Display) -> String {
+        self.color(ANSI_YELLOW, value)
+    }
+
+    /// Returns one error display string.
+    fn error(self, value: impl std::fmt::Display) -> String {
+        self.color(ANSI_RED, value)
+    }
+
+    /// Returns one lower-emphasis display string.
+    fn muted(self, value: impl std::fmt::Display) -> String {
+        self.color(ANSI_DIM, value)
+    }
+
+    /// Returns one path display string.
+    fn path(self, value: impl std::fmt::Display) -> String {
+        self.color(ANSI_CYAN, value)
+    }
+
+    /// Returns one count display string.
+    fn count(self, value: impl std::fmt::Display) -> String {
+        self.color(ANSI_BOLD, value)
+    }
+}
+
+/// Returns whether automatic terminal color should be enabled.
+fn should_auto_color_output(is_terminal: bool, no_color: bool, term: Option<&str>) -> bool {
+    is_terminal && !no_color && term != Some("dumb")
+}
+
+/// Returns whether one query output stream should include ANSI color.
+fn should_color_output(
+    policy: ColorArg,
+    stdout_is_terminal: bool,
+    no_color: bool,
+    term: Option<&str>,
+) -> bool {
+    match policy {
+        ColorArg::Always => true,
+        ColorArg::Never => false,
+        ColorArg::Auto => should_auto_color_output(stdout_is_terminal, no_color, term),
+    }
+}
+
+/// Adds ANSI syntax color to one pretty-printed JSON string.
+fn color_json(json: &str) -> String {
+    let mut output = String::with_capacity(json.len());
+    let mut index = 0;
+    while index < json.len() {
+        let ch = json[index..]
+            .chars()
+            .next()
+            .expect("index should be in bounds");
+        if ch == '"' {
+            let end = json_string_end(json, index);
+            let color = if json_string_is_key(json, end) {
+                ANSI_KEY
+            } else {
+                ANSI_STRING
+            };
+            push_colored(&mut output, color, &json[index..end]);
+            index = end;
+        } else if ch == '-' || ch.is_ascii_digit() {
+            let end = json_number_end(json, index);
+            push_colored(&mut output, ANSI_NUMBER, &json[index..end]);
+            index = end;
+        } else if json[index..].starts_with("true") {
+            push_colored(&mut output, ANSI_BOOLEAN, "true");
+            index += "true".len();
+        } else if json[index..].starts_with("false") {
+            push_colored(&mut output, ANSI_BOOLEAN, "false");
+            index += "false".len();
+        } else if json[index..].starts_with("null") {
+            push_colored(&mut output, ANSI_NULL, "null");
+            index += "null".len();
+        } else if matches!(ch, '{' | '}' | '[' | ']' | ':' | ',') {
+            push_colored(&mut output, ANSI_BOLD, &json[index..index + ch.len_utf8()]);
+            index += ch.len_utf8();
+        } else {
+            output.push(ch);
+            index += ch.len_utf8();
+        }
+    }
+    output
+}
+
+/// Adds ANSI match highlighting to nested search-match snippet strings.
+fn color_search_turns_json(json: &str, data: &SearchTurnsQueryData) -> Result<String> {
+    let mut colored = color_json(json);
+    if !matches!(data.mode, SearchMode::Literal | SearchMode::Regex) {
+        return Ok(colored);
+    }
+
+    let mut cursor = 0;
+    let matcher = SearchSnippetMatcher::new(data.mode, &data.query)?;
+    for hit in &data.hits {
+        for matched in &hit.matches {
+            let Some(range) = matcher.find(&matched.snippet) else {
+                continue;
+            };
+            if range.is_empty() {
+                continue;
+            }
+            let Some((value_start, token_len)) =
+                find_colored_snippet_value(&colored, &matched.snippet, cursor)
+            else {
+                continue;
+            };
+            let highlighted = color_json_string_with_match(&matched.snippet, range);
+            colored.replace_range(value_start..value_start + token_len, &highlighted);
+            cursor = value_start + highlighted.len();
+        }
+    }
+    Ok(colored)
+}
+
+/// Appends one ANSI-colored JSON token to the rendered output.
+fn push_colored(output: &mut String, color: &str, token: &str) {
+    output.push_str(color);
+    output.push_str(token);
+    output.push_str(ANSI_RESET);
+}
+
+/// Returns the next colored `snippet` string value from one colored JSON document.
+fn find_colored_snippet_value(
+    colored: &str,
+    snippet: &str,
+    cursor: usize,
+) -> Option<(usize, usize)> {
+    let key_prefix = format!("{ANSI_KEY}\"snippet\"{ANSI_RESET}{ANSI_BOLD}:{ANSI_RESET} ");
+    let token = color_json_string(snippet);
+    let target = format!("{key_prefix}{token}");
+    let value_start = cursor + colored.get(cursor..)?.find(&target)? + key_prefix.len();
+    Some((value_start, token.len()))
+}
+
+/// Returns one syntax-colored JSON string literal.
+fn color_json_string(value: &str) -> String {
+    format!("{ANSI_STRING}{}{ANSI_RESET}", json_string_literal(value))
+}
+
+/// Returns one syntax-colored JSON string literal with a highlighted inner byte range.
+fn color_json_string_with_match(value: &str, range: std::ops::Range<usize>) -> String {
+    let prefix = json_string_inner(&value[..range.start]);
+    let matched = json_string_inner(&value[range.clone()]);
+    let suffix = json_string_inner(&value[range.end..]);
+    format!(
+        "{ANSI_STRING}\"{prefix}{ANSI_MATCH}{matched}{ANSI_RESET}{ANSI_STRING}{suffix}\"{ANSI_RESET}"
+    )
+}
+
+/// Returns one JSON string literal for a known UTF-8 string.
+fn json_string_literal(value: &str) -> String {
+    serde_json::to_string(value).expect("serializing a string should not fail")
+}
+
+/// Returns the unquoted escaped content for one JSON string literal.
+fn json_string_inner(value: &str) -> String {
+    let literal = json_string_literal(value);
+    literal[1..literal.len() - 1].to_owned()
+}
+
+/// Returns the byte index after one JSON string literal.
+fn json_string_end(json: &str, start: usize) -> usize {
+    let mut escaped = false;
+    for (offset, ch) in json[start + 1..].char_indices() {
+        if escaped {
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == '"' {
+            return start + 1 + offset + ch.len_utf8();
+        }
+    }
+    json.len()
+}
+
+/// Returns whether one JSON string literal is followed by an object-key colon.
+fn json_string_is_key(json: &str, end: usize) -> bool {
+    json[end..]
+        .chars()
+        .find(|ch| !ch.is_whitespace())
+        .is_some_and(|ch| ch == ':')
+}
+
+/// Returns the byte index after one JSON number token.
+fn json_number_end(json: &str, start: usize) -> usize {
+    let mut end = start;
+    for ch in json[start..].chars() {
+        if matches!(ch, '-' | '+' | '.' | 'e' | 'E') || ch.is_ascii_digit() {
+            end += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    end
 }
 
 /// Returns one machine-readable JSON error envelope string.
@@ -1612,18 +2291,14 @@ fn supported_search_evidence_fields() -> String {
 
 /// Returns help text for exact-search field inclusion.
 fn search_evidence_field_include_help() -> String {
-    format!(
-        "Restrict literal and regex search to this evidence field. Accepted fields: {}",
-        supported_search_evidence_fields()
-    )
+    "Restrict literal and regex search to an evidence field. Repeat to include multiple fields.\n\nAccepted fields:\n  messages: user-message, final-answer, commentary, reasoning-summary\n  tools: tool-name, tool-arguments, tool-output\n  other: delegation-summary, delegation-metadata, hook-summary, attachment-metadata, provider-response-item-metadata"
+        .to_owned()
 }
 
 /// Returns help text for exact-search field exclusion.
 fn search_evidence_field_exclude_help() -> String {
-    format!(
-        "Exclude this evidence field from literal and regex search. Accepted fields: {}",
-        supported_search_evidence_fields()
-    )
+    "Exclude an evidence field from literal and regex search. Repeat to exclude multiple fields.\n\nAccepted fields:\n  messages: user-message, final-answer, commentary, reasoning-summary\n  tools: tool-name, tool-arguments, tool-output\n  other: delegation-summary, delegation-metadata, hook-summary, attachment-metadata, provider-response-item-metadata"
+        .to_owned()
 }
 
 /// Returns help text for the literal/regex per-hit match preview cap.
@@ -1795,16 +2470,105 @@ fn run_init(args: InitArgs) -> Result<()> {
         write_init(&draft)?;
     }
 
-    println!("{draft}");
+    let style = HumanStyle::stdout();
+    print_init_draft(style, &draft);
     if args.dry_run {
-        println!("\n{}", format_init_status(&draft, true));
         println!();
+        print_init_status(style, &draft, true);
+        println!();
+        print_section(style, "Config Preview");
         println!("{}", draft.config_toml()?);
     } else {
-        println!("\n{}", format_init_status(&draft, false));
+        println!();
+        print_init_status(style, &draft, false);
     }
 
     Ok(())
+}
+
+/// Prints the prepared init summary.
+fn print_init_draft(style: HumanStyle, draft: &InitDraft) {
+    print_section(style, "Darc");
+    print_field(
+        style,
+        2,
+        "Config",
+        if draft.global_config_exists {
+            style.ok("existing")
+        } else {
+            style.warn("not found")
+        },
+    );
+    print_field(style, 2, "Root", style.path(draft.root().display()));
+    print_field(
+        style,
+        2,
+        "Config path",
+        style.path(draft.root().join("config.toml").display()),
+    );
+    print_field(
+        style,
+        2,
+        "Index DB path",
+        style.path(draft.root().join("index.sqlite").display()),
+    );
+
+    if !draft.global_config_exists {
+        println!();
+        print_section(style, "Detected Sources");
+        if draft.sources.is_empty() {
+            print_line(2, style.muted("none"));
+        }
+        for source in &draft.sources {
+            print_line(2, style.bold(source.kind.title()));
+            print_field(style, 4, "Path", style.path(source.root.display()));
+            print_field(style, 4, "Rollouts", style.count(source.rollout_files));
+            if source.subagent_rollout_files > 0 {
+                print_field(
+                    style,
+                    4,
+                    "Subagents",
+                    style.count(source.subagent_rollout_files),
+                );
+            }
+        }
+    }
+
+    println!();
+    print_section(style, "Project");
+    print_field(style, 2, "Name", &draft.project.name);
+    print_field(
+        style,
+        2,
+        "Root",
+        style.path(draft.project.local_path.display()),
+    );
+    print_field(
+        style,
+        2,
+        "State",
+        if draft.project_exists {
+            style.ok("already configured")
+        } else {
+            style.warn("new")
+        },
+    );
+    if let Some(upstream) = &draft.project.git_upstream {
+        print_field(style, 2, "Upstream", style.path(upstream));
+    }
+}
+
+/// Prints the final init status block.
+fn print_init_status(style: HumanStyle, draft: &InitDraft, dry_run: bool) {
+    print_section(style, "Status");
+    for line in format_init_status(draft, dry_run).lines() {
+        let line = if dry_run {
+            style.warn(line)
+        } else {
+            style.ok(line)
+        };
+        print_line(2, line);
+    }
 }
 
 /// Formats the post-summary status lines for `init`.
@@ -1836,19 +2600,45 @@ fn format_init_status(draft: &InitDraft, dry_run: bool) -> String {
 /// Links one configured project's historical paths into the active project.
 fn run_link(args: LinkArgs) -> Result<()> {
     let report = link_project(Some(args.root), &args.project)?;
+    let style = HumanStyle::stdout();
 
-    println!("Project: {}", report.target_project_name);
-    println!("Linked From: {}", report.source_project_name);
-    println!("Project Root: {}", report.target_project_root.display());
-    println!(
-        "Known paths: {} total, {} added",
-        report.total_known_paths,
-        report.new_known_paths.len()
+    print_section(style, "Link");
+    print_field(style, 2, "Target project", &report.target_project_name);
+    print_field(
+        style,
+        2,
+        "Target ID",
+        style.muted(&report.target_project_id),
     );
+    print_field(style, 2, "Linked from", &report.source_project_name);
+    print_field(
+        style,
+        2,
+        "Source ID",
+        style.muted(&report.source_project_id),
+    );
+    print_field(
+        style,
+        2,
+        "Project root",
+        style.path(report.target_project_root.display()),
+    );
+    print_field(
+        style,
+        2,
+        "Known paths",
+        format!(
+            "{} total, {} added",
+            style.count(report.total_known_paths),
+            style.count(report.new_known_paths.len())
+        ),
+    );
+    println!();
+    print_section(style, "Status");
     if report.config_written {
-        println!("Updated config.");
+        print_field(style, 2, "Config", style.ok("updated"));
     } else {
-        println!("Config already covered all linked paths.");
+        print_field(style, 2, "Config", style.ok("already covered linked paths"));
     }
 
     Ok(())
@@ -1857,22 +2647,40 @@ fn run_link(args: LinkArgs) -> Result<()> {
 /// Removes one configured project and its archived/indexed data.
 fn run_remove(args: RemoveArgs) -> Result<()> {
     let report = remove_project(Some(args.root), &args.project)?;
+    let style = HumanStyle::stdout();
 
-    println!("Project: {}", report.project_name);
-    println!("Project ID: {}", report.project_id);
-    println!("Archive: {}", report.sessions_root.display());
-    println!(
-        "Indexed sessions removed: {}",
-        report.indexed_sessions_removed
+    print_section(style, "Remove");
+    print_field(style, 2, "Project", &report.project_name);
+    print_field(style, 2, "Project ID", style.muted(&report.project_id));
+    print_field(
+        style,
+        2,
+        "Archive",
+        style.path(report.sessions_root.display()),
     );
-    println!("Indexed turns removed: {}", report.indexed_turns_removed);
+    println!();
+    print_section(style, "Deleted Data");
     if report.archive_deleted {
-        println!("Deleted archive.");
+        print_field(style, 2, "Archive", style.warn("deleted"));
     } else {
-        println!("Archive did not exist.");
+        print_field(style, 2, "Archive", style.muted("did not exist"));
     }
+    print_field(
+        style,
+        2,
+        "Indexed sessions",
+        style.count(report.indexed_sessions_removed),
+    );
+    print_field(
+        style,
+        2,
+        "Indexed turns",
+        style.count(report.indexed_turns_removed),
+    );
+    println!();
+    print_section(style, "Status");
     if report.config_written {
-        println!("Updated config.");
+        print_field(style, 2, "Config", style.ok("updated"));
     }
 
     Ok(())
@@ -1881,28 +2689,66 @@ fn run_remove(args: RemoveArgs) -> Result<()> {
 /// Rebuilds one configured project's history under the active project's id.
 fn run_rename_from(args: RenameArgs) -> Result<()> {
     let report = rename_project(Some(args.root), &args.project)?;
+    let style = HumanStyle::stdout();
 
-    println!("Project: {}", report.link.target_project_name);
-    println!("Renamed From: {}", report.link.source_project_name);
-    println!(
-        "Known paths: {} total, {} added",
-        report.link.total_known_paths,
-        report.link.new_known_paths.len()
+    print_section(style, "Rename");
+    print_field(style, 2, "Project", &report.link.target_project_name);
+    print_field(style, 2, "Renamed from", &report.link.source_project_name);
+    print_field(
+        style,
+        2,
+        "Known paths",
+        format!(
+            "{} total, {} added",
+            style.count(report.link.total_known_paths),
+            style.count(report.link.new_known_paths.len())
+        ),
     );
-    println!(
-        "Synced {} session files and {} auxiliary files.",
-        report.sync.sessions_copied, report.sync.auxiliary_copied
+    println!();
+    print_section(style, "Sync");
+    print_field(
+        style,
+        2,
+        "Sessions",
+        format!(
+            "{} copied, {} unchanged",
+            style.count(report.sync.sessions_copied),
+            style.count(report.sync.sessions_unchanged)
+        ),
     );
-    println!(
-        "Indexed {} discovered sessions into {} indexed sessions and {} turns.",
-        report.index.sessions_discovered,
-        report.index.sessions_currently_indexed,
-        report.index.turns_currently_indexed
+    print_field(
+        style,
+        2,
+        "Auxiliary",
+        format!(
+            "{} copied, {} unchanged",
+            style.count(report.sync.auxiliary_copied),
+            style.count(report.sync.auxiliary_unchanged)
+        ),
     );
-    println!(
-        "Removed old project archive and {} indexed sessions.",
-        report.remove.indexed_sessions_removed
+    println!();
+    print_index_summary(style, &report.index);
+    println!();
+    print_section(style, "Cleanup");
+    print_field(
+        style,
+        2,
+        "Old archive",
+        if report.remove.archive_deleted {
+            style.warn("deleted")
+        } else {
+            style.muted("did not exist")
+        },
     );
+    print_field(
+        style,
+        2,
+        "Indexed sessions",
+        style.count(report.remove.indexed_sessions_removed),
+    );
+    println!();
+    print_section(style, "Status");
+    print_field(style, 2, "Overall", style.ok("renamed"));
 
     Ok(())
 }
@@ -1960,63 +2806,78 @@ fn status_check_exit(has_failed_check: bool, message: &'static str) -> Result<()
 
 /// Prints one active-project status report.
 fn print_project_status(report: &darc_core::ProjectStatusReport) {
-    print_status_header(&report.root, None);
+    let style = HumanStyle::stdout();
+    print_status_header(style, &report.root, None);
     println!();
-    print_sources(&report.sources);
+    print_sources(style, &report.sources);
     println!();
-    print_active_project_identity(&report.project);
+    print_active_project_identity(style, &report.project);
     println!();
-    print_project_index_status(&report.project, 0);
+    print_project_index_status(style, &report.project, 0);
     if report.project.sync_check.is_some() {
         println!();
-        print_sync_check(report.project.sync_check.as_ref(), "Sync Check", 0);
+        print_sync_check(style, report.project.sync_check.as_ref(), "Sync Check", 0);
     }
     if !report.project.issues.is_empty() {
         println!();
-        print_project_issues(&report.project, 0);
+        print_project_issues(style, &report.project, 0);
     }
     println!();
-    print_overall_status(format_overall_status(
-        &report.root.issues,
-        &report.sources,
-        std::slice::from_ref(&report.project),
-    ));
+    print_overall_status(
+        style,
+        format_overall_status(
+            &report.root.issues,
+            &report.sources,
+            std::slice::from_ref(&report.project),
+        ),
+    );
 }
 
 /// Prints one workspace status report.
 fn print_workspace_status(report: &WorkspaceStatusReport) {
-    print_status_header(&report.root, Some(report.projects.len()));
+    let style = HumanStyle::stdout();
+    print_status_header(style, &report.root, Some(report.projects.len()));
     println!();
-    print_sources(&report.sources);
+    print_sources(style, &report.sources);
     println!();
-    print_workspace_summary(report);
+    print_workspace_summary(style, report);
     println!();
-    print_workspace_projects(&report.projects);
+    print_workspace_projects(style, &report.projects);
     println!();
-    print_overall_status(format_overall_status(
-        &report.root.issues,
-        &report.sources,
-        &report.projects,
-    ));
+    print_overall_status(
+        style,
+        format_overall_status(&report.root.issues, &report.sources, &report.projects),
+    );
 }
 
 /// Prints a plain section heading.
-fn print_section(title: &str) {
-    if io::stdout().is_terminal() {
-        println!("\x1b[1m{title}\x1b[0m");
-    } else {
-        println!("{title}");
-    }
+fn print_section(style: HumanStyle, title: &str) {
+    println!("{}", style.bold(title));
 }
 
 /// Prints one indented label/value field.
-fn print_field(indent: usize, label: &str, value: impl std::fmt::Display) {
-    println!("{}{}: {}", " ".repeat(indent), label, value);
+fn print_field(style: HumanStyle, indent: usize, label: &str, value: impl std::fmt::Display) {
+    println!("{}{}: {}", " ".repeat(indent), style.label(label), value);
 }
 
 /// Prints one indented continuation line.
 fn print_line(indent: usize, value: impl std::fmt::Display) {
     println!("{}{}", " ".repeat(indent), value);
+}
+
+/// Prints one warning to stderr using human-output styling when available.
+fn print_warning(message: impl std::fmt::Display) {
+    let style = HumanStyle::stderr();
+    eprintln!("{}", style.warn(format!("warning: {message}")));
+}
+
+/// Prints one project-scoped warning to stderr using human-output styling when available.
+fn print_project_warning(project_name: &str, message: impl std::fmt::Display) {
+    let style = HumanStyle::stderr();
+    eprintln!(
+        "{}",
+        style.warn(format!("warning [{project_name}]: {message}"))
+    );
 }
 
 /// Returns a count phrase for one singular/plural noun pair.
@@ -2026,151 +2887,220 @@ fn count_label(count: usize, singular: &str, plural: &str) -> String {
 }
 
 /// Returns one archive availability label.
-fn archive_status(project: &StatusProject) -> &'static str {
+fn archive_status(style: HumanStyle, project: &StatusProject) -> String {
     if project.archive_exists {
-        "ok"
+        style.ok("ok")
     } else {
-        "missing"
+        style.error("missing")
     }
 }
 
 /// Returns one configured-source state label.
-fn source_state(source: &StatusSource) -> &'static str {
+fn source_state(style: HumanStyle, source: &StatusSource) -> String {
     if !source.configured {
-        "not configured"
+        style.muted("not configured")
     } else if source.enabled {
-        "enabled"
+        style.ok("enabled")
     } else {
-        "disabled"
+        style.muted("disabled")
     }
 }
 
 /// Returns one configured-source path availability label.
-fn source_path_state(source: &StatusSource) -> &'static str {
-    if source.path_exists { "ok" } else { "missing" }
+fn source_path_state(style: HumanStyle, source: &StatusSource) -> String {
+    if source.path_exists {
+        style.ok("ok")
+    } else {
+        style.error("missing")
+    }
 }
 
 /// Returns one configured-source path label.
-fn source_path(source: &StatusSource) -> String {
-    source
+fn source_path(style: HumanStyle, source: &StatusSource) -> String {
+    let path = source
         .path
         .as_ref()
         .map(|path| path.display().to_string())
-        .unwrap_or_else(|| "none".to_owned())
+        .unwrap_or_else(|| "none".to_owned());
+    style.path(path)
 }
 
 /// Returns one formatted source path with availability.
-fn source_path_with_state(source: &StatusSource) -> String {
-    format!("{} ({})", source_path(source), source_path_state(source))
+fn source_path_with_state(style: HumanStyle, source: &StatusSource) -> String {
+    format!(
+        "{} ({})",
+        source_path(style, source),
+        source_path_state(style, source)
+    )
 }
 
 /// Returns one formatted indexed count summary.
-fn indexed_summary(project: &StatusProject) -> String {
+fn indexed_summary(style: HumanStyle, project: &StatusProject) -> String {
     format!(
         "{} sessions, {} turns",
-        project.session_count, project.turn_count
+        style.count(project.session_count),
+        style.count(project.turn_count)
     )
 }
 
 /// Prints the common root/config/database status header.
-fn print_status_header(root: &darc_core::query::RootInfo, project_count: Option<usize>) {
-    print_section("Darc");
-    print_field(2, "Version", env!("CARGO_PKG_VERSION"));
-    print_field(2, "Root", root.resolved_root_path.display());
+fn print_status_header(
+    style: HumanStyle,
+    root: &darc_core::query::RootInfo,
+    project_count: Option<usize>,
+) {
+    print_section(style, "Darc");
+    print_field(style, 2, "Version", env!("CARGO_PKG_VERSION"));
+    print_field(
+        style,
+        2,
+        "Root",
+        style.path(root.resolved_root_path.display()),
+    );
     let config_status = if !root.available.config_exists {
-        "missing".to_owned()
+        style.error("missing")
     } else {
         match project_count {
-            Some(count) => format!("ok ({})", count_label(count, "project", "projects")),
-            None => "ok".to_owned(),
+            Some(count) => style.ok(format!(
+                "ok ({})",
+                count_label(count, "project", "projects")
+            )),
+            None => style.ok("ok"),
         }
     };
-    print_field(2, "Config", config_status);
+    print_field(style, 2, "Config", config_status);
     print_field(
+        style,
         2,
         "Index DB",
         if root.available.database_exists {
-            "ok"
+            style.ok("ok")
         } else {
-            "missing"
+            style.error("missing")
         },
     );
 }
 
 /// Prints all supported source availability rows.
-fn print_sources(sources: &[StatusSource]) {
-    print_section("Sources");
+fn print_sources(style: HumanStyle, sources: &[StatusSource]) {
+    print_section(style, "Sources");
     for source in sources {
-        print_line(2, source.kind.title());
-        print_field(4, "State", source_state(source));
+        print_line(2, style.bold(source.kind.title()));
+        print_field(style, 4, "State", source_state(style, source));
         if source.configured {
-            print_field(4, "Path", source_path_with_state(source));
+            print_field(style, 4, "Path", source_path_with_state(style, source));
         }
     }
 }
 
 /// Prints the active project identity and storage block.
-fn print_active_project_identity(project: &StatusProject) {
-    print_section("Active Project");
-    print_field(2, "Name", &project.name);
-    print_field(2, "ID", &project.id);
+fn print_active_project_identity(style: HumanStyle, project: &StatusProject) {
+    print_section(style, "Active Project");
+    print_field(style, 2, "Name", &project.name);
+    print_field(style, 2, "ID", style.muted(&project.id));
     print_field(
+        style,
         2,
         "Root",
-        project
-            .resolved_project_root
-            .as_ref()
-            .unwrap_or(&project.local_path)
-            .display(),
+        style.path(
+            project
+                .resolved_project_root
+                .as_ref()
+                .unwrap_or(&project.local_path)
+                .display(),
+        ),
     );
-    print_field(2, "Archive", archive_status(project));
-    print_field(2, "Archive path", project.sessions_root.display());
-    print_field(2, "Known paths", project.known_path_count);
+    print_field(style, 2, "Archive", archive_status(style, project));
+    print_field(
+        style,
+        2,
+        "Archive path",
+        style.path(project.sessions_root.display()),
+    );
+    print_field(
+        style,
+        2,
+        "Known paths",
+        style.count(project.known_path_count),
+    );
     if let Some(upstream) = &project.git_upstream {
-        print_field(2, "Upstream", upstream);
+        print_field(style, 2, "Upstream", style.path(upstream));
     }
 }
 
 /// Prints one indexed-data status block.
-fn print_project_index_status(project: &StatusProject, indent: usize) {
+fn print_project_index_status(style: HumanStyle, project: &StatusProject, indent: usize) {
     let heading = if indent == 0 {
         "Indexed Data"
     } else {
         "Indexed"
     };
-    print_line(indent, heading);
-    print_field(indent + 2, "Sessions", project.session_count);
-    print_field(indent + 2, "Turns", project.turn_count);
+    if indent == 0 {
+        print_section(style, heading);
+    } else {
+        print_line(indent, style.bold(heading));
+    }
     print_field(
+        style,
+        indent + 2,
+        "Sessions",
+        style.count(project.session_count),
+    );
+    print_field(style, indent + 2, "Turns", style.count(project.turn_count));
+    print_field(
+        style,
         indent + 2,
         "Last activity",
-        project.last_activity_at.as_deref().unwrap_or("none"),
+        project
+            .last_activity_at
+            .as_ref()
+            .map(|value| value.to_owned())
+            .unwrap_or_else(|| style.muted("none")),
     );
     print_field(
+        style,
         indent + 2,
         "Last sync",
-        project.last_sync_at.as_deref().unwrap_or("unknown"),
+        project
+            .last_sync_at
+            .as_ref()
+            .map(|value| value.to_owned())
+            .unwrap_or_else(|| style.muted("unknown")),
     );
 }
 
 /// Prints the workspace aggregate status block.
-fn print_workspace_summary(report: &WorkspaceStatusReport) {
-    print_section("Workspace Summary");
-    print_field(2, "Projects", report.projects.len());
-    print_field(2, "Indexed sessions", report.total_session_count());
-    print_field(2, "Indexed turns", report.total_turn_count());
+fn print_workspace_summary(style: HumanStyle, report: &WorkspaceStatusReport) {
+    print_section(style, "Workspace Summary");
+    print_field(style, 2, "Projects", style.count(report.projects.len()));
     print_field(
+        style,
+        2,
+        "Indexed sessions",
+        style.count(report.total_session_count()),
+    );
+    print_field(
+        style,
+        2,
+        "Indexed turns",
+        style.count(report.total_turn_count()),
+    );
+    print_field(
+        style,
         2,
         "Last activity",
-        report.latest_activity_at().unwrap_or("none"),
+        report
+            .latest_activity_at()
+            .map(str::to_owned)
+            .unwrap_or_else(|| style.muted("none")),
     );
 }
 
 /// Prints every workspace project as a readable multi-line block.
-fn print_workspace_projects(projects: &[StatusProject]) {
-    print_section("Projects");
+fn print_workspace_projects(style: HumanStyle, projects: &[StatusProject]) {
+    print_section(style, "Projects");
     if projects.is_empty() {
-        print_line(2, "none");
+        print_line(2, style.muted("none"));
         return;
     }
 
@@ -2178,117 +3108,157 @@ fn print_workspace_projects(projects: &[StatusProject]) {
         if index > 0 {
             println!();
         }
-        print_workspace_project_status(project);
+        print_workspace_project_status(style, project);
     }
 }
 
 /// Prints one compact workspace project row.
-fn print_workspace_project_status(project: &StatusProject) {
-    print_line(2, &project.name);
-    print_field(4, "ID", &project.id);
-    print_field(4, "Path", project.local_path.display());
-    print_field(4, "Archive", archive_status(project));
-    print_field(4, "Archive path", project.sessions_root.display());
-    print_field(4, "Indexed", indexed_summary(project));
+fn print_workspace_project_status(style: HumanStyle, project: &StatusProject) {
+    print_line(2, style.bold(&project.name));
+    print_field(style, 4, "ID", style.muted(&project.id));
+    print_field(style, 4, "Path", style.path(project.local_path.display()));
+    print_field(style, 4, "Archive", archive_status(style, project));
     print_field(
+        style,
+        4,
+        "Archive path",
+        style.path(project.sessions_root.display()),
+    );
+    print_field(style, 4, "Indexed", indexed_summary(style, project));
+    print_field(
+        style,
         4,
         "Last activity",
-        project.last_activity_at.as_deref().unwrap_or("none"),
+        project
+            .last_activity_at
+            .as_ref()
+            .map(|value| value.to_owned())
+            .unwrap_or_else(|| style.muted("none")),
     );
     print_field(
+        style,
         4,
         "Last sync",
-        project.last_sync_at.as_deref().unwrap_or("unknown"),
+        project
+            .last_sync_at
+            .as_ref()
+            .map(|value| value.to_owned())
+            .unwrap_or_else(|| style.muted("unknown")),
     );
     if project.sync_check.is_some() {
-        print_sync_check(project.sync_check.as_ref(), "Sync Check", 4);
+        print_sync_check(style, project.sync_check.as_ref(), "Sync Check", 4);
     }
     if !project.issues.is_empty() {
-        print_project_issues(project, 4);
+        print_project_issues(style, project, 4);
     }
 }
 
 /// Prints one optional sync dry-run block.
-fn print_sync_check(check: Option<&StatusSyncCheck>, label: &str, indent: usize) {
+fn print_sync_check(
+    style: HumanStyle,
+    check: Option<&StatusSyncCheck>,
+    label: &str,
+    indent: usize,
+) {
     let Some(check) = check else {
         return;
     };
 
     match check {
-        StatusSyncCheck::Planned(plan) => print_sync_plan(plan, label, indent),
+        StatusSyncCheck::Planned(plan) => print_sync_plan(style, plan, label, indent),
         StatusSyncCheck::Failed(failure) => {
-            print_line(indent, format!("{label}: failed"));
-            print_field(indent + 2, "Error", &failure.message);
+            print_line(
+                indent,
+                format!("{}: {}", style.bold(label), style.error("failed")),
+            );
+            print_field(style, indent + 2, "Error", style.error(&failure.message));
         }
     }
 }
 
 /// Prints one successful sync dry-run summary.
-fn print_sync_plan(plan: &StatusSyncPlan, label: &str, indent: usize) {
-    print_line(indent, label);
-    print_field(indent + 2, "Providers", format_sources(&plan.sources));
+fn print_sync_plan(style: HumanStyle, plan: &StatusSyncPlan, label: &str, indent: usize) {
+    print_line(indent, style.bold(label));
     print_field(
+        style,
+        indent + 2,
+        "Providers",
+        format_sources(&plan.sources),
+    );
+    print_field(
+        style,
         indent + 2,
         "Sessions",
         format!(
             "{} pending, {} unchanged",
-            plan.sessions_to_copy, plan.sessions_unchanged
+            style.count(plan.sessions_to_copy),
+            style.count(plan.sessions_unchanged)
         ),
     );
     print_field(
+        style,
         indent + 2,
         "Auxiliary",
         format!(
             "{} pending, {} unchanged",
-            plan.auxiliary_to_copy, plan.auxiliary_unchanged
+            style.count(plan.auxiliary_to_copy),
+            style.count(plan.auxiliary_unchanged)
         ),
     );
     print_field(
+        style,
         indent + 2,
         "Known paths",
-        format!("{} new", plan.new_known_path_count),
+        format!("{} new", style.count(plan.new_known_path_count)),
     );
     print_field(
+        style,
         indent + 2,
         "Manifest",
         if plan.manifest_written {
-            "would update"
+            style.warn("would update")
         } else {
-            "up to date"
+            style.ok("up to date")
         },
     );
     print_field(
+        style,
         indent + 2,
         "Config",
         if plan.config_written {
-            "would update"
+            style.warn("would update")
         } else {
-            "up to date"
+            style.ok("up to date")
         },
     );
     if !plan.warnings.is_empty() {
-        print_line(indent + 2, "Warnings");
+        print_line(indent + 2, style.warn("Warnings"));
         for warning in &plan.warnings {
-            print_line(indent + 4, format!("- {warning}"));
+            print_line(indent + 4, style.warn(format!("- {warning}")));
         }
     }
 }
 
 /// Prints project-local issues when present.
-fn print_project_issues(project: &StatusProject, indent: usize) {
+fn print_project_issues(style: HumanStyle, project: &StatusProject, indent: usize) {
     if project.issues.is_empty() {
         return;
     }
-    print_line(indent, "Issues");
+    print_line(indent, style.error("Issues"));
     for issue in &project.issues {
-        print_line(indent + 2, format!("- {issue}"));
+        print_line(indent + 2, style.error(format!("- {issue}")));
     }
 }
 
 /// Prints the final overall status block.
-fn print_overall_status(status: &'static str) {
-    print_section("Status");
-    print_field(2, "Overall", status);
+fn print_overall_status(style: HumanStyle, status: &'static str) {
+    print_section(style, "Status");
+    let status = if status == "ok" {
+        style.ok(status)
+    } else {
+        style.warn(status)
+    };
+    print_field(style, 2, "Overall", status);
 }
 
 /// Returns the overall human status label for one report.
@@ -2326,46 +3296,154 @@ fn run_sync(args: SyncArgs) -> Result<()> {
         },
     )
     .map_err(add_init_hint_for_unconfigured_project)?;
+    let style = HumanStyle::stdout();
 
-    println!("Project: {}", plan.project_name);
-    println!("Project Root: {}", plan.project_root.display());
-    println!("Archive: {}", plan.sessions_root.display());
-    println!("Providers: {}", format_sources(&plan.sources));
-    println!(
-        "Sessions: {} to copy, {} unchanged",
-        plan.sessions_to_copy(),
-        plan.sessions_unchanged
+    print_project_run_header(
+        style,
+        "Sync",
+        &plan.project_name,
+        &plan.project_root,
+        Some(plan.sessions_root.as_path()),
     );
-    println!(
-        "Auxiliary: {} to copy, {} unchanged",
-        plan.auxiliary_to_copy(),
-        plan.auxiliary_unchanged
+    println!();
+    print_section(style, "Plan");
+    print_field(style, 2, "Providers", format_sources(&plan.sources));
+    print_field(
+        style,
+        2,
+        "Sessions",
+        format!(
+            "{} to copy, {} unchanged",
+            style.count(plan.sessions_to_copy()),
+            style.count(plan.sessions_unchanged)
+        ),
     );
-    if !plan.new_known_paths.is_empty() {
-        println!("Known paths: {} new", plan.new_known_paths.len());
-    }
+    print_field(
+        style,
+        2,
+        "Auxiliary",
+        format!(
+            "{} to copy, {} unchanged",
+            style.count(plan.auxiliary_to_copy()),
+            style.count(plan.auxiliary_unchanged)
+        ),
+    );
+    print_field(
+        style,
+        2,
+        "Known paths",
+        format!("{} new", style.count(plan.new_known_paths.len())),
+    );
     for warning in &plan.warnings {
-        eprintln!("warning: {warning}");
+        print_warning(warning);
     }
 
     if args.dry_run {
-        println!("\nDry run only. No files were written.");
+        println!();
+        print_section(style, "Status");
+        print_field(style, 2, "Overall", style.warn("dry run only"));
+        print_line(2, style.muted("No files were written."));
         return Ok(());
     }
 
     let report = execute_sync(plan)?;
-    println!(
-        "\nSynced {} session files and {} auxiliary files.",
-        report.sessions_copied, report.auxiliary_copied
-    );
-    if report.manifest_written {
-        println!("Updated manifest.");
-    }
-    if report.config_written {
-        println!("Updated config.");
-    }
+    println!();
+    print_sync_result(style, &report);
+    println!();
+    print_section(style, "Status");
+    print_field(style, 2, "Overall", style.ok("synced"));
 
     Ok(())
+}
+
+/// Prints the common project/path header for human workflow commands.
+fn print_project_run_header(
+    style: HumanStyle,
+    title: &str,
+    project_name: &str,
+    project_root: &std::path::Path,
+    archive: Option<&std::path::Path>,
+) {
+    print_section(style, title);
+    print_field(style, 2, "Project", project_name);
+    print_field(style, 2, "Project root", style.path(project_root.display()));
+    if let Some(archive) = archive {
+        print_field(style, 2, "Archive", style.path(archive.display()));
+    }
+}
+
+/// Prints one executed sync summary block.
+fn print_sync_result(style: HumanStyle, report: &SyncReport) {
+    print_section(style, "Sync");
+    print_field(
+        style,
+        2,
+        "Sessions",
+        format!(
+            "{} copied, {} unchanged",
+            style.count(report.sessions_copied),
+            style.count(report.sessions_unchanged)
+        ),
+    );
+    print_field(
+        style,
+        2,
+        "Auxiliary",
+        format!(
+            "{} copied, {} unchanged",
+            style.count(report.auxiliary_copied),
+            style.count(report.auxiliary_unchanged)
+        ),
+    );
+    print_field(
+        style,
+        2,
+        "Known paths",
+        format!("{} new", style.count(report.new_known_paths.len())),
+    );
+}
+
+/// Prints one index summary block.
+fn print_index_summary(style: HumanStyle, report: &IndexReport) {
+    print_section(style, "Index");
+    print_field(style, 2, "Providers", format_sources(&report.providers));
+    print_field(
+        style,
+        2,
+        "Index DB",
+        style.path(report.index_db_path.display()),
+    );
+    print_field(
+        style,
+        2,
+        "Sessions discovered",
+        style.count(report.sessions_discovered),
+    );
+    print_field(
+        style,
+        2,
+        "Sessions skipped this run",
+        style.count(report.sessions_skipped_this_run),
+    );
+    print_field(
+        style,
+        2,
+        "Sessions currently indexed",
+        style.count(report.sessions_currently_indexed),
+    );
+    print_field(
+        style,
+        2,
+        "Turns currently indexed",
+        style.count(report.turns_currently_indexed),
+    );
+    let skipped = report.skipped_rollouts.len();
+    let skipped = if skipped == 0 {
+        style.ok(skipped)
+    } else {
+        style.warn(skipped)
+    };
+    print_field(style, 2, "Skipped rollout files", skipped);
 }
 
 /// Adds a `darc init` hint when sync or refresh runs outside a configured project.
@@ -2389,126 +3467,150 @@ fn run_index(args: IndexArgs) -> Result<()> {
             provider_filter: args.provider.into_iter().map(ProviderArg::into).collect(),
         },
     )?;
+    let style = HumanStyle::stdout();
 
     for skipped in &report.skipped_rollouts {
-        eprintln!("warning: {}", format_skipped_rollout(skipped));
+        print_warning(format_skipped_rollout(skipped));
     }
 
-    println!("Project: {}", report.project_name);
-    println!("Project Root: {}", report.project_root.display());
-    println!("Archive: {}", report.sessions_root.display());
-    println!("Providers: {}", format_sources(&report.providers));
-    println!("Index DB: {}", report.index_db_path.display());
-    println!("Sessions discovered: {}", report.sessions_discovered);
-    println!(
-        "Sessions skipped this run: {}",
-        report.sessions_skipped_this_run
+    print_project_run_header(
+        style,
+        "Index",
+        &report.project_name,
+        &report.project_root,
+        Some(report.sessions_root.as_path()),
     );
-    println!(
-        "Sessions currently indexed: {}",
-        report.sessions_currently_indexed
-    );
-    println!(
-        "Turns currently indexed: {}",
-        report.turns_currently_indexed
-    );
-    println!("Skipped rollout files: {}", report.skipped_rollouts.len());
+    println!();
+    print_index_summary(style, &report);
+    println!();
+    print_section(style, "Status");
+    let status = if report.skipped_rollouts.is_empty() {
+        style.ok("indexed")
+    } else {
+        style.warn("indexed with skipped rollouts")
+    };
+    print_field(style, 2, "Overall", status);
 
     Ok(())
 }
 
 /// Prints the combined sync and index summary for one refreshed project.
 fn print_refresh_report(report: &RefreshReport) {
+    let style = HumanStyle::stdout();
+    print_refresh_report_with_style(style, report);
+}
+
+/// Prints the combined sync and index summary using one resolved style context.
+fn print_refresh_report_with_style(style: HumanStyle, report: &RefreshReport) {
     for warning in &report.sync.warnings {
-        eprintln!("warning [{}]: {warning}", report.sync.project_name);
+        print_project_warning(&report.sync.project_name, warning);
     }
     for skipped in &report.index.skipped_rollouts {
-        eprintln!(
-            "warning [{}]: {}",
-            report.sync.project_name,
-            format_skipped_rollout(skipped)
-        );
+        print_project_warning(&report.sync.project_name, format_skipped_rollout(skipped));
     }
 
-    println!("Project: {}", report.sync.project_name);
-    println!("Project Root: {}", report.sync.project_root.display());
-    println!("Archive: {}", report.sync.sessions_root.display());
+    print_project_run_header(
+        style,
+        "Refresh",
+        &report.sync.project_name,
+        &report.sync.project_root,
+        Some(report.sync.sessions_root.as_path()),
+    );
+    println!();
+    print_section(style, "Providers");
     match format_refresh_provider_lines(report) {
-        RefreshProviderLines::Shared(providers) => println!("Providers: {providers}"),
+        RefreshProviderLines::Shared(providers) => print_field(style, 2, "Selected", providers),
         RefreshProviderLines::Split {
             sync_providers,
             index_providers,
         } => {
-            println!("Sync Providers: {sync_providers}");
-            println!("Index Providers: {index_providers}");
+            print_field(style, 2, "Sync", sync_providers);
+            print_field(style, 2, "Index", index_providers);
         }
     }
-    println!("Index DB: {}", report.index.index_db_path.display());
-    println!(
-        "Sync Sessions: {} copied, {} unchanged",
-        report.sync.sessions_copied, report.sync.sessions_unchanged
+    println!();
+    print_sync_result(style, &report.sync);
+    println!();
+    print_index_summary(style, &report.index);
+    println!();
+    print_section(style, "Changes");
+    print_field(
+        style,
+        2,
+        "Manifest",
+        if report.sync.manifest_written {
+            style.ok("updated")
+        } else {
+            style.muted("unchanged")
+        },
     );
-    println!(
-        "Sync Auxiliary: {} copied, {} unchanged",
-        report.sync.auxiliary_copied, report.sync.auxiliary_unchanged
+    print_field(
+        style,
+        2,
+        "Config",
+        if report.sync.config_written {
+            style.ok("updated")
+        } else {
+            style.muted("unchanged")
+        },
     );
-    println!(
-        "Index Sessions Discovered: {}",
-        report.index.sessions_discovered
-    );
-    println!(
-        "Index Sessions Skipped This Run: {}",
-        report.index.sessions_skipped_this_run
-    );
-    println!(
-        "Index Sessions Currently Indexed: {}",
-        report.index.sessions_currently_indexed
-    );
-    println!(
-        "Index Turns Currently Indexed: {}",
-        report.index.turns_currently_indexed
-    );
-    println!(
-        "Skipped rollout files: {}",
-        report.index.skipped_rollouts.len()
-    );
-    if report.sync.manifest_written {
-        println!("Updated manifest.");
-    }
-    if report.sync.config_written {
-        println!("Updated config.");
-    }
+    println!();
+    print_section(style, "Status");
+    let status = if report.index.skipped_rollouts.is_empty() {
+        style.ok("refreshed")
+    } else {
+        style.warn("refreshed with skipped rollouts")
+    };
+    print_field(style, 2, "Overall", status);
 }
 
 /// Prints one multi-project refresh report with per-project results and totals.
 fn print_refresh_all_report(report: &RefreshAllBestEffortReport) {
+    let style = HumanStyle::stdout();
     for (index, project) in report.projects.iter().enumerate() {
         if index > 0 {
             println!();
         }
-        print_refresh_all_project_report(project);
+        print_refresh_all_project_report(style, project);
     }
-    println!(
-        "\nRefresh summary: {} succeeded, {} failed.",
-        report.refreshed_count(),
-        report.failed_count()
-    );
+    println!();
+    print_section(style, "Workspace Summary");
+    print_field(style, 2, "Succeeded", style.ok(report.refreshed_count()));
+    let failed = report.failed_count();
+    let failed = if failed == 0 {
+        style.ok(failed)
+    } else {
+        style.error(failed)
+    };
+    print_field(style, 2, "Failed", failed);
 }
 
 /// Prints one project-scoped entry from a multi-project refresh report.
-fn print_refresh_all_project_report(project: &RefreshProjectAttempt) {
+fn print_refresh_all_project_report(style: HumanStyle, project: &RefreshProjectAttempt) {
     match project {
-        RefreshProjectAttempt::Refreshed(report) => print_refresh_report(report),
-        RefreshProjectAttempt::Failed(failure) => print_refresh_project_failure(failure),
+        RefreshProjectAttempt::Refreshed(report) => print_refresh_report_with_style(style, report),
+        RefreshProjectAttempt::Failed(failure) => print_refresh_project_failure(style, failure),
     }
 }
 
 /// Prints one structured project refresh failure from a best-effort workspace refresh.
-fn print_refresh_project_failure(failure: &RefreshProjectFailure) {
-    println!("Project: {}", failure.project_name);
-    println!("Project Root: {}", failure.project_root.display());
-    println!("Status: failed");
-    println!("Error: {:#}", failure.error);
+fn print_refresh_project_failure(style: HumanStyle, failure: &RefreshProjectFailure) {
+    print_project_run_header(
+        style,
+        "Refresh",
+        &failure.project_name,
+        &failure.project_root,
+        None,
+    );
+    println!();
+    print_section(style, "Status");
+    print_field(style, 2, "Overall", style.error("failed"));
+    print_field(
+        style,
+        2,
+        "Error",
+        style.error(format!("{:#}", failure.error)),
+    );
 }
 
 /// Runs the hidden Codex rollout schema audit command with dedicated exit codes.

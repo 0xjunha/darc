@@ -49,6 +49,11 @@ fn darc_binary() -> &'static str {
     env!("CARGO_BIN_EXE_darc")
 }
 
+/// Returns whether captured output contains an ANSI control sequence.
+fn contains_ansi(bytes: &[u8]) -> bool {
+    bytes.windows(2).any(|window| window == b"\x1b[")
+}
+
 /// Builds one configured project fixture for status CLI tests.
 fn project_fixture(root: &Path, name: &str, project_id: &str) -> ProjectFixture {
     ProjectFixture {
@@ -159,6 +164,7 @@ fn status_reports_active_project_counts() -> Result<()> {
         "status failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    assert!(!contains_ansi(&output.stdout));
     let stdout = String::from_utf8(output.stdout)?;
     assert!(stdout.contains("Active Project"));
     assert!(stdout.contains("  Name: repo"));
@@ -201,6 +207,7 @@ fn status_workspace_reports_all_projects() -> Result<()> {
         "status failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    assert!(!contains_ansi(&output.stdout));
     let stdout = String::from_utf8(output.stdout)?;
     assert!(stdout.contains("Workspace Summary"));
     assert!(stdout.contains("  Projects: 2"));
@@ -249,6 +256,7 @@ fn status_check_reports_pending_sync_without_writes() -> Result<()> {
         "status failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    assert!(!contains_ansi(&output.stdout));
     let stdout = String::from_utf8(output.stdout)?;
     assert!(stdout.contains("Sync Check"));
     assert!(stdout.contains("  Providers: Codex"));

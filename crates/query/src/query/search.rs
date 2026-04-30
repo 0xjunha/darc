@@ -236,6 +236,18 @@ enum EvidenceMatcher {
     Regex(Regex),
 }
 
+/// Stores one reusable matcher for terminal search snippet presentation.
+pub struct SearchSnippetMatcher {
+    kind: SearchSnippetMatcherKind,
+}
+
+/// Stores the supported snippet presentation matching strategies.
+enum SearchSnippetMatcherKind {
+    Literal(String),
+    Regex(EvidenceMatcher),
+    Unsupported,
+}
+
 /// Stores one concrete staged file-search request.
 #[derive(Debug, Clone, Copy)]
 struct FileSearchStageRequest<'a> {
@@ -253,6 +265,39 @@ pub fn query_search_turns(
 ) -> Result<SearchTurnsQueryData> {
     let connection = open_existing_index_database(index_db_path)?;
     build_search_turns(&connection, request)
+}
+
+/// Returns the first matched byte range for terminal presentation of one search snippet.
+pub fn search_snippet_match_range(
+    mode: SearchMode,
+    query: &str,
+    snippet: &str,
+) -> Result<Option<Range<usize>>> {
+    Ok(SearchSnippetMatcher::new(mode, query)?.find(snippet))
+}
+
+impl SearchSnippetMatcher {
+    /// Builds one reusable search snippet matcher.
+    pub fn new(mode: SearchMode, query: &str) -> Result<Self> {
+        let kind = match mode {
+            SearchMode::Literal => SearchSnippetMatcherKind::Literal(query.to_owned()),
+            SearchMode::Regex => SearchSnippetMatcherKind::Regex(build_regex_matcher(query)?),
+            SearchMode::Keyword
+            | SearchMode::FileName
+            | SearchMode::FilePath
+            | SearchMode::PathFragment => SearchSnippetMatcherKind::Unsupported,
+        };
+        Ok(Self { kind })
+    }
+
+    /// Returns the first matching byte range in one rendered snippet.
+    pub fn find(&self, snippet: &str) -> Option<Range<usize>> {
+        match &self.kind {
+            SearchSnippetMatcherKind::Literal(query) => literal_match_range(snippet, query),
+            SearchSnippetMatcherKind::Regex(matcher) => matcher.find_match(snippet),
+            SearchSnippetMatcherKind::Unsupported => None,
+        }
+    }
 }
 
 /// Builds one paginated turn-search response from the indexed search tables.
