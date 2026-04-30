@@ -20,6 +20,8 @@ pub struct SharedConfig {
     pub projects: Vec<ProjectConfig>,
     #[serde(default)]
     pub sources: SourcesConfig,
+    #[serde(default, skip_serializing_if = "WatchConfig::is_default")]
+    pub watch: WatchConfig,
 }
 
 fn default_config_version() -> u32 {
@@ -34,6 +36,7 @@ impl SharedConfig {
             root,
             projects,
             sources,
+            watch: WatchConfig::default(),
         }
     }
 }
@@ -59,6 +62,33 @@ pub struct SourcesConfig {
     pub claude: Option<ClaudeSourceConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub codex: Option<CodexSourceConfig>,
+}
+
+/// Stores workspace-level defaults for continuous refresh mode.
+#[derive(Debug, Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct WatchConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub debounce: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_interval: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconcile_interval: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub providers: Vec<SourceKind>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub poll: bool,
+}
+
+impl WatchConfig {
+    /// Returns whether the watch config has no explicit settings.
+    pub fn is_default(config: &Self) -> bool {
+        config == &Self::default()
+    }
+}
+
+/// Returns whether a boolean is false for default-skipping serialization.
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Stores Claude-specific source settings in the shared config.

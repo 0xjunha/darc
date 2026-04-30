@@ -19,7 +19,7 @@ use super::{
 };
 use crate::{
     SourceKind,
-    config::{ProjectConfig, SharedConfig, SourcesConfig},
+    config::{ProjectConfig, SharedConfig, SourcesConfig, WatchConfig},
     constants::CONFIG_FILE_NAME,
 };
 
@@ -258,6 +258,33 @@ fn config_deserializes_without_known_paths() -> Result<()> {
 
     assert_eq!(loaded.projects.len(), 1);
     assert!(loaded.projects[0].known_paths.is_empty());
+
+    Ok(())
+}
+
+#[test]
+fn config_round_trips_watch_defaults_when_present() -> Result<()> {
+    let dir = unique_test_dir("watch-config");
+    fs::create_dir_all(&dir)?;
+
+    let mut config = SharedConfig::new(dir.clone(), Vec::new(), SourcesConfig::default());
+    config.watch = WatchConfig {
+        debounce: Some("30s".to_owned()),
+        min_interval: Some("60s".to_owned()),
+        reconcile_interval: Some("10m".to_owned()),
+        providers: vec![SourceKind::Claude, SourceKind::Codex],
+        poll: true,
+    };
+
+    let toml_str = toml::to_string_pretty(&config)?;
+    let loaded: SharedConfig = toml::from_str(&toml_str)?;
+
+    assert_eq!(loaded.watch.debounce.as_deref(), Some("30s"));
+    assert_eq!(
+        loaded.watch.providers,
+        vec![SourceKind::Claude, SourceKind::Codex]
+    );
+    assert!(loaded.watch.poll);
 
     Ok(())
 }

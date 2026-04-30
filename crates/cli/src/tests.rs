@@ -1,6 +1,6 @@
 use std::{
     path::PathBuf,
-    time::{Duration, UNIX_EPOCH},
+    time::{Duration, Instant, UNIX_EPOCH},
 };
 
 use anyhow::anyhow;
@@ -199,6 +199,110 @@ fn refresh_command_accepts_provider_filters_and_all() {
 }
 
 #[test]
+fn refresh_command_accepts_watch_options() {
+    let cli = Cli::try_parse_from([
+        "darc",
+        "refresh",
+        "--watch",
+        "--all",
+        "--debounce",
+        "30s",
+        "--min-interval",
+        "60s",
+        "--reconcile-interval",
+        "10m",
+        "--poll",
+    ])
+    .unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Refresh(super::RefreshArgs {
+            watch: true,
+            all: true,
+            debounce,
+            min_interval,
+            reconcile_interval,
+            poll: true,
+            ..
+        }) if debounce.as_deref() == Some("30s")
+            && min_interval.as_deref() == Some("60s")
+            && reconcile_interval.as_deref() == Some("10m")
+    ));
+}
+
+#[test]
+fn parses_service_lifecycle_command() {
+    let cli = Cli::try_parse_from(["darc", "service", "enable"]).unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Service(super::ServiceArgs {
+            command: super::ServiceCommands::Enable,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn parse_duration_accepts_supported_units() {
+    assert_eq!(
+        super::parse_duration("500ms").unwrap(),
+        Duration::from_millis(500)
+    );
+    assert_eq!(
+        super::parse_duration("30s").unwrap(),
+        Duration::from_secs(30)
+    );
+    assert_eq!(
+        super::parse_duration("5m").unwrap(),
+        Duration::from_secs(300)
+    );
+    assert_eq!(
+        super::parse_duration("1h").unwrap(),
+        Duration::from_secs(3_600)
+    );
+}
+
+#[test]
+fn parse_duration_rejects_missing_unit() {
+    let error = super::parse_duration("30").unwrap_err();
+
+    assert!(format!("{error:#}").contains("duration must use a unit"));
+}
+
+#[test]
+fn reconcile_refresh_runs_when_interval_elapses() {
+    let settings = sample_watch_settings(
+        Duration::from_secs(30),
+        Duration::from_secs(60),
+        Duration::from_secs(600),
+    );
+    let now = Instant::now();
+
+    assert!(super::should_run_reconcile_refresh(
+        Some(now - Duration::from_secs(600)),
+        now,
+        &settings
+    ));
+}
+
+#[test]
+fn watched_refresh_still_respects_debounce() {
+    let settings = sample_watch_settings(
+        Duration::from_secs(30),
+        Duration::from_secs(60),
+        Duration::from_secs(600),
+    );
+    let now = Instant::now();
+
+    assert!(!super::should_run_watched_refresh(
+        Some(now - Duration::from_secs(29)),
+        Some(now - Duration::from_secs(600)),
+        now,
+        &settings
+    ));
+}
+
+#[test]
 fn status_command_accepts_workspace_and_check_flags() {
     let cli = Cli::try_parse_from(["darc", "status", "--workspace", "--check"]).unwrap();
     assert!(matches!(
@@ -209,6 +313,21 @@ fn status_command_accepts_workspace_and_check_flags() {
             ..
         })
     ));
+}
+
+fn sample_watch_settings(
+    debounce: Duration,
+    min_interval: Duration,
+    reconcile_interval: Duration,
+) -> super::WatchSettings {
+    super::WatchSettings {
+        debounce,
+        min_interval,
+        reconcile_interval,
+        provider_filter: Vec::new(),
+        poll: false,
+        watch_paths: Vec::new(),
+    }
 }
 
 #[test]
