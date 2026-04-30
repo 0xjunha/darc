@@ -50,7 +50,7 @@ use darc_rollout_audit::codex::{
 use serde::Serialize;
 use serde_json::{Value as JsonValue, json};
 
-/// Terminal help styles for Cargo-like section and option emphasis.
+/// Terminal styles for Clap-rendered help reference pages.
 const HELP_STYLES: Styles = Styles::styled()
     .header(AnsiColor::BrightGreen.on_default().bold())
     .usage(AnsiColor::BrightGreen.on_default().bold())
@@ -1816,12 +1816,16 @@ fn print_turns_query_envelope(
 
 const ANSI_RESET: &str = "\x1b[0m";
 const ANSI_BOLD: &str = "\x1b[1m";
+
+// JSON syntax colors intentionally stay separate from human report colors.
 const ANSI_KEY: &str = "\x1b[1;34m";
 const ANSI_STRING: &str = "\x1b[32m";
 const ANSI_NUMBER: &str = "\x1b[33m";
 const ANSI_BOOLEAN: &str = "\x1b[35m";
 const ANSI_NULL: &str = "\x1b[36m";
 const ANSI_MATCH: &str = "\x1b[1;95m";
+
+// Runtime report colors keep structure quiet and reserve hues for state.
 const ANSI_RED: &str = "\x1b[31m";
 const ANSI_DIM: &str = "\x1b[2m";
 const ANSI_GREEN: &str = ANSI_STRING;
@@ -1856,7 +1860,7 @@ impl HumanStyle {
     /// Builds one style context from resolved terminal environment facts.
     fn new(is_terminal: bool, no_color: bool, term: Option<&str>) -> Self {
         Self {
-            enabled: should_style_human_output(is_terminal, no_color, term),
+            enabled: should_auto_color_output(is_terminal, no_color, term),
         }
     }
 
@@ -1910,8 +1914,8 @@ impl HumanStyle {
     }
 }
 
-/// Returns whether a human-oriented output stream should include ANSI styling.
-fn should_style_human_output(is_terminal: bool, no_color: bool, term: Option<&str>) -> bool {
+/// Returns whether automatic terminal color should be enabled.
+fn should_auto_color_output(is_terminal: bool, no_color: bool, term: Option<&str>) -> bool {
     is_terminal && !no_color && term != Some("dumb")
 }
 
@@ -1925,7 +1929,7 @@ fn should_color_output(
     match policy {
         ColorArg::Always => true,
         ColorArg::Never => false,
-        ColorArg::Auto => stdout_is_terminal && !no_color && term != Some("dumb"),
+        ColorArg::Auto => should_auto_color_output(stdout_is_terminal, no_color, term),
     }
 }
 
