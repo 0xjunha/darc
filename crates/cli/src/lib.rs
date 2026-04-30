@@ -2975,35 +2975,47 @@ fn run_refresh_once(request: &RefreshRunRequest) -> Result<()> {
 fn run_refresh_watch(mut request: RefreshRunRequest, overrides: WatchOverrides) -> Result<()> {
     let settings = load_watch_settings(&request.root, &request.provider_filter, &overrides)?;
     request.provider_filter = settings.provider_filter.clone();
+    let style = HumanStyle::stdout();
 
-    println!(
-        "Watching {} for Darc refresh changes.",
+    print_section(style, "Watch");
+    print_field(
+        style,
+        2,
+        "Scope",
         if request.all {
             "the shared workspace"
         } else {
             "the active project"
-        }
+        },
     );
-    println!("Root: {}", request.root.display());
-    println!("Debounce: {}", format_duration(settings.debounce));
-    println!(
-        "Minimum interval: {}",
-        format_duration(settings.min_interval)
+    print_field(style, 2, "Root", style.path(request.root.display()));
+    print_field(style, 2, "Debounce", format_duration(settings.debounce));
+    print_field(
+        style,
+        2,
+        "Minimum interval",
+        format_duration(settings.min_interval),
     );
-    println!(
-        "Reconcile interval: {}",
-        format_duration(settings.reconcile_interval)
+    print_field(
+        style,
+        2,
+        "Reconcile interval",
+        format_duration(settings.reconcile_interval),
     );
-    println!(
-        "Watcher: {}",
+    print_field(
+        style,
+        2,
+        "Watcher",
         if settings.poll {
-            "polling reconcile"
+            style.warn("polling reconcile")
         } else {
-            "macOS filesystem events"
-        }
+            style.ok("macOS filesystem events")
+        },
     );
+    println!();
+    print_section(style, "Watch Paths");
     for path in &settings.watch_paths {
-        println!("Watching path: {}", path.display());
+        print_line(2, style.path(path.display()));
     }
     println!();
 
@@ -3053,7 +3065,8 @@ fn run_refresh_watch(mut request: RefreshRunRequest, overrides: WatchOverrides) 
                 )?;
             }
             Ok(WatchSignal::Warning(warning)) => {
-                eprintln!("warning [watch]: {warning}");
+                let style = HumanStyle::stderr();
+                eprintln!("{}", style.warn(format!("warning [watch]: {warning}")));
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -3077,9 +3090,11 @@ fn run_refresh_cycle(
     settings: &WatchSettings,
     reason: &str,
 ) -> Result<()> {
+    let style = HumanStyle::stdout();
     println!(
-        "[{}] Running Darc refresh ({reason}).",
-        current_utc_timestamp()
+        "[{}] {} ({reason}).",
+        style.muted(current_utc_timestamp()),
+        style.bold("Running Darc refresh")
     );
     state.last_refresh_reason = Some(reason.to_owned());
     state.last_refresh_started_at = Some(current_utc_timestamp());
@@ -3091,15 +3106,20 @@ fn run_refresh_cycle(
             state.last_refresh_succeeded = Some(true);
             state.last_error = None;
             write_watch_status(&request.root, state, true, "refresh-watch", Some(settings))?;
-            println!("[{}] Refresh completed.", current_utc_timestamp());
+            println!(
+                "[{}] {}.",
+                style.muted(current_utc_timestamp()),
+                style.ok("Refresh completed")
+            );
         }
         Err(error) => {
+            let style = HumanStyle::stderr();
             let message = format!("{error:#}");
             state.last_refresh_completed_at = Some(current_utc_timestamp());
             state.last_refresh_succeeded = Some(false);
             state.last_error = Some(message.clone());
             write_watch_status(&request.root, state, true, "refresh-watch", Some(settings))?;
-            eprintln!("error [watch]: {message}");
+            eprintln!("{}", style.error(format!("error [watch]: {message}")));
         }
     }
     Ok(())
@@ -3426,9 +3446,14 @@ fn run_platform_service(_args: ServiceArgs) -> Result<()> {
 #[cfg(target_os = "macos")]
 fn enable_macos_service(root: &Path) -> Result<()> {
     let plist_path = write_macos_launch_agent(root, true)?;
-    println!("Enabled Darc refresh service.");
-    println!("LaunchAgent: {}", plist_path.display());
-    println!("Run `darc service start` to start it in this login session.");
+    let style = HumanStyle::stdout();
+    print_section(style, "Service");
+    print_field(style, 2, "Status", style.ok("enabled"));
+    print_field(style, 2, "LaunchAgent", style.path(plist_path.display()));
+    print_line(
+        2,
+        style.muted("Run `darc service start` to start it in this login session."),
+    );
     Ok(())
 }
 
@@ -3440,10 +3465,19 @@ fn disable_macos_service(root: &Path) -> Result<()> {
     if plist_path.exists() {
         fs::remove_file(&plist_path)
             .with_context(|| format!("failed to remove {}", plist_path.display()))?;
-        println!("Disabled Darc refresh service.");
-        println!("Removed LaunchAgent: {}", plist_path.display());
+        let style = HumanStyle::stdout();
+        print_section(style, "Service");
+        print_field(style, 2, "Status", style.warn("disabled"));
+        print_field(
+            style,
+            2,
+            "Removed LaunchAgent",
+            style.path(plist_path.display()),
+        );
     } else {
-        println!("Darc refresh service was already disabled.");
+        let style = HumanStyle::stdout();
+        print_section(style, "Service");
+        print_field(style, 2, "Status", style.muted("already disabled"));
     }
     remove_macos_runtime_plist(root)?;
     Ok(())
@@ -3470,10 +3504,17 @@ fn start_macos_service(root: &Path) -> Result<()> {
         "-k".to_owned(),
         macos_launch_target()?,
     ])?;
-    println!("Started Darc refresh service.");
-    println!(
-        "Command: darc refresh --watch --all --root {}",
-        root.display()
+    let style = HumanStyle::stdout();
+    print_section(style, "Service");
+    print_field(style, 2, "Status", style.ok("started"));
+    print_field(
+        style,
+        2,
+        "Command",
+        format!(
+            "darc refresh --watch --all --root {}",
+            style.path(root.display())
+        ),
     );
     Ok(())
 }
@@ -3481,11 +3522,14 @@ fn start_macos_service(root: &Path) -> Result<()> {
 /// Stops the macOS LaunchAgent in the current login session.
 #[cfg(target_os = "macos")]
 fn stop_macos_service(root: &Path) -> Result<()> {
+    let style = HumanStyle::stdout();
     if macos_service_loaded()? {
         run_launchctl(&["bootout".to_owned(), macos_launch_target()?])?;
-        println!("Stopped Darc refresh service.");
+        print_section(style, "Service");
+        print_field(style, 2, "Status", style.warn("stopped"));
     } else {
-        println!("Darc refresh service is not running.");
+        print_section(style, "Service");
+        print_field(style, 2, "Status", style.muted("not running"));
     }
     remove_macos_runtime_plist(root)?;
     Ok(())
@@ -3498,59 +3542,101 @@ fn print_macos_service_status(root: &Path) -> Result<()> {
     let runtime_plist_path = macos_runtime_plist_path(root);
     let enabled = plist_path.exists();
     let running = macos_service_loaded()?;
-    println!("Service: Darc refresh");
-    println!("Platform: macOS LaunchAgent");
-    println!("Label: {MACOS_SERVICE_LABEL}");
-    println!("Enabled: {}", yes_no(enabled));
-    println!("Running: {}", yes_no(running));
-    if enabled {
-        println!("LaunchAgent: {}", plist_path.display());
+    let style = HumanStyle::stdout();
+    print_section(style, "Service");
+    print_field(style, 2, "Name", "Darc refresh");
+    print_field(style, 2, "Platform", "macOS LaunchAgent");
+    print_field(style, 2, "Label", style.muted(MACOS_SERVICE_LABEL));
+    print_field(style, 2, "Enabled", yes_no(style, enabled));
+    print_field(style, 2, "Running", yes_no(style, running));
+    let launch_agent = if enabled {
+        style.path(plist_path.display())
     } else if running && runtime_plist_path.exists() {
-        println!("LaunchAgent: {} (runtime)", runtime_plist_path.display());
+        format!(
+            "{} {}",
+            style.path(runtime_plist_path.display()),
+            style.muted("(runtime)")
+        )
     } else {
-        println!("LaunchAgent: {}", plist_path.display());
-    }
+        style.path(plist_path.display())
+    };
+    print_field(style, 2, "LaunchAgent", launch_agent);
 
+    println!();
+    print_section(style, "Watch Status");
     let status_path = root.join("run/status.json");
     if status_path.exists() {
         let content = fs::read_to_string(&status_path)
             .with_context(|| format!("failed to read {}", status_path.display()))?;
         let status: JsonValue =
             serde_json::from_str(&content).context("failed to parse watch status JSON")?;
-        println!("Status file: {}", status_path.display());
-        println!("Debounce: {}", json_string_or_dash(&status["debounce"]));
-        println!(
-            "Minimum interval: {}",
-            json_string_or_dash(&status["min_interval"])
+        print_field(style, 2, "Status file", style.path(status_path.display()));
+        print_field(
+            style,
+            2,
+            "Debounce",
+            json_string_or_dash(style, &status["debounce"]),
         );
-        println!(
-            "Reconcile interval: {}",
-            json_string_or_dash(&status["reconcile_interval"])
+        print_field(
+            style,
+            2,
+            "Minimum interval",
+            json_string_or_dash(style, &status["min_interval"]),
         );
-        println!("Poll: {}", json_bool_or_dash(&status["poll"]));
-        println!(
-            "Last event: {}",
-            json_string_or_dash(&status["last_event_at"])
+        print_field(
+            style,
+            2,
+            "Reconcile interval",
+            json_string_or_dash(style, &status["reconcile_interval"]),
         );
-        println!(
-            "Last refresh reason: {}",
-            json_string_or_dash(&status["last_refresh_reason"])
+        print_field(style, 2, "Poll", json_bool_or_dash(style, &status["poll"]));
+        print_field(
+            style,
+            2,
+            "Last event",
+            json_string_or_dash(style, &status["last_event_at"]),
         );
-        println!(
-            "Last refresh started: {}",
-            json_string_or_dash(&status["last_refresh_started_at"])
+        print_field(
+            style,
+            2,
+            "Last refresh reason",
+            json_string_or_dash(style, &status["last_refresh_reason"]),
         );
-        println!(
-            "Last refresh completed: {}",
-            json_string_or_dash(&status["last_refresh_completed_at"])
+        print_field(
+            style,
+            2,
+            "Last refresh started",
+            json_string_or_dash(style, &status["last_refresh_started_at"]),
         );
-        println!(
-            "Last refresh succeeded: {}",
-            json_bool_or_dash(&status["last_refresh_succeeded"])
+        print_field(
+            style,
+            2,
+            "Last refresh completed",
+            json_string_or_dash(style, &status["last_refresh_completed_at"]),
         );
-        println!("Last error: {}", json_string_or_dash(&status["last_error"]));
+        print_field(
+            style,
+            2,
+            "Last refresh succeeded",
+            json_success_or_dash(style, &status["last_refresh_succeeded"]),
+        );
+        print_field(
+            style,
+            2,
+            "Last error",
+            json_error_or_dash(style, &status["last_error"]),
+        );
     } else {
-        println!("Status file: not found ({})", status_path.display());
+        print_field(
+            style,
+            2,
+            "Status file",
+            format!(
+                "{} ({})",
+                style.muted("not found"),
+                style.path(status_path.display())
+            ),
+        );
     }
     Ok(())
 }
@@ -3719,25 +3805,51 @@ fn xml_escape(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-/// Formats a boolean as yes or no.
+/// Formats a boolean as a styled yes or no.
 #[cfg(target_os = "macos")]
-fn yes_no(value: bool) -> &'static str {
-    if value { "yes" } else { "no" }
+fn yes_no(style: HumanStyle, value: bool) -> String {
+    if value {
+        style.ok("yes")
+    } else {
+        style.muted("no")
+    }
 }
 
-/// Formats one JSON string value or a dash.
+/// Formats one JSON string value or a muted dash.
 #[cfg(target_os = "macos")]
-fn json_string_or_dash(value: &JsonValue) -> String {
-    value.as_str().unwrap_or("-").to_owned()
+fn json_string_or_dash(style: HumanStyle, value: &JsonValue) -> String {
+    value
+        .as_str()
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| style.muted("-"))
 }
 
-/// Formats one JSON boolean value or a dash.
+/// Formats one JSON boolean value or a muted dash.
 #[cfg(target_os = "macos")]
-fn json_bool_or_dash(value: &JsonValue) -> String {
+fn json_bool_or_dash(style: HumanStyle, value: &JsonValue) -> String {
     value
         .as_bool()
         .map(|value| value.to_string())
-        .unwrap_or_else(|| "-".to_owned())
+        .unwrap_or_else(|| style.muted("-"))
+}
+
+/// Formats a JSON success boolean with state coloring or a muted dash.
+#[cfg(target_os = "macos")]
+fn json_success_or_dash(style: HumanStyle, value: &JsonValue) -> String {
+    match value.as_bool() {
+        Some(true) => style.ok("true"),
+        Some(false) => style.error("false"),
+        None => style.muted("-"),
+    }
+}
+
+/// Formats a JSON error string with error coloring or a muted dash.
+#[cfg(target_os = "macos")]
+fn json_error_or_dash(style: HumanStyle, value: &JsonValue) -> String {
+    value
+        .as_str()
+        .map(|value| style.error(value))
+        .unwrap_or_else(|| style.muted("-"))
 }
 
 /// Converts one workspace refresh report into the final CLI exit result.

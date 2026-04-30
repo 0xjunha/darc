@@ -1410,6 +1410,25 @@ fn query_json_coloring_strips_to_original_json() {
     assert_eq!(strip_ansi_text(&colored), json);
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn service_status_helpers_use_human_style_colors() {
+    let style = super::HumanStyle::new(true, false, Some("xterm-256color"));
+    let yes = super::yes_no(style, true);
+    let no = super::yes_no(style, false);
+    let failed = super::json_success_or_dash(style, &Value::Bool(false));
+    let missing = super::json_error_or_dash(style, &Value::Null);
+
+    assert!(yes.contains("\x1b["));
+    assert!(no.contains("\x1b["));
+    assert!(failed.contains("\x1b["));
+    assert!(missing.contains("\x1b["));
+    assert_eq!(strip_ansi_text(&yes), "yes");
+    assert_eq!(strip_ansi_text(&no), "no");
+    assert_eq!(strip_ansi_text(&failed), "false");
+    assert_eq!(strip_ansi_text(&missing), "-");
+}
+
 /// Strips ANSI control sequences from rendered text for unit assertions.
 fn strip_ansi_text(input: &str) -> String {
     let mut output = String::new();
