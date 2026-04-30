@@ -47,7 +47,12 @@ use serde::Serialize;
 use serde_json::{Value as JsonValue, json};
 
 #[derive(Debug, Parser)]
-#[command(name = "darc", version, about = "Darc CLI")]
+#[command(
+    name = "darc",
+    version,
+    about = "Archive, index, and query coding-agent sessions",
+    after_help = "Common workflows:\n  darc status\n  darc refresh\n  darc query search turns \"panic\" --limit 5\n\nRun `darc help <command>` for details on a specific command."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -84,11 +89,23 @@ enum Commands {
         long_about = "Rebuild one old project's history into the current renamed project.\n\nUse this when you just renamed a project from one name to another.\nRun the command from the new project directory, and pass the old project name.\n\nExample:\n- Darc config still contains a project named `old-project`.\n- You renamed the checkout to `/path/to/new-project`.\n- Run `cd /path/to/new-project && darc rename-from old-project`.\n\nThis command bootstraps or reuses the current project as the target, links the old project's paths into it, runs `darc refresh`, and removes the old source project after those steps succeed.\n\nIn other words, it is the safe built-in workflow for:\n`darc link <old-project> && darc refresh && darc remove <old-project>`\n\nIf ~/.darc/config.toml does not exist yet, run `darc init` first."
     )]
     RenameFrom(RenameArgs),
-    /// Sync matching Claude and Codex sessions into the project archive.
+    #[command(
+        about = "Sync matching Claude and Codex sessions into the project archive",
+        long_about = "Sync matching Claude and Codex sessions into the active project's Darc archive.\n\nUse `--dry-run` to preview pending copies without writing archive files, manifests, or config.",
+        after_help = "Examples:\n  darc sync --dry-run\n  darc sync --provider codex"
+    )]
     Sync(SyncArgs),
-    /// Index archived sessions from selected providers for the active project into SQLite.
+    #[command(
+        about = "Index archived sessions for the active project into SQLite",
+        long_about = "Index archived sessions for the active project into the shared Darc SQLite database.\n\nRun this after `darc sync` when you want to rebuild searchable/queryable state without copying new archive files.",
+        after_help = "Examples:\n  darc index\n  darc index --provider claude"
+    )]
     Index(IndexArgs),
-    /// Query darc state through the machine-readable read protocol.
+    #[command(
+        about = "Query Darc state through the machine-readable read protocol",
+        long_about = "Query Darc state through the machine-readable read protocol.\n\nQuery commands emit JSON envelopes on stdout. The JSON contract is stable for scripts and agents; terminal color is presentation-only and controlled by `--color`.",
+        after_help = "Examples:\n  darc query sessions --limit 5\n  darc query turn <SESSION_ID> 0 --view narrative\n  darc query --color always search turns \"panic\" --limit 5 | less -R"
+    )]
     Query(Box<QueryArgs>),
     #[command(
         hide = true,
@@ -107,28 +124,44 @@ enum Commands {
 /// Detect local sources and create the shared darc config.
 #[derive(Debug, Args)]
 struct InitArgs {
-    #[arg(long, default_value_os_t = default_root_path())]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Create or update config under this Darc root"
+    )]
     root: PathBuf,
 
-    #[arg(long)]
+    #[arg(
+        long,
+        help_heading = "Mode",
+        help = "Show what would be written without changing files"
+    )]
     dry_run: bool,
 }
 
 /// Syncs then indexes archived sessions for one or all projects.
 #[derive(Debug, Args)]
 struct RefreshArgs {
-    #[arg(long, default_value_os_t = default_root_path())]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Use this Darc root instead of the default"
+    )]
     root: PathBuf,
 
     #[arg(
         long = "provider",
         value_enum,
+        help_heading = "Selection",
         help = "Limit both sync and index to the selected providers"
     )]
     provider: Vec<ProviderArg>,
 
     #[arg(
         long,
+        help_heading = "Scope",
         help = "Refresh every registered project, continue past per-project failures, and summarize the results"
     )]
     all: bool,
@@ -137,17 +170,24 @@ struct RefreshArgs {
 /// Shows Darc status for the active project or workspace.
 #[derive(Debug, Args)]
 struct StatusArgs {
-    #[arg(long, default_value_os_t = default_root_path())]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Use this Darc root instead of the default"
+    )]
     root: PathBuf,
 
     #[arg(
         long,
+        help_heading = "Scope",
         help = "Show status for the shared Darc workspace instead of the active project"
     )]
     workspace: bool,
 
     #[arg(
         long,
+        help_heading = "Mode",
         help = "Run sync planning without writing manifests, config, archives, or SQLite"
     )]
     check: bool,
@@ -156,20 +196,39 @@ struct StatusArgs {
 /// Sync matching Claude and Codex sessions into the project archive.
 #[derive(Debug, Args)]
 struct SyncArgs {
-    #[arg(long, default_value_os_t = default_root_path())]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Use this Darc root instead of the default"
+    )]
     root: PathBuf,
 
-    #[arg(long)]
+    #[arg(
+        long,
+        help_heading = "Mode",
+        help = "Preview pending copies without writing files"
+    )]
     dry_run: bool,
 
-    #[arg(long = "provider", value_enum)]
+    #[arg(
+        long = "provider",
+        value_enum,
+        help_heading = "Selection",
+        help = "Limit sync to the selected providers"
+    )]
     provider: Vec<ProviderArg>,
 }
 
 /// Link one configured project's historical paths into the active project.
 #[derive(Debug, Args)]
 struct LinkArgs {
-    #[arg(long, default_value_os_t = default_root_path())]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Use this Darc root instead of the default"
+    )]
     root: PathBuf,
 
     #[arg(value_name = "PROJECT")]
@@ -179,7 +238,12 @@ struct LinkArgs {
 /// Remove one configured project and its archived/indexed data.
 #[derive(Debug, Args)]
 struct RemoveArgs {
-    #[arg(long, default_value_os_t = default_root_path())]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Use this Darc root instead of the default"
+    )]
     root: PathBuf,
 
     #[arg(value_name = "PROJECT")]
@@ -189,7 +253,12 @@ struct RemoveArgs {
 /// Rebuild one configured project's history under the active project's id, then remove the old project.
 #[derive(Debug, Args)]
 struct RenameArgs {
-    #[arg(long, default_value_os_t = default_root_path())]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Use this Darc root instead of the default"
+    )]
     root: PathBuf,
 
     #[arg(value_name = "PROJECT")]
@@ -199,10 +268,20 @@ struct RenameArgs {
 /// Index archived sessions from selected providers for the active project into SQLite.
 #[derive(Debug, Args)]
 struct IndexArgs {
-    #[arg(long, default_value_os_t = default_root_path())]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Use this Darc root instead of the default"
+    )]
     root: PathBuf,
 
-    #[arg(long = "provider", value_enum)]
+    #[arg(
+        long = "provider",
+        value_enum,
+        help_heading = "Selection",
+        help = "Limit indexing to the selected providers"
+    )]
     provider: Vec<ProviderArg>,
 }
 
@@ -213,6 +292,7 @@ struct QueryArgs {
         long,
         value_enum,
         default_value_t = ColorArg::Auto,
+        help_heading = "Output",
         help = "Control ANSI color in query JSON output"
     )]
     color: ColorArg,
@@ -233,16 +313,25 @@ enum QueryCommands {
     /// Lists most-touched files or pivots from one file selector.
     #[command(
         about = "List most-touched files or pivot from one file selector",
-        long_about = "List most-touched files or pivot from one file selector.\n\nWith no PATH, --path, or --co-touched-with, this ranks files by touches across the project.\nPass PATH or --path to return sessions that touched matching paths.\nPass --co-touched-with to return files touched in the same sessions as the seed path."
+        long_about = "List most-touched files or pivot from one file selector.\n\nWith no PATH, --path, or --co-touched-with, this ranks files by touches across the project.\nPass PATH or --path to return sessions that touched matching paths.\nPass --co-touched-with to return files touched in the same sessions as the seed path.",
+        after_help = "Examples:\n  darc query files --limit 20\n  darc query files src/lib.rs\n  darc query files --co-touched-with src/lib.rs --limit 10"
     )]
     Files(QueryFilesArgs),
     /// Queries per-file access summaries for one session.
     SessionFiles(QuerySessionFilesArgs),
-    /// Queries one composite session bundle for one session.
+    #[command(
+        about = "Query one composite session bundle for one session",
+        long_about = "Query one composite session bundle for one session.\n\nThis combines the session summary, touched files, and paginated turn details into one JSON envelope. Compact session view keeps prompt/final-message previews bounded for agent context.",
+        after_help = "Examples:\n  darc query session-bundle <SESSION_ID>\n  darc query session-bundle <SESSION_ID> --view full --turn-limit 10\n  darc query session-bundle --session-id <SESSION_ID> --session-view full"
+    )]
     SessionBundle(QuerySessionBundleArgs),
     /// Queries the turn list for one session.
     Turns(QueryTurnsArgs),
-    /// Queries one turn detail payload.
+    #[command(
+        about = "Query one turn detail payload",
+        long_about = "Query one turn detail payload.\n\nNarrative view keeps bulky tool arguments, outputs, and raw payload blobs out of the response. Use `--include-raw` when you need debug fields such as `raw_steps_json`.",
+        after_help = "Examples:\n  darc query turn <SESSION_ID> 0\n  darc query turn <SESSION_ID> 0 --include-insights\n  darc query turn --session-id <SESSION_ID> --turn-ordinal 0 --include-raw"
+    )]
     Turn(QueryTurnArgs),
     /// Queries one paginated search payload.
     Search(QuerySearchArgs),
@@ -253,14 +342,24 @@ enum QueryCommands {
 /// Queries the workspace/sidebar payload for one darc root.
 #[derive(Debug, Args)]
 struct QueryWorkspaceArgs {
-    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Read from this darc root"
+    )]
     root: PathBuf,
 }
 
 /// Resolves one full session id or UUID prefix into canonical project/provider/session matches.
 #[derive(Debug, Args)]
 struct QueryResolveSessionArgs {
-    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Read from this darc root"
+    )]
     root: PathBuf,
 
     #[arg(help = "Resolve this full UUID or UUID prefix")]
@@ -268,15 +367,22 @@ struct QueryResolveSessionArgs {
 
     #[arg(
         long = "project-id",
+        help_heading = "Scope",
         help = "Restrict matches to this configured project id"
     )]
     project_id: Option<String>,
 
-    #[arg(long, value_enum, help = "Restrict matches to this provider")]
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Scope",
+        help = "Restrict matches to this provider"
+    )]
     provider: Option<ProviderArg>,
 
     #[arg(
         long,
+        help_heading = "Output",
         help = "Require exactly one match and return it as one convenience object"
     )]
     pick_one: bool,
@@ -285,64 +391,100 @@ struct QueryResolveSessionArgs {
 /// Queries the session list for one configured project.
 #[derive(Debug, Args)]
 struct QuerySessionsArgs {
-    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Read from this darc root"
+    )]
     root: PathBuf,
 
     #[arg(
         long = "project-id",
+        help_heading = "Scope",
         help = "Query this configured project id. Defaults to the project resolved from the current directory"
     )]
     project_id: Option<String>,
 
-    #[arg(long, value_enum, help = "Restrict sessions to this provider")]
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Scope",
+        help = "Restrict sessions to this provider"
+    )]
     provider: Option<ProviderArg>,
 
     #[arg(
         long,
         value_enum,
         default_value_t = SessionListViewArg::Compact,
+        help_heading = "Output",
         help = "Return full session prompts and final messages or compact previews"
     )]
     view: SessionListViewArg,
 
     #[arg(
         long,
+        help_heading = "Time Filters",
         help = "Inclusive latest_turn_at lower bound. Example: `5d` or `2026-04-07T00:00:00Z`"
     )]
     since: Option<String>,
 
     #[arg(
         long,
+        help_heading = "Time Filters",
         help = "Exclusive latest_turn_at upper bound. Example: `1d` or `2026-04-08T00:00:00Z`"
     )]
     until: Option<String>,
 
     #[arg(
         long = "touched-path",
+        help_heading = "Selection",
         help = "Only keep sessions that touched a file path matching this glob"
     )]
     touched_path: Option<String>,
 
-    #[arg(long, default_value_t = 50, help = "Maximum sessions to return")]
+    #[arg(
+        long,
+        default_value_t = 50,
+        help_heading = "Result Size",
+        help = "Maximum sessions to return"
+    )]
     limit: usize,
 
-    #[arg(long, default_value_t = 0, help = "Number of sessions to skip")]
+    #[arg(
+        long,
+        default_value_t = 0,
+        help_heading = "Result Size",
+        help = "Number of sessions to skip"
+    )]
     offset: usize,
 }
 
 /// Queries the turn list for one session.
 #[derive(Debug, Args)]
 struct QueryTurnsArgs {
-    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Read from this darc root"
+    )]
     root: PathBuf,
 
     #[arg(
         long = "project-id",
+        help_heading = "Scope",
         help = "Query this configured project id. Defaults to the project resolved from the current directory"
     )]
     project_id: Option<String>,
 
-    #[arg(long, value_enum, help = "Disambiguate a cross-provider session id")]
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Scope",
+        help = "Disambiguate a cross-provider session id"
+    )]
     provider: Option<ProviderArg>,
 
     #[arg(
@@ -354,6 +496,7 @@ struct QueryTurnsArgs {
     #[arg(
         long = "session-id",
         value_name = "SESSION_ID",
+        help_heading = "Identity",
         help = "Full session id to list turns for; alternative to positional SESSION_ID"
     )]
     session_id: Option<String>,
@@ -362,46 +505,71 @@ struct QueryTurnsArgs {
         long,
         value_enum,
         default_value_t = TurnListViewArg::Full,
+        help_heading = "Output",
         help = "Return full turn summaries or a compact one-line skim"
     )]
     view: TurnListViewArg,
 
     #[arg(
         long,
+        help_heading = "Time Filters",
         help = "Inclusive started_at lower bound. Example: `5d` or `2026-04-07T00:00:00Z`"
     )]
     since: Option<String>,
 
     #[arg(
         long,
+        help_heading = "Time Filters",
         help = "Exclusive started_at upper bound. Example: `1d` or `2026-04-08T00:00:00Z`"
     )]
     until: Option<String>,
 
-    #[arg(long, default_value_t = 50, help = "Maximum turns to return")]
+    #[arg(
+        long,
+        default_value_t = 50,
+        help_heading = "Result Size",
+        help = "Maximum turns to return"
+    )]
     limit: usize,
 
-    #[arg(long, default_value_t = 0, help = "Number of turns to skip")]
+    #[arg(
+        long,
+        default_value_t = 0,
+        help_heading = "Result Size",
+        help = "Number of turns to skip"
+    )]
     offset: usize,
 }
 
 /// Lists most-touched files or pivots from one file selector.
 #[derive(Debug, Args)]
 struct QueryFilesArgs {
-    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Read from this darc root"
+    )]
     root: PathBuf,
 
     #[arg(
         long = "project-id",
+        help_heading = "Scope",
         help = "Query this configured project id. Defaults to the project resolved from the current directory"
     )]
     project_id: Option<String>,
 
-    #[arg(long, value_enum, help = "Restrict file pivots to this provider")]
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Scope",
+        help = "Restrict file pivots to this provider"
+    )]
     provider: Option<ProviderArg>,
 
     #[arg(
         long,
+        help_heading = "Selection",
         help = "Return sessions that touched file paths matching this glob instead of most-touched files"
     )]
     path: Option<String>,
@@ -414,38 +582,53 @@ struct QueryFilesArgs {
 
     #[arg(
         long = "co-touched-with",
+        help_heading = "Selection",
         help = "Return files touched in the same sessions as this seed path instead of most-touched files"
     )]
     co_touched_with: Option<String>,
 
     #[arg(
         long,
+        help_heading = "Time Filters",
         help = "Inclusive started_at lower bound for file pivots. Example: `5d` or `2026-04-07T00:00:00Z`"
     )]
     since: Option<String>,
 
     #[arg(
         long,
+        help_heading = "Time Filters",
         help = "Exclusive started_at upper bound for file pivots. Example: `1d` or `2026-04-08T00:00:00Z`"
     )]
     until: Option<String>,
 
-    #[arg(long, default_value_t = 50, help = "Maximum rows to return")]
+    #[arg(
+        long,
+        default_value_t = 50,
+        help_heading = "Result Size",
+        help = "Maximum rows to return"
+    )]
     limit: usize,
 
-    #[arg(long, default_value_t = 0, help = "Number of rows to skip")]
+    #[arg(
+        long,
+        default_value_t = 0,
+        help_heading = "Result Size",
+        help = "Number of rows to skip"
+    )]
     offset: usize,
 
     #[arg(
         long = "matched-path-limit",
         default_value_t = DEFAULT_MATCHED_PATH_LIMIT,
         conflicts_with = "include_all_matched_paths",
+        help_heading = "Result Size",
         help = "Maximum matched_paths entries per path-mode row"
     )]
     matched_path_limit: usize,
 
     #[arg(
         long = "include-all-matched-paths",
+        help_heading = "Result Size",
         help = "Return every matched path in path-mode rows"
     )]
     include_all_matched_paths: bool,
@@ -454,16 +637,27 @@ struct QueryFilesArgs {
 /// Queries one session-scoped per-file access summary payload.
 #[derive(Debug, Args)]
 struct QuerySessionFilesArgs {
-    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Read from this darc root"
+    )]
     root: PathBuf,
 
     #[arg(
         long = "project-id",
+        help_heading = "Scope",
         help = "Query this configured project id. Defaults to the project resolved from the current directory"
     )]
     project_id: Option<String>,
 
-    #[arg(long, value_enum, help = "Disambiguate a cross-provider session id")]
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Scope",
+        help = "Disambiguate a cross-provider session id"
+    )]
     provider: Option<ProviderArg>,
 
     #[arg(
@@ -475,6 +669,7 @@ struct QuerySessionFilesArgs {
     #[arg(
         long = "session-id",
         value_name = "SESSION_ID",
+        help_heading = "Identity",
         help = "Query this session id; alternative to positional SESSION_ID"
     )]
     session_id: Option<String>,
@@ -483,16 +678,27 @@ struct QuerySessionFilesArgs {
 /// Queries one composite session bundle payload.
 #[derive(Debug, Args)]
 struct QuerySessionBundleArgs {
-    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Read from this darc root"
+    )]
     root: PathBuf,
 
     #[arg(
         long = "project-id",
+        help_heading = "Scope",
         help = "Query this configured project id. Defaults to the project resolved from the current directory"
     )]
     project_id: Option<String>,
 
-    #[arg(long, value_enum, help = "Disambiguate a cross-provider session id")]
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Scope",
+        help = "Disambiguate a cross-provider session id"
+    )]
     provider: Option<ProviderArg>,
 
     #[arg(
@@ -504,6 +710,7 @@ struct QuerySessionBundleArgs {
     #[arg(
         long = "session-id",
         value_name = "SESSION_ID",
+        help_heading = "Identity",
         help = "Query this session id; alternative to positional SESSION_ID"
     )]
     session_id: Option<String>,
@@ -512,6 +719,7 @@ struct QuerySessionBundleArgs {
         long = "session-view",
         value_enum,
         default_value_t = SessionListViewArg::Compact,
+        help_heading = "Output",
         help = "Return full session prompt/final message or compact previews"
     )]
     session_view: SessionListViewArg,
@@ -520,6 +728,7 @@ struct QuerySessionBundleArgs {
         long,
         value_enum,
         default_value_t = ViewArg::Narrative,
+        help_heading = "Output",
         help = "Turn detail level. `narrative` omits tool arguments, outputs, and payload blobs"
     )]
     view: ViewArg,
@@ -527,6 +736,7 @@ struct QuerySessionBundleArgs {
     #[arg(
         long = "turn-limit",
         default_value_t = 50,
+        help_heading = "Result Size",
         help = "Maximum turn details to return"
     )]
     turn_limit: usize,
@@ -534,6 +744,7 @@ struct QuerySessionBundleArgs {
     #[arg(
         long = "turn-offset",
         default_value_t = 0,
+        help_heading = "Result Size",
         help = "Number of turn details to skip"
     )]
     turn_offset: usize,
@@ -541,6 +752,7 @@ struct QuerySessionBundleArgs {
     #[arg(
         long = "step-limit",
         default_value_t = DEFAULT_TURN_STEP_LIMIT,
+        help_heading = "Result Size",
         help = "Maximum steps to return per turn detail"
     )]
     step_limit: usize,
@@ -548,6 +760,7 @@ struct QuerySessionBundleArgs {
     #[arg(
         long = "step-offset",
         default_value_t = 0,
+        help_heading = "Result Size",
         help = "Number of steps to skip per turn detail"
     )]
     step_offset: usize,
@@ -556,16 +769,27 @@ struct QuerySessionBundleArgs {
 /// Queries one turn detail payload.
 #[derive(Debug, Args)]
 struct QueryTurnArgs {
-    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Read from this darc root"
+    )]
     root: PathBuf,
 
     #[arg(
         long = "project-id",
+        help_heading = "Scope",
         help = "Query this configured project id. Defaults to the project resolved from the current directory"
     )]
     project_id: Option<String>,
 
-    #[arg(long, value_enum, help = "Disambiguate a cross-provider session id")]
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Scope",
+        help = "Disambiguate a cross-provider session id"
+    )]
     provider: Option<ProviderArg>,
 
     #[arg(
@@ -583,6 +807,7 @@ struct QueryTurnArgs {
     #[arg(
         long = "session-id",
         value_name = "SESSION_ID",
+        help_heading = "Identity",
         help = "Query this session id; alternative to positional SESSION_ID"
     )]
     session_id: Option<String>,
@@ -590,6 +815,7 @@ struct QueryTurnArgs {
     #[arg(
         long = "turn-ordinal",
         value_name = "TURN_ORDINAL",
+        help_heading = "Identity",
         help = "Query this turn ordinal; alternative to positional TURN_ORDINAL"
     )]
     turn_ordinal: Option<u64>,
@@ -597,18 +823,21 @@ struct QueryTurnArgs {
     #[arg(
         long,
         value_enum,
+        help_heading = "Output",
         help = "Step detail level. Defaults to narrative unless --include-raw is set; `narrative` omits tool arguments, outputs, and payload blobs"
     )]
     view: Option<ViewArg>,
 
     #[arg(
         long,
+        help_heading = "Output",
         help = "Include optional raw/debug fields such as raw_steps_json"
     )]
     include_raw: bool,
 
     #[arg(
         long,
+        help_heading = "Output",
         help = "Include one derived insights block with metrics plus tool and file analytics"
     )]
     include_insights: bool,
@@ -616,6 +845,7 @@ struct QueryTurnArgs {
     #[arg(
         long = "step-limit",
         default_value_t = DEFAULT_TURN_STEP_LIMIT,
+        help_heading = "Result Size",
         help = "Maximum steps to return"
     )]
     step_limit: usize,
@@ -623,6 +853,7 @@ struct QueryTurnArgs {
     #[arg(
         long = "step-offset",
         default_value_t = 0,
+        help_heading = "Result Size",
         help = "Number of steps to skip"
     )]
     step_offset: usize,
@@ -638,32 +869,52 @@ struct QuerySearchArgs {
 /// Represents the supported machine-readable search query commands.
 #[derive(Debug, Subcommand)]
 enum QuerySearchCommands {
-    /// Queries paginated turn search results for one configured project.
+    #[command(
+        about = "Search indexed turns for one configured project",
+        long_about = "Search indexed turns for one configured project.\n\nKeyword mode uses the SQLite full-text index. Literal and regex modes scan indexed turn evidence, excluding bulky tool output unless `--include-tool-output` or field filters opt into it. File modes search touched paths rather than message text.",
+        after_help = "Examples:\n  darc query search turns \"panic\" --limit 5\n  darc query search turns --mode literal \"staged init\" --field user-message\n  darc query --color always search turns --mode regex \"Process exited with code [0-9]+\" | less -R"
+    )]
     Turns(QuerySearchTurnsArgs),
 }
 
 /// Queries paginated turn search results for one configured project.
 #[derive(Debug, Args)]
 struct QuerySearchTurnsArgs {
-    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Read from this darc root"
+    )]
     root: PathBuf,
 
     #[arg(
         long = "project-id",
+        help_heading = "Scope",
         help = "Query this configured project id. Defaults to the project resolved from the current directory"
     )]
     project_id: Option<String>,
 
-    #[arg(long, value_enum, help = "Restrict search to this provider")]
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Scope",
+        help = "Restrict search to this provider"
+    )]
     provider: Option<ProviderArg>,
 
-    #[arg(long = "session-id", help = "Restrict search to this session id")]
+    #[arg(
+        long = "session-id",
+        help_heading = "Scope",
+        help = "Restrict search to this session id"
+    )]
     session_id: Option<String>,
 
     #[arg(
         long,
         value_enum,
         default_value_t = SearchModeArg::Keyword,
+        help_heading = "Search",
         help = "Search in this mode"
     )]
     mode: SearchModeArg,
@@ -678,12 +929,14 @@ struct QuerySearchTurnsArgs {
         long,
         allow_hyphen_values = true,
         value_name = "QUERY",
+        help_heading = "Search",
         help = "Search for this text, file glob, or path fragment"
     )]
     query: Option<String>,
 
     #[arg(
         long,
+        help_heading = "Evidence",
         help = "Include tool output evidence in literal and regex search"
     )]
     include_tool_output: bool,
@@ -692,6 +945,7 @@ struct QuerySearchTurnsArgs {
         long = "field",
         value_name = "FIELD",
         value_parser = parse_search_evidence_field,
+        help_heading = "Evidence",
         help = search_evidence_field_include_help()
     )]
     fields: Vec<SearchEvidenceField>,
@@ -700,32 +954,46 @@ struct QuerySearchTurnsArgs {
         long = "exclude-field",
         value_name = "FIELD",
         value_parser = parse_search_evidence_field,
+        help_heading = "Evidence",
         help = search_evidence_field_exclude_help()
     )]
     excluded_fields: Vec<SearchEvidenceField>,
 
     #[arg(
         long,
+        help_heading = "Time Filters",
         help = "Inclusive started_at lower bound. Example: `5d` or `2026-04-07T00:00:00Z`"
     )]
     since: Option<String>,
 
     #[arg(
         long,
+        help_heading = "Time Filters",
         help = "Exclusive started_at upper bound. Example: `1d` or `2026-04-08T00:00:00Z`"
     )]
     until: Option<String>,
 
-    #[arg(long, default_value_t = 50, help = "Maximum turn hits to return")]
+    #[arg(
+        long,
+        default_value_t = 50,
+        help_heading = "Result Size",
+        help = "Maximum turn hits to return"
+    )]
     limit: usize,
 
-    #[arg(long, default_value_t = 0, help = "Number of turn hits to skip")]
+    #[arg(
+        long,
+        default_value_t = 0,
+        help_heading = "Result Size",
+        help = "Number of turn hits to skip"
+    )]
     offset: usize,
 
     #[arg(
         long = "matched-path-limit",
         default_value_t = DEFAULT_MATCHED_PATH_LIMIT,
         conflicts_with = "include_all_matched_paths",
+        help_heading = "Result Size",
         help = "Maximum matched_paths entries per file-search hit"
     )]
     matched_path_limit: usize,
@@ -733,12 +1001,14 @@ struct QuerySearchTurnsArgs {
     #[arg(
         long = "match-limit",
         value_name = "MATCH_LIMIT",
+        help_heading = "Result Size",
         help = search_match_limit_help()
     )]
     match_limit: Option<usize>,
 
     #[arg(
         long = "include-all-matched-paths",
+        help_heading = "Result Size",
         help = "Return every matched path in file-search hits"
     )]
     include_all_matched_paths: bool,
@@ -765,13 +1035,19 @@ enum QueryInsightsCommands {
 /// Queries the workspace insights payload for one rolling day window.
 #[derive(Debug, Args)]
 struct QueryWorkspaceInsightsArgs {
-    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Read from this darc root"
+    )]
     root: PathBuf,
 
     #[arg(
         long = "window",
         default_value = "7d",
         value_parser = parse_window_days,
+        help_heading = "Time Window",
         help = "Rolling host-local day window in `<days>d` format"
     )]
     window_days: u32,
@@ -779,6 +1055,7 @@ struct QueryWorkspaceInsightsArgs {
     #[arg(
         long = "recent-session-limit",
         default_value_t = DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT,
+        help_heading = "Result Size",
         help = "Maximum recent sessions to return"
     )]
     recent_session_limit: usize,
@@ -786,6 +1063,7 @@ struct QueryWorkspaceInsightsArgs {
     #[arg(
         long = "recent-session-offset",
         default_value_t = 0,
+        help_heading = "Result Size",
         help = "Number of recent sessions to skip"
     )]
     recent_session_offset: usize,
@@ -794,22 +1072,34 @@ struct QueryWorkspaceInsightsArgs {
 /// Queries the project insights payload for one configured project.
 #[derive(Debug, Args)]
 struct QueryProjectInsightsArgs {
-    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Read from this darc root"
+    )]
     root: PathBuf,
 
     #[arg(
         long = "project-id",
+        help_heading = "Scope",
         help = "Query this configured project id. Defaults to the project resolved from the current directory"
     )]
     project_id: Option<String>,
 
-    #[arg(long, value_enum, help = "Restrict project insights to this provider")]
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Scope",
+        help = "Restrict project insights to this provider"
+    )]
     provider: Option<ProviderArg>,
 
     #[arg(
         long = "turn-limit",
         alias = "limit",
         default_value_t = 1000,
+        help_heading = "Result Size",
         help = "Maximum indexed turns to inspect"
     )]
     turn_limit: usize,
@@ -818,16 +1108,27 @@ struct QueryProjectInsightsArgs {
 /// Queries one turn insights payload.
 #[derive(Debug, Args)]
 struct QueryTurnInsightsArgs {
-    #[arg(long, default_value_os_t = default_root_path(), help = "Read from this darc root")]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Read from this darc root"
+    )]
     root: PathBuf,
 
     #[arg(
         long = "project-id",
+        help_heading = "Scope",
         help = "Query this configured project id. Defaults to the project resolved from the current directory"
     )]
     project_id: Option<String>,
 
-    #[arg(long, value_enum, help = "Disambiguate a cross-provider session id")]
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Scope",
+        help = "Disambiguate a cross-provider session id"
+    )]
     provider: Option<ProviderArg>,
 
     #[arg(
@@ -845,6 +1146,7 @@ struct QueryTurnInsightsArgs {
     #[arg(
         long = "session-id",
         value_name = "SESSION_ID",
+        help_heading = "Identity",
         help = "Query this session id; alternative to positional SESSION_ID"
     )]
     session_id: Option<String>,
@@ -852,6 +1154,7 @@ struct QueryTurnInsightsArgs {
     #[arg(
         long = "turn-ordinal",
         value_name = "TURN_ORDINAL",
+        help_heading = "Identity",
         help = "Query this turn ordinal; alternative to positional TURN_ORDINAL"
     )]
     turn_ordinal: Option<u64>,
@@ -860,26 +1163,31 @@ struct QueryTurnInsightsArgs {
 /// Audit Codex rollout schema compatibility against stable release tags.
 #[derive(Debug, Args)]
 struct CodexSchemaAuditArgs {
-    #[arg(long, value_name = "DIR")]
+    #[arg(long, value_name = "DIR", help_heading = "Cache")]
     cache_dir: Option<PathBuf>,
 }
 
 /// Audit Claude rollout transcript compatibility against published npm releases.
 #[derive(Debug, Args)]
 struct ClaudeSchemaAuditArgs {
-    #[arg(long, value_name = "DIR")]
+    #[arg(long, value_name = "DIR", help_heading = "Cache")]
     cache_dir: Option<PathBuf>,
 
-    #[arg(long, default_value_t = 1, value_name = "N")]
+    #[arg(long, default_value_t = 1, value_name = "N", help_heading = "Sampling")]
     sample_stride: usize,
 
-    #[arg(long)]
+    #[arg(long, help_heading = "Runtime")]
     use_host_auth: bool,
 
-    #[arg(long, value_name = "VERSION")]
+    #[arg(long, value_name = "VERSION", help_heading = "Scope")]
     from_version: Option<String>,
 
-    #[arg(long, value_enum, default_value_t = ClaudeSurveyModeArg::Refine)]
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = ClaudeSurveyModeArg::Refine,
+        help_heading = "Mode"
+    )]
     survey_mode: ClaudeSurveyModeArg,
 }
 
@@ -1963,18 +2271,14 @@ fn supported_search_evidence_fields() -> String {
 
 /// Returns help text for exact-search field inclusion.
 fn search_evidence_field_include_help() -> String {
-    format!(
-        "Restrict literal and regex search to this evidence field. Accepted fields: {}",
-        supported_search_evidence_fields()
-    )
+    "Restrict literal and regex search to an evidence field. Repeat to include multiple fields.\n\nAccepted fields:\n  messages: user-message, final-answer, commentary, reasoning-summary\n  tools: tool-name, tool-arguments, tool-output\n  other: delegation-summary, delegation-metadata, hook-summary, attachment-metadata, provider-response-item-metadata"
+        .to_owned()
 }
 
 /// Returns help text for exact-search field exclusion.
 fn search_evidence_field_exclude_help() -> String {
-    format!(
-        "Exclude this evidence field from literal and regex search. Accepted fields: {}",
-        supported_search_evidence_fields()
-    )
+    "Exclude an evidence field from literal and regex search. Repeat to exclude multiple fields.\n\nAccepted fields:\n  messages: user-message, final-answer, commentary, reasoning-summary\n  tools: tool-name, tool-arguments, tool-output\n  other: delegation-summary, delegation-metadata, hook-summary, attachment-metadata, provider-response-item-metadata"
+        .to_owned()
 }
 
 /// Returns help text for the literal/regex per-hit match preview cap.

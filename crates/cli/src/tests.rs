@@ -43,6 +43,18 @@ fn query_args(cli: Cli) -> super::QueryArgs {
     }
 }
 
+/// Renders long help for one nested command path.
+fn help_for_command_path(path: &[&str]) -> String {
+    let mut command = Cli::command();
+    let mut current = &mut command;
+    for name in path {
+        current = current
+            .find_subcommand_mut(name)
+            .unwrap_or_else(|| panic!("subcommand `{name}` should be present"));
+    }
+    current.render_long_help().to_string()
+}
+
 fn compatible_claude_report() -> ClaudeSchemaAuditReport {
     ClaudeSchemaAuditReport {
         release_source: "npm registry (@anthropic-ai/claude-code)".to_owned(),
@@ -109,6 +121,17 @@ fn parses_hidden_codex_schema_audit_command() {
 }
 
 #[test]
+fn top_level_help_points_to_common_workflows() {
+    let help = Cli::command().render_long_help().to_string();
+
+    assert!(help.contains("Archive, index, and query coding-agent sessions"));
+    assert!(help.contains("Common workflows:"));
+    assert!(help.contains("darc status"));
+    assert!(help.contains("darc query search turns \"panic\" --limit 5"));
+    assert!(help.contains("darc help <command>"));
+}
+
+#[test]
 fn parses_hidden_claude_schema_audit_command() {
     let cli = Cli::try_parse_from([
         "darc",
@@ -158,6 +181,21 @@ fn status_command_accepts_workspace_and_check_flags() {
             ..
         })
     ));
+}
+
+#[test]
+fn human_command_help_groups_options() {
+    let status_help = help_for_command_path(&["status"]);
+    assert!(status_help.contains("Workspace:"));
+    assert!(status_help.contains("Scope:"));
+    assert!(status_help.contains("Mode:"));
+
+    let sync_help = help_for_command_path(&["sync"]);
+    assert!(sync_help.contains("Workspace:"));
+    assert!(sync_help.contains("Mode:"));
+    assert!(sync_help.contains("Selection:"));
+    assert!(sync_help.contains("Preview pending copies without writing files"));
+    assert!(sync_help.contains("darc sync --dry-run"));
 }
 
 #[test]
@@ -590,19 +628,15 @@ fn parses_query_session_bundle_command() {
 
 #[test]
 fn query_session_bundle_help_mentions_prompt_and_final_message_projection() {
-    let mut command = Cli::command();
-    let query = command
-        .find_subcommand_mut("query")
-        .expect("query subcommand should be present");
-    let help = query
-        .find_subcommand_mut("session-bundle")
-        .expect("session-bundle query subcommand should be present")
-        .render_long_help()
-        .to_string();
+    let help = help_for_command_path(&["query", "session-bundle"]);
 
     assert!(help.contains("--session-view"));
     assert!(help.contains("session prompt/final message"));
     assert!(help.contains("compact previews"));
+    assert!(help.contains("Identity:"));
+    assert!(help.contains("Output:"));
+    assert!(help.contains("Result Size:"));
+    assert!(help.contains("darc query session-bundle <SESSION_ID>"));
 }
 
 #[test]
@@ -734,15 +768,12 @@ fn parses_query_search_turns_default_keyword_positional_query() {
 
 #[test]
 fn query_help_mentions_machine_protocol() {
-    let mut command = Cli::command();
-    let help = command
-        .find_subcommand_mut("query")
-        .expect("query subcommand should be present")
-        .render_long_help()
-        .to_string();
+    let help = help_for_command_path(&["query"]);
 
     assert!(help.contains("machine-readable"));
     assert!(help.contains("--color"));
+    assert!(help.contains("Output:"));
+    assert!(help.contains("darc query sessions --limit 5"));
 }
 
 #[test]
@@ -895,18 +926,7 @@ fn query_turns_help_omits_removed_grep_surface() {
 
 #[test]
 fn query_search_turns_help_mentions_tool_output_opt_in() {
-    let mut command = Cli::command();
-    let query = command
-        .find_subcommand_mut("query")
-        .expect("query subcommand should be present");
-    let search = query
-        .find_subcommand_mut("search")
-        .expect("search query subcommand should be present");
-    let help = search
-        .find_subcommand_mut("turns")
-        .expect("turn search subcommand should be present")
-        .render_long_help()
-        .to_string();
+    let help = help_for_command_path(&["query", "search", "turns"]);
 
     assert!(help.contains("--include-tool-output"));
     assert!(help.contains("--field"));
@@ -914,26 +934,29 @@ fn query_search_turns_help_mentions_tool_output_opt_in() {
     assert!(help.contains("--match-limit <MATCH_LIMIT>"));
     assert!(help.contains("Maximum nested matches per literal/regex turn hit [default: 20]"));
     assert!(help.contains("literal and regex"));
-    assert!(help.contains("Accepted fields: user-message, final-answer"));
+    assert!(help.contains("Accepted fields:"));
+    assert!(help.contains("messages: user-message, final-answer"));
     assert!(help.contains("path-fragment"));
+    assert!(help.contains("Workspace:"));
+    assert!(help.contains("Scope:"));
+    assert!(help.contains("Search:"));
+    assert!(help.contains("Evidence:"));
+    assert!(help.contains("Time Filters:"));
+    assert!(help.contains("Result Size:"));
+    assert!(help.contains("darc query search turns \"panic\" --limit 5"));
 }
 
 #[test]
 fn query_files_help_mentions_path_and_co_touch_modes() {
-    let mut command = Cli::command();
-    let query = command
-        .find_subcommand_mut("query")
-        .expect("query subcommand should be present");
-    let help = query
-        .find_subcommand_mut("files")
-        .expect("files query subcommand should be present")
-        .render_long_help()
-        .to_string();
+    let help = help_for_command_path(&["query", "files"]);
 
     assert!(help.contains("--path"));
     assert!(help.contains("--co-touched-with"));
     assert!(help.contains("--limit"));
     assert!(help.contains("most-touched files"));
+    assert!(help.contains("Selection:"));
+    assert!(help.contains("Time Filters:"));
+    assert!(help.contains("Result Size:"));
 }
 
 #[test]
