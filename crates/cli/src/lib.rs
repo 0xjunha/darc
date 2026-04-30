@@ -2907,6 +2907,23 @@ enum WatchSignal {
     Warning(String),
 }
 
+/// Describes why the watch loop should run a refresh cycle.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum WatchRefreshReason {
+    Change,
+    Reconcile,
+}
+
+impl WatchRefreshReason {
+    /// Returns the stable status/log label for this refresh reason.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Change => "change",
+            Self::Reconcile => "reconcile",
+        }
+    }
+}
+
 /// Runs the daily refresh workflow for one or all projects.
 fn run_refresh(args: RefreshArgs) -> Result<()> {
     let provider_filter = args.provider.into_iter().map(ProviderArg::into).collect();
@@ -3045,14 +3062,8 @@ fn run_refresh_watch(mut request: RefreshRunRequest, overrides: WatchOverrides) 
         }
 
         let now = Instant::now();
-        if should_run_reconcile_refresh(last_refresh_at, now, &settings) {
-            run_refresh_cycle(&request, &mut state, &settings, "reconcile")?;
-            last_refresh_at = Some(Instant::now());
-            dirty_since = None;
-            continue;
-        }
-        if should_run_watched_refresh(dirty_since, last_refresh_at, now, &settings) {
-            run_refresh_cycle(&request, &mut state, &settings, "change")?;
+        if let Some(reason) = next_watch_refresh(dirty_since, last_refresh_at, now, &settings) {
+            run_refresh_cycle(&request, &mut state, &settings, reason.as_str())?;
             last_refresh_at = Some(Instant::now());
             dirty_since = None;
         }
@@ -3100,7 +3111,16 @@ fn watch_loop_timeout(
     last_refresh_at: Option<Instant>,
     settings: &WatchSettings,
 ) -> Duration {
-    let now = Instant::now();
+    watch_loop_timeout_at(Instant::now(), dirty_since, last_refresh_at, settings)
+}
+
+/// Returns the timeout for a watch loop iteration at one instant.
+fn watch_loop_timeout_at(
+    now: Instant,
+    dirty_since: Option<Instant>,
+    last_refresh_at: Option<Instant>,
+    settings: &WatchSettings,
+) -> Duration {
     let mut deadline = last_refresh_at
         .map(|last_refresh_at| last_refresh_at + settings.reconcile_interval)
         .unwrap_or(now);
@@ -3114,6 +3134,22 @@ fn watch_loop_timeout(
         }
     }
     deadline.saturating_duration_since(now)
+}
+
+/// Returns the refresh reason that is due at the given instant.
+fn next_watch_refresh(
+    dirty_since: Option<Instant>,
+    last_refresh_at: Option<Instant>,
+    now: Instant,
+    settings: &WatchSettings,
+) -> Option<WatchRefreshReason> {
+    if should_run_reconcile_refresh(last_refresh_at, now, settings) {
+        Some(WatchRefreshReason::Reconcile)
+    } else if should_run_watched_refresh(dirty_since, last_refresh_at, now, settings) {
+        Some(WatchRefreshReason::Change)
+    } else {
+        None
+    }
 }
 
 /// Returns whether the periodic safety refresh is due.
