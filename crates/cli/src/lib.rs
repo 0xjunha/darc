@@ -25,12 +25,12 @@ use darc_core::query::{
     resolve_query_search_session_id_for_project, resolve_query_session_for_project,
 };
 use darc_core::{
-    IndexOptions, InitDraft, RefreshAllBestEffortReport, RefreshOptions, RefreshProjectAttempt,
-    RefreshProjectFailure, RefreshReport, SkippedRollout, SourceKind, StatusProject, StatusSource,
-    StatusSyncCheck, StatusSyncPlan, SyncOptions, WorkspaceStatusReport, default_root_path,
-    execute_sync, index_project_sessions, link_project, prepare_init, prepare_sync,
-    refresh_all_projects_best_effort, refresh_project, remove_project, rename_project,
-    status_project, status_workspace, write_init,
+    IndexOptions, IndexReport, InitDraft, RefreshAllBestEffortReport, RefreshOptions,
+    RefreshProjectAttempt, RefreshProjectFailure, RefreshReport, SkippedRollout, SourceKind,
+    StatusProject, StatusSource, StatusSyncCheck, StatusSyncPlan, SyncOptions, SyncReport,
+    WorkspaceStatusReport, default_root_path, execute_sync, index_project_sessions, link_project,
+    prepare_init, prepare_sync, refresh_all_projects_best_effort, refresh_project, remove_project,
+    rename_project, status_project, status_workspace, write_init,
 };
 use darc_paths::{
     current_utc_timestamp, resolve_query_time_bound as resolve_shared_query_time_bound,
@@ -1520,6 +1520,15 @@ impl HumanStyle {
         )
     }
 
+    /// Builds one style context for stderr.
+    fn stderr() -> Self {
+        Self::new(
+            io::stderr().is_terminal(),
+            env::var_os("NO_COLOR").is_some(),
+            env::var("TERM").ok().as_deref(),
+        )
+    }
+
     /// Builds one style context from resolved terminal environment facts.
     fn new(is_terminal: bool, no_color: bool, term: Option<&str>) -> Self {
         Self {
@@ -2137,16 +2146,105 @@ fn run_init(args: InitArgs) -> Result<()> {
         write_init(&draft)?;
     }
 
-    println!("{draft}");
+    let style = HumanStyle::stdout();
+    print_init_draft(style, &draft);
     if args.dry_run {
-        println!("\n{}", format_init_status(&draft, true));
         println!();
+        print_init_status(style, &draft, true);
+        println!();
+        print_section(style, "Config Preview");
         println!("{}", draft.config_toml()?);
     } else {
-        println!("\n{}", format_init_status(&draft, false));
+        println!();
+        print_init_status(style, &draft, false);
     }
 
     Ok(())
+}
+
+/// Prints the prepared init summary.
+fn print_init_draft(style: HumanStyle, draft: &InitDraft) {
+    print_section(style, "Darc");
+    print_field(
+        style,
+        2,
+        "Config",
+        if draft.global_config_exists {
+            style.ok("existing")
+        } else {
+            style.warn("not found")
+        },
+    );
+    print_field(style, 2, "Root", style.path(draft.root().display()));
+    print_field(
+        style,
+        2,
+        "Config path",
+        style.path(draft.root().join("config.toml").display()),
+    );
+    print_field(
+        style,
+        2,
+        "Index DB path",
+        style.path(draft.root().join("index.sqlite").display()),
+    );
+
+    if !draft.global_config_exists {
+        println!();
+        print_section(style, "Detected Sources");
+        if draft.sources.is_empty() {
+            print_line(2, style.muted("none"));
+        }
+        for source in &draft.sources {
+            print_line(2, style.bold(source.kind.title()));
+            print_field(style, 4, "Path", style.path(source.root.display()));
+            print_field(style, 4, "Rollouts", style.count(source.rollout_files));
+            if source.subagent_rollout_files > 0 {
+                print_field(
+                    style,
+                    4,
+                    "Subagents",
+                    style.count(source.subagent_rollout_files),
+                );
+            }
+        }
+    }
+
+    println!();
+    print_section(style, "Project");
+    print_field(style, 2, "Name", &draft.project.name);
+    print_field(
+        style,
+        2,
+        "Root",
+        style.path(draft.project.local_path.display()),
+    );
+    print_field(
+        style,
+        2,
+        "State",
+        if draft.project_exists {
+            style.ok("already configured")
+        } else {
+            style.warn("new")
+        },
+    );
+    if let Some(upstream) = &draft.project.git_upstream {
+        print_field(style, 2, "Upstream", style.path(upstream));
+    }
+}
+
+/// Prints the final init status block.
+fn print_init_status(style: HumanStyle, draft: &InitDraft, dry_run: bool) {
+    print_section(style, "Status");
+    for line in format_init_status(draft, dry_run).lines() {
+        let line = if dry_run {
+            style.warn(line)
+        } else {
+            style.ok(line)
+        };
+        print_line(2, line);
+    }
 }
 
 /// Formats the post-summary status lines for `init`.
@@ -2178,19 +2276,45 @@ fn format_init_status(draft: &InitDraft, dry_run: bool) -> String {
 /// Links one configured project's historical paths into the active project.
 fn run_link(args: LinkArgs) -> Result<()> {
     let report = link_project(Some(args.root), &args.project)?;
+    let style = HumanStyle::stdout();
 
-    println!("Project: {}", report.target_project_name);
-    println!("Linked From: {}", report.source_project_name);
-    println!("Project Root: {}", report.target_project_root.display());
-    println!(
-        "Known paths: {} total, {} added",
-        report.total_known_paths,
-        report.new_known_paths.len()
+    print_section(style, "Link");
+    print_field(style, 2, "Target project", &report.target_project_name);
+    print_field(
+        style,
+        2,
+        "Target ID",
+        style.muted(&report.target_project_id),
     );
+    print_field(style, 2, "Linked from", &report.source_project_name);
+    print_field(
+        style,
+        2,
+        "Source ID",
+        style.muted(&report.source_project_id),
+    );
+    print_field(
+        style,
+        2,
+        "Project root",
+        style.path(report.target_project_root.display()),
+    );
+    print_field(
+        style,
+        2,
+        "Known paths",
+        format!(
+            "{} total, {} added",
+            style.count(report.total_known_paths),
+            style.count(report.new_known_paths.len())
+        ),
+    );
+    println!();
+    print_section(style, "Status");
     if report.config_written {
-        println!("Updated config.");
+        print_field(style, 2, "Config", style.ok("updated"));
     } else {
-        println!("Config already covered all linked paths.");
+        print_field(style, 2, "Config", style.ok("already covered linked paths"));
     }
 
     Ok(())
@@ -2199,22 +2323,40 @@ fn run_link(args: LinkArgs) -> Result<()> {
 /// Removes one configured project and its archived/indexed data.
 fn run_remove(args: RemoveArgs) -> Result<()> {
     let report = remove_project(Some(args.root), &args.project)?;
+    let style = HumanStyle::stdout();
 
-    println!("Project: {}", report.project_name);
-    println!("Project ID: {}", report.project_id);
-    println!("Archive: {}", report.sessions_root.display());
-    println!(
-        "Indexed sessions removed: {}",
-        report.indexed_sessions_removed
+    print_section(style, "Remove");
+    print_field(style, 2, "Project", &report.project_name);
+    print_field(style, 2, "Project ID", style.muted(&report.project_id));
+    print_field(
+        style,
+        2,
+        "Archive",
+        style.path(report.sessions_root.display()),
     );
-    println!("Indexed turns removed: {}", report.indexed_turns_removed);
+    println!();
+    print_section(style, "Deleted Data");
     if report.archive_deleted {
-        println!("Deleted archive.");
+        print_field(style, 2, "Archive", style.warn("deleted"));
     } else {
-        println!("Archive did not exist.");
+        print_field(style, 2, "Archive", style.muted("did not exist"));
     }
+    print_field(
+        style,
+        2,
+        "Indexed sessions",
+        style.count(report.indexed_sessions_removed),
+    );
+    print_field(
+        style,
+        2,
+        "Indexed turns",
+        style.count(report.indexed_turns_removed),
+    );
+    println!();
+    print_section(style, "Status");
     if report.config_written {
-        println!("Updated config.");
+        print_field(style, 2, "Config", style.ok("updated"));
     }
 
     Ok(())
@@ -2223,28 +2365,66 @@ fn run_remove(args: RemoveArgs) -> Result<()> {
 /// Rebuilds one configured project's history under the active project's id.
 fn run_rename_from(args: RenameArgs) -> Result<()> {
     let report = rename_project(Some(args.root), &args.project)?;
+    let style = HumanStyle::stdout();
 
-    println!("Project: {}", report.link.target_project_name);
-    println!("Renamed From: {}", report.link.source_project_name);
-    println!(
-        "Known paths: {} total, {} added",
-        report.link.total_known_paths,
-        report.link.new_known_paths.len()
+    print_section(style, "Rename");
+    print_field(style, 2, "Project", &report.link.target_project_name);
+    print_field(style, 2, "Renamed from", &report.link.source_project_name);
+    print_field(
+        style,
+        2,
+        "Known paths",
+        format!(
+            "{} total, {} added",
+            style.count(report.link.total_known_paths),
+            style.count(report.link.new_known_paths.len())
+        ),
     );
-    println!(
-        "Synced {} session files and {} auxiliary files.",
-        report.sync.sessions_copied, report.sync.auxiliary_copied
+    println!();
+    print_section(style, "Sync");
+    print_field(
+        style,
+        2,
+        "Sessions",
+        format!(
+            "{} copied, {} unchanged",
+            style.count(report.sync.sessions_copied),
+            style.count(report.sync.sessions_unchanged)
+        ),
     );
-    println!(
-        "Indexed {} discovered sessions into {} indexed sessions and {} turns.",
-        report.index.sessions_discovered,
-        report.index.sessions_currently_indexed,
-        report.index.turns_currently_indexed
+    print_field(
+        style,
+        2,
+        "Auxiliary",
+        format!(
+            "{} copied, {} unchanged",
+            style.count(report.sync.auxiliary_copied),
+            style.count(report.sync.auxiliary_unchanged)
+        ),
     );
-    println!(
-        "Removed old project archive and {} indexed sessions.",
-        report.remove.indexed_sessions_removed
+    println!();
+    print_index_summary(style, &report.index);
+    println!();
+    print_section(style, "Cleanup");
+    print_field(
+        style,
+        2,
+        "Old archive",
+        if report.remove.archive_deleted {
+            style.warn("deleted")
+        } else {
+            style.muted("did not exist")
+        },
     );
+    print_field(
+        style,
+        2,
+        "Indexed sessions",
+        style.count(report.remove.indexed_sessions_removed),
+    );
+    println!();
+    print_section(style, "Status");
+    print_field(style, 2, "Overall", style.ok("renamed"));
 
     Ok(())
 }
@@ -2359,6 +2539,21 @@ fn print_field(style: HumanStyle, indent: usize, label: &str, value: impl std::f
 /// Prints one indented continuation line.
 fn print_line(indent: usize, value: impl std::fmt::Display) {
     println!("{}{}", " ".repeat(indent), value);
+}
+
+/// Prints one warning to stderr using human-output styling when available.
+fn print_warning(message: impl std::fmt::Display) {
+    let style = HumanStyle::stderr();
+    eprintln!("{}", style.warn(format!("warning: {message}")));
+}
+
+/// Prints one project-scoped warning to stderr using human-output styling when available.
+fn print_project_warning(project_name: &str, message: impl std::fmt::Display) {
+    let style = HumanStyle::stderr();
+    eprintln!(
+        "{}",
+        style.warn(format!("warning [{project_name}]: {message}"))
+    );
 }
 
 /// Returns a count phrase for one singular/plural noun pair.
@@ -2777,46 +2972,154 @@ fn run_sync(args: SyncArgs) -> Result<()> {
         },
     )
     .map_err(add_init_hint_for_unconfigured_project)?;
+    let style = HumanStyle::stdout();
 
-    println!("Project: {}", plan.project_name);
-    println!("Project Root: {}", plan.project_root.display());
-    println!("Archive: {}", plan.sessions_root.display());
-    println!("Providers: {}", format_sources(&plan.sources));
-    println!(
-        "Sessions: {} to copy, {} unchanged",
-        plan.sessions_to_copy(),
-        plan.sessions_unchanged
+    print_project_run_header(
+        style,
+        "Sync",
+        &plan.project_name,
+        &plan.project_root,
+        Some(plan.sessions_root.as_path()),
     );
-    println!(
-        "Auxiliary: {} to copy, {} unchanged",
-        plan.auxiliary_to_copy(),
-        plan.auxiliary_unchanged
+    println!();
+    print_section(style, "Plan");
+    print_field(style, 2, "Providers", format_sources(&plan.sources));
+    print_field(
+        style,
+        2,
+        "Sessions",
+        format!(
+            "{} to copy, {} unchanged",
+            style.count(plan.sessions_to_copy()),
+            style.count(plan.sessions_unchanged)
+        ),
     );
-    if !plan.new_known_paths.is_empty() {
-        println!("Known paths: {} new", plan.new_known_paths.len());
-    }
+    print_field(
+        style,
+        2,
+        "Auxiliary",
+        format!(
+            "{} to copy, {} unchanged",
+            style.count(plan.auxiliary_to_copy()),
+            style.count(plan.auxiliary_unchanged)
+        ),
+    );
+    print_field(
+        style,
+        2,
+        "Known paths",
+        format!("{} new", style.count(plan.new_known_paths.len())),
+    );
     for warning in &plan.warnings {
-        eprintln!("warning: {warning}");
+        print_warning(warning);
     }
 
     if args.dry_run {
-        println!("\nDry run only. No files were written.");
+        println!();
+        print_section(style, "Status");
+        print_field(style, 2, "Overall", style.warn("dry run only"));
+        print_line(2, style.muted("No files were written."));
         return Ok(());
     }
 
     let report = execute_sync(plan)?;
-    println!(
-        "\nSynced {} session files and {} auxiliary files.",
-        report.sessions_copied, report.auxiliary_copied
-    );
-    if report.manifest_written {
-        println!("Updated manifest.");
-    }
-    if report.config_written {
-        println!("Updated config.");
-    }
+    println!();
+    print_sync_result(style, &report);
+    println!();
+    print_section(style, "Status");
+    print_field(style, 2, "Overall", style.ok("synced"));
 
     Ok(())
+}
+
+/// Prints the common project/path header for human workflow commands.
+fn print_project_run_header(
+    style: HumanStyle,
+    title: &str,
+    project_name: &str,
+    project_root: &std::path::Path,
+    archive: Option<&std::path::Path>,
+) {
+    print_section(style, title);
+    print_field(style, 2, "Project", project_name);
+    print_field(style, 2, "Project root", style.path(project_root.display()));
+    if let Some(archive) = archive {
+        print_field(style, 2, "Archive", style.path(archive.display()));
+    }
+}
+
+/// Prints one executed sync summary block.
+fn print_sync_result(style: HumanStyle, report: &SyncReport) {
+    print_section(style, "Sync");
+    print_field(
+        style,
+        2,
+        "Sessions",
+        format!(
+            "{} copied, {} unchanged",
+            style.count(report.sessions_copied),
+            style.count(report.sessions_unchanged)
+        ),
+    );
+    print_field(
+        style,
+        2,
+        "Auxiliary",
+        format!(
+            "{} copied, {} unchanged",
+            style.count(report.auxiliary_copied),
+            style.count(report.auxiliary_unchanged)
+        ),
+    );
+    print_field(
+        style,
+        2,
+        "Known paths",
+        format!("{} new", style.count(report.new_known_paths.len())),
+    );
+}
+
+/// Prints one index summary block.
+fn print_index_summary(style: HumanStyle, report: &IndexReport) {
+    print_section(style, "Index");
+    print_field(style, 2, "Providers", format_sources(&report.providers));
+    print_field(
+        style,
+        2,
+        "Index DB",
+        style.path(report.index_db_path.display()),
+    );
+    print_field(
+        style,
+        2,
+        "Sessions discovered",
+        style.count(report.sessions_discovered),
+    );
+    print_field(
+        style,
+        2,
+        "Sessions skipped this run",
+        style.count(report.sessions_skipped_this_run),
+    );
+    print_field(
+        style,
+        2,
+        "Sessions currently indexed",
+        style.count(report.sessions_currently_indexed),
+    );
+    print_field(
+        style,
+        2,
+        "Turns currently indexed",
+        style.count(report.turns_currently_indexed),
+    );
+    let skipped = report.skipped_rollouts.len();
+    let skipped = if skipped == 0 {
+        style.ok(skipped)
+    } else {
+        style.warn(skipped)
+    };
+    print_field(style, 2, "Skipped rollout files", skipped);
 }
 
 /// Adds a `darc init` hint when sync or refresh runs outside a configured project.
@@ -2840,126 +3143,150 @@ fn run_index(args: IndexArgs) -> Result<()> {
             provider_filter: args.provider.into_iter().map(ProviderArg::into).collect(),
         },
     )?;
+    let style = HumanStyle::stdout();
 
     for skipped in &report.skipped_rollouts {
-        eprintln!("warning: {}", format_skipped_rollout(skipped));
+        print_warning(format_skipped_rollout(skipped));
     }
 
-    println!("Project: {}", report.project_name);
-    println!("Project Root: {}", report.project_root.display());
-    println!("Archive: {}", report.sessions_root.display());
-    println!("Providers: {}", format_sources(&report.providers));
-    println!("Index DB: {}", report.index_db_path.display());
-    println!("Sessions discovered: {}", report.sessions_discovered);
-    println!(
-        "Sessions skipped this run: {}",
-        report.sessions_skipped_this_run
+    print_project_run_header(
+        style,
+        "Index",
+        &report.project_name,
+        &report.project_root,
+        Some(report.sessions_root.as_path()),
     );
-    println!(
-        "Sessions currently indexed: {}",
-        report.sessions_currently_indexed
-    );
-    println!(
-        "Turns currently indexed: {}",
-        report.turns_currently_indexed
-    );
-    println!("Skipped rollout files: {}", report.skipped_rollouts.len());
+    println!();
+    print_index_summary(style, &report);
+    println!();
+    print_section(style, "Status");
+    let status = if report.skipped_rollouts.is_empty() {
+        style.ok("indexed")
+    } else {
+        style.warn("indexed with skipped rollouts")
+    };
+    print_field(style, 2, "Overall", status);
 
     Ok(())
 }
 
 /// Prints the combined sync and index summary for one refreshed project.
 fn print_refresh_report(report: &RefreshReport) {
+    let style = HumanStyle::stdout();
+    print_refresh_report_with_style(style, report);
+}
+
+/// Prints the combined sync and index summary using one resolved style context.
+fn print_refresh_report_with_style(style: HumanStyle, report: &RefreshReport) {
     for warning in &report.sync.warnings {
-        eprintln!("warning [{}]: {warning}", report.sync.project_name);
+        print_project_warning(&report.sync.project_name, warning);
     }
     for skipped in &report.index.skipped_rollouts {
-        eprintln!(
-            "warning [{}]: {}",
-            report.sync.project_name,
-            format_skipped_rollout(skipped)
-        );
+        print_project_warning(&report.sync.project_name, format_skipped_rollout(skipped));
     }
 
-    println!("Project: {}", report.sync.project_name);
-    println!("Project Root: {}", report.sync.project_root.display());
-    println!("Archive: {}", report.sync.sessions_root.display());
+    print_project_run_header(
+        style,
+        "Refresh",
+        &report.sync.project_name,
+        &report.sync.project_root,
+        Some(report.sync.sessions_root.as_path()),
+    );
+    println!();
+    print_section(style, "Providers");
     match format_refresh_provider_lines(report) {
-        RefreshProviderLines::Shared(providers) => println!("Providers: {providers}"),
+        RefreshProviderLines::Shared(providers) => print_field(style, 2, "Selected", providers),
         RefreshProviderLines::Split {
             sync_providers,
             index_providers,
         } => {
-            println!("Sync Providers: {sync_providers}");
-            println!("Index Providers: {index_providers}");
+            print_field(style, 2, "Sync", sync_providers);
+            print_field(style, 2, "Index", index_providers);
         }
     }
-    println!("Index DB: {}", report.index.index_db_path.display());
-    println!(
-        "Sync Sessions: {} copied, {} unchanged",
-        report.sync.sessions_copied, report.sync.sessions_unchanged
+    println!();
+    print_sync_result(style, &report.sync);
+    println!();
+    print_index_summary(style, &report.index);
+    println!();
+    print_section(style, "Changes");
+    print_field(
+        style,
+        2,
+        "Manifest",
+        if report.sync.manifest_written {
+            style.ok("updated")
+        } else {
+            style.muted("unchanged")
+        },
     );
-    println!(
-        "Sync Auxiliary: {} copied, {} unchanged",
-        report.sync.auxiliary_copied, report.sync.auxiliary_unchanged
+    print_field(
+        style,
+        2,
+        "Config",
+        if report.sync.config_written {
+            style.ok("updated")
+        } else {
+            style.muted("unchanged")
+        },
     );
-    println!(
-        "Index Sessions Discovered: {}",
-        report.index.sessions_discovered
-    );
-    println!(
-        "Index Sessions Skipped This Run: {}",
-        report.index.sessions_skipped_this_run
-    );
-    println!(
-        "Index Sessions Currently Indexed: {}",
-        report.index.sessions_currently_indexed
-    );
-    println!(
-        "Index Turns Currently Indexed: {}",
-        report.index.turns_currently_indexed
-    );
-    println!(
-        "Skipped rollout files: {}",
-        report.index.skipped_rollouts.len()
-    );
-    if report.sync.manifest_written {
-        println!("Updated manifest.");
-    }
-    if report.sync.config_written {
-        println!("Updated config.");
-    }
+    println!();
+    print_section(style, "Status");
+    let status = if report.index.skipped_rollouts.is_empty() {
+        style.ok("refreshed")
+    } else {
+        style.warn("refreshed with skipped rollouts")
+    };
+    print_field(style, 2, "Overall", status);
 }
 
 /// Prints one multi-project refresh report with per-project results and totals.
 fn print_refresh_all_report(report: &RefreshAllBestEffortReport) {
+    let style = HumanStyle::stdout();
     for (index, project) in report.projects.iter().enumerate() {
         if index > 0 {
             println!();
         }
-        print_refresh_all_project_report(project);
+        print_refresh_all_project_report(style, project);
     }
-    println!(
-        "\nRefresh summary: {} succeeded, {} failed.",
-        report.refreshed_count(),
-        report.failed_count()
-    );
+    println!();
+    print_section(style, "Workspace Summary");
+    print_field(style, 2, "Succeeded", style.ok(report.refreshed_count()));
+    let failed = report.failed_count();
+    let failed = if failed == 0 {
+        style.ok(failed)
+    } else {
+        style.error(failed)
+    };
+    print_field(style, 2, "Failed", failed);
 }
 
 /// Prints one project-scoped entry from a multi-project refresh report.
-fn print_refresh_all_project_report(project: &RefreshProjectAttempt) {
+fn print_refresh_all_project_report(style: HumanStyle, project: &RefreshProjectAttempt) {
     match project {
-        RefreshProjectAttempt::Refreshed(report) => print_refresh_report(report),
-        RefreshProjectAttempt::Failed(failure) => print_refresh_project_failure(failure),
+        RefreshProjectAttempt::Refreshed(report) => print_refresh_report_with_style(style, report),
+        RefreshProjectAttempt::Failed(failure) => print_refresh_project_failure(style, failure),
     }
 }
 
 /// Prints one structured project refresh failure from a best-effort workspace refresh.
-fn print_refresh_project_failure(failure: &RefreshProjectFailure) {
-    println!("Project: {}", failure.project_name);
-    println!("Project Root: {}", failure.project_root.display());
-    println!("Status: failed");
-    println!("Error: {:#}", failure.error);
+fn print_refresh_project_failure(style: HumanStyle, failure: &RefreshProjectFailure) {
+    print_project_run_header(
+        style,
+        "Refresh",
+        &failure.project_name,
+        &failure.project_root,
+        None,
+    );
+    println!();
+    print_section(style, "Status");
+    print_field(style, 2, "Overall", style.error("failed"));
+    print_field(
+        style,
+        2,
+        "Error",
+        style.error(format!("{:#}", failure.error)),
+    );
 }
 
 /// Runs the hidden Codex rollout schema audit command with dedicated exit codes.
