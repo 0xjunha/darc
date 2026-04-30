@@ -21,7 +21,7 @@ use super::{
     Cli, ColorArg, Commands, QueryCommands, QueryInsightsCommands, claude_schema_audit_exit_code,
     codex_schema_audit_exit_code, format_claude_schema_audit_report,
     format_codex_schema_audit_report, format_query_clap_error, format_query_error,
-    parse_window_days, resolve_query_time_bound_at, should_color_output,
+    parse_window_days, resolve_query_time_bound_at, should_color_output, should_style_human_output,
 };
 
 fn compatible_report() -> CodexSchemaAuditReport {
@@ -774,6 +774,19 @@ fn query_color_policy_respects_terminal_environment() {
         false,
         Some("xterm-256color"),
     ));
+}
+
+#[test]
+fn human_style_policy_respects_terminal_environment() {
+    assert!(should_style_human_output(true, false, None));
+    assert!(should_style_human_output(
+        true,
+        false,
+        Some("xterm-256color"),
+    ));
+    assert!(!should_style_human_output(false, false, None));
+    assert!(!should_style_human_output(true, true, None));
+    assert!(!should_style_human_output(true, false, Some("dumb")));
 }
 
 #[test]

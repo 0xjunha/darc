@@ -1498,6 +1498,89 @@ const ANSI_NUMBER: &str = "\x1b[33m";
 const ANSI_BOOLEAN: &str = "\x1b[35m";
 const ANSI_NULL: &str = "\x1b[36m";
 const ANSI_MATCH: &str = "\x1b[1;95m";
+const ANSI_RED: &str = "\x1b[31m";
+const ANSI_DIM: &str = "\x1b[2m";
+const ANSI_GREEN: &str = ANSI_STRING;
+const ANSI_YELLOW: &str = ANSI_NUMBER;
+const ANSI_CYAN: &str = ANSI_NULL;
+
+/// Stores whether human-oriented CLI output should use terminal styling.
+#[derive(Debug, Clone, Copy)]
+struct HumanStyle {
+    enabled: bool,
+}
+
+impl HumanStyle {
+    /// Builds one style context for stdout.
+    fn stdout() -> Self {
+        Self::new(
+            io::stdout().is_terminal(),
+            env::var_os("NO_COLOR").is_some(),
+            env::var("TERM").ok().as_deref(),
+        )
+    }
+
+    /// Builds one style context from resolved terminal environment facts.
+    fn new(is_terminal: bool, no_color: bool, term: Option<&str>) -> Self {
+        Self {
+            enabled: should_style_human_output(is_terminal, no_color, term),
+        }
+    }
+
+    /// Returns one string wrapped with an ANSI style when styling is enabled.
+    fn color(self, code: &str, value: impl std::fmt::Display) -> String {
+        if self.enabled {
+            format!("{code}{value}{ANSI_RESET}")
+        } else {
+            value.to_string()
+        }
+    }
+
+    /// Returns one bold display string.
+    fn bold(self, value: impl std::fmt::Display) -> String {
+        self.color(ANSI_BOLD, value)
+    }
+
+    /// Returns one field label display string.
+    fn label(self, value: impl std::fmt::Display) -> String {
+        self.bold(value)
+    }
+
+    /// Returns one success display string.
+    fn ok(self, value: impl std::fmt::Display) -> String {
+        self.color(ANSI_GREEN, value)
+    }
+
+    /// Returns one warning display string.
+    fn warn(self, value: impl std::fmt::Display) -> String {
+        self.color(ANSI_YELLOW, value)
+    }
+
+    /// Returns one error display string.
+    fn error(self, value: impl std::fmt::Display) -> String {
+        self.color(ANSI_RED, value)
+    }
+
+    /// Returns one lower-emphasis display string.
+    fn muted(self, value: impl std::fmt::Display) -> String {
+        self.color(ANSI_DIM, value)
+    }
+
+    /// Returns one path display string.
+    fn path(self, value: impl std::fmt::Display) -> String {
+        self.color(ANSI_CYAN, value)
+    }
+
+    /// Returns one count display string.
+    fn count(self, value: impl std::fmt::Display) -> String {
+        self.color(ANSI_BOLD, value)
+    }
+}
+
+/// Returns whether a human-oriented output stream should include ANSI styling.
+fn should_style_human_output(is_terminal: bool, no_color: bool, term: Option<&str>) -> bool {
+    is_terminal && !no_color && term != Some("dumb")
+}
 
 /// Returns whether one query output stream should include ANSI color.
 fn should_color_output(
@@ -2219,58 +2302,58 @@ fn status_check_exit(has_failed_check: bool, message: &'static str) -> Result<()
 
 /// Prints one active-project status report.
 fn print_project_status(report: &darc_core::ProjectStatusReport) {
-    print_status_header(&report.root, None);
+    let style = HumanStyle::stdout();
+    print_status_header(style, &report.root, None);
     println!();
-    print_sources(&report.sources);
+    print_sources(style, &report.sources);
     println!();
-    print_active_project_identity(&report.project);
+    print_active_project_identity(style, &report.project);
     println!();
-    print_project_index_status(&report.project, 0);
+    print_project_index_status(style, &report.project, 0);
     if report.project.sync_check.is_some() {
         println!();
-        print_sync_check(report.project.sync_check.as_ref(), "Sync Check", 0);
+        print_sync_check(style, report.project.sync_check.as_ref(), "Sync Check", 0);
     }
     if !report.project.issues.is_empty() {
         println!();
-        print_project_issues(&report.project, 0);
+        print_project_issues(style, &report.project, 0);
     }
     println!();
-    print_overall_status(format_overall_status(
-        &report.root.issues,
-        &report.sources,
-        std::slice::from_ref(&report.project),
-    ));
+    print_overall_status(
+        style,
+        format_overall_status(
+            &report.root.issues,
+            &report.sources,
+            std::slice::from_ref(&report.project),
+        ),
+    );
 }
 
 /// Prints one workspace status report.
 fn print_workspace_status(report: &WorkspaceStatusReport) {
-    print_status_header(&report.root, Some(report.projects.len()));
+    let style = HumanStyle::stdout();
+    print_status_header(style, &report.root, Some(report.projects.len()));
     println!();
-    print_sources(&report.sources);
+    print_sources(style, &report.sources);
     println!();
-    print_workspace_summary(report);
+    print_workspace_summary(style, report);
     println!();
-    print_workspace_projects(&report.projects);
+    print_workspace_projects(style, &report.projects);
     println!();
-    print_overall_status(format_overall_status(
-        &report.root.issues,
-        &report.sources,
-        &report.projects,
-    ));
+    print_overall_status(
+        style,
+        format_overall_status(&report.root.issues, &report.sources, &report.projects),
+    );
 }
 
 /// Prints a plain section heading.
-fn print_section(title: &str) {
-    if io::stdout().is_terminal() {
-        println!("\x1b[1m{title}\x1b[0m");
-    } else {
-        println!("{title}");
-    }
+fn print_section(style: HumanStyle, title: &str) {
+    println!("{}", style.bold(title));
 }
 
 /// Prints one indented label/value field.
-fn print_field(indent: usize, label: &str, value: impl std::fmt::Display) {
-    println!("{}{}: {}", " ".repeat(indent), label, value);
+fn print_field(style: HumanStyle, indent: usize, label: &str, value: impl std::fmt::Display) {
+    println!("{}{}: {}", " ".repeat(indent), style.label(label), value);
 }
 
 /// Prints one indented continuation line.
@@ -2285,151 +2368,220 @@ fn count_label(count: usize, singular: &str, plural: &str) -> String {
 }
 
 /// Returns one archive availability label.
-fn archive_status(project: &StatusProject) -> &'static str {
+fn archive_status(style: HumanStyle, project: &StatusProject) -> String {
     if project.archive_exists {
-        "ok"
+        style.ok("ok")
     } else {
-        "missing"
+        style.error("missing")
     }
 }
 
 /// Returns one configured-source state label.
-fn source_state(source: &StatusSource) -> &'static str {
+fn source_state(style: HumanStyle, source: &StatusSource) -> String {
     if !source.configured {
-        "not configured"
+        style.muted("not configured")
     } else if source.enabled {
-        "enabled"
+        style.ok("enabled")
     } else {
-        "disabled"
+        style.muted("disabled")
     }
 }
 
 /// Returns one configured-source path availability label.
-fn source_path_state(source: &StatusSource) -> &'static str {
-    if source.path_exists { "ok" } else { "missing" }
+fn source_path_state(style: HumanStyle, source: &StatusSource) -> String {
+    if source.path_exists {
+        style.ok("ok")
+    } else {
+        style.error("missing")
+    }
 }
 
 /// Returns one configured-source path label.
-fn source_path(source: &StatusSource) -> String {
-    source
+fn source_path(style: HumanStyle, source: &StatusSource) -> String {
+    let path = source
         .path
         .as_ref()
         .map(|path| path.display().to_string())
-        .unwrap_or_else(|| "none".to_owned())
+        .unwrap_or_else(|| "none".to_owned());
+    style.path(path)
 }
 
 /// Returns one formatted source path with availability.
-fn source_path_with_state(source: &StatusSource) -> String {
-    format!("{} ({})", source_path(source), source_path_state(source))
+fn source_path_with_state(style: HumanStyle, source: &StatusSource) -> String {
+    format!(
+        "{} ({})",
+        source_path(style, source),
+        source_path_state(style, source)
+    )
 }
 
 /// Returns one formatted indexed count summary.
-fn indexed_summary(project: &StatusProject) -> String {
+fn indexed_summary(style: HumanStyle, project: &StatusProject) -> String {
     format!(
         "{} sessions, {} turns",
-        project.session_count, project.turn_count
+        style.count(project.session_count),
+        style.count(project.turn_count)
     )
 }
 
 /// Prints the common root/config/database status header.
-fn print_status_header(root: &darc_core::query::RootInfo, project_count: Option<usize>) {
-    print_section("Darc");
-    print_field(2, "Version", env!("CARGO_PKG_VERSION"));
-    print_field(2, "Root", root.resolved_root_path.display());
+fn print_status_header(
+    style: HumanStyle,
+    root: &darc_core::query::RootInfo,
+    project_count: Option<usize>,
+) {
+    print_section(style, "Darc");
+    print_field(style, 2, "Version", env!("CARGO_PKG_VERSION"));
+    print_field(
+        style,
+        2,
+        "Root",
+        style.path(root.resolved_root_path.display()),
+    );
     let config_status = if !root.available.config_exists {
-        "missing".to_owned()
+        style.error("missing")
     } else {
         match project_count {
-            Some(count) => format!("ok ({})", count_label(count, "project", "projects")),
-            None => "ok".to_owned(),
+            Some(count) => style.ok(format!(
+                "ok ({})",
+                count_label(count, "project", "projects")
+            )),
+            None => style.ok("ok"),
         }
     };
-    print_field(2, "Config", config_status);
+    print_field(style, 2, "Config", config_status);
     print_field(
+        style,
         2,
         "Index DB",
         if root.available.database_exists {
-            "ok"
+            style.ok("ok")
         } else {
-            "missing"
+            style.error("missing")
         },
     );
 }
 
 /// Prints all supported source availability rows.
-fn print_sources(sources: &[StatusSource]) {
-    print_section("Sources");
+fn print_sources(style: HumanStyle, sources: &[StatusSource]) {
+    print_section(style, "Sources");
     for source in sources {
-        print_line(2, source.kind.title());
-        print_field(4, "State", source_state(source));
+        print_line(2, style.bold(source.kind.title()));
+        print_field(style, 4, "State", source_state(style, source));
         if source.configured {
-            print_field(4, "Path", source_path_with_state(source));
+            print_field(style, 4, "Path", source_path_with_state(style, source));
         }
     }
 }
 
 /// Prints the active project identity and storage block.
-fn print_active_project_identity(project: &StatusProject) {
-    print_section("Active Project");
-    print_field(2, "Name", &project.name);
-    print_field(2, "ID", &project.id);
+fn print_active_project_identity(style: HumanStyle, project: &StatusProject) {
+    print_section(style, "Active Project");
+    print_field(style, 2, "Name", &project.name);
+    print_field(style, 2, "ID", style.muted(&project.id));
     print_field(
+        style,
         2,
         "Root",
-        project
-            .resolved_project_root
-            .as_ref()
-            .unwrap_or(&project.local_path)
-            .display(),
+        style.path(
+            project
+                .resolved_project_root
+                .as_ref()
+                .unwrap_or(&project.local_path)
+                .display(),
+        ),
     );
-    print_field(2, "Archive", archive_status(project));
-    print_field(2, "Archive path", project.sessions_root.display());
-    print_field(2, "Known paths", project.known_path_count);
+    print_field(style, 2, "Archive", archive_status(style, project));
+    print_field(
+        style,
+        2,
+        "Archive path",
+        style.path(project.sessions_root.display()),
+    );
+    print_field(
+        style,
+        2,
+        "Known paths",
+        style.count(project.known_path_count),
+    );
     if let Some(upstream) = &project.git_upstream {
-        print_field(2, "Upstream", upstream);
+        print_field(style, 2, "Upstream", style.path(upstream));
     }
 }
 
 /// Prints one indexed-data status block.
-fn print_project_index_status(project: &StatusProject, indent: usize) {
+fn print_project_index_status(style: HumanStyle, project: &StatusProject, indent: usize) {
     let heading = if indent == 0 {
         "Indexed Data"
     } else {
         "Indexed"
     };
-    print_line(indent, heading);
-    print_field(indent + 2, "Sessions", project.session_count);
-    print_field(indent + 2, "Turns", project.turn_count);
+    if indent == 0 {
+        print_section(style, heading);
+    } else {
+        print_line(indent, style.bold(heading));
+    }
     print_field(
+        style,
+        indent + 2,
+        "Sessions",
+        style.count(project.session_count),
+    );
+    print_field(style, indent + 2, "Turns", style.count(project.turn_count));
+    print_field(
+        style,
         indent + 2,
         "Last activity",
-        project.last_activity_at.as_deref().unwrap_or("none"),
+        project
+            .last_activity_at
+            .as_ref()
+            .map(|value| value.to_owned())
+            .unwrap_or_else(|| style.muted("none")),
     );
     print_field(
+        style,
         indent + 2,
         "Last sync",
-        project.last_sync_at.as_deref().unwrap_or("unknown"),
+        project
+            .last_sync_at
+            .as_ref()
+            .map(|value| value.to_owned())
+            .unwrap_or_else(|| style.muted("unknown")),
     );
 }
 
 /// Prints the workspace aggregate status block.
-fn print_workspace_summary(report: &WorkspaceStatusReport) {
-    print_section("Workspace Summary");
-    print_field(2, "Projects", report.projects.len());
-    print_field(2, "Indexed sessions", report.total_session_count());
-    print_field(2, "Indexed turns", report.total_turn_count());
+fn print_workspace_summary(style: HumanStyle, report: &WorkspaceStatusReport) {
+    print_section(style, "Workspace Summary");
+    print_field(style, 2, "Projects", style.count(report.projects.len()));
     print_field(
+        style,
+        2,
+        "Indexed sessions",
+        style.count(report.total_session_count()),
+    );
+    print_field(
+        style,
+        2,
+        "Indexed turns",
+        style.count(report.total_turn_count()),
+    );
+    print_field(
+        style,
         2,
         "Last activity",
-        report.latest_activity_at().unwrap_or("none"),
+        report
+            .latest_activity_at()
+            .map(str::to_owned)
+            .unwrap_or_else(|| style.muted("none")),
     );
 }
 
 /// Prints every workspace project as a readable multi-line block.
-fn print_workspace_projects(projects: &[StatusProject]) {
-    print_section("Projects");
+fn print_workspace_projects(style: HumanStyle, projects: &[StatusProject]) {
+    print_section(style, "Projects");
     if projects.is_empty() {
-        print_line(2, "none");
+        print_line(2, style.muted("none"));
         return;
     }
 
@@ -2437,117 +2589,157 @@ fn print_workspace_projects(projects: &[StatusProject]) {
         if index > 0 {
             println!();
         }
-        print_workspace_project_status(project);
+        print_workspace_project_status(style, project);
     }
 }
 
 /// Prints one compact workspace project row.
-fn print_workspace_project_status(project: &StatusProject) {
-    print_line(2, &project.name);
-    print_field(4, "ID", &project.id);
-    print_field(4, "Path", project.local_path.display());
-    print_field(4, "Archive", archive_status(project));
-    print_field(4, "Archive path", project.sessions_root.display());
-    print_field(4, "Indexed", indexed_summary(project));
+fn print_workspace_project_status(style: HumanStyle, project: &StatusProject) {
+    print_line(2, style.bold(&project.name));
+    print_field(style, 4, "ID", style.muted(&project.id));
+    print_field(style, 4, "Path", style.path(project.local_path.display()));
+    print_field(style, 4, "Archive", archive_status(style, project));
     print_field(
+        style,
+        4,
+        "Archive path",
+        style.path(project.sessions_root.display()),
+    );
+    print_field(style, 4, "Indexed", indexed_summary(style, project));
+    print_field(
+        style,
         4,
         "Last activity",
-        project.last_activity_at.as_deref().unwrap_or("none"),
+        project
+            .last_activity_at
+            .as_ref()
+            .map(|value| value.to_owned())
+            .unwrap_or_else(|| style.muted("none")),
     );
     print_field(
+        style,
         4,
         "Last sync",
-        project.last_sync_at.as_deref().unwrap_or("unknown"),
+        project
+            .last_sync_at
+            .as_ref()
+            .map(|value| value.to_owned())
+            .unwrap_or_else(|| style.muted("unknown")),
     );
     if project.sync_check.is_some() {
-        print_sync_check(project.sync_check.as_ref(), "Sync Check", 4);
+        print_sync_check(style, project.sync_check.as_ref(), "Sync Check", 4);
     }
     if !project.issues.is_empty() {
-        print_project_issues(project, 4);
+        print_project_issues(style, project, 4);
     }
 }
 
 /// Prints one optional sync dry-run block.
-fn print_sync_check(check: Option<&StatusSyncCheck>, label: &str, indent: usize) {
+fn print_sync_check(
+    style: HumanStyle,
+    check: Option<&StatusSyncCheck>,
+    label: &str,
+    indent: usize,
+) {
     let Some(check) = check else {
         return;
     };
 
     match check {
-        StatusSyncCheck::Planned(plan) => print_sync_plan(plan, label, indent),
+        StatusSyncCheck::Planned(plan) => print_sync_plan(style, plan, label, indent),
         StatusSyncCheck::Failed(failure) => {
-            print_line(indent, format!("{label}: failed"));
-            print_field(indent + 2, "Error", &failure.message);
+            print_line(
+                indent,
+                format!("{}: {}", style.bold(label), style.error("failed")),
+            );
+            print_field(style, indent + 2, "Error", style.error(&failure.message));
         }
     }
 }
 
 /// Prints one successful sync dry-run summary.
-fn print_sync_plan(plan: &StatusSyncPlan, label: &str, indent: usize) {
-    print_line(indent, label);
-    print_field(indent + 2, "Providers", format_sources(&plan.sources));
+fn print_sync_plan(style: HumanStyle, plan: &StatusSyncPlan, label: &str, indent: usize) {
+    print_line(indent, style.bold(label));
     print_field(
+        style,
+        indent + 2,
+        "Providers",
+        format_sources(&plan.sources),
+    );
+    print_field(
+        style,
         indent + 2,
         "Sessions",
         format!(
             "{} pending, {} unchanged",
-            plan.sessions_to_copy, plan.sessions_unchanged
+            style.count(plan.sessions_to_copy),
+            style.count(plan.sessions_unchanged)
         ),
     );
     print_field(
+        style,
         indent + 2,
         "Auxiliary",
         format!(
             "{} pending, {} unchanged",
-            plan.auxiliary_to_copy, plan.auxiliary_unchanged
+            style.count(plan.auxiliary_to_copy),
+            style.count(plan.auxiliary_unchanged)
         ),
     );
     print_field(
+        style,
         indent + 2,
         "Known paths",
-        format!("{} new", plan.new_known_path_count),
+        format!("{} new", style.count(plan.new_known_path_count)),
     );
     print_field(
+        style,
         indent + 2,
         "Manifest",
         if plan.manifest_written {
-            "would update"
+            style.warn("would update")
         } else {
-            "up to date"
+            style.ok("up to date")
         },
     );
     print_field(
+        style,
         indent + 2,
         "Config",
         if plan.config_written {
-            "would update"
+            style.warn("would update")
         } else {
-            "up to date"
+            style.ok("up to date")
         },
     );
     if !plan.warnings.is_empty() {
-        print_line(indent + 2, "Warnings");
+        print_line(indent + 2, style.warn("Warnings"));
         for warning in &plan.warnings {
-            print_line(indent + 4, format!("- {warning}"));
+            print_line(indent + 4, style.warn(format!("- {warning}")));
         }
     }
 }
 
 /// Prints project-local issues when present.
-fn print_project_issues(project: &StatusProject, indent: usize) {
+fn print_project_issues(style: HumanStyle, project: &StatusProject, indent: usize) {
     if project.issues.is_empty() {
         return;
     }
-    print_line(indent, "Issues");
+    print_line(indent, style.error("Issues"));
     for issue in &project.issues {
-        print_line(indent + 2, format!("- {issue}"));
+        print_line(indent + 2, style.error(format!("- {issue}")));
     }
 }
 
 /// Prints the final overall status block.
-fn print_overall_status(status: &'static str) {
-    print_section("Status");
-    print_field(2, "Overall", status);
+fn print_overall_status(style: HumanStyle, status: &'static str) {
+    print_section(style, "Status");
+    let status = if status == "ok" {
+        style.ok(status)
+    } else {
+        style.warn(status)
+    };
+    print_field(style, 2, "Overall", status);
 }
 
 /// Returns the overall human status label for one report.
