@@ -22,7 +22,7 @@ pub use projects::{
     query_project_sessions, query_project_turns, query_resolve_sessions,
 };
 use rusqlite::Connection;
-pub use search::{query_search_turns, search_snippet_match_range};
+pub use search::{SearchSnippetMatcher, query_search_turns, search_snippet_match_range};
 use serde::Serialize;
 #[cfg(test)]
 pub(crate) use turns::build_turn_insights;

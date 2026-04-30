@@ -236,6 +236,18 @@ enum EvidenceMatcher {
     Regex(Regex),
 }
 
+/// Stores one reusable matcher for terminal search snippet presentation.
+pub struct SearchSnippetMatcher {
+    kind: SearchSnippetMatcherKind,
+}
+
+/// Stores the supported snippet presentation matching strategies.
+enum SearchSnippetMatcherKind {
+    Literal(String),
+    Regex(EvidenceMatcher),
+    Unsupported,
+}
+
 /// Stores one concrete staged file-search request.
 #[derive(Debug, Clone, Copy)]
 struct FileSearchStageRequest<'a> {
@@ -261,13 +273,30 @@ pub fn search_snippet_match_range(
     query: &str,
     snippet: &str,
 ) -> Result<Option<Range<usize>>> {
-    match mode {
-        SearchMode::Literal => Ok(literal_match_range(snippet, query)),
-        SearchMode::Regex => Ok(build_regex_matcher(query)?.find_match(snippet)),
-        SearchMode::Keyword
-        | SearchMode::FileName
-        | SearchMode::FilePath
-        | SearchMode::PathFragment => Ok(None),
+    Ok(SearchSnippetMatcher::new(mode, query)?.find(snippet))
+}
+
+impl SearchSnippetMatcher {
+    /// Builds one reusable search snippet matcher.
+    pub fn new(mode: SearchMode, query: &str) -> Result<Self> {
+        let kind = match mode {
+            SearchMode::Literal => SearchSnippetMatcherKind::Literal(query.to_owned()),
+            SearchMode::Regex => SearchSnippetMatcherKind::Regex(build_regex_matcher(query)?),
+            SearchMode::Keyword
+            | SearchMode::FileName
+            | SearchMode::FilePath
+            | SearchMode::PathFragment => SearchSnippetMatcherKind::Unsupported,
+        };
+        Ok(Self { kind })
+    }
+
+    /// Returns the first matching byte range in one rendered snippet.
+    pub fn find(&self, snippet: &str) -> Option<Range<usize>> {
+        match &self.kind {
+            SearchSnippetMatcherKind::Literal(query) => literal_match_range(snippet, query),
+            SearchSnippetMatcherKind::Regex(matcher) => matcher.find_match(snippet),
+            SearchSnippetMatcherKind::Unsupported => None,
+        }
     }
 }
 

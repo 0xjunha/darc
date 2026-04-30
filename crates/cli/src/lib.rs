@@ -14,16 +14,15 @@ use darc_core::query::{
     DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, DEFAULT_SEARCH_MATCH_LIMIT,
     DEFAULT_TURN_STEP_LIMIT, DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT, FilesQueryRequest,
     QueryProtocolError, ResolveSessionQueryRequest, ResolvedQueryProject, ResolvedSessionMatch,
-    SearchEvidenceField, SearchMode, SearchTurnsQueryData, SearchTurnsRequest,
-    SessionBundleQueryRequest, SessionBundleView, SessionsQueryRequest, SessionsView,
-    TurnDetailOptions, TurnsQueryRequest, TurnsView, query_files_for_project,
+    SearchEvidenceField, SearchMode, SearchSnippetMatcher, SearchTurnsQueryData,
+    SearchTurnsRequest, SessionBundleQueryRequest, SessionBundleView, SessionsQueryRequest,
+    SessionsView, TurnDetailOptions, TurnsQueryRequest, TurnsView, query_files_for_project,
     query_project_insight_report_for_project, query_resolve_sessions,
     query_search_turns_for_project, query_session_bundle_for_project,
     query_session_files_for_project, query_sessions_for_project, query_turn_for_project,
     query_turn_insight_report_for_project, query_turns_for_project, query_workspace,
     query_workspace_insight_report, resolve_query_project,
     resolve_query_search_session_id_for_project, resolve_query_session_for_project,
-    search_snippet_match_range,
 };
 use darc_core::{
     IndexOptions, InitDraft, RefreshAllBestEffortReport, RefreshOptions, RefreshProjectAttempt,
@@ -1564,10 +1563,10 @@ fn color_search_turns_json(json: &str, data: &SearchTurnsQueryData) -> Result<St
     }
 
     let mut cursor = 0;
+    let matcher = SearchSnippetMatcher::new(data.mode, &data.query)?;
     for hit in &data.hits {
         for matched in &hit.matches {
-            let Some(range) = search_snippet_match_range(data.mode, &data.query, &matched.snippet)?
-            else {
+            let Some(range) = matcher.find(&matched.snippet) else {
                 continue;
             };
             if range.is_empty() {
