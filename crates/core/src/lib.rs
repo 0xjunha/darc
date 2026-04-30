@@ -15,9 +15,10 @@ pub use index::{
 };
 pub use init::{DetectedRolloutSource, InitDraft, default_root_path, prepare_init, write_init};
 pub use project::{
-    LinkReport, RefreshAllBestEffortReport, RefreshAllReport, RefreshOptions,
+    LinkReport, RefreshAllBestEffortReport, RefreshAllReport, RefreshOptions, RefreshProgress,
     RefreshProjectAttempt, RefreshProjectFailure, RefreshReport, RemoveReport, RenameReport,
-    link_project, refresh_all_projects, refresh_all_projects_best_effort, refresh_project,
+    link_project, refresh_all_projects, refresh_all_projects_best_effort,
+    refresh_all_projects_best_effort_with_progress, refresh_project, refresh_project_with_progress,
     remove_project, rename_project,
 };
 pub use status::{

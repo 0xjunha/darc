@@ -11,7 +11,7 @@ use darc_paths::{
 use darc_sync::{ClaudeSource, CodexSource, SyncRequest};
 
 use crate::{
-    active_project::load_active_project,
+    active_project::{ActiveProject, load_active_project},
     config::{ProjectConfig, SharedConfig, SourceKind},
     default_root_path,
     project::write_shared_config,
@@ -142,6 +142,14 @@ pub(crate) fn prepare_sync_from(
     options: SyncOptions,
 ) -> Result<SyncPlan> {
     let active_project = load_active_project(current_dir, &root)?;
+    prepare_sync_for_active_project(active_project, options)
+}
+
+/// Plans a sync from one already-resolved active project.
+pub(crate) fn prepare_sync_for_active_project(
+    active_project: ActiveProject,
+    options: SyncOptions,
+) -> Result<SyncPlan> {
     let crate::active_project::ActiveProject {
         mut config,
         config_path,

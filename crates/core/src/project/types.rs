@@ -42,6 +42,38 @@ pub struct RefreshReport {
     pub index: IndexReport,
 }
 
+/// Describes one observable refresh workflow transition for human progress UIs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RefreshProgress {
+    WorkspaceStarted {
+        total_projects: usize,
+    },
+    ProjectStarted {
+        project_name: String,
+        project_root: PathBuf,
+        project_index: usize,
+        total_projects: usize,
+    },
+    SyncStarted {
+        project_name: String,
+    },
+    SyncFinished {
+        project_name: String,
+    },
+    IndexStarted {
+        project_name: String,
+    },
+    IndexFinished {
+        project_name: String,
+    },
+    ProjectFinished {
+        project_name: String,
+    },
+    ProjectFailed {
+        project_name: String,
+    },
+}
+
 /// Reports one completed multi-project refresh workflow.
 #[derive(Debug, Clone)]
 pub struct RefreshAllReport {

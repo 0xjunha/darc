@@ -10,7 +10,8 @@ use darc_index::{INDEX_DB_FILE_NAME, open_index_database};
 use rusqlite::params;
 
 use super::{
-    RefreshOptions, refresh_all_projects, refresh_all_projects_best_effort,
+    RefreshOptions, RefreshProgress, refresh_all_projects, refresh_all_projects_best_effort,
+    refresh_all_projects_best_effort_with_progress,
     registry::load_normalized_shared_config,
     remove_project,
     workflow::{link_project_from, refresh_project_from, rename_project_from},
@@ -689,6 +690,68 @@ fn refresh_all_projects_best_effort_continues_after_project_failure() -> Result<
     let indexed_sessions: i64 =
         connection.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))?;
     assert_eq!(indexed_sessions, 1);
+
+    Ok(())
+}
+
+#[test]
+fn refresh_all_projects_best_effort_reports_progress_events() -> Result<()> {
+    let root = unique_test_dir(&format!("refresh-all-progress-{}", timestamp_seed()));
+    write_partial_refresh_workspace(&root)?;
+
+    let mut events = Vec::new();
+    let report = refresh_all_projects_best_effort_with_progress(
+        Some(root),
+        RefreshOptions::default(),
+        |event| {
+            events.push(match event {
+                RefreshProgress::WorkspaceStarted { total_projects } => {
+                    format!("workspace:{total_projects}")
+                }
+                RefreshProgress::ProjectStarted {
+                    project_name,
+                    project_index,
+                    total_projects,
+                    ..
+                } => format!("project-start:{project_index}/{total_projects}:{project_name}"),
+                RefreshProgress::SyncStarted { project_name } => {
+                    format!("sync-start:{project_name}")
+                }
+                RefreshProgress::SyncFinished { project_name } => {
+                    format!("sync-finish:{project_name}")
+                }
+                RefreshProgress::IndexStarted { project_name } => {
+                    format!("index-start:{project_name}")
+                }
+                RefreshProgress::IndexFinished { project_name } => {
+                    format!("index-finish:{project_name}")
+                }
+                RefreshProgress::ProjectFinished { project_name } => {
+                    format!("project-finish:{project_name}")
+                }
+                RefreshProgress::ProjectFailed { project_name } => {
+                    format!("project-failed:{project_name}")
+                }
+            });
+        },
+    )?;
+
+    assert_eq!(report.refreshed_count(), 1);
+    assert_eq!(report.failed_count(), 1);
+    assert_eq!(
+        events,
+        vec![
+            "workspace:2",
+            "project-start:1/2:broken-repo",
+            "project-failed:broken-repo",
+            "project-start:2/2:healthy-repo",
+            "sync-start:healthy-repo",
+            "sync-finish:healthy-repo",
+            "index-start:healthy-repo",
+            "index-finish:healthy-repo",
+            "project-finish:healthy-repo",
+        ]
+    );
 
     Ok(())
 }

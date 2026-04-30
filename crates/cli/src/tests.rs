@@ -7,8 +7,8 @@ use std::{
 use anyhow::{Result, anyhow};
 use clap::{ColorChoice, CommandFactory, Parser};
 use darc_core::{
-    IndexReport, RefreshAllBestEffortReport, RefreshProjectAttempt, RefreshProjectFailure,
-    RefreshReport, SourceKind, SyncReport,
+    IndexReport, RefreshAllBestEffortReport, RefreshProgress, RefreshProjectAttempt,
+    RefreshProjectFailure, RefreshReport, SourceKind, SyncReport,
     config::{ClaudeSourceConfig, CodexSourceConfig, SharedConfig, SourcesConfig, WatchConfig},
 };
 use darc_rollout_audit::claude::{
@@ -805,6 +805,58 @@ fn refresh_all_exit_status_errors_when_any_project_failed() {
         format!("{error:#}"),
         "1 project(s) failed during workspace refresh"
     );
+}
+
+#[test]
+fn refresh_progress_printer_writes_interactive_steps() {
+    let mut output = Vec::new();
+    {
+        let style = super::HumanStyle::new(false, false, None);
+        let mut printer = super::RefreshProgressPrinter::new(&mut output, style, true);
+        printer.record(RefreshProgress::WorkspaceStarted { total_projects: 2 });
+        printer.record(RefreshProgress::ProjectStarted {
+            project_name: "repo-a".to_owned(),
+            project_root: PathBuf::from("/tmp/repo-a"),
+            project_index: 1,
+            total_projects: 2,
+        });
+        printer.record(RefreshProgress::SyncStarted {
+            project_name: "repo-a".to_owned(),
+        });
+        printer.record(RefreshProgress::IndexStarted {
+            project_name: "repo-a".to_owned(),
+        });
+        printer.record(RefreshProgress::ProjectFinished {
+            project_name: "repo-a".to_owned(),
+        });
+    }
+
+    let output = String::from_utf8(output).unwrap();
+    assert!(output.contains("Refreshing workspace (2 projects)"));
+    assert!(output.contains("  [1/2] repo-a"));
+    assert!(output.contains("    [1/2] Syncing archive..."));
+    assert!(output.contains("    [2/2] Indexing sessions..."));
+    assert!(output.contains("    done"));
+}
+
+#[test]
+fn refresh_progress_printer_stays_silent_when_disabled() {
+    let mut output = Vec::new();
+    {
+        let style = super::HumanStyle::new(false, false, None);
+        let mut printer = super::RefreshProgressPrinter::new(&mut output, style, false);
+        printer.record(RefreshProgress::ProjectStarted {
+            project_name: "repo-a".to_owned(),
+            project_root: PathBuf::from("/tmp/repo-a"),
+            project_index: 1,
+            total_projects: 1,
+        });
+        printer.record(RefreshProgress::SyncStarted {
+            project_name: "repo-a".to_owned(),
+        });
+    }
+
+    assert!(output.is_empty());
 }
 
 #[test]
