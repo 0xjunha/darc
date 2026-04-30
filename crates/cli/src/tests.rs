@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::anyhow;
-use clap::{CommandFactory, Parser};
+use clap::{ColorChoice, CommandFactory, Parser};
 use darc_core::{
     IndexReport, RefreshAllBestEffortReport, RefreshProjectAttempt, RefreshProjectFailure,
     RefreshReport, SourceKind, SyncReport,
@@ -18,8 +18,8 @@ use darc_rollout_audit::{claude::ClaudeSchemaAuditOutcome, codex::CodexSchemaAud
 use serde_json::Value;
 
 use super::{
-    Cli, ColorArg, Commands, QueryCommands, QueryInsightsCommands, claude_schema_audit_exit_code,
-    codex_schema_audit_exit_code, format_claude_schema_audit_report,
+    Cli, ColorArg, Commands, HELP_STYLES, QueryCommands, QueryInsightsCommands,
+    claude_schema_audit_exit_code, codex_schema_audit_exit_code, format_claude_schema_audit_report,
     format_codex_schema_audit_report, format_query_clap_error, format_query_error,
     parse_window_days, resolve_query_time_bound_at, should_color_output, should_style_human_output,
 };
@@ -129,6 +129,34 @@ fn top_level_help_points_to_common_workflows() {
     assert!(help.contains("darc status"));
     assert!(help.contains("darc query search turns \"panic\" --limit 5"));
     assert!(help.contains("darc help <command>"));
+}
+
+#[test]
+fn help_uses_terminal_color_auto() {
+    let mut command = Cli::command();
+    command.build();
+
+    assert_eq!(command.get_color(), ColorChoice::Auto);
+    assert_eq!(
+        *command.get_styles().get_header(),
+        *HELP_STYLES.get_header()
+    );
+
+    let query = command
+        .find_subcommand("query")
+        .expect("query subcommand should be present");
+    assert_eq!(*query.get_styles().get_header(), *HELP_STYLES.get_header());
+}
+
+#[test]
+fn rendered_help_is_plain_but_carries_ansi_styles() {
+    let styled = Cli::command().render_long_help();
+    let plain = styled.to_string();
+    let ansi = styled.ansi().to_string();
+
+    assert!(!plain.contains("\x1b["));
+    assert!(ansi.contains("\x1b["));
+    assert_eq!(strip_ansi_text(&ansi), plain);
 }
 
 #[test]

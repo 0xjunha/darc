@@ -9,7 +9,11 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
-use clap::{Args, Parser, Subcommand, ValueEnum, error::ErrorKind};
+use clap::{
+    Args, ColorChoice, Parser, Subcommand, ValueEnum,
+    builder::styling::{AnsiColor, Styles},
+    error::ErrorKind,
+};
 use darc_core::query::{
     DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, DEFAULT_SEARCH_MATCH_LIMIT,
     DEFAULT_TURN_STEP_LIMIT, DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT, FilesQueryRequest,
@@ -46,11 +50,23 @@ use darc_rollout_audit::codex::{
 use serde::Serialize;
 use serde_json::{Value as JsonValue, json};
 
+/// Terminal help styles for Cargo-like section and option emphasis.
+const HELP_STYLES: Styles = Styles::styled()
+    .header(AnsiColor::BrightGreen.on_default().bold())
+    .usage(AnsiColor::BrightGreen.on_default().bold())
+    .literal(AnsiColor::BrightWhite.on_default().bold())
+    .placeholder(AnsiColor::BrightBlue.on_default())
+    .error(AnsiColor::BrightRed.on_default().bold())
+    .valid(AnsiColor::BrightGreen.on_default())
+    .invalid(AnsiColor::BrightYellow.on_default());
+
 #[derive(Debug, Parser)]
 #[command(
     name = "darc",
     version,
     about = "Archive, index, and query coding-agent sessions",
+    color = ColorChoice::Auto,
+    styles = HELP_STYLES,
     after_help = "Common workflows:\n  darc status\n  darc refresh\n  darc query search turns \"panic\" --limit 5\n\nRun `darc help <command>` for details on a specific command."
 )]
 struct Cli {
