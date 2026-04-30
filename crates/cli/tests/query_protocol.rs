@@ -301,6 +301,144 @@ fn workspace_query_emits_success_envelope() -> Result<()> {
 }
 
 #[test]
+fn canonical_read_commands_emit_query_envelopes() -> Result<()> {
+    let root = create_query_fixture_root("cli-canonical-read-surface")?;
+    let root_arg = root.to_string_lossy();
+
+    let projects = run_darc(["list", "projects", "--root", root_arg.as_ref()])?;
+    assert!(projects.status.success());
+    let value = parse_json(&projects.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.workspace.v1");
+    assert_eq!(value["data"]["projects"][0]["id"], "repo-abc123");
+
+    let sessions = run_darc([
+        "list",
+        "sessions",
+        "--root",
+        root_arg.as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--limit",
+        "1",
+    ])?;
+    assert!(sessions.status.success());
+    let value = parse_json(&sessions.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.sessions.v1");
+    assert_eq!(
+        value["data"]["sessions"][0]["session_id"],
+        PRIMARY_SESSION_ID
+    );
+
+    let files = run_darc([
+        "list",
+        "files",
+        "--root",
+        root_arg.as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--session",
+        PRIMARY_SESSION_ID,
+    ])?;
+    assert!(files.status.success());
+    let value = parse_json(&files.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.session_files.v1");
+    assert_eq!(value["data"]["files"][0]["path"], "README.md");
+
+    let session = run_darc([
+        "show",
+        "session",
+        "--root",
+        root_arg.as_ref(),
+        "--project-id",
+        "repo-abc123",
+        PRIMARY_SESSION_ID,
+        "--turn-limit",
+        "1",
+    ])?;
+    assert!(session.status.success());
+    let value = parse_json(&session.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.session_bundle.v1");
+    assert_eq!(value["data"]["turn_limit"], 1);
+
+    let turn = run_darc([
+        "show",
+        "turn",
+        "--root",
+        root_arg.as_ref(),
+        "--project-id",
+        "repo-abc123",
+        PRIMARY_SESSION_ID,
+        "0",
+    ])?;
+    assert!(turn.status.success());
+    let value = parse_json(&turn.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.turn.v1");
+    assert_eq!(value["data"]["turn_ordinal"], 0);
+
+    let search = run_darc([
+        "search",
+        "--root",
+        root_arg.as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "Inspect",
+    ])?;
+    assert!(search.status.success());
+    let value = parse_json(&search.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.search.turns.v1");
+    assert_eq!(value["data"]["mode"], "keyword");
+    assert_eq!(value["data"]["hits"][0]["turn_ordinal"], 0);
+
+    let path_search = run_darc([
+        "search",
+        "--root",
+        root_arg.as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--path",
+        "README.md",
+    ])?;
+    assert!(path_search.status.success());
+    let value = parse_json(&path_search.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.search.turns.v1");
+    assert_eq!(value["data"]["mode"], "file_path");
+    assert_eq!(value["data"]["hits"][0]["matched_paths"][0], "README.md");
+
+    let stats = run_darc([
+        "stats",
+        "project",
+        "--root",
+        root_arg.as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--turn-limit",
+        "1",
+    ])?;
+    assert!(stats.status.success());
+    let value = parse_json(&stats.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.insights.project.v1");
+    assert_eq!(value["data"]["inspected_turn_count"], 1);
+
+    let resolve = run_darc([
+        "resolve",
+        "session",
+        "--root",
+        root_arg.as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--pick-one",
+        PRIMARY_SESSION_PREFIX,
+    ])?;
+    assert!(resolve.status.success());
+    let value = parse_json(&resolve.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.resolve_session.v1");
+    assert_eq!(value["data"]["match"]["session_id"], PRIMARY_SESSION_ID);
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
 fn workspace_query_color_flags_preserve_json_contract() -> Result<()> {
     let root = create_query_fixture_root("cli-query-color")?;
     let root_arg = root.to_string_lossy();

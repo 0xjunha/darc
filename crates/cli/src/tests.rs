@@ -130,8 +130,15 @@ fn top_level_help_points_to_common_workflows() {
     assert!(help.contains("Archive, index, and query coding-agent sessions"));
     assert!(help.contains("Common workflows:"));
     assert!(help.contains("darc status"));
-    assert!(help.contains("darc query search turns \"panic\" --limit 5"));
+    assert!(help.contains("darc search \"panic\" --limit 5"));
+    assert!(help.contains("darc show session <SESSION_ID> --turn-limit 5"));
     assert!(help.contains("darc help <command>"));
+    assert!(help.contains("  search "));
+    assert!(help.contains("  project "));
+    assert!(!help.contains("  query "));
+    assert!(!help.contains("  link "));
+    assert!(!help.contains("  remove "));
+    assert!(!help.contains("  rename-from "));
 }
 
 #[test]
@@ -901,6 +908,153 @@ fn parses_rename_command() {
     assert!(matches!(
         cli.command,
         Commands::RenameFrom(super::RenameArgs { project, .. }) if project == "memstack"
+    ));
+}
+
+#[test]
+fn parses_project_management_namespace() {
+    let link = Cli::try_parse_from(["darc", "project", "link", "memstack"]).unwrap();
+    assert!(matches!(
+        link.command,
+        Commands::Project(super::ProjectArgs {
+            command: super::ProjectCommands::Link(super::LinkArgs { project, .. }),
+        }) if project == "memstack"
+    ));
+
+    let remove = Cli::try_parse_from(["darc", "project", "remove", "memstack"]).unwrap();
+    assert!(matches!(
+        remove.command,
+        Commands::Project(super::ProjectArgs {
+            command: super::ProjectCommands::Remove(super::RemoveArgs { project, .. }),
+        }) if project == "memstack"
+    ));
+
+    let rename = Cli::try_parse_from(["darc", "project", "rename-from", "memstack"]).unwrap();
+    assert!(matches!(
+        rename.command,
+        Commands::Project(super::ProjectArgs {
+            command: super::ProjectCommands::RenameFrom(super::RenameArgs { project, .. }),
+        }) if project == "memstack"
+    ));
+}
+
+#[test]
+fn parses_canonical_list_show_search_stats_and_resolve_commands() {
+    let sessions = Cli::try_parse_from([
+        "darc",
+        "list",
+        "sessions",
+        "--project-id",
+        "repo-abc123",
+        "--touching",
+        "docs/**",
+        "--limit",
+        "5",
+    ])
+    .unwrap();
+    assert!(matches!(
+        sessions.command,
+        Commands::List(super::ListArgs {
+            command: super::ListCommands::Sessions(super::ListSessionsArgs {
+                project_id,
+                touching,
+                limit,
+                ..
+            }),
+            ..
+        }) if project_id.as_deref() == Some("repo-abc123")
+            && touching.as_deref() == Some("docs/**")
+            && limit == 5
+    ));
+
+    let files = Cli::try_parse_from([
+        "darc",
+        "list",
+        "files",
+        "--session",
+        "11111111",
+        "--provider",
+        "codex",
+    ])
+    .unwrap();
+    assert!(matches!(
+        files.command,
+        Commands::List(super::ListArgs {
+            command: super::ListCommands::Files(super::ListFilesArgs {
+                session,
+                provider,
+                ..
+            }),
+            ..
+        }) if session.as_deref() == Some("11111111")
+            && matches!(provider, Some(super::ProviderArg::Codex))
+    ));
+
+    let show =
+        Cli::try_parse_from(["darc", "show", "session", "11111111", "--turn-limit", "3"]).unwrap();
+    assert!(matches!(
+        show.command,
+        Commands::Show(super::ShowArgs {
+            command: super::ShowCommands::Session(super::QuerySessionBundleArgs {
+                session_id_arg,
+                turn_limit,
+                ..
+            }),
+            ..
+        }) if session_id_arg.as_deref() == Some("11111111") && turn_limit == 3
+    ));
+
+    let search = Cli::try_parse_from([
+        "darc",
+        "search",
+        "--literal",
+        "--query",
+        "--output-last-message",
+        "--field",
+        "user-message",
+    ])
+    .unwrap();
+    assert!(matches!(
+        search.command,
+        Commands::Search(super::SearchArgs {
+            literal,
+            query,
+            fields,
+            ..
+        }) if literal
+            && query.as_deref() == Some("--output-last-message")
+            && fields == [super::SearchEvidenceField::UserMessage]
+    ));
+
+    let path_search = Cli::try_parse_from(["darc", "search", "--path", "docs/**"]).unwrap();
+    assert!(matches!(
+        path_search.command,
+        Commands::Search(super::SearchArgs { path, .. })
+            if path.as_deref() == Some("docs/**")
+    ));
+
+    let stats = Cli::try_parse_from(["darc", "stats", "project", "--turn-limit", "5"]).unwrap();
+    assert!(matches!(
+        stats.command,
+        Commands::Stats(super::StatsArgs {
+            command: super::StatsCommands::Project(super::QueryProjectInsightsArgs {
+                turn_limit,
+                ..
+            }),
+            ..
+        }) if turn_limit == 5
+    ));
+
+    let resolve = Cli::try_parse_from(["darc", "resolve", "session", "11111111"]).unwrap();
+    assert!(matches!(
+        resolve.command,
+        Commands::Resolve(super::ResolveArgs {
+            command: super::ResolveCommands::Session(super::QueryResolveSessionArgs {
+                input,
+                ..
+            }),
+            ..
+        }) if input == "11111111"
     ));
 }
 

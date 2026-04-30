@@ -75,7 +75,7 @@ const HELP_STYLES: Styles = Styles::styled()
     about = "Archive, index, and query coding-agent sessions",
     color = ColorChoice::Auto,
     styles = HELP_STYLES,
-    after_help = "Common workflows:\n  darc status\n  darc refresh\n  darc query search turns \"panic\" --limit 5\n\nRun `darc help <command>` for details on a specific command."
+    after_help = "Common workflows:\n  darc status\n  darc refresh\n  darc search \"panic\" --limit 5\n  darc show session <SESSION_ID> --turn-limit 5\n\nRun `darc help <command>` for details on a specific command."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -98,16 +98,50 @@ enum Commands {
     )]
     Status(StatusArgs),
     #[command(
+        about = "List projects, sessions, turns, or files from indexed history",
+        long_about = "List projects, sessions, turns, or files from indexed history.\n\nList commands emit JSON envelopes on stdout and are the canonical browse surface for coding agents."
+    )]
+    List(ListArgs),
+    #[command(
+        about = "Show workspace, session, or turn detail from indexed history",
+        long_about = "Show workspace, session, or turn detail from indexed history.\n\nShow commands emit JSON envelopes on stdout. `darc show session` returns a bounded session bundle: compact session summary, a paginated turn-detail page, and a capped session-file preview."
+    )]
+    Show(ShowArgs),
+    #[command(
+        about = "Search indexed turns and return matching turn hits",
+        long_about = "Search indexed turns and return matching turn hits.\n\nDarc search is turn-scoped: every hit includes the session id and turn ordinal needed for follow-up `darc show turn` or `darc show session` calls. Text search defaults to keyword mode. Use flags for literal, regex, or file-path search modes.",
+        after_help = "Examples:\n  darc search \"panic unwrap\" --limit 5\n  darc search --literal --query \"--output-last-message\" --field user-message\n  darc search --path docs/query-protocol.md --limit 5"
+    )]
+    Search(SearchArgs),
+    #[command(
+        about = "Show workspace, project, or turn stats",
+        long_about = "Show workspace, project, or turn stats.\n\nStats commands emit JSON envelopes with indexed counts, active time, tool usage, file usage, and related metrics."
+    )]
+    Stats(StatsArgs),
+    #[command(
+        about = "Resolve short identifiers into canonical Darc identifiers",
+        long_about = "Resolve short identifiers into canonical Darc identifiers.\n\nResolve commands emit JSON envelopes and are useful before session-scoped reads when a prefix is ambiguous."
+    )]
+    Resolve(ResolveArgs),
+    #[command(
+        about = "Manage configured Darc projects",
+        long_about = "Manage configured Darc projects.\n\nProject commands update the shared Darc workspace configuration and project archive/index state."
+    )]
+    Project(ProjectArgs),
+    #[command(
+        hide = true,
         about = "Link one configured project's historical paths into the current project",
         long_about = "Link one configured project's historical paths into the current project.\n\nRun this command from the target project directory.\nThe PROJECT argument is the old or source project name already stored in ~/.darc/config.toml.\n\nExample:\n- You renamed `/path/to/old-project` to `/path/to/new-project`.\n- Darc still has a configured project named `old-project`.\n- Run `cd /path/to/new-project && darc link old-project`.\n\nThis command is non-destructive.\nIt updates config so the current project knows the source project's old local_path and known_paths.\nIt does not run `darc refresh` or remove the source project."
     )]
     Link(LinkArgs),
     #[command(
+        hide = true,
         about = "Remove one configured project and its archived/indexed data",
         long_about = "Remove one configured project and its archived/indexed data.\n\nThe PROJECT argument is matched against the configured project `name` in ~/.darc/config.toml.\nThe name must identify exactly one configured project.\n\nThis command deletes:\n- the project entry from config.toml\n- the project's archived sessions directory under ~/.darc/projects/...\n- the project's indexed SQLite rows\n\nYou can run this command from any directory."
     )]
     Remove(RemoveArgs),
     #[command(
+        hide = true,
         name = "rename-from",
         about = "Rebuild one old project's history into the current renamed project",
         long_about = "Rebuild one old project's history into the current renamed project.\n\nUse this when you just renamed a project from one name to another.\nRun the command from the new project directory, and pass the old project name.\n\nExample:\n- Darc config still contains a project named `old-project`.\n- You renamed the checkout to `/path/to/new-project`.\n- Run `cd /path/to/new-project && darc rename-from old-project`.\n\nThis command bootstraps or reuses the current project as the target, links the old project's paths into it, runs `darc refresh`, and removes the old source project after those steps succeed.\n\nIn other words, it is the safe built-in workflow for:\n`darc link <old-project> && darc refresh && darc remove <old-project>`\n\nIf ~/.darc/config.toml does not exist yet, run `darc init` first."
@@ -131,6 +165,7 @@ enum Commands {
     )]
     Service(ServiceArgs),
     #[command(
+        hide = true,
         about = "Query Darc state through the machine-readable read protocol",
         long_about = "Query Darc state through the machine-readable read protocol.\n\nQuery commands emit JSON envelopes on stdout. The JSON contract is stable for scripts and agents; terminal color is presentation-only and controlled by `--color`.",
         after_help = "Examples:\n  darc query sessions --limit 5\n  darc query turn <SESSION_ID> 0 --view narrative\n  darc query --color always search turns \"panic\" --limit 5 | less -R"
@@ -374,6 +409,310 @@ struct IndexArgs {
     provider: Vec<ProviderArg>,
 }
 
+/// Lists indexed Darc resources through the canonical JSON read surface.
+#[derive(Debug, Args)]
+struct ListArgs {
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = ColorArg::Auto,
+        help_heading = "Output",
+        help = "Control ANSI color in JSON output"
+    )]
+    color: ColorArg,
+
+    #[command(subcommand)]
+    command: ListCommands,
+}
+
+/// Represents the supported canonical list commands.
+#[derive(Debug, Subcommand)]
+enum ListCommands {
+    /// List configured projects from the Darc workspace.
+    Projects(QueryWorkspaceArgs),
+    /// List sessions for one configured project.
+    Sessions(ListSessionsArgs),
+    /// List turns for one session.
+    Turns(QueryTurnsArgs),
+    /// List most-touched files, session files, or co-touched files.
+    #[command(
+        long_about = "List most-touched files, session files, or co-touched files.\n\nWith no mode flag, this ranks files by touches across the project. Use `--session` for the full per-session file summary. Use `--co-touched-with` for files touched in the same sessions as a seed path. Result pagination applies to top and co-touch modes; session mode currently returns the full per-session file summary."
+    )]
+    Files(ListFilesArgs),
+}
+
+/// Shows indexed Darc resources through the canonical JSON read surface.
+#[derive(Debug, Args)]
+struct ShowArgs {
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = ColorArg::Auto,
+        help_heading = "Output",
+        help = "Control ANSI color in JSON output"
+    )]
+    color: ColorArg,
+
+    #[command(subcommand)]
+    command: ShowCommands,
+}
+
+/// Represents the supported canonical show commands.
+#[derive(Debug, Subcommand)]
+enum ShowCommands {
+    /// Show the workspace/sidebar payload for one Darc root.
+    Workspace(QueryWorkspaceArgs),
+    /// Show one bounded session bundle.
+    #[command(
+        long_about = "Show one bounded session bundle.\n\nThe response contains a compact session summary, paginated turn details, and a capped session-file preview. Use --turn-limit/--turn-offset to page turns, --step-limit/--step-offset to page steps inside each returned turn, and `darc list files --session <SESSION_ID>` when the full session file list is needed."
+    )]
+    Session(QuerySessionBundleArgs),
+    /// Show one turn detail payload.
+    Turn(QueryTurnArgs),
+}
+
+/// Searches indexed turns through the canonical JSON read surface.
+#[derive(Debug, Args)]
+struct SearchArgs {
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = ColorArg::Auto,
+        help_heading = "Output",
+        help = "Control ANSI color in JSON output"
+    )]
+    color: ColorArg,
+
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Read from this darc root"
+    )]
+    root: PathBuf,
+
+    #[arg(
+        long = "project-id",
+        help_heading = "Scope",
+        help = "Search this configured project id. Defaults to the project resolved from the current directory"
+    )]
+    project_id: Option<String>,
+
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Scope",
+        help = "Restrict search to this provider"
+    )]
+    provider: Option<ProviderArg>,
+
+    #[arg(
+        long = "session-id",
+        alias = "session",
+        help_heading = "Scope",
+        help = "Restrict search to this session id or unambiguous UUID prefix"
+    )]
+    session_id: Option<String>,
+
+    #[arg(value_name = "QUERY", help = "Search indexed turns for this text")]
+    query_arg: Option<String>,
+
+    #[arg(
+        long,
+        allow_hyphen_values = true,
+        value_name = "QUERY",
+        help_heading = "Search",
+        help = "Search indexed turns for this text"
+    )]
+    query: Option<String>,
+
+    #[arg(
+        long,
+        help_heading = "Search",
+        help = "Search exact literal text instead of keyword terms"
+    )]
+    literal: bool,
+
+    #[arg(
+        long,
+        help_heading = "Search",
+        help = "Search with a regular expression instead of keyword terms"
+    )]
+    regex: bool,
+
+    #[arg(
+        long,
+        value_name = "PATH_OR_GLOB",
+        help_heading = "Search",
+        help = "Search touched file paths and return matching turn hits"
+    )]
+    path: Option<String>,
+
+    #[arg(
+        long = "file-name",
+        value_name = "NAME",
+        help_heading = "Search",
+        help = "Search touched file names and return matching turn hits"
+    )]
+    file_name: Option<String>,
+
+    #[arg(
+        long = "path-fragment",
+        value_name = "TEXT",
+        help_heading = "Search",
+        help = "Search touched path fragments and return matching turn hits"
+    )]
+    path_fragment: Option<String>,
+
+    #[arg(
+        long,
+        help_heading = "Evidence",
+        help = "Include tool output evidence in literal and regex search"
+    )]
+    include_tool_output: bool,
+
+    #[arg(
+        long = "field",
+        value_name = "FIELD",
+        value_parser = parse_search_evidence_field,
+        help_heading = "Evidence",
+        help = search_evidence_field_include_help()
+    )]
+    fields: Vec<SearchEvidenceField>,
+
+    #[arg(
+        long = "exclude-field",
+        value_name = "FIELD",
+        value_parser = parse_search_evidence_field,
+        help_heading = "Evidence",
+        help = search_evidence_field_exclude_help()
+    )]
+    excluded_fields: Vec<SearchEvidenceField>,
+
+    #[arg(
+        long,
+        help_heading = "Time Filters",
+        help = "Inclusive started_at lower bound. Example: `5d` or `2026-04-07T00:00:00Z`"
+    )]
+    since: Option<String>,
+
+    #[arg(
+        long,
+        help_heading = "Time Filters",
+        help = "Exclusive started_at upper bound. Example: `1d` or `2026-04-08T00:00:00Z`"
+    )]
+    until: Option<String>,
+
+    #[arg(
+        long,
+        default_value_t = 50,
+        help_heading = "Result Size",
+        help = "Maximum turn hits to return"
+    )]
+    limit: usize,
+
+    #[arg(
+        long,
+        default_value_t = 0,
+        help_heading = "Result Size",
+        help = "Number of turn hits to skip"
+    )]
+    offset: usize,
+
+    #[arg(
+        long = "matched-path-limit",
+        default_value_t = DEFAULT_MATCHED_PATH_LIMIT,
+        conflicts_with = "include_all_matched_paths",
+        help_heading = "Result Size",
+        help = "Maximum matched_paths entries per file-search hit"
+    )]
+    matched_path_limit: usize,
+
+    #[arg(
+        long = "match-limit",
+        value_name = "N",
+        help_heading = "Result Size",
+        help = search_match_limit_help()
+    )]
+    match_limit: Option<usize>,
+
+    #[arg(
+        long = "include-all-matched-paths",
+        help_heading = "Result Size",
+        help = "Return every matched path in file-search hits"
+    )]
+    include_all_matched_paths: bool,
+}
+
+/// Shows indexed stats through the canonical JSON read surface.
+#[derive(Debug, Args)]
+struct StatsArgs {
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = ColorArg::Auto,
+        help_heading = "Output",
+        help = "Control ANSI color in JSON output"
+    )]
+    color: ColorArg,
+
+    #[command(subcommand)]
+    command: StatsCommands,
+}
+
+/// Represents the supported canonical stats commands.
+#[derive(Debug, Subcommand)]
+enum StatsCommands {
+    /// Show workspace stats for one rolling day window.
+    Workspace(QueryWorkspaceInsightsArgs),
+    /// Show project stats for one configured project.
+    Project(QueryProjectInsightsArgs),
+    /// Show one turn's derived stats.
+    Turn(QueryTurnInsightsArgs),
+}
+
+/// Resolves Darc identifiers through the canonical JSON read surface.
+#[derive(Debug, Args)]
+struct ResolveArgs {
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = ColorArg::Auto,
+        help_heading = "Output",
+        help = "Control ANSI color in JSON output"
+    )]
+    color: ColorArg,
+
+    #[command(subcommand)]
+    command: ResolveCommands,
+}
+
+/// Represents the supported canonical resolver commands.
+#[derive(Debug, Subcommand)]
+enum ResolveCommands {
+    /// Resolve a full session id or UUID prefix into canonical matches.
+    Session(QueryResolveSessionArgs),
+}
+
+/// Manages configured projects through the canonical project namespace.
+#[derive(Debug, Args)]
+struct ProjectArgs {
+    #[command(subcommand)]
+    command: ProjectCommands,
+}
+
+/// Represents the supported project-management commands.
+#[derive(Debug, Subcommand)]
+enum ProjectCommands {
+    /// Link one configured project's historical paths into the current project.
+    Link(LinkArgs),
+    /// Remove one configured project and its archived/indexed data.
+    Remove(RemoveArgs),
+    /// Rebuild one old project's history into the current renamed project.
+    #[command(name = "rename-from")]
+    RenameFrom(RenameArgs),
+}
+
 /// Queries darc state through the machine-readable read protocol.
 #[derive(Debug, Args)]
 struct QueryArgs {
@@ -532,6 +871,80 @@ struct QuerySessionsArgs {
         help = "Only keep sessions that touched a file path matching this glob"
     )]
     touched_path: Option<String>,
+
+    #[arg(
+        long,
+        default_value_t = 50,
+        help_heading = "Result Size",
+        help = "Maximum sessions to return"
+    )]
+    limit: usize,
+
+    #[arg(
+        long,
+        default_value_t = 0,
+        help_heading = "Result Size",
+        help = "Number of sessions to skip"
+    )]
+    offset: usize,
+}
+
+/// Lists sessions for one configured project through the canonical read surface.
+#[derive(Debug, Args)]
+struct ListSessionsArgs {
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Read from this darc root"
+    )]
+    root: PathBuf,
+
+    #[arg(
+        long = "project-id",
+        help_heading = "Scope",
+        help = "List sessions for this configured project id. Defaults to the project resolved from the current directory"
+    )]
+    project_id: Option<String>,
+
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Scope",
+        help = "Restrict sessions to this provider"
+    )]
+    provider: Option<ProviderArg>,
+
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = SessionListViewArg::Compact,
+        help_heading = "Output",
+        help = "Return full session prompts and final messages or compact previews"
+    )]
+    view: SessionListViewArg,
+
+    #[arg(
+        long,
+        help_heading = "Time Filters",
+        help = "Inclusive latest_turn_at lower bound. Example: `5d` or `2026-04-07T00:00:00Z`"
+    )]
+    since: Option<String>,
+
+    #[arg(
+        long,
+        help_heading = "Time Filters",
+        help = "Exclusive latest_turn_at upper bound. Example: `1d` or `2026-04-08T00:00:00Z`"
+    )]
+    until: Option<String>,
+
+    #[arg(
+        long = "touching",
+        alias = "touched-path",
+        help_heading = "Selection",
+        help = "Only keep sessions that touched a file path matching this glob"
+    )]
+    touching: Option<String>,
 
     #[arg(
         long,
@@ -721,6 +1134,76 @@ struct QueryFilesArgs {
         help = "Return every matched path in path-mode rows"
     )]
     include_all_matched_paths: bool,
+}
+
+/// Lists files for one project or session through the canonical read surface.
+#[derive(Debug, Args)]
+struct ListFilesArgs {
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Read from this darc root"
+    )]
+    root: PathBuf,
+
+    #[arg(
+        long = "project-id",
+        help_heading = "Scope",
+        help = "List files for this configured project id. Defaults to the project resolved from the current directory"
+    )]
+    project_id: Option<String>,
+
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Scope",
+        help = "Restrict file queries to this provider"
+    )]
+    provider: Option<ProviderArg>,
+
+    #[arg(
+        long,
+        value_name = "SESSION_ID",
+        help_heading = "Selection",
+        help = "Return the full per-session file summary for this session id or unambiguous UUID prefix"
+    )]
+    session: Option<String>,
+
+    #[arg(
+        long = "co-touched-with",
+        help_heading = "Selection",
+        help = "Return files touched in the same sessions as this seed path instead of most-touched files"
+    )]
+    co_touched_with: Option<String>,
+
+    #[arg(
+        long,
+        help_heading = "Time Filters",
+        help = "Inclusive started_at lower bound for top/co-touch modes. Example: `5d` or `2026-04-07T00:00:00Z`"
+    )]
+    since: Option<String>,
+
+    #[arg(
+        long,
+        help_heading = "Time Filters",
+        help = "Exclusive started_at upper bound for top/co-touch modes. Example: `1d` or `2026-04-08T00:00:00Z`"
+    )]
+    until: Option<String>,
+
+    #[arg(
+        long,
+        help_heading = "Result Size",
+        help = "Maximum rows to return in top/co-touch modes [default: 50]"
+    )]
+    limit: Option<usize>,
+
+    #[arg(
+        long,
+        help_heading = "Result Size",
+        help = "Number of rows to skip in top/co-touch modes [default: 0]"
+    )]
+    offset: Option<usize>,
 }
 
 /// Queries one session-scoped per-file access summary payload.
@@ -1381,6 +1864,12 @@ fn run_cli(cli: Cli) -> i32 {
         Commands::Init(args) => standard_exit(run_init(args)),
         Commands::Refresh(args) => standard_exit(run_refresh(args)),
         Commands::Status(args) => standard_exit(run_status(args)),
+        Commands::List(args) => query_exit(run_list(args)),
+        Commands::Show(args) => query_exit(run_show(args)),
+        Commands::Search(args) => query_exit(run_search(args)),
+        Commands::Stats(args) => query_exit(run_stats(args)),
+        Commands::Resolve(args) => query_exit(run_resolve(args)),
+        Commands::Project(args) => standard_exit(run_project(args)),
         Commands::Link(args) => standard_exit(run_link(args)),
         Commands::Remove(args) => standard_exit(run_remove(args)),
         Commands::RenameFrom(args) => standard_exit(run_rename_from(args)),
@@ -1395,7 +1884,7 @@ fn run_cli(cli: Cli) -> i32 {
 
 /// Maps Clap parse errors to the correct command-family output format.
 fn clap_error_exit(error: clap::Error, args: &[OsString]) -> i32 {
-    if is_query_invocation(args) && !is_clap_display_request(error.kind()) {
+    if is_json_read_invocation(args) && !is_clap_display_request(error.kind()) {
         eprintln!("{}", format_query_clap_error(&error));
         return error.exit_code();
     }
@@ -1407,9 +1896,12 @@ fn clap_error_exit(error: clap::Error, args: &[OsString]) -> i32 {
     error.exit_code()
 }
 
-/// Returns whether the raw CLI arguments target the query protocol surface.
-fn is_query_invocation(args: &[OsString]) -> bool {
-    args.get(1).and_then(|arg| arg.to_str()) == Some("query")
+/// Returns whether the raw CLI arguments target one JSON read surface.
+fn is_json_read_invocation(args: &[OsString]) -> bool {
+    matches!(
+        args.get(1).and_then(|arg| arg.to_str()),
+        Some("query" | "list" | "show" | "search" | "stats" | "resolve")
+    )
 }
 
 /// Returns whether Clap is carrying a normal display request instead of an error.
@@ -1438,6 +1930,103 @@ fn query_exit(result: Result<()>) -> i32 {
             1
         }
     }
+}
+
+/// Dispatches the supported canonical list commands.
+fn run_list(args: ListArgs) -> Result<()> {
+    let output = QueryOutput::new(args.color);
+    match args.command {
+        ListCommands::Projects(args) => run_query_workspace(&output, args),
+        ListCommands::Sessions(args) => run_query_sessions(&output, args.into()),
+        ListCommands::Turns(args) => run_query_turns(&output, args),
+        ListCommands::Files(args) => run_list_files(&output, args),
+    }
+}
+
+/// Dispatches the supported canonical show commands.
+fn run_show(args: ShowArgs) -> Result<()> {
+    let output = QueryOutput::new(args.color);
+    match args.command {
+        ShowCommands::Workspace(args) => run_query_workspace(&output, args),
+        ShowCommands::Session(args) => run_query_session_bundle(&output, args),
+        ShowCommands::Turn(args) => run_query_turn(&output, args),
+    }
+}
+
+/// Dispatches canonical turn search.
+fn run_search(args: SearchArgs) -> Result<()> {
+    let output = QueryOutput::new(args.color);
+    run_query_search_turns(&output, args.into_query_search_turns_args()?)
+}
+
+/// Dispatches the supported canonical stats commands.
+fn run_stats(args: StatsArgs) -> Result<()> {
+    let output = QueryOutput::new(args.color);
+    match args.command {
+        StatsCommands::Workspace(args) => run_query_workspace_insights(&output, args),
+        StatsCommands::Project(args) => run_query_project_insights(&output, args),
+        StatsCommands::Turn(args) => run_query_turn_insights(&output, args),
+    }
+}
+
+/// Dispatches the supported canonical resolver commands.
+fn run_resolve(args: ResolveArgs) -> Result<()> {
+    let output = QueryOutput::new(args.color);
+    match args.command {
+        ResolveCommands::Session(args) => run_query_resolve_session(&output, args),
+    }
+}
+
+/// Dispatches the supported project-management commands.
+fn run_project(args: ProjectArgs) -> Result<()> {
+    match args.command {
+        ProjectCommands::Link(args) => run_link(args),
+        ProjectCommands::Remove(args) => run_remove(args),
+        ProjectCommands::RenameFrom(args) => run_rename_from(args),
+    }
+}
+
+/// Lists files through either project-wide or session-scoped query payloads.
+fn run_list_files(output: &QueryOutput, args: ListFilesArgs) -> Result<()> {
+    if args.session.is_some() && args.co_touched_with.is_some() {
+        bail!("list files accepts either --session or --co-touched-with, not both");
+    }
+    if let Some(session_id) = args.session {
+        if args.since.is_some()
+            || args.until.is_some()
+            || args.limit.is_some()
+            || args.offset.is_some()
+        {
+            bail!("list files --session does not accept --since, --until, --limit, or --offset");
+        }
+        return run_query_session_files(
+            output,
+            QuerySessionFilesArgs {
+                root: args.root,
+                project_id: args.project_id,
+                provider: args.provider,
+                session_id_arg: None,
+                session_id: Some(session_id),
+            },
+        );
+    }
+    run_query_files(
+        output,
+        QueryFilesArgs {
+            root: args.root,
+            project_id: args.project_id,
+            provider: args.provider,
+            path: None,
+            path_arg: None,
+            co_touched_with: args.co_touched_with,
+            since: args.since,
+            until: args.until,
+            limit: args.limit.unwrap_or(50),
+            offset: args.offset.unwrap_or(0),
+            matched_path_limit: DEFAULT_MATCHED_PATH_LIMIT,
+            include_all_matched_paths: false,
+        },
+    )
 }
 
 /// Dispatches the supported machine-readable query commands.
@@ -2401,6 +2990,112 @@ fn parse_turn_ordinal_arg(value: &str) -> Result<u64> {
     value
         .parse()
         .with_context(|| format!("invalid turn ordinal `{value}`"))
+}
+
+impl From<ListSessionsArgs> for QuerySessionsArgs {
+    /// Converts canonical list-session arguments into the shared query-session shape.
+    fn from(args: ListSessionsArgs) -> Self {
+        Self {
+            root: args.root,
+            project_id: args.project_id,
+            provider: args.provider,
+            view: args.view,
+            since: args.since,
+            until: args.until,
+            touched_path: args.touching,
+            limit: args.limit,
+            offset: args.offset,
+        }
+    }
+}
+
+impl SearchArgs {
+    /// Converts canonical search flags into the existing turn-search query shape.
+    fn into_query_search_turns_args(self) -> Result<QuerySearchTurnsArgs> {
+        let (mode, query_arg, query) = self.resolve_mode_and_query()?;
+        Ok(QuerySearchTurnsArgs {
+            root: self.root,
+            project_id: self.project_id,
+            provider: self.provider,
+            session_id: self.session_id,
+            mode,
+            query_arg,
+            query,
+            include_tool_output: self.include_tool_output,
+            fields: self.fields,
+            excluded_fields: self.excluded_fields,
+            since: self.since,
+            until: self.until,
+            limit: self.limit,
+            offset: self.offset,
+            matched_path_limit: self.matched_path_limit,
+            match_limit: self.match_limit,
+            include_all_matched_paths: self.include_all_matched_paths,
+        })
+    }
+
+    /// Resolves the selected search mode and query text from canonical flags.
+    fn resolve_mode_and_query(&self) -> Result<(SearchModeArg, Option<String>, Option<String>)> {
+        let selected_modes = usize::from(self.literal)
+            + usize::from(self.regex)
+            + usize::from(self.path.is_some())
+            + usize::from(self.file_name.is_some())
+            + usize::from(self.path_fragment.is_some());
+        if selected_modes > 1 {
+            bail!(
+                "pass only one search mode: --literal, --regex, --path, --file-name, or --path-fragment"
+            );
+        }
+
+        if let Some(query) = &self.path {
+            ensure_no_text_query(self.query_arg.as_deref(), self.query.as_deref(), "--path")?;
+            return Ok((SearchModeArg::FilePath, Some(query.clone()), None));
+        }
+        if let Some(query) = &self.file_name {
+            ensure_no_text_query(
+                self.query_arg.as_deref(),
+                self.query.as_deref(),
+                "--file-name",
+            )?;
+            return Ok((SearchModeArg::FileName, Some(query.clone()), None));
+        }
+        if let Some(query) = &self.path_fragment {
+            ensure_no_text_query(
+                self.query_arg.as_deref(),
+                self.query.as_deref(),
+                "--path-fragment",
+            )?;
+            return Ok((SearchModeArg::PathFragment, Some(query.clone()), None));
+        }
+
+        let mode = if self.literal {
+            SearchModeArg::Literal
+        } else if self.regex {
+            SearchModeArg::Regex
+        } else {
+            SearchModeArg::Keyword
+        };
+        let query = required_named_or_positional(
+            "query text",
+            "--query",
+            self.query.as_deref(),
+            "QUERY",
+            self.query_arg.as_deref(),
+        )?;
+        Ok((mode, Some(query.to_owned()), None))
+    }
+}
+
+/// Rejects a positional or --query text value when a value-bearing search mode flag is used.
+fn ensure_no_text_query(
+    query_arg: Option<&str>,
+    query: Option<&str>,
+    mode_flag: &str,
+) -> Result<()> {
+    if query_arg.is_some() || query.is_some() {
+        bail!("do not pass QUERY or --query when using {mode_flag}");
+    }
+    Ok(())
 }
 
 /// Returns whether one string is a full canonical UUID text value.
