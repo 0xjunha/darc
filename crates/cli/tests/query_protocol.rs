@@ -11,7 +11,7 @@ use darc_test_utils::{
     IndexedSessionFixture, IndexedTurnFixture, insert_indexed_session, insert_indexed_turn,
     unique_test_dir, write_file,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 
 const PRIMARY_SESSION_ID: &str = "11111111-1111-4111-8111-111111111111";
 const SECONDARY_SESSION_ID: &str = "11111111-1111-4111-8111-111111111112";
@@ -165,6 +165,47 @@ fn insert_query_fixture_provider_session(
             "completed",
             "[]",
         ),
+    )?;
+    Ok(())
+}
+
+/// Adds one indexed turn that references a configured-repo file by absolute path.
+fn insert_absolute_project_file_read_turn(root: &Path, turn_ordinal: i64) -> Result<()> {
+    let connection = open_index_database(&root.join("index.sqlite"))?;
+    let file_path = root.join("repo/src/lib.rs").to_string_lossy().into_owned();
+    let arguments = json!({ "file_path": file_path }).to_string();
+    let steps_json = json!([
+        {
+            "type": "tool_call",
+            "timestamp": "2026-04-06T10:05:01Z",
+            "call_id": "call-absolute",
+            "name": "Read",
+            "arguments": arguments
+        }
+    ])
+    .to_string();
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            turn_id: Some("turn-absolute"),
+            completed_at: Some("2026-04-06T10:05:05Z"),
+            user_message: "Read one absolute project file",
+            final_answer_at: Some("2026-04-06T10:05:05Z"),
+            final_answer_text: Some("Done."),
+            step_count: 1,
+            tool_call_count: 1,
+            tool_output_count: 0,
+            duration_ms: 2_000,
+            ..IndexedTurnFixture::new(
+                "repo-abc123",
+                SourceKind::Codex,
+                PRIMARY_SESSION_ID,
+                turn_ordinal,
+                "2026-04-06T10:05:00Z",
+                "completed",
+                &steps_json,
+            )
+        },
     )?;
     Ok(())
 }
@@ -1823,6 +1864,35 @@ fn turn_query_can_embed_derived_insights() -> Result<()> {
 }
 
 #[test]
+fn turn_query_embedded_insights_normalize_absolute_project_paths() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-turn-insights-paths")?;
+    insert_absolute_project_file_read_turn(&root, 1)?;
+    let output = run_darc([
+        "query",
+        "turn",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--provider",
+        "codex",
+        "--session-id",
+        PRIMARY_SESSION_ID,
+        "1",
+        "--include-insights",
+    ])?;
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.turn.v1");
+    assert_eq!(value["data"]["insights"]["files"][0]["path"], "src/lib.rs");
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
 fn turn_query_narrative_view_strips_bulky_fields() -> Result<()> {
     let root = create_query_fixture_root("cli-query-turn-narrative")?;
     let output = run_darc([
@@ -2082,6 +2152,47 @@ fn project_insights_query_emits_success_envelope() -> Result<()> {
 }
 
 #[test]
+fn project_insights_query_normalizes_absolute_project_paths() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-project-insights-paths")?;
+    insert_absolute_project_file_read_turn(&root, 1)?;
+    let output = run_darc([
+        "query",
+        "insights",
+        "project",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--provider",
+        "codex",
+        "--turn-limit",
+        "1000",
+    ])?;
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.insights.project.v1");
+    let read_files = value["data"]["most_read_files"]
+        .as_array()
+        .expect("most_read_files should be an array");
+    assert!(
+        read_files
+            .iter()
+            .any(|file| file["path"].as_str() == Some("src/lib.rs"))
+    );
+    let project_root = root.join("repo").to_string_lossy().into_owned();
+    assert!(read_files.iter().all(|file| {
+        file["path"]
+            .as_str()
+            .is_none_or(|path| !path.starts_with(&project_root))
+    }));
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
 fn turn_insights_query_emits_success_envelope() -> Result<()> {
     let root = create_query_fixture_root("cli-query-turn-insights")?;
     let output = run_darc([
@@ -2134,6 +2245,35 @@ fn turn_insights_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["files"][0]["path"], "README.md");
     assert!(value["data"]["files"][0]["repo_relative_path"].is_null());
     assert_eq!(value["data"]["files"][0]["read_count"], 1);
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn turn_insights_query_normalizes_absolute_project_paths() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-turn-insights-paths")?;
+    insert_absolute_project_file_read_turn(&root, 1)?;
+    let output = run_darc([
+        "query",
+        "insights",
+        "turn",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--provider",
+        "codex",
+        "--session-id",
+        PRIMARY_SESSION_ID,
+        "1",
+    ])?;
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.insights.turn.v1");
+    assert_eq!(value["data"]["files"][0]["path"], "src/lib.rs");
 
     remove_root(&root)?;
     Ok(())

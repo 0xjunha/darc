@@ -331,8 +331,10 @@ Today:
 - current shell rules cover common explicit file-target commands such as `sed`, `rg`, `grep`, `cat`, `nl`, `ls`, `find`, `head`, `tail`, `awk`, `jq`, `cp`, `mv`, `rm`, `mkdir`, `touch`, `chmod`, and `apply_patch`
 - shell commands only contribute file analytics when Darc can extract a concrete file-like path from the command text; obvious directory-only operands from list, search, and directory-creation commands are dropped, and implicit cwd-only access plus dynamic shell-variable expansion may still be omitted
 - this layer is best effort, not a perfect trace: archived rollouts record tool payloads and command text, not syscall-level file I/O, so commands such as `git`, `cargo`, inline Python, shell loops, subshells, or helper scripts may touch files without naming every path explicitly
-- paths are currently reported as the extracted path string after Darc drops obvious directory-only operands such as `ls crates`, `find crates ...`, `rg foo crates`, or `mkdir -p scratch/cache`
-- insights file-usage rows expose one `path` field; when a repo-relative label is available it is preferred, otherwise Darc keeps the extracted absolute or original path
+- paths are reported as canonical display paths after Darc drops obvious directory-only operands such as `ls crates`, `find crates ...`, `rg foo crates`, or `mkdir -p scratch/cache`
+- when a configured project root is available, repo-relative paths, `./`-prefixed paths, and absolute paths under that root are normalized to one project-scoped relative display path
+- external absolute paths and other paths that cannot be normalized to the configured project root fall back to the stored extracted path string
+- insights file-usage rows expose one `path` field and merge counts after this display-path normalization, so equivalent in-repo absolute and relative accesses report as one row
 
 These rules may evolve before stabilization.
 
@@ -354,7 +356,7 @@ Today:
 - `tools` comes from normalized per-turn `tool_calls` rows, grouped by `tool_name`
 - `shell_commands` comes from Darc-owned parsing of shell-like `tool_calls` payloads such as `exec_command`, `shell_command`, `shell`, and `Bash`
 - each `shell_commands[*]` item currently reports the originating `tool_name`, the extracted `command_text`, and optional `workdir`
-- `files` comes from normalized per-turn `file_accesses` rows, grouped by `path`, after obvious directory-only operands are filtered during extraction
+- `files` comes from normalized per-turn `file_accesses` rows, grouped by canonical display `path` after project-root normalization and after obvious directory-only operands are filtered during extraction
 - `files[*].read_count` currently counts both `read` and `list` access kinds
 - `files[*].write_count` currently counts both `write` and `edit` access kinds
 - `tools` is ordered by higher `count` first, then `name` ascending
@@ -529,6 +531,8 @@ Today:
 `darc.query.insights.project.v1` echoes nullable `provider`; when present, `daily_time`, tool/file rankings, failures, and total time are computed from that provider's recent turns only.
 
 `turn_limit` echoes the requested inspection bound, `inspected_turn_count` is the number of turns actually included in the aggregate, and `turns_has_more=true` means older matching turns existed beyond the inspected page.
+
+Project insight `most_read_files[*].path` and `most_written_files[*].path` use the same canonical display-path contract as turn insight `files[*].path`: in-repo absolute paths are normalized to project-scoped relative paths when the configured project root is available, equivalent in-repo path forms are merged before counting, and external paths fall back to the stored extracted path.
 
 `darc.query.insights.workspace.v1` keeps `active_session_count` as the total active session count in the window, while `recent_sessions` is a bounded preview described by `recent_session_limit`, `recent_session_offset`, and `recent_sessions_has_more`.
 

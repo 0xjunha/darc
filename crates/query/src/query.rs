@@ -1108,12 +1108,14 @@ enum ToolUsageScope<'a> {
 enum FileUsageScope<'a> {
     Turn {
         project_id: &'a str,
+        project_root: Option<&'a Path>,
         provider: SourceKind,
         session_id: &'a str,
         turn_ordinal: u64,
     },
     RecentProject {
         project_id: &'a str,
+        project_root: Option<&'a Path>,
         provider: Option<SourceKind>,
         limit: usize,
     },

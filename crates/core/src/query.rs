@@ -357,6 +357,7 @@ pub fn query_turn_for_project(
     query_turn_detail(
         &context.root.database_path,
         &context.project.id,
+        Some(context.project.local_path.as_path()),
         provider,
         session_id,
         turn_ordinal,
@@ -389,6 +390,7 @@ pub fn query_session_turn_details(
     query_project_session_turn_details(
         &context.root.database_path,
         &context.project.id,
+        Some(context.project.local_path.as_path()),
         provider,
         session_id,
         options,
@@ -406,6 +408,7 @@ pub fn query_turn_insight_report_for_project(
     query_turn_insights(
         &context.root.database_path,
         &context.project.id,
+        Some(context.project.local_path.as_path()),
         provider,
         session_id,
         turn_ordinal,
@@ -476,6 +479,7 @@ pub fn query_project_insight_report_for_project(
     query_project_insights(
         &context.root.database_path,
         &context.project.id,
+        Some(context.project.local_path.as_path()),
         provider,
         limit,
     )
