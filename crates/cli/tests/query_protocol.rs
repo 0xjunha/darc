@@ -1027,22 +1027,49 @@ fn session_files_query_rejects_invalid_session_id() -> Result<()> {
         "--provider",
         "codex",
         "--session-id",
-        "abc",
+        "not-a-session",
     ])?;
 
     assert!(!output.status.success());
     let value = parse_json(&output.stderr, "stderr")?;
     assert_eq!(value["schema"], "darc.error.v1");
     assert_eq!(value["error"]["code"], "invalid_session_id");
-    assert_eq!(value["error"]["details"]["session"], "abc");
+    assert_eq!(value["error"]["details"]["session"], "not-a-session");
 
     remove_root(&root)?;
     Ok(())
 }
 
 #[test]
-fn session_files_query_rejects_prefix_session_id_with_resolver_hint() -> Result<()> {
+fn session_files_query_accepts_unambiguous_prefix_session_id() -> Result<()> {
     let root = create_query_fixture_root("cli-query-session-files-prefix-id")?;
+    let output = run_darc([
+        "query",
+        "session-files",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--provider",
+        "codex",
+        "--session-id",
+        PRIMARY_SESSION_PREFIX,
+    ])?;
+
+    assert!(output.status.success());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.session_files.v1");
+    assert_eq!(value["data"]["session_id"], PRIMARY_SESSION_ID);
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn session_scoped_query_rejects_ambiguous_prefix_session_id() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-session-prefix-ambiguity")?;
+    insert_query_fixture_session(&root, SECONDARY_SESSION_ID, "2026-04-06T10:05:00Z")?;
+
     let output = run_darc([
         "query",
         "session-files",
@@ -1059,13 +1086,14 @@ fn session_files_query_rejects_prefix_session_id_with_resolver_hint() -> Result<
     assert!(!output.status.success());
     let value = parse_json(&output.stderr, "stderr")?;
     assert_eq!(value["schema"], "darc.error.v1");
-    assert_eq!(value["error"]["code"], "unknown_session");
-    assert_eq!(value["error"]["details"]["session"], PRIMARY_SESSION_PREFIX);
-    assert_eq!(value["error"]["details"]["looks_like_prefix"], true);
-    assert!(
-        value["error"]["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("resolve-session"))
+    assert_eq!(value["error"]["code"], "ambiguous_session");
+    assert_eq!(value["error"]["details"]["query"], PRIMARY_SESSION_PREFIX);
+    assert_eq!(
+        value["error"]["details"]["matches"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
     );
 
     remove_root(&root)?;
@@ -1888,7 +1916,8 @@ fn turns_query_help_lists_positional_session_and_optional_provider() -> Result<(
     assert!(output.stderr.is_empty());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("--session-id <SESSION_ID>"));
-    assert!(stdout.contains("--provider <PROVIDER>      Disambiguate a cross-provider session id"));
+    assert!(stdout.contains("--provider <PROVIDER>"));
+    assert!(stdout.contains("Disambiguate a session id or UUID prefix by provider"));
     assert!(stdout.contains("required unless --session-id is set"));
     Ok(())
 }
@@ -2112,7 +2141,7 @@ fn search_turns_query_emits_keyword_search_envelope() -> Result<()> {
 }
 
 #[test]
-fn search_turns_query_allows_cross_provider_session_id_filter() -> Result<()> {
+fn search_turns_query_rejects_cross_provider_session_id_filter() -> Result<()> {
     let root = create_query_fixture_root("cli-query-search-cross-provider-session")?;
     insert_query_fixture_provider_session(
         &root,
@@ -2134,20 +2163,11 @@ fn search_turns_query_allows_cross_provider_session_id_filter() -> Result<()> {
         PRIMARY_SESSION_ID,
     ])?;
 
-    assert!(output.status.success());
-    assert!(output.stderr.is_empty());
-    let value = parse_json(&output.stdout, "stdout")?;
-    assert_eq!(value["schema"], "darc.query.search.turns.v1");
-    assert_eq!(value["data"]["provider"], Value::Null);
-    assert_eq!(value["data"]["session_id"], PRIMARY_SESSION_ID);
-    let mut providers = value["data"]["hits"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|hit| hit["provider"].as_str().unwrap())
-        .collect::<Vec<_>>();
-    providers.sort_unstable();
-    assert_eq!(providers, vec!["claude", "codex"]);
+    assert!(!output.status.success());
+    let value = parse_json(&output.stderr, "stderr")?;
+    assert_eq!(value["schema"], "darc.error.v1");
+    assert_eq!(value["error"]["code"], "ambiguous_session");
+    assert_eq!(value["error"]["details"]["query"], PRIMARY_SESSION_ID);
 
     remove_root(&root)?;
     Ok(())
@@ -2521,7 +2541,7 @@ fn turn_insights_query_missing_turn_emits_error_envelope() -> Result<()> {
 }
 
 #[test]
-fn turns_query_rejects_prefix_session_id() -> Result<()> {
+fn turns_query_accepts_unambiguous_prefix_session_id() -> Result<()> {
     let root = create_query_fixture_root("cli-query-turns-prefix-id")?;
     let output = run_darc([
         "query",
@@ -2536,11 +2556,10 @@ fn turns_query_rejects_prefix_session_id() -> Result<()> {
         PRIMARY_SESSION_PREFIX,
     ])?;
 
-    assert!(!output.status.success());
-    let value = parse_json(&output.stderr, "stderr")?;
-    assert_eq!(value["schema"], "darc.error.v1");
-    assert_eq!(value["error"]["code"], "unknown_session");
-    assert_eq!(value["error"]["details"]["session"], PRIMARY_SESSION_PREFIX);
+    assert!(output.status.success());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.turns.v1");
+    assert_eq!(value["data"]["session_id"], PRIMARY_SESSION_ID);
 
     remove_root(&root)?;
     Ok(())
@@ -2674,7 +2693,7 @@ fn turn_query_rejects_invalid_session_id() -> Result<()> {
         "--provider",
         "codex",
         "--session-id",
-        "abc",
+        "not-a-session",
         "--turn-ordinal",
         "0",
     ])?;
@@ -2683,14 +2702,14 @@ fn turn_query_rejects_invalid_session_id() -> Result<()> {
     let value = parse_json(&output.stderr, "stderr")?;
     assert_eq!(value["schema"], "darc.error.v1");
     assert_eq!(value["error"]["code"], "invalid_session_id");
-    assert_eq!(value["error"]["details"]["session"], "abc");
+    assert_eq!(value["error"]["details"]["session"], "not-a-session");
 
     remove_root(&root)?;
     Ok(())
 }
 
 #[test]
-fn turn_insights_query_rejects_prefix_session_id() -> Result<()> {
+fn turn_insights_query_accepts_unambiguous_prefix_session_id() -> Result<()> {
     let root = create_query_fixture_root("cli-query-turn-insights-prefix-id")?;
     let output = run_darc([
         "query",
@@ -2708,11 +2727,10 @@ fn turn_insights_query_rejects_prefix_session_id() -> Result<()> {
         "0",
     ])?;
 
-    assert!(!output.status.success());
-    let value = parse_json(&output.stderr, "stderr")?;
-    assert_eq!(value["schema"], "darc.error.v1");
-    assert_eq!(value["error"]["code"], "unknown_session");
-    assert_eq!(value["error"]["details"]["session"], PRIMARY_SESSION_PREFIX);
+    assert!(output.status.success());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.insights.turn.v1");
+    assert_eq!(value["data"]["session_id"], PRIMARY_SESSION_ID);
 
     remove_root(&root)?;
     Ok(())
@@ -2937,9 +2955,9 @@ fn resolve_session_pick_one_feeds_session_bundle() -> Result<()> {
         "--session-id",
         PRIMARY_SESSION_PREFIX,
     ])?;
-    assert!(!prefix_bundle.status.success());
-    let prefix_value = parse_json(&prefix_bundle.stderr, "stderr")?;
-    assert_eq!(prefix_value["error"]["code"], "unknown_session");
+    assert!(prefix_bundle.status.success());
+    let prefix_value = parse_json(&prefix_bundle.stdout, "stdout")?;
+    assert_eq!(prefix_value["data"]["session_id"], PRIMARY_SESSION_ID);
 
     remove_root(&root)?;
     Ok(())

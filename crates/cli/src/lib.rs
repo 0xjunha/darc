@@ -985,13 +985,13 @@ struct QueryTurnsArgs {
         long,
         value_enum,
         help_heading = "Scope",
-        help = "Disambiguate a cross-provider session id"
+        help = "Disambiguate a session id or UUID prefix by provider"
     )]
     provider: Option<ProviderArg>,
 
     #[arg(
         value_name = "SESSION_ID",
-        help = "Full session id to list turns for; required unless --session-id is set"
+        help = "Session id or unambiguous UUID prefix to list turns for; required unless --session-id is set"
     )]
     session_id_arg: Option<String>,
 
@@ -999,7 +999,7 @@ struct QueryTurnsArgs {
         long = "session-id",
         value_name = "SESSION_ID",
         help_heading = "Identity",
-        help = "Full session id to list turns for; alternative to positional SESSION_ID"
+        help = "Session id or unambiguous UUID prefix to list turns for; alternative to positional SESSION_ID"
     )]
     session_id: Option<String>,
 
@@ -1228,13 +1228,13 @@ struct QuerySessionFilesArgs {
         long,
         value_enum,
         help_heading = "Scope",
-        help = "Disambiguate a cross-provider session id"
+        help = "Disambiguate a session id or UUID prefix by provider"
     )]
     provider: Option<ProviderArg>,
 
     #[arg(
         value_name = "SESSION_ID",
-        help = "Query this session id; required unless --session-id is set"
+        help = "Query this session id or unambiguous UUID prefix; required unless --session-id is set"
     )]
     session_id_arg: Option<String>,
 
@@ -1242,7 +1242,7 @@ struct QuerySessionFilesArgs {
         long = "session-id",
         value_name = "SESSION_ID",
         help_heading = "Identity",
-        help = "Query this session id; alternative to positional SESSION_ID"
+        help = "Query this session id or unambiguous UUID prefix; alternative to positional SESSION_ID"
     )]
     session_id: Option<String>,
 }
@@ -1269,13 +1269,13 @@ struct QuerySessionBundleArgs {
         long,
         value_enum,
         help_heading = "Scope",
-        help = "Disambiguate a cross-provider session id"
+        help = "Disambiguate a session id or UUID prefix by provider"
     )]
     provider: Option<ProviderArg>,
 
     #[arg(
         value_name = "SESSION_ID",
-        help = "Query this session id; required unless --session-id is set"
+        help = "Query this session id or unambiguous UUID prefix; required unless --session-id is set"
     )]
     session_id_arg: Option<String>,
 
@@ -1283,7 +1283,7 @@ struct QuerySessionBundleArgs {
         long = "session-id",
         value_name = "SESSION_ID",
         help_heading = "Identity",
-        help = "Query this session id; alternative to positional SESSION_ID"
+        help = "Query this session id or unambiguous UUID prefix; alternative to positional SESSION_ID"
     )]
     session_id: Option<String>,
 
@@ -1360,13 +1360,13 @@ struct QueryTurnArgs {
         long,
         value_enum,
         help_heading = "Scope",
-        help = "Disambiguate a cross-provider session id"
+        help = "Disambiguate a session id or UUID prefix by provider"
     )]
     provider: Option<ProviderArg>,
 
     #[arg(
         value_name = "SESSION_ID",
-        help = "Query this session id; required unless --session-id is set"
+        help = "Query this session id or unambiguous UUID prefix; required unless --session-id is set"
     )]
     session_id_arg: Option<String>,
 
@@ -1380,7 +1380,7 @@ struct QueryTurnArgs {
         long = "session-id",
         value_name = "SESSION_ID",
         help_heading = "Identity",
-        help = "Query this session id; alternative to positional SESSION_ID"
+        help = "Query this session id or unambiguous UUID prefix; alternative to positional SESSION_ID"
     )]
     session_id: Option<String>,
 
@@ -1478,7 +1478,7 @@ struct QuerySearchTurnsArgs {
     #[arg(
         long = "session-id",
         help_heading = "Scope",
-        help = "Restrict search to this session id"
+        help = "Restrict search to this session id or unambiguous UUID prefix"
     )]
     session_id: Option<String>,
 
@@ -1699,13 +1699,13 @@ struct QueryTurnInsightsArgs {
         long,
         value_enum,
         help_heading = "Scope",
-        help = "Disambiguate a cross-provider session id"
+        help = "Disambiguate a session id or UUID prefix by provider"
     )]
     provider: Option<ProviderArg>,
 
     #[arg(
         value_name = "SESSION_ID",
-        help = "Query this session id; required unless --session-id is set"
+        help = "Query this session id or unambiguous UUID prefix; required unless --session-id is set"
     )]
     session_id_arg: Option<String>,
 
@@ -1719,7 +1719,7 @@ struct QueryTurnInsightsArgs {
         long = "session-id",
         value_name = "SESSION_ID",
         help_heading = "Identity",
-        help = "Query this session id; alternative to positional SESSION_ID"
+        help = "Query this session id or unambiguous UUID prefix; alternative to positional SESSION_ID"
     )]
     session_id: Option<String>,
 
