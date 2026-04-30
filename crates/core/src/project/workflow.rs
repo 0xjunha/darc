@@ -10,15 +10,52 @@ use super::{
     registry::{registered_projects, write_shared_config},
     remove::{remove_project_by_id, remove_project_named},
     types::{
-        LinkReport, RefreshAllBestEffortReport, RefreshAllReport, RefreshOptions,
+        LinkReport, RefreshAllBestEffortReport, RefreshAllReport, RefreshOptions, RefreshProgress,
         RefreshProjectAttempt, RefreshProjectFailure, RefreshReport, RemoveReport, RenameReport,
     },
 };
 use crate::{
+    active_project::{ActiveProject, load_active_project},
+    config::ProjectConfig,
     default_root_path,
-    index::{index_project_sessions_from, selected_index_providers},
-    sync::{SyncOptions, execute_sync, prepare_sync_from},
+    index::{index_project_sessions_for_active_project, selected_index_providers},
+    sync::{SyncOptions, execute_sync, prepare_sync_for_active_project},
 };
+
+/// Stores display identity for one project refresh progress entry.
+#[derive(Debug, Clone)]
+struct RefreshProjectProgress {
+    project_name: String,
+    project_root: PathBuf,
+    project_index: usize,
+    total_projects: usize,
+}
+
+impl RefreshProjectProgress {
+    /// Builds one progress identity from a configured project row.
+    fn from_project(project: &ProjectConfig, project_index: usize, total_projects: usize) -> Self {
+        Self {
+            project_name: project.name.clone(),
+            project_root: project.local_path.clone(),
+            project_index,
+            total_projects,
+        }
+    }
+
+    /// Builds one progress identity from a resolved active project.
+    fn from_active_project(
+        active_project: &ActiveProject,
+        project_index: usize,
+        total_projects: usize,
+    ) -> Self {
+        Self {
+            project_name: active_project.project.name.clone(),
+            project_root: active_project.current_root.clone(),
+            project_index,
+            total_projects,
+        }
+    }
+}
 
 /// Links one named project's historical paths into the active project.
 pub fn link_project(root: Option<PathBuf>, source_name: &str) -> Result<LinkReport> {
@@ -58,6 +95,23 @@ pub fn refresh_project(root: Option<PathBuf>, options: RefreshOptions) -> Result
     )
 }
 
+/// Refreshes one active project while reporting neutral workflow progress events.
+pub fn refresh_project_with_progress(
+    root: Option<PathBuf>,
+    options: RefreshOptions,
+    mut progress: impl FnMut(RefreshProgress),
+) -> Result<RefreshReport> {
+    let current_dir =
+        env::current_dir().context("unable to resolve the current working directory")?;
+    refresh_project_from_with_progress(
+        &current_dir,
+        root.unwrap_or_else(default_root_path),
+        &options,
+        None,
+        &mut progress,
+    )
+}
+
 /// Refreshes every registered project by running sync and then index for each one.
 pub fn refresh_all_projects(
     root: Option<PathBuf>,
@@ -70,10 +124,22 @@ pub fn refresh_all_projects(
     }
 
     let mut reports = Vec::with_capacity(projects.len());
-    for project in projects {
+    let total_projects = projects.len();
+    let mut progress = |_| {};
+    for (index, project) in projects.into_iter().enumerate() {
         reports.push(
-            refresh_project_from(&project.local_path, root.clone(), &options)
-                .with_context(|| format!("failed to refresh project `{}`", project.name))?,
+            refresh_project_from_with_progress(
+                &project.local_path,
+                root.clone(),
+                &options,
+                Some(RefreshProjectProgress::from_project(
+                    &project,
+                    index + 1,
+                    total_projects,
+                )),
+                &mut progress,
+            )
+            .with_context(|| format!("failed to refresh project `{}`", project.name))?,
         );
     }
 
@@ -85,15 +151,40 @@ pub fn refresh_all_projects_best_effort(
     root: Option<PathBuf>,
     options: RefreshOptions,
 ) -> Result<RefreshAllBestEffortReport> {
+    let mut progress = |_| {};
+    refresh_all_projects_best_effort_with_progress(root, options, &mut progress)
+}
+
+/// Refreshes every registered project while reporting neutral workflow progress events.
+pub fn refresh_all_projects_best_effort_with_progress(
+    root: Option<PathBuf>,
+    options: RefreshOptions,
+    mut progress: impl FnMut(RefreshProgress),
+) -> Result<RefreshAllBestEffortReport> {
     let root = root.unwrap_or_else(default_root_path);
     let projects = registered_projects(&root)?;
     if projects.is_empty() {
         bail!("no configured darc projects found under {}", root.display());
     }
 
+    progress(RefreshProgress::WorkspaceStarted {
+        total_projects: projects.len(),
+    });
+
     let mut reports = Vec::with_capacity(projects.len());
-    for project in projects {
-        let attempt = match refresh_project_from(&project.local_path, root.clone(), &options) {
+    let total_projects = projects.len();
+    for (index, project) in projects.into_iter().enumerate() {
+        let attempt = match refresh_project_from_with_progress(
+            &project.local_path,
+            root.clone(),
+            &options,
+            Some(RefreshProjectProgress::from_project(
+                &project,
+                index + 1,
+                total_projects,
+            )),
+            &mut progress,
+        ) {
             Ok(report) => RefreshProjectAttempt::Refreshed(Box::new(report)),
             Err(error) => RefreshProjectAttempt::Failed(RefreshProjectFailure {
                 project_name: project.name.clone(),
@@ -168,18 +259,94 @@ pub(crate) fn refresh_project_from(
     root: PathBuf,
     options: &RefreshOptions,
 ) -> Result<RefreshReport> {
-    let sync = execute_sync(prepare_sync_from(
+    let mut progress = |_| {};
+    refresh_project_from_with_progress(current_dir, root, options, None, &mut progress)
+}
+
+/// Runs sync and index while reporting neutral workflow progress events.
+fn refresh_project_from_with_progress(
+    current_dir: &Path,
+    root: PathBuf,
+    options: &RefreshOptions,
+    progress_project: Option<RefreshProjectProgress>,
+    progress: &mut impl FnMut(RefreshProgress),
+) -> Result<RefreshReport> {
+    let mut active_project = None;
+    let project = match progress_project {
+        Some(project) => project,
+        None => {
+            let active = load_active_project(current_dir, &root)?;
+            let project = RefreshProjectProgress::from_active_project(&active, 1, 1);
+            active_project = Some(active);
+            project
+        }
+    };
+
+    progress(RefreshProgress::ProjectStarted {
+        project_name: project.project_name.clone(),
+        project_root: project.project_root.clone(),
+        project_index: project.project_index,
+        total_projects: project.total_projects,
+    });
+
+    let result = refresh_loaded_project_from(
         current_dir,
-        root.clone(),
+        root,
+        options,
+        active_project,
+        &project.project_name,
+        progress,
+    );
+    match &result {
+        Ok(_) => progress(RefreshProgress::ProjectFinished {
+            project_name: project.project_name.clone(),
+        }),
+        Err(_) => progress(RefreshProgress::ProjectFailed {
+            project_name: project.project_name.clone(),
+        }),
+    }
+    result
+}
+
+/// Runs sync and index for one project, reusing a resolved active project when available.
+fn refresh_loaded_project_from(
+    current_dir: &Path,
+    root: PathBuf,
+    options: &RefreshOptions,
+    active_project: Option<ActiveProject>,
+    project_name: &str,
+    progress: &mut impl FnMut(RefreshProgress),
+) -> Result<RefreshReport> {
+    let active_project = match active_project {
+        Some(active_project) => active_project,
+        None => load_active_project(current_dir, &root)?,
+    };
+    let index_project = active_project.clone();
+
+    progress(RefreshProgress::SyncStarted {
+        project_name: project_name.to_owned(),
+    });
+    let sync = execute_sync(prepare_sync_for_active_project(
+        active_project,
         SyncOptions {
             provider_filter: options.provider_filter.clone(),
         },
     )?)?;
-    let index = index_project_sessions_from(
-        current_dir,
+    progress(RefreshProgress::SyncFinished {
+        project_name: project_name.to_owned(),
+    });
+
+    progress(RefreshProgress::IndexStarted {
+        project_name: project_name.to_owned(),
+    });
+    let index = index_project_sessions_for_active_project(
+        index_project,
         root,
         &selected_index_providers(&options.provider_filter),
     )?;
+    progress(RefreshProgress::IndexFinished {
+        project_name: project_name.to_owned(),
+    });
 
     Ok(RefreshReport { sync, index })
 }

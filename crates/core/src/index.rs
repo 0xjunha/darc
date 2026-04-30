@@ -9,7 +9,10 @@ use darc_index::{INDEX_DB_FILE_NAME, ProjectIndexRequest, index_project_archived
 pub use darc_index::{IndexReport, SkippedCodexRollout, SkippedRollout};
 use darc_paths::SourceKind;
 
-use crate::{active_project::load_active_project, default_root_path};
+use crate::{
+    active_project::{ActiveProject, load_active_project},
+    default_root_path,
+};
 
 /// Collects optional provider filters for the indexing workflow.
 #[derive(Debug, Clone, Default)]
@@ -45,6 +48,15 @@ pub(crate) fn index_project_sessions_from(
     providers: &[SourceKind],
 ) -> Result<IndexReport> {
     let active_project = load_active_project(current_dir, &root)?;
+    index_project_sessions_for_active_project(active_project, root, providers)
+}
+
+/// Indexes archived provider rollouts for one already-resolved active project.
+pub(crate) fn index_project_sessions_for_active_project(
+    active_project: ActiveProject,
+    root: PathBuf,
+    providers: &[SourceKind],
+) -> Result<IndexReport> {
     let request = ProjectIndexRequest {
         project_id: active_project.project.id,
         project_name: active_project.project.name,

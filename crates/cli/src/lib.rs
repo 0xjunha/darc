@@ -7,7 +7,7 @@ use std::{
     env,
     ffi::OsString,
     fs::{self, File, OpenOptions},
-    io::{self, IsTerminal},
+    io::{self, IsTerminal, Write},
     path::{Path, PathBuf},
     sync::mpsc,
     time::{Duration, Instant},
@@ -36,11 +36,12 @@ use darc_core::query::{
 };
 use darc_core::{
     IndexOptions, IndexReport, InitDraft, RefreshAllBestEffortReport, RefreshOptions,
-    RefreshProjectAttempt, RefreshProjectFailure, RefreshReport, SkippedRollout, SourceKind,
-    StatusProject, StatusSource, StatusSyncCheck, StatusSyncPlan, SyncOptions, SyncReport,
-    WorkspaceStatusReport, default_root_path, execute_sync, index_project_sessions, link_project,
-    prepare_init, prepare_sync, refresh_all_projects_best_effort, refresh_project, remove_project,
-    rename_project, status_project, status_workspace, write_init,
+    RefreshProgress, RefreshProjectAttempt, RefreshProjectFailure, RefreshReport, SkippedRollout,
+    SourceKind, StatusProject, StatusSource, StatusSyncCheck, StatusSyncPlan, SyncOptions,
+    SyncReport, WorkspaceStatusReport, default_root_path, execute_sync, index_project_sessions,
+    link_project, prepare_init, prepare_sync, refresh_all_projects_best_effort_with_progress,
+    refresh_project_with_progress, remove_project, rename_project, status_project,
+    status_workspace, write_init,
 };
 use darc_paths::{
     current_utc_timestamp, resolve_query_time_bound as resolve_shared_query_time_bound,
@@ -1987,6 +1988,110 @@ impl HumanStyle {
     }
 }
 
+/// Renders refresh progress events for interactive terminals.
+struct RefreshProgressPrinter<W> {
+    writer: W,
+    style: HumanStyle,
+    enabled: bool,
+    total_projects: usize,
+}
+
+impl RefreshProgressPrinter<io::Stderr> {
+    /// Builds one refresh progress printer for the current stderr stream.
+    fn stderr() -> Self {
+        let term = env::var("TERM").ok();
+        Self::new(
+            io::stderr(),
+            HumanStyle::stderr(),
+            io::stderr().is_terminal() && term.as_deref() != Some("dumb"),
+        )
+    }
+}
+
+impl<W: Write> RefreshProgressPrinter<W> {
+    /// Builds one refresh progress printer from resolved terminal facts.
+    fn new(writer: W, style: HumanStyle, enabled: bool) -> Self {
+        Self {
+            writer,
+            style,
+            enabled,
+            total_projects: 1,
+        }
+    }
+
+    /// Records one refresh progress event, ignoring presentation write failures.
+    fn record(&mut self, event: RefreshProgress) {
+        if self.enabled {
+            let _ = self.write_event(event);
+            let _ = self.writer.flush();
+        }
+    }
+
+    /// Writes one refresh progress event to the configured stream.
+    fn write_event(&mut self, event: RefreshProgress) -> io::Result<()> {
+        match event {
+            RefreshProgress::WorkspaceStarted { total_projects } => {
+                self.total_projects = total_projects;
+                writeln!(
+                    self.writer,
+                    "Refreshing workspace ({} project{})",
+                    self.style.count(total_projects),
+                    if total_projects == 1 { "" } else { "s" }
+                )
+            }
+            RefreshProgress::ProjectStarted {
+                project_name,
+                project_root: _project_root,
+                project_index,
+                total_projects,
+            } => {
+                self.total_projects = total_projects;
+                if total_projects > 1 {
+                    writeln!(
+                        self.writer,
+                        "  [{}/{}] {}",
+                        self.style.count(project_index),
+                        self.style.count(total_projects),
+                        self.style.bold(project_name)
+                    )
+                } else {
+                    writeln!(self.writer, "Refreshing {}", self.style.bold(project_name))
+                }
+            }
+            RefreshProgress::SyncStarted { project_name: _ } => {
+                writeln!(self.writer, "{}[1/2] Syncing archive...", self.indent())
+            }
+            RefreshProgress::SyncFinished { project_name: _ } => Ok(()),
+            RefreshProgress::IndexStarted { project_name: _ } => {
+                writeln!(self.writer, "{}[2/2] Indexing sessions...", self.indent())
+            }
+            RefreshProgress::IndexFinished { project_name: _ } => Ok(()),
+            RefreshProgress::ProjectFinished { project_name: _ } => {
+                writeln!(self.writer, "{}{}", self.indent(), self.style.ok("done"))?;
+                writeln!(self.writer)
+            }
+            RefreshProgress::ProjectFailed { project_name: _ } => {
+                writeln!(
+                    self.writer,
+                    "{}{}",
+                    self.indent(),
+                    self.style.error("failed")
+                )?;
+                writeln!(self.writer)
+            }
+        }
+    }
+
+    /// Returns the current phase indentation for project or workspace progress.
+    fn indent(&self) -> &'static str {
+        if self.total_projects > 1 {
+            "    "
+        } else {
+            "  "
+        }
+    }
+}
+
 /// Returns whether automatic terminal color should be enabled.
 fn should_auto_color_output(is_terminal: bool, no_color: bool, term: Option<&str>) -> bool {
     is_terminal && !no_color && term != Some("dumb")
@@ -2958,15 +3063,22 @@ fn run_refresh_once(request: &RefreshRunRequest) -> Result<()> {
     let options = RefreshOptions {
         provider_filter: request.provider_filter.clone(),
     };
+    let mut progress = RefreshProgressPrinter::stderr();
 
     if request.all {
-        let report = refresh_all_projects_best_effort(Some(request.root.clone()), options)?;
+        let report = refresh_all_projects_best_effort_with_progress(
+            Some(request.root.clone()),
+            options,
+            |event| progress.record(event),
+        )?;
         print_refresh_all_report(&report);
         return refresh_all_exit_status(&report);
     }
 
-    let report = refresh_project(Some(request.root.clone()), options)
-        .map_err(add_init_hint_for_unconfigured_project)?;
+    let report = refresh_project_with_progress(Some(request.root.clone()), options, |event| {
+        progress.record(event);
+    })
+    .map_err(add_init_hint_for_unconfigured_project)?;
     print_refresh_report(&report);
     Ok(())
 }
