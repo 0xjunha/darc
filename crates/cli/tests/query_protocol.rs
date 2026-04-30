@@ -1101,6 +1101,45 @@ fn session_scoped_query_rejects_ambiguous_prefix_session_id() -> Result<()> {
 }
 
 #[test]
+fn session_scoped_query_reports_truncated_ambiguous_prefix_session_id() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-session-prefix-truncated")?;
+    for suffix in 0_u16..60 {
+        let session_id = format!("11111111-1111-4111-8111-{suffix:012x}");
+        insert_query_fixture_session(&root, &session_id, "2026-04-07T10:00:00Z")?;
+    }
+
+    let output = run_darc([
+        "query",
+        "session-files",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--provider",
+        "codex",
+        "--session-id",
+        PRIMARY_SESSION_PREFIX,
+    ])?;
+
+    assert!(!output.status.success());
+    let value = parse_json(&output.stderr, "stderr")?;
+    assert_eq!(value["schema"], "darc.error.v1");
+    assert_eq!(value["error"]["code"], "ambiguous_session");
+    assert_eq!(value["error"]["details"]["query"], PRIMARY_SESSION_PREFIX);
+    assert_eq!(value["error"]["details"]["truncated"], true);
+    assert_eq!(
+        value["error"]["details"]["matches"]
+            .as_array()
+            .unwrap()
+            .len(),
+        50
+    );
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
 fn session_files_query_rejects_unknown_uuid_session_id() -> Result<()> {
     let root = create_query_fixture_root("cli-query-session-files-unknown-id")?;
     let output = run_darc([
@@ -2141,7 +2180,7 @@ fn search_turns_query_emits_keyword_search_envelope() -> Result<()> {
 }
 
 #[test]
-fn search_turns_query_rejects_cross_provider_session_id_filter() -> Result<()> {
+fn search_turns_query_accepts_cross_provider_full_session_id_filter() -> Result<()> {
     let root = create_query_fixture_root("cli-query-search-cross-provider-session")?;
     insert_query_fixture_provider_session(
         &root,
@@ -2163,11 +2202,58 @@ fn search_turns_query_rejects_cross_provider_session_id_filter() -> Result<()> {
         PRIMARY_SESSION_ID,
     ])?;
 
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.search.turns.v1");
+    assert_eq!(value["data"]["session_id"], PRIMARY_SESSION_ID);
+    let mut providers = value["data"]["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hit| hit["provider"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    providers.sort_unstable();
+    assert_eq!(providers, vec!["claude", "codex"]);
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn search_turns_query_reports_truncated_ambiguous_prefix_filter() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-search-prefix-truncated")?;
+    for suffix in 0_u16..60 {
+        let session_id = format!("11111111-1111-4111-8111-{suffix:012x}");
+        insert_query_fixture_session(&root, &session_id, "2026-04-07T10:00:00Z")?;
+    }
+
+    let output = run_darc([
+        "query",
+        "search",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "Inspect",
+        "--session-id",
+        PRIMARY_SESSION_PREFIX,
+    ])?;
+
     assert!(!output.status.success());
     let value = parse_json(&output.stderr, "stderr")?;
     assert_eq!(value["schema"], "darc.error.v1");
     assert_eq!(value["error"]["code"], "ambiguous_session");
-    assert_eq!(value["error"]["details"]["query"], PRIMARY_SESSION_ID);
+    assert_eq!(value["error"]["details"]["query"], PRIMARY_SESSION_PREFIX);
+    assert_eq!(value["error"]["details"]["truncated"], true);
+    assert_eq!(
+        value["error"]["details"]["matches"]
+            .as_array()
+            .unwrap()
+            .len(),
+        50
+    );
 
     remove_root(&root)?;
     Ok(())
@@ -2614,9 +2700,8 @@ fn search_turns_query_rejects_tool_output_flag_for_keyword_mode() -> Result<()> 
 
     assert!(!output.status.success());
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains(
-            "--include-tool-output is only supported with --mode literal or --mode regex"
-        )
+        String::from_utf8_lossy(&output.stderr)
+            .contains("--include-tool-output is only supported with literal or regex search")
     );
 
     let match_limit_output = run_darc([
@@ -2638,8 +2723,36 @@ fn search_turns_query_rejects_tool_output_flag_for_keyword_mode() -> Result<()> 
     assert!(!match_limit_output.status.success());
     assert!(
         String::from_utf8_lossy(&match_limit_output.stderr)
-            .contains("--match-limit is only supported with --mode literal or --mode regex")
+            .contains("--match-limit is only supported with literal or regex search")
     );
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn canonical_search_errors_use_canonical_mode_language() -> Result<()> {
+    let root = create_query_fixture_root("cli-canonical-search-mode-error")?;
+    let output = run_darc([
+        "search",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--path",
+        "README.md",
+        "--field",
+        "user-message",
+    ])?;
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            "--field and --exclude-field are only supported with literal or regex search"
+        )
+    );
+    assert!(!stderr.contains("--mode literal"));
 
     remove_root(&root)?;
     Ok(())

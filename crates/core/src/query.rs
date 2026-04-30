@@ -246,7 +246,7 @@ pub fn resolve_query_search_session_id_for_project(
     session_id: &str,
 ) -> Result<String> {
     let context = &project.context;
-    validate_project_session_filter_id(
+    validate_project_search_session_filter_id(
         &context.root.database_path,
         &context.project.id,
         provider,
@@ -645,20 +645,30 @@ impl QueryProtocolError {
     }
 
     /// Builds one structured ambiguity error for one data command.
-    pub fn ambiguous_data_session(input: &str, matches: Vec<ResolvedSessionMatch>) -> Self {
+    pub fn ambiguous_data_session(
+        input: &str,
+        matches: Vec<ResolvedSessionMatch>,
+        truncated: bool,
+    ) -> Self {
         let match_count = matches.len();
         let provider_count = matches
             .iter()
             .map(|candidate| candidate.provider)
             .collect::<BTreeSet<_>>()
             .len();
-        let message = format!(
-            "Session id or prefix `{input}` matched {match_count} sessions across {provider_count} providers in this project. Use a longer prefix or pass --provider."
-        );
+        let message = if truncated {
+            format!(
+                "Session id or prefix `{input}` matched at least {match_count} sessions across {provider_count} providers in this project. Use a longer prefix or pass --provider."
+            )
+        } else {
+            format!(
+                "Session id or prefix `{input}` matched {match_count} sessions across {provider_count} providers in this project. Use a longer prefix or pass --provider."
+            )
+        };
         Self::AmbiguousSession {
             query: input.to_owned(),
             matches,
-            truncated: false,
+            truncated,
             message,
         }
     }
@@ -872,8 +882,8 @@ fn validate_project_session_id(
     Ok(validate_project_session_ref(index_db_path, project_id, provider, session_id)?.session_id)
 }
 
-/// Validates one session-id filter and resolves an unambiguous canonical stored session id.
-fn validate_project_session_filter_id(
+/// Validates one search session-id filter and resolves a canonical stored session id.
+fn validate_project_search_session_filter_id(
     index_db_path: &Path,
     project_id: &str,
     provider: Option<SourceKind>,
@@ -886,16 +896,26 @@ fn validate_project_session_filter_id(
         }
         SessionIdShape::FullUuid | SessionIdShape::Prefix => {}
     }
-    let matches =
-        lookup_project_session_matches(index_db_path, project_id, provider, session_id, 2)?;
+    let is_full_uuid = is_full_uuid_text(session_id);
+    let (matches, truncated) =
+        lookup_project_session_matches_for_error(index_db_path, project_id, provider, session_id)?;
     match matches.as_slice() {
-        [] => Err(QueryProtocolError::unknown_data_session(
-            session_id,
-            !is_full_uuid_text(session_id),
-        )
-        .into()),
+        [] => Err(QueryProtocolError::unknown_data_session(session_id, !is_full_uuid).into()),
         [resolved] => Ok(resolved.session_id.clone()),
-        _ => Err(QueryProtocolError::ambiguous_data_session(session_id, matches).into()),
+        _ => {
+            let distinct_session_ids = matches
+                .iter()
+                .map(|candidate| candidate.session_id.as_str())
+                .collect::<BTreeSet<_>>();
+            if distinct_session_ids.len() == 1 && (is_full_uuid || !truncated) {
+                Ok(matches[0].session_id.clone())
+            } else {
+                Err(
+                    QueryProtocolError::ambiguous_data_session(session_id, matches, truncated)
+                        .into(),
+                )
+            }
+        }
     }
 }
 
@@ -913,8 +933,8 @@ fn validate_project_session_ref(
         }
         SessionIdShape::FullUuid | SessionIdShape::Prefix => {}
     }
-    let matches =
-        lookup_project_session_matches(index_db_path, project_id, provider, session_id, 2)?;
+    let (matches, truncated) =
+        lookup_project_session_matches_for_error(index_db_path, project_id, provider, session_id)?;
     match matches.as_slice() {
         [] => Err(QueryProtocolError::unknown_data_session(
             session_id,
@@ -925,8 +945,27 @@ fn validate_project_session_ref(
             provider: resolved.provider,
             session_id: resolved.session_id.clone(),
         }),
-        _ => Err(QueryProtocolError::ambiguous_data_session(session_id, matches).into()),
+        _ => Err(QueryProtocolError::ambiguous_data_session(session_id, matches, truncated).into()),
     }
+}
+
+/// Looks up a bounded session-match preview plus whether more matches were omitted.
+fn lookup_project_session_matches_for_error(
+    index_db_path: &Path,
+    project_id: &str,
+    provider: Option<SourceKind>,
+    session_id: &str,
+) -> Result<(Vec<ResolvedSessionMatch>, bool)> {
+    let limit = DEFAULT_RESOLVE_SESSION_MATCH_LIMIT
+        .checked_add(1)
+        .context("session match limit exceeds usize range")?;
+    let mut matches =
+        lookup_project_session_matches(index_db_path, project_id, provider, session_id, limit)?;
+    let truncated = matches.len() > DEFAULT_RESOLVE_SESSION_MATCH_LIMIT;
+    if truncated {
+        matches.truncate(DEFAULT_RESOLVE_SESSION_MATCH_LIMIT);
+    }
+    Ok((matches, truncated))
 }
 
 /// Classifies one resolver input, allowing any non-empty UUID prefix.

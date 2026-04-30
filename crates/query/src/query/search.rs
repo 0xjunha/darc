@@ -464,7 +464,7 @@ fn build_search_turns(
 fn resolve_match_limit(mode: SearchMode, match_limit: Option<usize>) -> Result<usize> {
     let uses_evidence_rows = matches!(mode, SearchMode::Literal | SearchMode::Regex);
     if match_limit.is_some() && !uses_evidence_rows {
-        bail!("--match-limit is only supported with --mode literal or --mode regex");
+        bail!("--match-limit is only supported with literal or regex search");
     }
     Ok(match_limit.unwrap_or(DEFAULT_SEARCH_MATCH_LIMIT))
 }
@@ -492,12 +492,10 @@ impl EvidenceFieldSelection {
     ) -> Result<Self> {
         let uses_evidence_rows = matches!(mode, SearchMode::Literal | SearchMode::Regex);
         if include_tool_output && !uses_evidence_rows {
-            bail!("--include-tool-output is only supported with --mode literal or --mode regex");
+            bail!("--include-tool-output is only supported with literal or regex search");
         }
         if (!included.is_empty() || !excluded.is_empty()) && !uses_evidence_rows {
-            bail!(
-                "--field and --exclude-field are only supported with --mode literal or --mode regex"
-            );
+            bail!("--field and --exclude-field are only supported with literal or regex search");
         }
         if included.contains(&SearchEvidenceField::ToolOutput) && !include_tool_output {
             bail!("--field tool-output requires --include-tool-output");
