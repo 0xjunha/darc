@@ -206,7 +206,7 @@ fn contains_ansi(bytes: &[u8]) -> bool {
 
 /// Returns whether captured output highlights one visible search-match string.
 fn contains_highlighted_text(bytes: &[u8], text: &str) -> bool {
-    String::from_utf8_lossy(bytes).contains(&format!("\x1b[1;30;43m{text}\x1b[0m\x1b[32m"))
+    String::from_utf8_lossy(bytes).contains(&format!("\x1b[1;95m{text}\x1b[0m\x1b[32m"))
 }
 
 /// Strips ANSI control sequences from captured process output.

@@ -1497,7 +1497,7 @@ const ANSI_STRING: &str = "\x1b[32m";
 const ANSI_NUMBER: &str = "\x1b[33m";
 const ANSI_BOOLEAN: &str = "\x1b[35m";
 const ANSI_NULL: &str = "\x1b[36m";
-const ANSI_MATCH: &str = "\x1b[1;30;43m";
+const ANSI_MATCH: &str = "\x1b[1;95m";
 
 /// Returns whether one query output stream should include ANSI color.
 fn should_color_output(
