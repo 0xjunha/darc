@@ -537,6 +537,7 @@ fn sanitize_access_path(path: &str) -> Option<String> {
         || path.contains("${")
         || path.contains('*')
         || path.contains('?')
+        || path_looks_shell_redirection(path)
     {
         return None;
     }
@@ -544,6 +545,20 @@ fn sanitize_access_path(path: &str) -> Option<String> {
         return None;
     }
     Some(path.to_owned())
+}
+
+/// Returns whether one token is shell redirection syntax instead of a path.
+fn path_looks_shell_redirection(path: &str) -> bool {
+    let body = path.trim_start_matches(|ch: char| ch.is_ascii_digit());
+    if body.is_empty() {
+        return false;
+    }
+    matches!(body, "<<" | "<<-" | "<<<")
+        || body.starts_with("<<")
+        || body.starts_with("&>")
+        || body.starts_with('>')
+        || body.starts_with("<>")
+        || body.starts_with('<')
 }
 
 /// Appends any string-like path values from one JSON value into the set.

@@ -340,6 +340,85 @@ fn derives_file_accesses_from_shell_commands_and_patches() {
 }
 
 #[test]
+fn derives_file_accesses_skip_fd_redirections() {
+    let steps = vec![NormalizedTurnStep::ToolCall {
+        timestamp: "2026-04-06T10:00:01Z".to_owned(),
+        call_id: "call-1".to_owned(),
+        name: "Bash".to_owned(),
+        arguments: r#"{"command":"ls README.md 2>&1 && cargo +nightly fmt -- crates/core/src/sync.rs 2>&1 && ls README.md 2>/dev/null && grep foo src/lib.rs 2> errors.log && cargo test > target/test.log 2>&1 && cat < input.txt > output.txt","description":"exercise redirections"}"#.to_owned(),
+    }];
+
+    let tool_calls = extract_tool_call_records("repo-a", SourceKind::Codex, "session-1", 0, &steps);
+    let file_accesses = derive_file_access_records(&tool_calls);
+
+    assert!(!file_accesses.iter().any(|record| {
+        matches!(
+            record.path.as_str(),
+            "2>&1" | "2>/dev/null" | "&1" | "/dev/null"
+        )
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "README.md" && matches!(record.access_type, ToolAccessKind::List)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "crates/core/src/sync.rs"
+            && matches!(record.access_type, ToolAccessKind::Edit)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "src/lib.rs" && matches!(record.access_type, ToolAccessKind::Read)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "errors.log" && matches!(record.access_type, ToolAccessKind::Write)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "target/test.log" && matches!(record.access_type, ToolAccessKind::Write)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "input.txt" && matches!(record.access_type, ToolAccessKind::Read)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "output.txt" && matches!(record.access_type, ToolAccessKind::Write)
+    }));
+}
+
+#[test]
+fn derives_file_accesses_preserve_quoted_search_patterns() {
+    let steps = vec![NormalizedTurnStep::ToolCall {
+        timestamp: "2026-04-06T10:00:01Z".to_owned(),
+        call_id: "call-1".to_owned(),
+        name: "Bash".to_owned(),
+        arguments: r#"{"command":"rg '<div>' src/main.rs > rg.log && grep '>' src/lib.rs && rg -e '<tag>' src/opt.rs && echo hi >| out.log","description":"exercise quoted search patterns"}"#.to_owned(),
+    }];
+
+    let tool_calls = extract_tool_call_records("repo-a", SourceKind::Codex, "session-1", 0, &steps);
+    let file_accesses = derive_file_access_records(&tool_calls);
+
+    assert!(
+        !file_accesses
+            .iter()
+            .any(|record| matches!(record.path.as_str(), "div>" | "tag>" | ">"))
+    );
+    assert!(!file_accesses.iter().any(|record| {
+        record.path == "src/lib.rs" && matches!(record.access_type, ToolAccessKind::Write)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "src/main.rs" && matches!(record.access_type, ToolAccessKind::Read)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "src/lib.rs" && matches!(record.access_type, ToolAccessKind::Read)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "src/opt.rs" && matches!(record.access_type, ToolAccessKind::Read)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "rg.log" && matches!(record.access_type, ToolAccessKind::Write)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "out.log" && matches!(record.access_type, ToolAccessKind::Write)
+    }));
+}
+
+#[test]
 fn derives_file_accesses_from_shell_heredoc_apply_patch() {
     let steps = vec![NormalizedTurnStep::ToolCall {
         timestamp: "2026-04-06T10:00:01Z".to_owned(),
@@ -2551,6 +2630,7 @@ fn turn_detail_narrative_view_strips_bulky_step_fields() -> Result<()> {
     let detail = query_turn_detail(
         &index_path,
         "repo-a",
+        None,
         SourceKind::Codex,
         "session-1",
         0,
@@ -2620,6 +2700,7 @@ fn turn_detail_narrative_view_strips_bulky_step_fields() -> Result<()> {
     let page = query_turn_detail(
         &index_path,
         "repo-a",
+        None,
         SourceKind::Codex,
         "session-1",
         0,
@@ -2645,6 +2726,7 @@ fn turn_detail_narrative_view_strips_bulky_step_fields() -> Result<()> {
     let error = query_turn_detail(
         &index_path,
         "repo-a",
+        None,
         SourceKind::Codex,
         "session-1",
         0,
@@ -2798,6 +2880,7 @@ fn session_turn_details_reuse_one_session_query_shape() -> Result<()> {
     let details = query_session_turn_details(
         &index_path,
         "repo-a",
+        None,
         SourceKind::Codex,
         "session-1",
         TurnDetailOptions {
@@ -2930,7 +3013,8 @@ fn project_insights_collect_tool_and_file_stats() -> Result<()> {
         },
     )?;
 
-    let insights: ProjectInsights = build_project_insights(&connection, "repo-a", None, 1000)?;
+    let insights: ProjectInsights =
+        build_project_insights(&connection, "repo-a", None, None, 1000)?;
 
     assert_eq!(insights.provider, None);
     assert_eq!(insights.turn_limit, 1000);
@@ -2951,7 +3035,8 @@ fn project_insights_collect_tool_and_file_stats() -> Result<()> {
             .iter()
             .any(|stat| { stat.path == "src/main.rs" && stat.write_count == 1 })
     );
-    let limited_insights: ProjectInsights = build_project_insights(&connection, "repo-a", None, 1)?;
+    let limited_insights: ProjectInsights =
+        build_project_insights(&connection, "repo-a", None, None, 1)?;
     assert_eq!(limited_insights.turn_limit, 1);
     assert_eq!(limited_insights.inspected_turn_count, 1);
     assert!(limited_insights.turns_has_more);
@@ -2976,14 +3061,71 @@ fn project_insights_collect_tool_and_file_stats() -> Result<()> {
         },
     )?;
     let codex_insights: ProjectInsights =
-        build_project_insights(&connection, "repo-a", Some(SourceKind::Codex), 1000)?;
+        build_project_insights(&connection, "repo-a", None, Some(SourceKind::Codex), 1000)?;
     let claude_insights: ProjectInsights =
-        build_project_insights(&connection, "repo-a", Some(SourceKind::Claude), 1000)?;
+        build_project_insights(&connection, "repo-a", None, Some(SourceKind::Claude), 1000)?;
     assert_eq!(codex_insights.provider, Some(SourceKind::Codex));
     assert_eq!(codex_insights.total_time_ms, 5_000);
     assert_eq!(claude_insights.provider, Some(SourceKind::Claude));
     assert_eq!(claude_insights.total_time_ms, 7_000);
     assert_eq!(claude_insights.most_common_tools[0].name, "Write");
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn project_insights_display_project_root_relative_paths() -> Result<()> {
+    let index_path = test_index_path("project-insights-project-root-paths");
+    let connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture::new(
+            "repo-a",
+            SourceKind::Codex,
+            "session-1",
+            0,
+            "2026-04-06T10:00:00Z",
+            "completed",
+            r#"[{"type":"tool_call","timestamp":"2026-04-06T10:00:01Z","call_id":"call-1","name":"Read","arguments":"{\"file_path\":\"/tmp/repo-a/src/lib.rs\"}"},{"type":"tool_call","timestamp":"2026-04-06T10:00:02Z","call_id":"call-2","name":"Read","arguments":"{\"file_path\":\"src/lib.rs\"}"},{"type":"tool_call","timestamp":"2026-04-06T10:00:03Z","call_id":"call-3","name":"Write","arguments":"{\"path\":\"/tmp/repo-a/src/main.rs\"}"}]"#,
+        ),
+    )?;
+
+    let insights = build_project_insights(
+        &connection,
+        "repo-a",
+        Some(Path::new("/tmp/repo-a")),
+        None,
+        1000,
+    )?;
+
+    assert!(
+        insights
+            .most_read_files
+            .iter()
+            .any(|stat| stat.path == "src/lib.rs" && stat.read_count == 2)
+    );
+    assert!(
+        insights
+            .most_written_files
+            .iter()
+            .any(|stat| stat.path == "src/main.rs" && stat.write_count == 1)
+    );
+    assert!(
+        insights
+            .most_read_files
+            .iter()
+            .chain(insights.most_written_files.iter())
+            .all(|stat| !stat.path.starts_with("/tmp/repo-a/"))
+    );
 
     fs::remove_dir_all(
         index_path
@@ -3052,8 +3194,14 @@ fn turn_insights_collect_turn_scoped_stats_and_ordering() -> Result<()> {
         },
     )?;
 
-    let insights: TurnInsights =
-        build_turn_insights(&connection, "repo-a", SourceKind::Codex, "session-1", 0)?;
+    let insights: TurnInsights = build_turn_insights(
+        &connection,
+        "repo-a",
+        None,
+        SourceKind::Codex,
+        "session-1",
+        0,
+    )?;
 
     assert_eq!(insights.project_id, "repo-a");
     assert_eq!(insights.provider, SourceKind::Codex);
@@ -3148,13 +3296,66 @@ fn turn_insights_keep_absolute_paths() -> Result<()> {
         ),
     )?;
 
-    let insights: TurnInsights =
-        build_turn_insights(&connection, "repo-a", SourceKind::Codex, "session-1", 0)?;
+    let insights: TurnInsights = build_turn_insights(
+        &connection,
+        "repo-a",
+        None,
+        SourceKind::Codex,
+        "session-1",
+        0,
+    )?;
 
     assert_eq!(insights.files.len(), 1);
     assert_eq!(insights.files[0].path, "/tmp/repo-a/README.md");
     assert_eq!(insights.files[0].read_count, 1);
     assert_eq!(insights.files[0].write_count, 0);
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn turn_insights_display_project_root_relative_paths() -> Result<()> {
+    let index_path = test_index_path("turn-insights-project-root-paths");
+    let connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture::new(
+            "repo-a",
+            SourceKind::Codex,
+            "session-1",
+            0,
+            "2026-04-06T11:10:00Z",
+            "completed",
+            r#"[{"type":"tool_call","timestamp":"2026-04-06T11:10:01Z","call_id":"call-1","name":"Read","arguments":"{\"file_path\":\"/tmp/repo-a/README.md\"}"},{"type":"tool_call","timestamp":"2026-04-06T11:10:02Z","call_id":"call-2","name":"Read","arguments":"{\"file_path\":\"README.md\"}"}]"#,
+        ),
+    )?;
+
+    let insights = build_turn_insights(
+        &connection,
+        "repo-a",
+        Some(Path::new("/tmp/repo-a")),
+        SourceKind::Codex,
+        "session-1",
+        0,
+    )?;
+
+    assert_eq!(
+        insights
+            .files
+            .iter()
+            .map(|stat| (stat.path.as_str(), stat.read_count, stat.write_count))
+            .collect::<Vec<_>>(),
+        vec![("README.md", 2, 0)]
+    );
 
     fs::remove_dir_all(
         index_path
@@ -3195,7 +3396,14 @@ fn turn_insights_collect_shell_commands() -> Result<()> {
         },
     )?;
 
-    let insights = build_turn_insights(&connection, "repo-a", SourceKind::Codex, "session-1", 0)?;
+    let insights = build_turn_insights(
+        &connection,
+        "repo-a",
+        None,
+        SourceKind::Codex,
+        "session-1",
+        0,
+    )?;
 
     assert_eq!(
         insights
@@ -3262,7 +3470,14 @@ fn turn_insights_return_empty_tool_and_file_lists() -> Result<()> {
         },
     )?;
 
-    let insights = build_turn_insights(&connection, "repo-a", SourceKind::Codex, "session-1", 0)?;
+    let insights = build_turn_insights(
+        &connection,
+        "repo-a",
+        None,
+        SourceKind::Codex,
+        "session-1",
+        0,
+    )?;
 
     assert!(insights.tools.is_empty());
     assert!(insights.shell_commands.is_empty());
@@ -3287,8 +3502,15 @@ fn turn_insights_report_missing_turn_errors() -> Result<()> {
         IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
     )?;
 
-    let error = build_turn_insights(&connection, "repo-a", SourceKind::Codex, "session-1", 9)
-        .expect_err("missing turns should error");
+    let error = build_turn_insights(
+        &connection,
+        "repo-a",
+        None,
+        SourceKind::Codex,
+        "session-1",
+        9,
+    )
+    .expect_err("missing turns should error");
 
     assert!(
         error

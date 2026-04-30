@@ -15,6 +15,7 @@ use super::{
     open_existing_index_database, paginate_ranked_rows, parse_provider, parse_turn_status,
     sort_tool_usage_stats, sql_count_to_u64,
 };
+use crate::query::files::display_path_for_access;
 
 const LATEST_LOCAL_DATE_SQL: &str = "SELECT MAX(DATE(started_at, 'localtime')) FROM turns";
 const LOCAL_TODAY_SQL: &str = "SELECT DATE('now', 'localtime')";
@@ -81,7 +82,8 @@ const RECENT_PROJECT_TOOL_USAGE_SQL: &str = "
 
 const TURN_FILE_USAGE_SQL: &str = "
     SELECT
-        COALESCE(repo_relative_path, path) AS display_path,
+        repo_relative_path,
+        path,
         SUM(CASE WHEN access_type IN ('read', 'list') THEN 1 ELSE 0 END) AS read_count,
         SUM(CASE WHEN access_type IN ('write', 'edit') THEN 1 ELSE 0 END) AS write_count
     FROM file_accesses
@@ -89,7 +91,8 @@ const TURN_FILE_USAGE_SQL: &str = "
         AND provider = ?2
         AND session_id = ?3
         AND turn_ordinal = ?4
-    GROUP BY COALESCE(repo_relative_path, path)
+        AND NULLIF(TRIM(path), '') IS NOT NULL
+    GROUP BY repo_relative_path, path
 ";
 
 const RECENT_PROJECT_FILE_USAGE_SQL: &str = "
@@ -102,7 +105,8 @@ const RECENT_PROJECT_FILE_USAGE_SQL: &str = "
         LIMIT ?3
     )
     SELECT
-        COALESCE(file_accesses.repo_relative_path, file_accesses.path) AS display_path,
+        file_accesses.repo_relative_path,
+        file_accesses.path,
         SUM(CASE
             WHEN file_accesses.access_type IN ('read', 'list') THEN 1
             ELSE 0
@@ -117,7 +121,8 @@ const RECENT_PROJECT_FILE_USAGE_SQL: &str = "
         AND file_accesses.provider = recent_turns.provider
         AND file_accesses.session_id = recent_turns.session_id
         AND file_accesses.turn_ordinal = recent_turns.turn_ordinal
-    GROUP BY COALESCE(file_accesses.repo_relative_path, file_accesses.path)
+    WHERE NULLIF(TRIM(file_accesses.path), '') IS NOT NULL
+    GROUP BY file_accesses.repo_relative_path, file_accesses.path
 ";
 
 const TURN_SHELL_COMMANDS_SQL: &str = "
@@ -152,11 +157,12 @@ pub fn query_workspace_insights(
 pub fn query_project_insights(
     index_db_path: &Path,
     project_id: &str,
+    project_root: Option<&Path>,
     provider: Option<SourceKind>,
     limit: usize,
 ) -> Result<ProjectInsights> {
     let connection = open_existing_index_database(index_db_path)?;
-    build_project_insights(&connection, project_id, provider, limit)
+    build_project_insights(&connection, project_id, project_root, provider, limit)
 }
 
 /// Builds one workspace insights report from indexed turn rows.
@@ -300,6 +306,7 @@ pub(crate) fn build_workspace_insights(
 pub(crate) fn build_project_insights(
     connection: &Connection,
     project_id: &str,
+    project_root: Option<&Path>,
     provider: Option<SourceKind>,
     limit: usize,
 ) -> Result<ProjectInsights> {
@@ -310,6 +317,7 @@ pub(crate) fn build_project_insights(
         connection,
         FileUsageScope::RecentProject {
             project_id,
+            project_root,
             provider,
             limit,
         },
@@ -572,6 +580,7 @@ pub(crate) fn query_file_usage_stats(
             provider,
             session_id,
             turn_ordinal,
+            ..
         } => {
             let turn_ordinal =
                 i64::try_from(turn_ordinal).context("turn ordinal exceeds SQLite INTEGER range")?;
@@ -587,11 +596,12 @@ pub(crate) fn query_file_usage_stats(
                         turn_ordinal,
                     ),
                     |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, i64>(1)?,
-                            row.get::<_, i64>(2)?,
-                        ))
+                        Ok(FileUsageRawStat {
+                            repo_relative_path: row.get::<_, Option<String>>(0)?,
+                            path: row.get::<_, String>(1)?,
+                            read_count: row.get::<_, i64>(2)?,
+                            write_count: row.get::<_, i64>(3)?,
+                        })
                     },
                 )
                 .context("failed to query turn file usage rows")?
@@ -602,6 +612,7 @@ pub(crate) fn query_file_usage_stats(
             project_id,
             provider,
             limit,
+            ..
         } => {
             let limit = i64::try_from(limit)
                 .context("project insights limit exceeds SQLite INTEGER range")?;
@@ -611,26 +622,79 @@ pub(crate) fn query_file_usage_stats(
                 .context("failed to prepare project file usage query")?;
             statement
                 .query_map((project_id, provider, limit), |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, i64>(2)?,
-                    ))
+                    Ok(FileUsageRawStat {
+                        repo_relative_path: row.get::<_, Option<String>>(0)?,
+                        path: row.get::<_, String>(1)?,
+                        read_count: row.get::<_, i64>(2)?,
+                        write_count: row.get::<_, i64>(3)?,
+                    })
                 })
                 .context("failed to query project file usage rows")?
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .context("failed to read project file usage rows")?
         }
     };
-    rows.into_iter()
-        .map(|(path, read_count, write_count)| -> Result<_> {
-            Ok(FileUsageStat {
-                path,
-                read_count: sql_count_to_u64(read_count)?,
-                write_count: sql_count_to_u64(write_count)?,
-            })
+    merge_file_usage_stats(rows, scope.project_root())
+}
+
+/// Stores one raw grouped file-usage row before display-path normalization.
+struct FileUsageRawStat {
+    repo_relative_path: Option<String>,
+    path: String,
+    read_count: i64,
+    write_count: i64,
+}
+
+impl<'a> FileUsageScope<'a> {
+    /// Returns the configured project root used for insight file display paths.
+    fn project_root(self) -> Option<&'a Path> {
+        match self {
+            Self::Turn { project_root, .. } | Self::RecentProject { project_root, .. } => {
+                project_root
+            }
+        }
+    }
+}
+
+/// Merges raw file-usage rows by the path shown in insights payloads.
+fn merge_file_usage_stats(
+    rows: Vec<FileUsageRawStat>,
+    project_root: Option<&Path>,
+) -> Result<Vec<FileUsageStat>> {
+    let mut stats = BTreeMap::<String, (u64, u64)>::new();
+    for row in rows {
+        let Some(path) =
+            display_file_usage_path(project_root, row.repo_relative_path.as_deref(), &row.path)
+        else {
+            continue;
+        };
+        let read_count = sql_count_to_u64(row.read_count)?;
+        let write_count = sql_count_to_u64(row.write_count)?;
+        let entry = stats.entry(path).or_insert((0, 0));
+        entry.0 = entry.0.saturating_add(read_count);
+        entry.1 = entry.1.saturating_add(write_count);
+    }
+
+    Ok(stats
+        .into_iter()
+        .map(|(path, (read_count, write_count))| FileUsageStat {
+            path,
+            read_count,
+            write_count,
         })
-        .collect()
+        .collect())
+}
+
+/// Returns the in-project relative path for a file access, falling back to the stored path.
+fn display_file_usage_path(
+    project_root: Option<&Path>,
+    repo_relative_path: Option<&str>,
+    path: &str,
+) -> Option<String> {
+    display_path_for_access(project_root, repo_relative_path, path).or_else(|| {
+        let path = path.trim();
+        (!path.is_empty()).then(|| path.to_owned())
+    })
 }
 
 /// Queries shell-like command invocations for one indexed turn.

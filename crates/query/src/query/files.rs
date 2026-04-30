@@ -1036,7 +1036,7 @@ fn candidate_query_paths(
 }
 
 /// Returns one canonical in-project display path for one indexed file access.
-fn display_path_for_access(
+pub(crate) fn display_path_for_access(
     project_root: Option<&Path>,
     repo_relative_path: Option<&str>,
     path: &str,

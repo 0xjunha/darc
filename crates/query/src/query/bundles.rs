@@ -8,8 +8,10 @@ use super::{
     SessionBundleView, SessionsView, TurnDetailOptions, open_existing_index_database,
 };
 use crate::query::{
-    files::build_session_files_query, projects::compact_session_summary,
-    projects::query_session_summary, turns::build_session_turn_details_page,
+    files::build_session_files_query,
+    projects::compact_session_summary,
+    projects::query_session_summary,
+    turns::{TurnDetailQueryScope, build_session_turn_details_page},
 };
 
 /// Queries one composite session bundle from indexed session, turn, and file summaries.
@@ -47,9 +49,12 @@ fn build_session_bundle_query(
     };
     let (turns, turns_has_more) = build_session_turn_details_page(
         connection,
-        request.project_id,
-        request.provider,
-        request.session_id,
+        TurnDetailQueryScope {
+            project_id: request.project_id,
+            project_root: request.project_root,
+            provider: request.provider,
+            session_id: request.session_id,
+        },
         TurnDetailOptions {
             include_raw: false,
             include_insights: false,

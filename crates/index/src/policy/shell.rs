@@ -7,6 +7,13 @@ use super::file_access::{
     path_looks_directory_like, push_access, summarize_apply_patch_changes,
 };
 
+/// Stores one parsed shell redirection and how many following tokens it consumes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ShellRedirection<'a> {
+    access: Option<(ToolAccessKind, &'a str)>,
+    consume_next: bool,
+}
+
 /// Stores one shell-like command decoded from one tool-call payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellCommand {
@@ -173,6 +180,9 @@ fn split_shell_fragments(command_text: &str) -> Vec<String> {
             '\n' | ';' if !in_single_quote && !in_double_quote => {
                 push_fragment(&mut fragments, &mut current);
             }
+            '|' if !in_single_quote && !in_double_quote && current.ends_with('>') => {
+                current.push(ch);
+            }
             '|' if !in_single_quote && !in_double_quote => {
                 if chars.peek() == Some(&'|') {
                     let _ = chars.next();
@@ -327,10 +337,7 @@ fn derive_shell_fragment_file_accesses(
         "touch" => extract_simple_path_accesses(tokens, ToolAccessKind::Write, &[]),
         "curl" => extract_output_option_file_accesses(tokens),
         "echo" | "printf" | ":" => extract_redirection_file_accesses(tokens),
-        "source" | "." => tokens
-            .get(1)
-            .map(|path| vec![(ToolAccessKind::Read, path.clone())])
-            .unwrap_or_default(),
+        "source" | "." => extract_source_file_accesses(tokens),
         "test" | "[" => extract_test_file_accesses(tokens),
         "fd" => extract_fd_file_accesses(tokens),
         "wc" | "rustfmt" | "lsof" | "sort" | "stat" | "xxd" | "mdls" | "file" => {
@@ -392,6 +399,10 @@ fn extract_sed_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)>
             index += 1;
             continue;
         }
+        if let Some(next_index) = skip_redirection_token(tokens, index) {
+            index = next_index;
+            continue;
+        }
         let token = tokens[index].as_str();
         match token {
             "-e" | "-f" => {
@@ -416,6 +427,7 @@ fn extract_sed_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)>
 fn extract_ripgrep_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)> {
     let mut accesses = Vec::new();
     let list_mode = tokens.iter().any(|token| token == "--files");
+    let mut pattern_from_option = false;
     let mut non_option_tokens = Vec::<&str>::new();
     let mut index = 1;
     let mut skip_next = false;
@@ -426,18 +438,29 @@ fn extract_ripgrep_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, Stri
             index += 1;
             continue;
         }
+        if (list_mode || pattern_from_option || !non_option_tokens.is_empty())
+            && let Some(next_index) = consume_redirection_token(tokens, index, &mut accesses)
+        {
+            index = next_index;
+            continue;
+        }
         let token = tokens[index].as_str();
         match token {
-            "--glob" | "-g" | "--regexp" | "-e" | "--file" | "-f" | "--type" | "-t"
-            | "--type-not" | "-T" | "--max-count" | "-m" | "--context" | "-C" | "-A" | "-B"
-            | "--threads" | "-j" | "--sort" | "--sortr" => skip_next = true,
+            "--regexp" | "-e" | "--file" | "-f" => {
+                pattern_from_option = true;
+                skip_next = true;
+            }
+            "--glob" | "-g" | "--type" | "-t" | "--type-not" | "-T" | "--max-count" | "-m"
+            | "--context" | "-C" | "-A" | "-B" | "--threads" | "-j" | "--sort" | "--sortr" => {
+                skip_next = true;
+            }
             _ if token.starts_with('-') => {}
             _ => non_option_tokens.push(token),
         }
         index += 1;
     }
 
-    let path_tokens = if list_mode {
+    let path_tokens = if list_mode || pattern_from_option {
         non_option_tokens
     } else {
         non_option_tokens.into_iter().skip(1).collect()
@@ -456,6 +479,7 @@ fn extract_ripgrep_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, Stri
 /// Extracts read accesses from one grep command.
 fn extract_grep_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)> {
     let mut accesses = Vec::new();
+    let mut pattern_from_option = false;
     let mut non_option_tokens = Vec::<&str>::new();
     let mut index = 1;
     let mut skip_next = false;
@@ -466,9 +490,19 @@ fn extract_grep_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)
             index += 1;
             continue;
         }
+        if (pattern_from_option || !non_option_tokens.is_empty())
+            && let Some(next_index) = consume_redirection_token(tokens, index, &mut accesses)
+        {
+            index = next_index;
+            continue;
+        }
         let token = tokens[index].as_str();
         match token {
-            "-e" | "-f" | "-m" | "-A" | "-B" | "-C" | "--include" | "--exclude" => {
+            "-e" | "-f" => {
+                pattern_from_option = true;
+                skip_next = true;
+            }
+            "-m" | "-A" | "-B" | "-C" | "--include" | "--exclude" => {
                 skip_next = true;
             }
             _ if token.starts_with('-') => {}
@@ -477,7 +511,12 @@ fn extract_grep_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)
         index += 1;
     }
 
-    for token in non_option_tokens.into_iter().skip(1) {
+    let path_tokens = if pattern_from_option {
+        non_option_tokens
+    } else {
+        non_option_tokens.into_iter().skip(1).collect()
+    };
+    for token in path_tokens {
         push_file_like_access(&mut accesses, ToolAccessKind::Read, token);
     }
     accesses
@@ -487,23 +526,14 @@ fn extract_grep_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)
 fn extract_cat_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)> {
     let mut accesses = extract_redirection_file_accesses(tokens);
     let mut index = 1;
-    let mut skip_next = false;
 
     while index < tokens.len() {
-        if skip_next {
-            skip_next = false;
-            index += 1;
+        if let Some(next_index) = skip_redirection_token(tokens, index) {
+            index = next_index;
             continue;
         }
         let token = tokens[index].as_str();
         match token {
-            ">" | ">>" | "1>" | "1>>" | "<" | "<<" => {
-                skip_next = true;
-            }
-            _ if token.starts_with(">")
-                || token.starts_with(">>")
-                || token.starts_with('<')
-                || token.starts_with("<<") => {}
             _ if token.starts_with('-') => {}
             _ => push_access(&mut accesses, ToolAccessKind::Read, token),
         }
@@ -515,18 +545,25 @@ fn extract_cat_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)>
 
 /// Extracts list accesses from one find command.
 fn extract_find_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)> {
-    let mut accesses = Vec::new();
+    let mut accesses = extract_redirection_file_accesses(tokens);
     let mut saw_expression = false;
+    let mut index = 1;
 
-    for token in &tokens[1..] {
-        let token = token.as_str();
+    while index < tokens.len() {
+        if let Some(next_index) = skip_redirection_token(tokens, index) {
+            index = next_index;
+            continue;
+        }
+        let token = tokens[index].as_str();
         if token.starts_with('-') || matches!(token, "!" | "(" | ")" | "\\(" | "\\)") {
             saw_expression = true;
         }
         if saw_expression {
+            index += 1;
             continue;
         }
         push_file_like_access(&mut accesses, ToolAccessKind::List, token);
+        index += 1;
     }
 
     accesses
@@ -546,6 +583,10 @@ fn extract_simple_path_accesses(
         if skip_next {
             skip_next = false;
             index += 1;
+            continue;
+        }
+        if let Some(next_index) = skip_redirection_token(tokens, index) {
+            index = next_index;
             continue;
         }
         let token = tokens[index].as_str();
@@ -592,32 +633,42 @@ fn extract_rm_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)> 
 
 /// Extracts script-file reads from shell and interpreter entrypoints.
 fn extract_script_runner_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)> {
+    let mut accesses = extract_redirection_file_accesses(tokens);
     let mut index = 1;
     while index < tokens.len() {
+        if let Some(next_index) = skip_redirection_token(tokens, index) {
+            index = next_index;
+            continue;
+        }
         let token = tokens[index].as_str();
         if token == "-" || token.starts_with("<<") {
-            return Vec::new();
+            return accesses;
         }
         if token.starts_with('-') {
             if matches!(token, "-c" | "-m") {
-                return Vec::new();
+                return accesses;
             }
             index += 1;
             continue;
         }
-        return vec![(ToolAccessKind::Read, token.to_owned())];
+        accesses.push((ToolAccessKind::Read, token.to_owned()));
+        return accesses;
     }
-    Vec::new()
+    accesses
 }
 
 /// Extracts manifest and fmt target accesses from cargo commands.
 fn extract_cargo_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)> {
-    let mut accesses = Vec::new();
+    let mut accesses = extract_redirection_file_accesses(tokens);
     let mut index = 1;
     let mut saw_fmt = false;
     let mut after_double_dash = false;
 
     while index < tokens.len() {
+        if let Some(next_index) = skip_redirection_token(tokens, index) {
+            index = next_index;
+            continue;
+        }
         let token = tokens[index].as_str();
         if token == "fmt" {
             saw_fmt = true;
@@ -661,6 +712,10 @@ fn extract_program_and_file_accesses(
             index += 1;
             continue;
         }
+        if let Some(next_index) = skip_redirection_token(tokens, index) {
+            index = next_index;
+            continue;
+        }
         let token = tokens[index].as_str();
         match token {
             "-f" => {
@@ -680,10 +735,14 @@ fn extract_program_and_file_accesses(
 
 /// Extracts write accesses from commands that use `-o` or `--output`.
 fn extract_output_option_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)> {
-    let mut accesses = Vec::new();
+    let mut accesses = extract_redirection_file_accesses(tokens);
     let mut index = 1;
 
     while index < tokens.len() {
+        if let Some(next_index) = skip_redirection_token(tokens, index) {
+            index = next_index;
+            continue;
+        }
         let token = tokens[index].as_str();
         if matches!(token, "-o" | "--output")
             && let Some(path) = tokens.get(index + 1)
@@ -701,12 +760,12 @@ fn extract_output_option_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind
 /// Extracts read and write accesses from one cp command.
 fn extract_copy_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)> {
     let mut paths = collect_non_option_tokens(tokens);
+    let mut accesses = extract_redirection_file_accesses(tokens);
     if paths.len() < 2 {
-        return Vec::new();
+        return accesses;
     }
 
     let destination = paths.pop().expect("checked above");
-    let mut accesses = Vec::new();
     for source in paths {
         push_access(&mut accesses, ToolAccessKind::Read, source);
     }
@@ -717,12 +776,12 @@ fn extract_copy_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)
 /// Extracts source edits and destination writes from one mv command.
 fn extract_move_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)> {
     let mut paths = collect_non_option_tokens(tokens);
+    let mut accesses = extract_redirection_file_accesses(tokens);
     if paths.len() < 2 {
-        return Vec::new();
+        return accesses;
     }
 
     let destination = paths.pop().expect("checked above");
-    let mut accesses = Vec::new();
     for source in paths {
         push_access(&mut accesses, ToolAccessKind::Edit, source);
     }
@@ -733,8 +792,14 @@ fn extract_move_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)
 /// Extracts read checks from one `test` or `[` command.
 fn extract_test_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)> {
     let directory_check = tokens.iter().any(|token| token == "-d");
-    let mut accesses = Vec::new();
-    for token in &tokens[1..] {
+    let mut accesses = extract_redirection_file_accesses(tokens);
+    let mut index = 1;
+    while index < tokens.len() {
+        if let Some(next_index) = skip_redirection_token(tokens, index) {
+            index = next_index;
+            continue;
+        }
+        let token = tokens[index].as_str();
         if !token.starts_with('-') {
             if directory_check {
                 push_file_like_access(&mut accesses, ToolAccessKind::Read, token);
@@ -742,6 +807,7 @@ fn extract_test_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)
                 push_access(&mut accesses, ToolAccessKind::Read, token);
             }
         }
+        index += 1;
     }
     accesses
 }
@@ -765,11 +831,11 @@ fn extract_diff_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)
 /// Extracts list accesses from one `fd` command.
 fn extract_fd_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)> {
     let paths = collect_non_option_tokens(tokens);
+    let mut accesses = extract_redirection_file_accesses(tokens);
     if paths.len() < 2 {
-        return Vec::new();
+        return accesses;
     }
 
-    let mut accesses = Vec::new();
     for path in paths.into_iter().skip(1) {
         push_file_like_access(&mut accesses, ToolAccessKind::List, path);
     }
@@ -804,18 +870,40 @@ fn extract_perl_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)
 
     let mut skip_next = false;
     let mut script_consumed = false;
-    for token in &tokens[1..] {
-        let token = token.as_str();
+    let mut index = 1;
+    while index < tokens.len() {
         if skip_next {
             skip_next = false;
+            index += 1;
             continue;
         }
+        if let Some(next_index) = skip_redirection_token(tokens, index) {
+            index = next_index;
+            continue;
+        }
+        let token = tokens[index].as_str();
         match token {
             "-e" | "-f" | "-i" => skip_next = true,
             _ if token.starts_with("-i") || token.starts_with('-') => {}
             _ if !script_consumed => script_consumed = true,
             _ => push_access(&mut accesses, ToolAccessKind::Edit, token),
         }
+        index += 1;
+    }
+    accesses
+}
+
+/// Extracts the sourced file path while preserving any output redirection.
+fn extract_source_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)> {
+    let mut accesses = extract_redirection_file_accesses(tokens);
+    let mut index = 1;
+    while index < tokens.len() {
+        if let Some(next_index) = skip_redirection_token(tokens, index) {
+            index = next_index;
+            continue;
+        }
+        push_access(&mut accesses, ToolAccessKind::Read, &tokens[index]);
+        break;
     }
     accesses
 }
@@ -823,11 +911,11 @@ fn extract_perl_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)
 /// Extracts read and write accesses from one link command.
 fn extract_link_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)> {
     let paths = collect_non_option_tokens(tokens);
+    let mut accesses = extract_redirection_file_accesses(tokens);
     if paths.len() < 2 {
-        return Vec::new();
+        return accesses;
     }
 
-    let mut accesses = Vec::new();
     push_access(&mut accesses, ToolAccessKind::Read, paths[0]);
     push_access(
         &mut accesses,
@@ -841,32 +929,30 @@ fn extract_link_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)
 fn collect_non_option_tokens(tokens: &[String]) -> Vec<&str> {
     let mut paths = Vec::new();
     let mut index = 1;
-    let mut skip_next = false;
 
     while index < tokens.len() {
-        if skip_next {
-            skip_next = false;
-            index += 1;
-            continue;
-        }
         let token = tokens[index].as_str();
         match token {
             "--" => {
-                for token in &tokens[index + 1..] {
-                    paths.push(token.as_str());
+                index += 1;
+                while index < tokens.len() {
+                    if let Some(next_index) = skip_redirection_token(tokens, index) {
+                        index = next_index;
+                        continue;
+                    }
+                    paths.push(tokens[index].as_str());
+                    index += 1;
                 }
                 break;
             }
-            _ if token == ">" || token == ">>" || token == "1>" || token == "1>>" => {
-                skip_next = true;
+            _ if parse_redirection_token(token, tokens.get(index + 1).map(String::as_str))
+                .is_some() =>
+            {
+                if let Some(next_index) = skip_redirection_token(tokens, index) {
+                    index = next_index;
+                    continue;
+                }
             }
-            _ if token == "<" || token == "<<" => {
-                skip_next = true;
-            }
-            _ if token.starts_with('>')
-                || token.starts_with(">>")
-                || token.starts_with('<')
-                || token.starts_with("<<") => {}
             _ if token.starts_with('-') => {}
             _ => paths.push(token),
         }
@@ -882,39 +968,114 @@ fn extract_redirection_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, 
     let mut index = 1;
 
     while index < tokens.len() {
-        let token = tokens[index].as_str();
-        match token {
-            ">" | ">>" | "1>" | "1>>" => {
-                if let Some(target) = tokens.get(index + 1) {
-                    push_access(&mut accesses, ToolAccessKind::Write, target);
-                    index += 1;
-                }
-            }
-            "<" => {
-                if let Some(target) = tokens.get(index + 1) {
-                    push_access(&mut accesses, ToolAccessKind::Read, target);
-                    index += 1;
-                }
-            }
-            _ if token.starts_with("<<") => {}
-            _ if matches!(token.strip_prefix(">>"), Some(path) if !path.is_empty()) => {
-                let path = token.strip_prefix(">>").expect("checked above");
-                push_access(&mut accesses, ToolAccessKind::Write, path);
-            }
-            _ if matches!(token.strip_prefix('>'), Some(path) if !path.is_empty()) => {
-                let path = token.strip_prefix('>').expect("checked above");
-                push_access(&mut accesses, ToolAccessKind::Write, path);
-            }
-            _ if matches!(token.strip_prefix('<'), Some(path) if !path.is_empty()) => {
-                let path = token.strip_prefix('<').expect("checked above");
-                push_access(&mut accesses, ToolAccessKind::Read, path);
-            }
-            _ => {}
+        if let Some(next_index) = consume_redirection_token(tokens, index, &mut accesses) {
+            index = next_index;
+            continue;
         }
         index += 1;
     }
 
     accesses
+}
+
+/// Consumes one redirection token and records a target file access when present.
+fn consume_redirection_token(
+    tokens: &[String],
+    index: usize,
+    accesses: &mut Vec<(ToolAccessKind, String)>,
+) -> Option<usize> {
+    let redirection = parse_redirection_token(
+        tokens.get(index)?.as_str(),
+        tokens.get(index + 1).map(String::as_str),
+    )?;
+    if let Some((access_type, target)) = redirection.access {
+        push_access(accesses, access_type, target);
+    }
+    Some(index + 1 + usize::from(redirection.consume_next))
+}
+
+/// Returns the next token index when the current token is shell redirection syntax.
+fn skip_redirection_token(tokens: &[String], index: usize) -> Option<usize> {
+    parse_redirection_token(
+        tokens.get(index)?.as_str(),
+        tokens.get(index + 1).map(String::as_str),
+    )
+    .map(|redirection| index + 1 + usize::from(redirection.consume_next))
+}
+
+/// Parses one token as shell redirection syntax without treating fd duplication as a file.
+fn parse_redirection_token<'a>(
+    token: &'a str,
+    next_token: Option<&'a str>,
+) -> Option<ShellRedirection<'a>> {
+    let body = token.trim_start_matches(|ch: char| ch.is_ascii_digit());
+    if body.is_empty() {
+        return None;
+    }
+    if matches!(body, "<<" | "<<-" | "<<<") {
+        return Some(ShellRedirection {
+            access: None,
+            consume_next: true,
+        });
+    }
+    if body.starts_with("<<") || body.starts_with("<<<") {
+        return Some(ShellRedirection {
+            access: None,
+            consume_next: false,
+        });
+    }
+    if let Some(access_type) = separate_redirection_access_type(body) {
+        return Some(ShellRedirection {
+            access: next_token.and_then(|target| redirection_target_access(access_type, target)),
+            consume_next: true,
+        });
+    }
+    for (operator, access_type) in [
+        ("&>>", ToolAccessKind::Write),
+        ("&>", ToolAccessKind::Write),
+        (">>", ToolAccessKind::Write),
+        (">|", ToolAccessKind::Write),
+        (">", ToolAccessKind::Write),
+        ("<>", ToolAccessKind::Edit),
+        ("<", ToolAccessKind::Read),
+    ] {
+        if let Some(target) = body.strip_prefix(operator)
+            && !target.is_empty()
+        {
+            return Some(ShellRedirection {
+                access: redirection_target_access(access_type, target),
+                consume_next: false,
+            });
+        }
+    }
+    None
+}
+
+/// Returns the access kind for a redirection operator that takes its target from the next token.
+fn separate_redirection_access_type(token: &str) -> Option<ToolAccessKind> {
+    match token {
+        ">" | ">>" | ">|" | "&>" | "&>>" => Some(ToolAccessKind::Write),
+        "<>" => Some(ToolAccessKind::Edit),
+        "<" => Some(ToolAccessKind::Read),
+        _ => None,
+    }
+}
+
+/// Returns the file target for one redirection when the target names a real path.
+fn redirection_target_access(
+    access_type: ToolAccessKind,
+    target: &str,
+) -> Option<(ToolAccessKind, &str)> {
+    let target = target.trim();
+    (!target.is_empty() && !is_fd_duplication_target(target)).then_some((access_type, target))
+}
+
+/// Returns whether one redirection target is an fd duplication or close operation.
+fn is_fd_duplication_target(target: &str) -> bool {
+    let Some(rest) = target.strip_prefix('&') else {
+        return false;
+    };
+    rest == "-" || (!rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_digit()))
 }
 
 /// Returns whether one program name is one of the supported shell interpreters.

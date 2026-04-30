@@ -139,10 +139,20 @@ const INDEXED_TURN_EXISTS_SQL: &str = "
     LIMIT 1
 ";
 
+/// Identifies one project/provider/session scope for turn-detail queries.
+#[derive(Clone, Copy)]
+pub(crate) struct TurnDetailQueryScope<'a> {
+    pub(crate) project_id: &'a str,
+    pub(crate) project_root: Option<&'a Path>,
+    pub(crate) provider: SourceKind,
+    pub(crate) session_id: &'a str,
+}
+
 /// Queries one full normalized turn detail payload.
 pub fn query_turn_detail(
     index_db_path: &Path,
     project_id: &str,
+    project_root: Option<&Path>,
     provider: SourceKind,
     session_id: &str,
     turn_ordinal: u64,
@@ -152,6 +162,7 @@ pub fn query_turn_detail(
     build_turn_detail(
         &connection,
         project_id,
+        project_root,
         provider,
         session_id,
         turn_ordinal,
@@ -163,24 +174,42 @@ pub fn query_turn_detail(
 pub fn query_session_turn_details(
     index_db_path: &Path,
     project_id: &str,
+    project_root: Option<&Path>,
     provider: SourceKind,
     session_id: &str,
     options: TurnDetailOptions,
 ) -> Result<Vec<TurnDetail>> {
     let connection = open_existing_index_database(index_db_path)?;
-    build_session_turn_details(&connection, project_id, provider, session_id, options)
+    build_session_turn_details(
+        &connection,
+        TurnDetailQueryScope {
+            project_id,
+            project_root,
+            provider,
+            session_id,
+        },
+        options,
+    )
 }
 
 /// Queries one turn insights payload for one indexed provider session turn.
 pub fn query_turn_insights(
     index_db_path: &Path,
     project_id: &str,
+    project_root: Option<&Path>,
     provider: SourceKind,
     session_id: &str,
     turn_ordinal: u64,
 ) -> Result<TurnInsights> {
     let connection = open_existing_index_database(index_db_path)?;
-    build_turn_insights(&connection, project_id, provider, session_id, turn_ordinal)
+    build_turn_insights(
+        &connection,
+        project_id,
+        project_root,
+        provider,
+        session_id,
+        turn_ordinal,
+    )
 }
 
 /// Stores one reusable index handle for repeated indexed-turn existence checks.
@@ -229,6 +258,7 @@ pub fn query_turn_exists(
 fn build_turn_detail(
     connection: &Connection,
     project_id: &str,
+    project_root: Option<&Path>,
     provider: SourceKind,
     session_id: &str,
     turn_ordinal: u64,
@@ -237,7 +267,7 @@ fn build_turn_detail(
     let row = query_indexed_turn_row(connection, project_id, provider, session_id, turn_ordinal)?;
     let insights = options
         .include_insights
-        .then(|| build_turn_detail_insights(connection, &row))
+        .then(|| build_turn_detail_insights(connection, project_root, &row))
         .transpose()?;
     row.into_turn_detail(options, insights)
 }
@@ -245,28 +275,28 @@ fn build_turn_detail(
 /// Builds every normalized turn detail row for one indexed session.
 pub(crate) fn build_session_turn_details(
     connection: &Connection,
-    project_id: &str,
-    provider: SourceKind,
-    session_id: &str,
+    scope: TurnDetailQueryScope<'_>,
     options: TurnDetailOptions,
 ) -> Result<Vec<TurnDetail>> {
     let rows = query_session_turn_detail_rows(
         connection,
         INDEXED_SESSION_TURNS_SQL,
-        (project_id, provider.directory_name(), session_id),
-        session_id,
-        provider,
+        (
+            scope.project_id,
+            scope.provider.directory_name(),
+            scope.session_id,
+        ),
+        scope.session_id,
+        scope.provider,
     )?;
 
-    build_turn_details_from_rows(connection, rows, options)
+    build_turn_details_from_rows(connection, rows, scope.project_root, options)
 }
 
 /// Builds one bounded page of normalized turn details for one indexed session.
 pub(crate) fn build_session_turn_details_page(
     connection: &Connection,
-    project_id: &str,
-    provider: SourceKind,
-    session_id: &str,
+    scope: TurnDetailQueryScope<'_>,
     options: TurnDetailOptions,
     limit: usize,
     offset: usize,
@@ -281,18 +311,18 @@ pub(crate) fn build_session_turn_details_page(
         connection,
         INDEXED_SESSION_TURNS_PAGE_SQL,
         (
-            project_id,
-            provider.directory_name(),
-            session_id,
+            scope.project_id,
+            scope.provider.directory_name(),
+            scope.session_id,
             page_limit,
             offset,
         ),
-        session_id,
-        provider,
+        scope.session_id,
+        scope.provider,
     )?;
     let has_more = rows.len() > limit;
     rows.truncate(limit);
-    let turns = build_turn_details_from_rows(connection, rows, options)?;
+    let turns = build_turn_details_from_rows(connection, rows, scope.project_root, options)?;
     Ok((turns, has_more))
 }
 
@@ -326,13 +356,14 @@ where
 fn build_turn_details_from_rows(
     connection: &Connection,
     rows: Vec<IndexedTurnRow>,
+    project_root: Option<&Path>,
     options: TurnDetailOptions,
 ) -> Result<Vec<TurnDetail>> {
     rows.into_iter()
         .map(|row| {
             let insights = options
                 .include_insights
-                .then(|| build_turn_detail_insights(connection, &row))
+                .then(|| build_turn_detail_insights(connection, project_root, &row))
                 .transpose()?;
             row.into_turn_detail(options, insights)
         })
@@ -374,12 +405,13 @@ pub(crate) fn build_turn_exists(
 pub(crate) fn build_turn_insights(
     connection: &Connection,
     project_id: &str,
+    project_root: Option<&Path>,
     provider: SourceKind,
     session_id: &str,
     turn_ordinal: u64,
 ) -> Result<TurnInsights> {
     let row = query_indexed_turn_row(connection, project_id, provider, session_id, turn_ordinal)?;
-    let insights = build_turn_detail_insights(connection, &row)?;
+    let insights = build_turn_detail_insights(connection, project_root, &row)?;
     let shell_commands =
         query_turn_shell_commands(connection, project_id, provider, session_id, turn_ordinal)?;
     Ok(row.into_turn_insights(insights, shell_commands))
@@ -541,6 +573,7 @@ pub(crate) fn build_token_usage(
 /// Builds one derived insights block for a turn detail payload.
 fn build_turn_detail_insights(
     connection: &Connection,
+    project_root: Option<&Path>,
     turn: &IndexedTurnRow,
 ) -> Result<TurnDetailInsights> {
     let mut tools = query_tool_usage_stats(
@@ -558,6 +591,7 @@ fn build_turn_detail_insights(
         connection,
         FileUsageScope::Turn {
             project_id: &turn.project_id,
+            project_root,
             provider: turn.provider,
             session_id: &turn.session_id,
             turn_ordinal: turn.turn_ordinal,
