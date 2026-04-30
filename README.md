@@ -74,11 +74,25 @@ Refresh every registered project in the shared Darc workspace:
 darc refresh --all
 ```
 
+Keep the shared workspace fresh in the foreground:
+
+```bash
+darc refresh --watch --all
+```
+
+On macOS, manage the same watcher as a beta user LaunchAgent service:
+
+```bash
+darc service enable
+darc service start
+darc service status
+```
+
 ## Commands
 
 - `darc init` detects local sources and creates the shared Darc config.
 - `darc refresh` is the daily happy path. It runs `sync` then `index` for the active project, or every registered
-  project with `--all`.
+  project with `--all`. Add `--watch` to keep the same refresh workflow running in the foreground.
 - `darc status` shows human-readable health for the active project. Add `--workspace` to summarize every configured
   project, and `--check` to run sync planning without writing manifests, config, archives, or SQLite.
 - `darc sync` archives matching Claude and Codex sessions for the active project.
@@ -86,6 +100,8 @@ darc refresh --all
 - `darc query` exposes the machine-readable read protocol for workspace, session, turn, file-pivot, search, and
   insights data. Query commands emit JSON by default; see [Query protocol](docs/query-protocol.md).
 - `darc link`, `darc remove`, and `darc rename-from` manage renamed or merged projects.
+- `darc service` manages the beta background refresh service. Service management is currently macOS-only; see
+  [Background refresh service](docs/service.md).
 
 ## Session And Turn Stats
 

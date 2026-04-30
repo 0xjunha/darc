@@ -9,4 +9,5 @@ Darc keeps the root README focused on overview and quickstart. Use these docs fo
 - [Project rename and linking](project-rename.md)
 - [Schema audits](schema-audits.md)
 - [Claude support](claude-support.md)
+- [Background refresh service](service.md)
 - [Backlog](todo.md)
