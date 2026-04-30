@@ -18,7 +18,7 @@ use self::{
 };
 
 /// Tracks one-shot SQLite migrations for derived analytics tables.
-const INDEX_DB_SCHEMA_VERSION: i32 = 10;
+const INDEX_DB_SCHEMA_VERSION: i32 = 11;
 
 /// Opens the index database and creates the current schema when missing.
 pub fn open_index_database(path: &Path) -> Result<Connection> {
@@ -659,6 +659,97 @@ mod tests {
             ("Read".to_owned(), "read".to_owned(), "README.md".to_owned())
         );
         assert_eq!(evidence_count, 4);
+        assert_eq!(user_version, INDEX_DB_SCHEMA_VERSION);
+
+        Ok(())
+    }
+
+    #[test]
+    fn open_index_database_rebuilds_file_accesses_for_policy_migrations() -> Result<()> {
+        let path = unique_db_path("index-db-file-access-policy-rebuild");
+        let connection = open_index_database(&path)?;
+        insert_indexed_session(
+            &connection,
+            IndexedSessionFixture::new("project", SourceKind::Claude, "session", "/tmp/repo"),
+        )?;
+        insert_indexed_turn(
+            &connection,
+            IndexedTurnFixture::new(
+                "project",
+                SourceKind::Claude,
+                "session",
+                0,
+                "2026-04-01T00:00:00Z",
+                "completed",
+                r#"[{"type":"tool_call","timestamp":"2026-04-01T00:00:01Z","call_id":"tool-1","name":"Bash","arguments":"{\"command\":\"ls README.md 2>&1 && grep foo src/lib.rs 2> errors.log\"}"}]"#,
+            ),
+        )?;
+        connection.execute(
+            "
+            INSERT INTO file_accesses (
+                project_id,
+                provider,
+                session_id,
+                turn_ordinal,
+                call_ordinal,
+                call_id,
+                timestamp,
+                tool_name,
+                access_type,
+                path,
+                repo_relative_path,
+                file_name
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            ",
+            rusqlite::params![
+                "project",
+                "claude",
+                "session",
+                0_i64,
+                0_i64,
+                "tool-1",
+                "2026-04-01T00:00:02Z",
+                "Bash",
+                "read",
+                "2>&1",
+                "2>&1",
+                "2>&1",
+            ],
+        )?;
+        connection.execute_batch(&format!(
+            "PRAGMA user_version = {};",
+            INDEX_DB_SCHEMA_VERSION - 1
+        ))?;
+        drop(connection);
+
+        let reopened = open_index_database(&path)?;
+        let redirection_count: i64 = reopened.query_row(
+            "SELECT COUNT(*) FROM file_accesses WHERE path = '2>&1'",
+            [],
+            |row| row.get(0),
+        )?;
+        let rebuilt_rows: Vec<(String, String)> = reopened
+            .prepare(
+                "
+                SELECT access_type, path
+                FROM file_accesses
+                WHERE project_id = 'project' AND provider = 'claude' AND session_id = 'session'
+                ORDER BY access_type ASC, path ASC
+                ",
+            )?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let user_version: i32 = reopened.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+
+        assert_eq!(redirection_count, 0);
+        assert_eq!(
+            rebuilt_rows,
+            vec![
+                ("list".to_owned(), "README.md".to_owned()),
+                ("read".to_owned(), "src/lib.rs".to_owned()),
+                ("write".to_owned(), "errors.log".to_owned()),
+            ]
+        );
         assert_eq!(user_version, INDEX_DB_SCHEMA_VERSION);
 
         Ok(())

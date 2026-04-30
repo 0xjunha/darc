@@ -340,6 +340,85 @@ fn derives_file_accesses_from_shell_commands_and_patches() {
 }
 
 #[test]
+fn derives_file_accesses_skip_fd_redirections() {
+    let steps = vec![NormalizedTurnStep::ToolCall {
+        timestamp: "2026-04-06T10:00:01Z".to_owned(),
+        call_id: "call-1".to_owned(),
+        name: "Bash".to_owned(),
+        arguments: r#"{"command":"ls README.md 2>&1 && cargo +nightly fmt -- crates/core/src/sync.rs 2>&1 && ls README.md 2>/dev/null && grep foo src/lib.rs 2> errors.log && cargo test > target/test.log 2>&1 && cat < input.txt > output.txt","description":"exercise redirections"}"#.to_owned(),
+    }];
+
+    let tool_calls = extract_tool_call_records("repo-a", SourceKind::Codex, "session-1", 0, &steps);
+    let file_accesses = derive_file_access_records(&tool_calls);
+
+    assert!(!file_accesses.iter().any(|record| {
+        matches!(
+            record.path.as_str(),
+            "2>&1" | "2>/dev/null" | "&1" | "/dev/null"
+        )
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "README.md" && matches!(record.access_type, ToolAccessKind::List)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "crates/core/src/sync.rs"
+            && matches!(record.access_type, ToolAccessKind::Edit)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "src/lib.rs" && matches!(record.access_type, ToolAccessKind::Read)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "errors.log" && matches!(record.access_type, ToolAccessKind::Write)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "target/test.log" && matches!(record.access_type, ToolAccessKind::Write)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "input.txt" && matches!(record.access_type, ToolAccessKind::Read)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "output.txt" && matches!(record.access_type, ToolAccessKind::Write)
+    }));
+}
+
+#[test]
+fn derives_file_accesses_preserve_quoted_search_patterns() {
+    let steps = vec![NormalizedTurnStep::ToolCall {
+        timestamp: "2026-04-06T10:00:01Z".to_owned(),
+        call_id: "call-1".to_owned(),
+        name: "Bash".to_owned(),
+        arguments: r#"{"command":"rg '<div>' src/main.rs > rg.log && grep '>' src/lib.rs && rg -e '<tag>' src/opt.rs && echo hi >| out.log","description":"exercise quoted search patterns"}"#.to_owned(),
+    }];
+
+    let tool_calls = extract_tool_call_records("repo-a", SourceKind::Codex, "session-1", 0, &steps);
+    let file_accesses = derive_file_access_records(&tool_calls);
+
+    assert!(
+        !file_accesses
+            .iter()
+            .any(|record| matches!(record.path.as_str(), "div>" | "tag>" | ">"))
+    );
+    assert!(!file_accesses.iter().any(|record| {
+        record.path == "src/lib.rs" && matches!(record.access_type, ToolAccessKind::Write)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "src/main.rs" && matches!(record.access_type, ToolAccessKind::Read)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "src/lib.rs" && matches!(record.access_type, ToolAccessKind::Read)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "src/opt.rs" && matches!(record.access_type, ToolAccessKind::Read)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "rg.log" && matches!(record.access_type, ToolAccessKind::Write)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "out.log" && matches!(record.access_type, ToolAccessKind::Write)
+    }));
+}
+
+#[test]
 fn derives_file_accesses_from_shell_heredoc_apply_patch() {
     let steps = vec![NormalizedTurnStep::ToolCall {
         timestamp: "2026-04-06T10:00:01Z".to_owned(),
