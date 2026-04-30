@@ -2,6 +2,9 @@
 
 Darc can keep the session archive and SQLite index usually fresh by running the normal refresh workflow continuously.
 
+`darc service` is currently beta. The foreground watch mode is the stable primitive; the background service wrapper is
+macOS-only and still hardening around launchd integration, permission prompts, and operational polish.
+
 The foreground command is:
 
 ```bash
@@ -13,7 +16,7 @@ events, periodically reconciles missed events, and runs the same refresh path as
 
 ## macOS support
 
-`darc service` is currently macOS-only. It manages a user LaunchAgent for the current macOS login session.
+`darc service` is currently beta and macOS-only. It manages a user LaunchAgent for the current macOS login session.
 
 ```bash
 darc service enable

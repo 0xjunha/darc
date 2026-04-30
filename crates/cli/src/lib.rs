@@ -125,8 +125,8 @@ enum Commands {
     )]
     Index(IndexArgs),
     #[command(
-        about = "Manage the background Darc refresh service",
-        long_about = "Manage the background Darc refresh service.\n\nThe service commands currently support macOS LaunchAgents only.\nUse `darc refresh --watch --all` for the foreground process that the service runs in the background."
+        about = "Manage the beta background Darc refresh service",
+        long_about = "Manage the beta background Darc refresh service.\n\nThis service feature is currently beta and supports macOS LaunchAgents only.\nUse `darc refresh --watch --all` for the foreground process that the service runs in the background."
     )]
     Service(ServiceArgs),
     #[command(

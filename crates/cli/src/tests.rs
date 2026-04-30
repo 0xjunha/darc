@@ -246,6 +246,14 @@ fn parses_service_lifecycle_command() {
 }
 
 #[test]
+fn service_help_marks_feature_beta_and_macos_only() {
+    let help = help_for_command_path(&["service"]);
+
+    assert!(help.contains("beta background Darc refresh service"));
+    assert!(help.contains("currently beta and supports macOS LaunchAgents only"));
+}
+
+#[test]
 fn parse_duration_accepts_supported_units() {
     assert_eq!(
         super::parse_duration("500ms").unwrap(),

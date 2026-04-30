@@ -80,7 +80,7 @@ Keep the shared workspace fresh in the foreground:
 darc refresh --watch --all
 ```
 
-On macOS, manage the same watcher as a user LaunchAgent:
+On macOS, manage the same watcher as a beta user LaunchAgent service:
 
 ```bash
 darc service enable
@@ -100,7 +100,7 @@ darc service status
 - `darc query` exposes the machine-readable read protocol for workspace, session, turn, file-pivot, search, and
   insights data. Query commands emit JSON by default; see [Query protocol](docs/query-protocol.md).
 - `darc link`, `darc remove`, and `darc rename-from` manage renamed or merged projects.
-- `darc service` manages the background refresh service. Service management is currently macOS-only; see
+- `darc service` manages the beta background refresh service. Service management is currently macOS-only; see
   [Background refresh service](docs/service.md).
 
 ## Session And Turn Stats
