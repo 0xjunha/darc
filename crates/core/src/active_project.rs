@@ -5,12 +5,20 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use darc_paths::{current_project_root, normalize_project_path, project_path_set};
+use thiserror::Error;
 
 use crate::{
     config::{ProjectConfig, SharedConfig, load_config},
     constants::CONFIG_FILE_NAME,
     init::normalize_project_config,
 };
+
+/// Describes active-project resolution failures with stable categories.
+#[derive(Debug, Error)]
+pub(crate) enum ActiveProjectError {
+    #[error("current directory does not match any configured darc project")]
+    NoMatch,
+}
 
 /// Stores the resolved darc project for the current working directory.
 #[derive(Debug, Clone)]
@@ -59,6 +67,14 @@ pub(crate) fn load_active_project(current_dir: &Path, root: &Path) -> Result<Act
     })
 }
 
+/// Returns whether an error means the cwd simply has no configured active project.
+pub(crate) fn is_no_active_project_error(error: &anyhow::Error) -> bool {
+    error
+        .root_cause()
+        .downcast_ref::<ActiveProjectError>()
+        .is_some_and(|error| matches!(error, ActiveProjectError::NoMatch))
+}
+
 /// Matches the current repo or worktree against configured projects.
 fn find_project_index(
     projects: &[ProjectConfig],
@@ -74,7 +90,7 @@ fn find_project_index(
     }
 
     match matches.as_slice() {
-        [] => bail!("current directory does not match any configured darc project"),
+        [] => Err(ActiveProjectError::NoMatch.into()),
         [index] => Ok(*index),
         _ => {
             let names = matches

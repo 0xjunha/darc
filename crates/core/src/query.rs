@@ -37,7 +37,7 @@ use serde_json::{Value as JsonValue, json};
 use thiserror::Error;
 
 use crate::{
-    active_project::load_active_project,
+    active_project::{is_no_active_project_error, load_active_project},
     config::{ProjectConfig, SharedConfig, load_config},
     constants::CONFIG_FILE_NAME,
     default_root_path,
@@ -83,6 +83,7 @@ pub fn query_workspace(root: Option<PathBuf>) -> WorkspaceQueryData {
             project_name: active_project.project.name,
             current_root: active_project.current_root,
         }),
+        Err(error) if is_no_active_project_error(&error) => None,
         Err(error) => {
             root_info.issues.push(format!(
                 "Active project could not be resolved: {}",

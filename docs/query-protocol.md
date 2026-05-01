@@ -66,7 +66,7 @@ presentation; the default is `--color auto`. Status JSON emits the same envelope
 ## Argument rules
 
 - project-scoped queries accept optional `--project-id`; when omitted, Darc resolves the configured project from the current directory
-- `darc show workspace` and `darc list projects` include nullable `active_project` with the cwd-resolved project id, name, and current root when the current directory matches a configured project
+- `darc show workspace` and `darc list projects` include nullable `active_project` with the cwd-resolved project id, name, and current root when the current directory matches a configured project; a neutral cwd returns `active_project: null` without adding a root issue
 - `darc status --json` reports the same active-project status as human `darc status`; add `--check` to include a non-mutating sync plan under `data.project.sync_check`
 - canonical read commands accept shared `--root` and `--color` options before or after nested subcommands, so both
   `darc list --root ~/.darc sessions` and `darc list sessions --root ~/.darc` are valid

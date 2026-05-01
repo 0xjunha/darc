@@ -384,6 +384,34 @@ fn workspace_query_emits_success_envelope() -> Result<()> {
 }
 
 #[test]
+fn workspace_query_omits_active_project_without_root_issue_from_neutral_cwd() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-workspace-neutral-cwd")?;
+    let neutral_cwd = test_root("cli-query-workspace-neutral-cwd-runner");
+    fs::create_dir_all(&neutral_cwd)?;
+    let output = run_darc_in_dir(
+        &neutral_cwd,
+        [
+            "show",
+            "workspace",
+            "--root",
+            root.to_string_lossy().as_ref(),
+        ],
+    )?;
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.workspace.v1");
+    assert_eq!(value["data"]["active_project"], Value::Null);
+    assert_eq!(value["data"]["root"]["issues"], Value::Array(vec![]));
+    assert_eq!(value["data"]["projects"][0]["id"], "repo-abc123");
+
+    remove_root(&neutral_cwd)?;
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
 fn canonical_read_commands_emit_query_envelopes() -> Result<()> {
     let root = create_query_fixture_root("cli-canonical-read-surface")?;
     let root_arg = root.to_string_lossy();
