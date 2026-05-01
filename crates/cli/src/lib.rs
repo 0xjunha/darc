@@ -15,7 +15,8 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{
-    Args, ColorChoice, Parser, Subcommand, ValueEnum,
+    Arg, ArgAction, Args, ColorChoice, Command as ClapCommand, CommandFactory, FromArgMatches,
+    Parser, Subcommand, ValueEnum,
     builder::styling::{AnsiColor, Styles},
     error::ErrorKind,
 };
@@ -71,6 +72,69 @@ const HELP_STYLES: Styles = Styles::styled()
     .invalid(AnsiColor::BrightYellow.on_default());
 
 const LINK_LONG_ABOUT: &str = "Link one configured project's historical paths into the current project.\n\nRun this command from the target project directory.\nThe PROJECT argument is the old or source project name already stored in ~/.darc/config.toml.\n\nExample:\n- You renamed `/path/to/old-project` to `/path/to/new-project`.\n- Darc still has a configured project named `old-project`.\n- Run `cd /path/to/new-project && darc project link old-project`.\n\nThis command is non-destructive.\nIt updates config so the current project knows the source project's old local_path and known_paths.\nIt does not run `darc refresh` or remove the source project.\n\nUse `--dry-run` to preview the target project, source project, and known-path changes without writing config.";
+const REMOVE_LONG_ABOUT: &str = "Remove one configured project and its archived/indexed data.\n\nThe PROJECT argument is matched against the configured project `name` in ~/.darc/config.toml.\nThe name must identify exactly one configured project.\n\nThis command deletes:\n- the project entry from config.toml\n- the project's archived sessions directory under ~/.darc/projects/...\n- the project's indexed SQLite rows\n\nUse `--dry-run` to preview the resolved project and deletion counts without writing.\nYou can run this command from any directory.";
+const RENAME_FROM_LONG_ABOUT: &str = "Rebuild one old project's history into the current renamed project.\n\nUse this when you just renamed a project from one name to another.\nRun the command from the new project directory, and pass the old project name.\n\nExample:\n- Darc config still contains a project named `old-project`.\n- You renamed the checkout to `/path/to/new-project`.\n- Run `cd /path/to/new-project && darc project rename-from old-project`.\n\nThis command bootstraps or reuses the current project as the target, links the old project's paths into it, runs `darc refresh`, and removes the old source project after those steps succeed.\n\nIn other words, it is the safe built-in workflow for:\n`darc project link <old-project> && darc refresh && darc project remove <old-project>`\n\nUse `--dry-run` to preview the link target and cleanup counts without writing.\nIf ~/.darc/config.toml does not exist yet, run `darc init` first.";
+const HELP_TRAILER_HEADER_STYLE: &str = "\x1b[1;97m";
+const HELP_RESET_STYLE: &str = "\x1b[0m";
+
+/// Returns one styled help trailer section.
+fn styled_help_section(title: &str, body: &str) -> String {
+    format!("{HELP_TRAILER_HEADER_STYLE}{title}:{HELP_RESET_STYLE}\n{body}")
+}
+
+/// Returns top-level common workflow examples.
+fn root_after_help() -> String {
+    styled_help_section(
+        "Common workflows",
+        "  darc status\n  darc refresh\n  darc search \"panic\" --limit 5\n  darc show session <SESSION_ID> --turn-limit 5\n\nRun `darc help <command>` for details on a specific command.",
+    )
+}
+
+/// Returns sync command examples.
+fn sync_after_help() -> String {
+    styled_help_section(
+        "Examples",
+        "  darc sync --dry-run\n  darc sync --provider codex",
+    )
+}
+
+/// Returns index command examples.
+fn index_after_help() -> String {
+    styled_help_section("Examples", "  darc index\n  darc index --provider claude")
+}
+
+/// Returns canonical search command examples.
+fn search_after_help() -> String {
+    styled_help_section(
+        "Examples",
+        "  darc search \"panic unwrap\" --limit 5\n  darc search --mode literal --query \"--output-last-message\" --field user-message\n  darc search --mode regex --query \"error\\s+code\" --since 7d\n  darc search --mode file-path \"docs/**/*.md\" --limit 5\n  darc search --mode path-fragment query-protocol",
+    )
+}
+
+/// Returns mode-specific guidance for search query text.
+fn search_query_help() -> &'static str {
+    "Query text or path pattern. The accepted form depends on --mode.\n\nMode-specific query forms:\n  keyword: one or more terms, e.g. \"panic unwrap\"; searches Darc's derived per-turn text.\n  literal: exact plain text, e.g. \"--output-last-message\"; use --query when the text starts with '-'.\n  regex: Rust regex, e.g. \"panic|unwrap\" or \"error\\s+code\"; quote shell metacharacters.\n  file-name: file basename text, e.g. \"lib.rs\".\n  file-path: project-relative glob, e.g. \"docs/**/*.md\".\n  path-fragment: path substring or prefix, e.g. \"query-protocol\"."
+}
+
+/// Builds the Clap command tree with Darc-specific help flag placement.
+fn cli_command() -> ClapCommand {
+    with_explicit_help_arg(Cli::command())
+}
+
+/// Adds the Darc help flag into a stable `Help` section for one command tree.
+fn with_explicit_help_arg(command: ClapCommand) -> ClapCommand {
+    command
+        .disable_help_flag(true)
+        .arg(
+            Arg::new("help")
+                .short('h')
+                .long("help")
+                .action(ArgAction::Help)
+                .help("Print help (see a summary with '-h')")
+                .help_heading("Help"),
+        )
+        .mut_subcommands(with_explicit_help_arg)
+}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -79,7 +143,7 @@ const LINK_LONG_ABOUT: &str = "Link one configured project's historical paths in
     about = "Archive, index, and query coding-agent sessions",
     color = ColorChoice::Auto,
     styles = HELP_STYLES,
-    after_help = "Common workflows:\n  darc status\n  darc refresh\n  darc search \"panic\" --limit 5\n  darc show session <SESSION_ID> --turn-limit 5\n\nRun `darc help <command>` for details on a specific command."
+    after_help = root_after_help()
 )]
 struct Cli {
     #[command(subcommand)]
@@ -114,7 +178,7 @@ enum Commands {
     #[command(
         about = "Search indexed turns and return matching turn hits",
         long_about = "Search indexed turns and return matching turn hits.\n\nDarc search is turn-scoped: every hit includes the session id and turn ordinal needed for follow-up `darc show turn` or `darc show session` calls. Search defaults to keyword mode. Pass --mode for literal, regex, file-name, file-path, or path-fragment search modes.",
-        after_help = "Examples:\n  darc search \"panic unwrap\" --limit 5\n  darc search --mode literal --query \"--output-last-message\" --field user-message\n  darc search --mode file-path docs/query-protocol.md --limit 5"
+        after_help = search_after_help()
     )]
     Search(SearchArgs),
     #[command(
@@ -141,26 +205,26 @@ enum Commands {
     #[command(
         hide = true,
         about = "Remove one configured project and its archived/indexed data",
-        long_about = "Remove one configured project and its archived/indexed data.\n\nThe PROJECT argument is matched against the configured project `name` in ~/.darc/config.toml.\nThe name must identify exactly one configured project.\n\nThis command deletes:\n- the project entry from config.toml\n- the project's archived sessions directory under ~/.darc/projects/...\n- the project's indexed SQLite rows\n\nUse `--dry-run` to preview the resolved project and deletion counts without writing.\nYou can run this command from any directory."
+        long_about = REMOVE_LONG_ABOUT
     )]
     Remove(RemoveArgs),
     #[command(
         hide = true,
         name = "rename-from",
         about = "Rebuild one old project's history into the current renamed project",
-        long_about = "Rebuild one old project's history into the current renamed project.\n\nUse this when you just renamed a project from one name to another.\nRun the command from the new project directory, and pass the old project name.\n\nExample:\n- Darc config still contains a project named `old-project`.\n- You renamed the checkout to `/path/to/new-project`.\n- Run `cd /path/to/new-project && darc rename-from old-project`.\n\nThis command bootstraps or reuses the current project as the target, links the old project's paths into it, runs `darc refresh`, and removes the old source project after those steps succeed.\n\nIn other words, it is the safe built-in workflow for:\n`darc link <old-project> && darc refresh && darc remove <old-project>`\n\nUse `--dry-run` to preview the link target and cleanup counts without writing.\nIf ~/.darc/config.toml does not exist yet, run `darc init` first."
+        long_about = RENAME_FROM_LONG_ABOUT
     )]
     RenameFrom(RenameArgs),
     #[command(
         about = "Sync matching Claude and Codex sessions into the project archive",
         long_about = "Sync matching Claude and Codex sessions into the active project's Darc archive.\n\nUse `--dry-run` to preview pending copies without writing archive files, manifests, or config.",
-        after_help = "Examples:\n  darc sync --dry-run\n  darc sync --provider codex"
+        after_help = sync_after_help()
     )]
     Sync(SyncArgs),
     #[command(
         about = "Index archived sessions for the active project into SQLite",
         long_about = "Index archived sessions for the active project into the shared Darc SQLite database.\n\nRun this after `darc sync` when you want to rebuild searchable/queryable state without copying new archive files.",
-        after_help = "Examples:\n  darc index\n  darc index --provider claude"
+        after_help = index_after_help()
     )]
     Index(IndexArgs),
     #[command(
@@ -187,31 +251,23 @@ enum Commands {
 struct InitArgs {
     #[arg(
         long,
+        help_heading = "Mode",
+        help = "Show what would be written without changing files"
+    )]
+    dry_run: bool,
+
+    #[arg(
+        long,
         default_value_os_t = default_root_path(),
         help_heading = "Workspace",
         help = "Create or update config under this Darc root"
     )]
     root: PathBuf,
-
-    #[arg(
-        long,
-        help_heading = "Mode",
-        help = "Show what would be written without changing files"
-    )]
-    dry_run: bool,
 }
 
 /// Syncs then indexes archived sessions for one or all projects.
 #[derive(Debug, Args)]
 struct RefreshArgs {
-    #[arg(
-        long,
-        default_value_os_t = default_root_path(),
-        help_heading = "Workspace",
-        help = "Use this Darc root instead of the default"
-    )]
-    root: PathBuf,
-
     #[arg(
         long = "provider",
         value_enum,
@@ -229,6 +285,7 @@ struct RefreshArgs {
 
     #[arg(
         long,
+        help_heading = "Mode",
         help = "Keep refreshing when Claude or Codex session files change"
     )]
     watch: bool,
@@ -237,6 +294,7 @@ struct RefreshArgs {
         long,
         value_name = "DURATION",
         requires = "watch",
+        help_heading = "Mode",
         help = "Quiet period before a watched refresh, such as 30s or 2m"
     )]
     debounce: Option<String>,
@@ -245,6 +303,7 @@ struct RefreshArgs {
         long = "min-interval",
         value_name = "DURATION",
         requires = "watch",
+        help_heading = "Mode",
         help = "Minimum time between watched refresh runs, such as 60s or 5m"
     )]
     min_interval: Option<String>,
@@ -253,6 +312,7 @@ struct RefreshArgs {
         long = "reconcile-interval",
         value_name = "DURATION",
         requires = "watch",
+        help_heading = "Mode",
         help = "Periodic safety refresh interval for watch mode, such as 10m"
     )]
     reconcile_interval: Option<String>,
@@ -260,15 +320,30 @@ struct RefreshArgs {
     #[arg(
         long,
         requires = "watch",
+        help_heading = "Mode",
         help = "Use periodic polling instead of native filesystem events"
     )]
     poll: bool,
+
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Use this Darc root instead of the default"
+    )]
+    root: PathBuf,
 }
 
 /// Manages the background Darc refresh service.
 #[derive(Debug, Args)]
 struct ServiceArgs {
-    #[arg(long, default_value_os_t = default_root_path(), global = true)]
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        global = true,
+        help_heading = "Workspace",
+        help = "Use this Darc root instead of the default"
+    )]
     root: PathBuf,
 
     #[command(subcommand)]
@@ -297,14 +372,6 @@ enum ServiceCommands {
 struct StatusArgs {
     #[arg(
         long,
-        default_value_os_t = default_root_path(),
-        help_heading = "Workspace",
-        help = "Use this Darc root instead of the default"
-    )]
-    root: PathBuf,
-
-    #[arg(
-        long,
         help_heading = "Scope",
         help = "Show status for the shared Darc workspace instead of the active project"
     )]
@@ -323,11 +390,7 @@ struct StatusArgs {
         help = "Write status as a machine-readable JSON envelope"
     )]
     json: bool,
-}
 
-/// Sync matching Claude and Codex sessions into the project archive.
-#[derive(Debug, Args)]
-struct SyncArgs {
     #[arg(
         long,
         default_value_os_t = default_root_path(),
@@ -335,7 +398,11 @@ struct SyncArgs {
         help = "Use this Darc root instead of the default"
     )]
     root: PathBuf,
+}
 
+/// Sync matching Claude and Codex sessions into the project archive.
+#[derive(Debug, Args)]
+struct SyncArgs {
     #[arg(
         long,
         help_heading = "Mode",
@@ -350,6 +417,14 @@ struct SyncArgs {
         help = "Limit sync to the selected providers"
     )]
     provider: Vec<ProviderArg>,
+
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Use this Darc root instead of the default"
+    )]
+    root: PathBuf,
 }
 
 /// Link one configured project's historical paths into the active project.
@@ -357,21 +432,24 @@ struct SyncArgs {
 struct LinkArgs {
     #[arg(
         long,
-        default_value_os_t = default_root_path(),
-        help_heading = "Workspace",
-        help = "Use this Darc root instead of the default"
-    )]
-    root: PathBuf,
-
-    #[arg(
-        long,
         help_heading = "Mode",
         help = "Preview link changes without writing config"
     )]
     dry_run: bool,
 
-    #[arg(value_name = "PROJECT")]
+    #[arg(
+        value_name = "PROJECT",
+        help = "Configured source project name to link into the current project"
+    )]
     project: String,
+
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Use this Darc root instead of the default"
+    )]
+    root: PathBuf,
 }
 
 /// Remove one configured project and its archived/indexed data.
@@ -379,21 +457,21 @@ struct LinkArgs {
 struct RemoveArgs {
     #[arg(
         long,
-        default_value_os_t = default_root_path(),
-        help_heading = "Workspace",
-        help = "Use this Darc root instead of the default"
-    )]
-    root: PathBuf,
-
-    #[arg(
-        long,
         help_heading = "Mode",
         help = "Preview removal without writing config, archive, or index changes"
     )]
     dry_run: bool,
 
-    #[arg(value_name = "PROJECT")]
+    #[arg(value_name = "PROJECT", help = "Configured project name to remove")]
     project: String,
+
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Use this Darc root instead of the default"
+    )]
+    root: PathBuf,
 }
 
 /// Rebuild one configured project's history under the active project's id, then remove the old project.
@@ -401,26 +479,17 @@ struct RemoveArgs {
 struct RenameArgs {
     #[arg(
         long,
-        default_value_os_t = default_root_path(),
-        help_heading = "Workspace",
-        help = "Use this Darc root instead of the default"
-    )]
-    root: PathBuf,
-
-    #[arg(
-        long,
         help_heading = "Mode",
         help = "Preview rename workflow without writing config, archive, or index changes"
     )]
     dry_run: bool,
 
-    #[arg(value_name = "PROJECT")]
+    #[arg(
+        value_name = "PROJECT",
+        help = "Old configured project name to rebuild into the current project"
+    )]
     project: String,
-}
 
-/// Index archived sessions from selected providers for the active project into SQLite.
-#[derive(Debug, Args)]
-struct IndexArgs {
     #[arg(
         long,
         default_value_os_t = default_root_path(),
@@ -428,7 +497,11 @@ struct IndexArgs {
         help = "Use this Darc root instead of the default"
     )]
     root: PathBuf,
+}
 
+/// Index archived sessions from selected providers for the active project into SQLite.
+#[derive(Debug, Args)]
+struct IndexArgs {
     #[arg(
         long = "provider",
         value_enum,
@@ -436,21 +509,19 @@ struct IndexArgs {
         help = "Limit indexing to the selected providers"
     )]
     provider: Vec<ProviderArg>,
+
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Use this Darc root instead of the default"
+    )]
+    root: PathBuf,
 }
 
 /// Lists indexed Darc resources through the canonical JSON read surface.
 #[derive(Debug, Args)]
 struct ListArgs {
-    #[arg(
-        long,
-        value_enum,
-        default_value_t = ColorArg::Auto,
-        global = true,
-        help_heading = "Output",
-        help = "Control ANSI color in JSON output"
-    )]
-    color: ColorArg,
-
     #[arg(
         long,
         default_value_os_t = default_root_path(),
@@ -459,6 +530,16 @@ struct ListArgs {
         help = "Read from this darc root"
     )]
     root: PathBuf,
+
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = ColorArg::Auto,
+        global = true,
+        help_heading = "Presentation",
+        help = "Control ANSI color in JSON output"
+    )]
+    color: ColorArg,
 
     #[command(subcommand)]
     command: ListCommands,
@@ -485,22 +566,22 @@ enum ListCommands {
 struct ShowArgs {
     #[arg(
         long,
-        value_enum,
-        default_value_t = ColorArg::Auto,
-        global = true,
-        help_heading = "Output",
-        help = "Control ANSI color in JSON output"
-    )]
-    color: ColorArg,
-
-    #[arg(
-        long,
         default_value_os_t = default_root_path(),
         global = true,
         help_heading = "Workspace",
         help = "Read from this darc root"
     )]
     root: PathBuf,
+
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = ColorArg::Auto,
+        global = true,
+        help_heading = "Presentation",
+        help = "Control ANSI color in JSON output"
+    )]
+    color: ColorArg,
 
     #[command(subcommand)]
     command: ShowCommands,
@@ -526,19 +607,27 @@ struct SearchArgs {
     #[arg(
         long,
         value_enum,
-        default_value_t = ColorArg::Auto,
-        help_heading = "Output",
-        help = "Control ANSI color in JSON output"
+        default_value_t = SearchModeArg::Keyword,
+        help_heading = "Search",
+        help = "Choose how QUERY is interpreted"
     )]
-    color: ColorArg,
+    mode: SearchModeArg,
+
+    #[arg(
+        value_name = "QUERY",
+        help = "Search query text or path pattern",
+        long_help = search_query_help()
+    )]
+    query_arg: Option<String>,
 
     #[arg(
         long,
-        default_value_os_t = default_root_path(),
-        help_heading = "Workspace",
-        help = "Read from this darc root"
+        allow_hyphen_values = true,
+        value_name = "QUERY",
+        help_heading = "Search",
+        help = "Pass QUERY by flag; use this when the value starts with '-'"
     )]
-    root: PathBuf,
+    query: Option<String>,
 
     #[arg(
         long = "project-id",
@@ -562,30 +651,6 @@ struct SearchArgs {
         help = "Restrict search to this session id or unambiguous UUID prefix"
     )]
     session_id: Option<String>,
-
-    #[arg(
-        long,
-        value_enum,
-        default_value_t = SearchModeArg::Keyword,
-        help_heading = "Search",
-        help = "Search in this mode"
-    )]
-    mode: SearchModeArg,
-
-    #[arg(
-        value_name = "QUERY",
-        help = "Search for this text, file glob, or path fragment"
-    )]
-    query_arg: Option<String>,
-
-    #[arg(
-        long,
-        allow_hyphen_values = true,
-        value_name = "QUERY",
-        help_heading = "Search",
-        help = "Search for this text, file glob, or path fragment"
-    )]
-    query: Option<String>,
 
     #[arg(
         long,
@@ -653,7 +718,7 @@ struct SearchArgs {
 
     #[arg(
         long = "match-limit",
-        value_name = "N",
+        value_name = "MATCH_LIMIT",
         help_heading = "Result Size",
         help = search_match_limit_help()
     )]
@@ -665,21 +730,28 @@ struct SearchArgs {
         help = "Return every matched path in file-search hits"
     )]
     include_all_matched_paths: bool,
+
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Read from this darc root"
+    )]
+    root: PathBuf,
+
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = ColorArg::Auto,
+        help_heading = "Presentation",
+        help = "Control ANSI color in JSON output"
+    )]
+    color: ColorArg,
 }
 
 /// Shows indexed stats through the canonical JSON read surface.
 #[derive(Debug, Args)]
 struct StatsArgs {
-    #[arg(
-        long,
-        value_enum,
-        default_value_t = ColorArg::Auto,
-        global = true,
-        help_heading = "Output",
-        help = "Control ANSI color in JSON output"
-    )]
-    color: ColorArg,
-
     #[arg(
         long,
         default_value_os_t = default_root_path(),
@@ -688,6 +760,16 @@ struct StatsArgs {
         help = "Read from this darc root"
     )]
     root: PathBuf,
+
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = ColorArg::Auto,
+        global = true,
+        help_heading = "Presentation",
+        help = "Control ANSI color in JSON output"
+    )]
+    color: ColorArg,
 
     #[command(subcommand)]
     command: StatsCommands,
@@ -709,22 +791,22 @@ enum StatsCommands {
 struct ResolveArgs {
     #[arg(
         long,
-        value_enum,
-        default_value_t = ColorArg::Auto,
-        global = true,
-        help_heading = "Output",
-        help = "Control ANSI color in JSON output"
-    )]
-    color: ColorArg,
-
-    #[arg(
-        long,
         default_value_os_t = default_root_path(),
         global = true,
         help_heading = "Workspace",
         help = "Read from this darc root"
     )]
     root: PathBuf,
+
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = ColorArg::Auto,
+        global = true,
+        help_heading = "Presentation",
+        help = "Control ANSI color in JSON output"
+    )]
+    color: ColorArg,
 
     #[command(subcommand)]
     command: ResolveCommands,
@@ -754,9 +836,17 @@ enum ProjectCommands {
     )]
     Link(LinkArgs),
     /// Remove one configured project and its archived/indexed data.
+    #[command(
+        about = "Remove one configured project and its archived/indexed data",
+        long_about = REMOVE_LONG_ABOUT
+    )]
     Remove(RemoveArgs),
     /// Rebuild one old project's history into the current renamed project.
-    #[command(name = "rename-from")]
+    #[command(
+        name = "rename-from",
+        about = "Rebuild one old project's history into the current renamed project",
+        long_about = RENAME_FROM_LONG_ABOUT
+    )]
     RenameFrom(RenameArgs),
 }
 
@@ -775,14 +865,6 @@ struct QueryWorkspaceArgs {
 /// Resolves one full session id or UUID prefix into canonical project/provider/session matches.
 #[derive(Debug, Args)]
 struct QueryResolveSessionArgs {
-    #[arg(
-        long,
-        default_value_os_t = default_root_path(),
-        help_heading = "Workspace",
-        help = "Read from this darc root"
-    )]
-    root: PathBuf,
-
     #[arg(help = "Resolve this full UUID or UUID prefix")]
     input: String,
 
@@ -807,11 +889,7 @@ struct QueryResolveSessionArgs {
         help = "Require exactly one match and return it as one convenience object"
     )]
     pick_one: bool,
-}
 
-/// Queries the session list for one configured project.
-#[derive(Debug, Args)]
-struct QuerySessionsArgs {
     #[arg(
         long,
         default_value_os_t = default_root_path(),
@@ -819,7 +897,11 @@ struct QuerySessionsArgs {
         help = "Read from this darc root"
     )]
     root: PathBuf,
+}
 
+/// Queries the session list for one configured project.
+#[derive(Debug, Args)]
+struct QuerySessionsArgs {
     #[arg(
         long = "project-id",
         help_heading = "Scope",
@@ -834,15 +916,6 @@ struct QuerySessionsArgs {
         help = "Restrict sessions to this provider"
     )]
     provider: Option<ProviderArg>,
-
-    #[arg(
-        long,
-        value_enum,
-        default_value_t = SessionListViewArg::Compact,
-        help_heading = "Output",
-        help = "Return full session prompts and final messages or compact previews"
-    )]
-    view: SessionListViewArg,
 
     #[arg(
         long,
@@ -880,11 +953,16 @@ struct QuerySessionsArgs {
         help = "Number of sessions to skip"
     )]
     offset: usize,
-}
 
-/// Lists sessions for one configured project through the canonical read surface.
-#[derive(Debug, Args)]
-struct ListSessionsArgs {
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = SessionListViewArg::Compact,
+        help_heading = "Output",
+        help = "Return full session prompts and final messages or compact previews"
+    )]
+    view: SessionListViewArg,
+
     #[arg(
         long,
         default_value_os_t = default_root_path(),
@@ -892,7 +970,11 @@ struct ListSessionsArgs {
         help = "Read from this darc root"
     )]
     root: PathBuf,
+}
 
+/// Lists sessions for one configured project through the canonical read surface.
+#[derive(Debug, Args)]
+struct ListSessionsArgs {
     #[arg(
         long = "project-id",
         help_heading = "Scope",
@@ -907,15 +989,6 @@ struct ListSessionsArgs {
         help = "Restrict sessions to this provider"
     )]
     provider: Option<ProviderArg>,
-
-    #[arg(
-        long,
-        value_enum,
-        default_value_t = SessionListViewArg::Compact,
-        help_heading = "Output",
-        help = "Return full session prompts and final messages or compact previews"
-    )]
-    view: SessionListViewArg,
 
     #[arg(
         long,
@@ -954,11 +1027,16 @@ struct ListSessionsArgs {
         help = "Number of sessions to skip"
     )]
     offset: usize,
-}
 
-/// Queries the turn list for one session.
-#[derive(Debug, Args)]
-struct QueryTurnsArgs {
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = SessionListViewArg::Compact,
+        help_heading = "Output",
+        help = "Return full session prompts and final messages or compact previews"
+    )]
+    view: SessionListViewArg,
+
     #[arg(
         long,
         default_value_os_t = default_root_path(),
@@ -966,7 +1044,11 @@ struct QueryTurnsArgs {
         help = "Read from this darc root"
     )]
     root: PathBuf,
+}
 
+/// Queries the turn list for one session.
+#[derive(Debug, Args)]
+struct QueryTurnsArgs {
     #[arg(
         long = "project-id",
         help_heading = "Scope",
@@ -998,15 +1080,6 @@ struct QueryTurnsArgs {
 
     #[arg(
         long,
-        value_enum,
-        default_value_t = TurnListViewArg::Full,
-        help_heading = "Output",
-        help = "Return full turn summaries or a compact one-line skim"
-    )]
-    view: TurnListViewArg,
-
-    #[arg(
-        long,
         help_heading = "Time Filters",
         help = "Inclusive started_at lower bound. Example: `5d` or `2026-04-07T00:00:00Z`"
     )]
@@ -1034,11 +1107,16 @@ struct QueryTurnsArgs {
         help = "Number of turns to skip"
     )]
     offset: usize,
-}
 
-/// Lists most-touched files or pivots from one file selector.
-#[derive(Debug, Args)]
-struct QueryFilesArgs {
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = TurnListViewArg::Full,
+        help_heading = "Output",
+        help = "Return full turn summaries or a compact one-line skim"
+    )]
+    view: TurnListViewArg,
+
     #[arg(
         long,
         default_value_os_t = default_root_path(),
@@ -1046,7 +1124,11 @@ struct QueryFilesArgs {
         help = "Read from this darc root"
     )]
     root: PathBuf,
+}
 
+/// Lists most-touched files or pivots from one file selector.
+#[derive(Debug, Args)]
+struct QueryFilesArgs {
     #[arg(
         long = "project-id",
         help_heading = "Scope",
@@ -1127,11 +1209,7 @@ struct QueryFilesArgs {
         help = "Return every matched path in path-mode rows"
     )]
     include_all_matched_paths: bool,
-}
 
-/// Lists files for one project or session through the canonical read surface.
-#[derive(Debug, Args)]
-struct ListFilesArgs {
     #[arg(
         long,
         default_value_os_t = default_root_path(),
@@ -1139,7 +1217,11 @@ struct ListFilesArgs {
         help = "Read from this darc root"
     )]
     root: PathBuf,
+}
 
+/// Lists files for one project or session through the canonical read surface.
+#[derive(Debug, Args)]
+struct ListFilesArgs {
     #[arg(
         long = "project-id",
         help_heading = "Scope",
@@ -1227,11 +1309,7 @@ struct ListFilesArgs {
         help = "Return every matched path in path-mode rows"
     )]
     include_all_matched_paths: bool,
-}
 
-/// Queries one session-scoped per-file access summary payload.
-#[derive(Debug, Args)]
-struct QuerySessionFilesArgs {
     #[arg(
         long,
         default_value_os_t = default_root_path(),
@@ -1239,7 +1317,11 @@ struct QuerySessionFilesArgs {
         help = "Read from this darc root"
     )]
     root: PathBuf,
+}
 
+/// Queries one session-scoped per-file access summary payload.
+#[derive(Debug, Args)]
+struct QuerySessionFilesArgs {
     #[arg(
         long = "project-id",
         help_heading = "Scope",
@@ -1284,11 +1366,7 @@ struct QuerySessionFilesArgs {
         help = "Number of file rows to skip"
     )]
     offset: usize,
-}
 
-/// Queries one composite session bundle payload.
-#[derive(Debug, Args)]
-struct QuerySessionBundleArgs {
     #[arg(
         long,
         default_value_os_t = default_root_path(),
@@ -1296,7 +1374,11 @@ struct QuerySessionBundleArgs {
         help = "Read from this darc root"
     )]
     root: PathBuf,
+}
 
+/// Queries one composite session bundle payload.
+#[derive(Debug, Args)]
+struct QuerySessionBundleArgs {
     #[arg(
         long = "project-id",
         help_heading = "Scope",
@@ -1375,11 +1457,7 @@ struct QuerySessionBundleArgs {
         help = "Number of steps to skip per turn detail"
     )]
     step_offset: usize,
-}
 
-/// Queries one turn detail payload.
-#[derive(Debug, Args)]
-struct QueryTurnArgs {
     #[arg(
         long,
         default_value_os_t = default_root_path(),
@@ -1387,7 +1465,11 @@ struct QueryTurnArgs {
         help = "Read from this darc root"
     )]
     root: PathBuf,
+}
 
+/// Queries one turn detail payload.
+#[derive(Debug, Args)]
+struct QueryTurnArgs {
     #[arg(
         long = "project-id",
         help_heading = "Scope",
@@ -1468,11 +1550,7 @@ struct QueryTurnArgs {
         help = "Number of steps to skip"
     )]
     step_offset: usize,
-}
 
-/// Queries paginated turn search results for one configured project.
-#[derive(Debug, Args)]
-struct QuerySearchTurnsArgs {
     #[arg(
         long,
         default_value_os_t = default_root_path(),
@@ -1480,6 +1558,35 @@ struct QuerySearchTurnsArgs {
         help = "Read from this darc root"
     )]
     root: PathBuf,
+}
+
+/// Queries paginated turn search results for one configured project.
+#[derive(Debug, Args)]
+struct QuerySearchTurnsArgs {
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = SearchModeArg::Keyword,
+        help_heading = "Search",
+        help = "Choose how QUERY is interpreted"
+    )]
+    mode: SearchModeArg,
+
+    #[arg(
+        value_name = "QUERY",
+        help = "Search query text or path pattern",
+        long_help = search_query_help()
+    )]
+    query_arg: Option<String>,
+
+    #[arg(
+        long,
+        allow_hyphen_values = true,
+        value_name = "QUERY",
+        help_heading = "Search",
+        help = "Pass QUERY by flag; use this when the value starts with '-'"
+    )]
+    query: Option<String>,
 
     #[arg(
         long = "project-id",
@@ -1502,30 +1609,6 @@ struct QuerySearchTurnsArgs {
         help = "Restrict search to this session id or unambiguous UUID prefix"
     )]
     session_id: Option<String>,
-
-    #[arg(
-        long,
-        value_enum,
-        default_value_t = SearchModeArg::Keyword,
-        help_heading = "Search",
-        help = "Search in this mode"
-    )]
-    mode: SearchModeArg,
-
-    #[arg(
-        value_name = "QUERY",
-        help = "Search for this text, file glob, or path fragment"
-    )]
-    query_arg: Option<String>,
-
-    #[arg(
-        long,
-        allow_hyphen_values = true,
-        value_name = "QUERY",
-        help_heading = "Search",
-        help = "Search for this text, file glob, or path fragment"
-    )]
-    query: Option<String>,
 
     #[arg(
         long,
@@ -1605,11 +1688,7 @@ struct QuerySearchTurnsArgs {
         help = "Return every matched path in file-search hits"
     )]
     include_all_matched_paths: bool,
-}
 
-/// Queries the workspace insights payload for one rolling day window.
-#[derive(Debug, Args)]
-struct QueryWorkspaceInsightsArgs {
     #[arg(
         long,
         default_value_os_t = default_root_path(),
@@ -1617,7 +1696,11 @@ struct QueryWorkspaceInsightsArgs {
         help = "Read from this darc root"
     )]
     root: PathBuf,
+}
 
+/// Queries the workspace insights payload for one rolling day window.
+#[derive(Debug, Args)]
+struct QueryWorkspaceInsightsArgs {
     #[arg(
         long = "window",
         default_value = "7d",
@@ -1642,11 +1725,7 @@ struct QueryWorkspaceInsightsArgs {
         help = "Number of recent sessions to skip"
     )]
     recent_session_offset: usize,
-}
 
-/// Queries the project insights payload for one configured project.
-#[derive(Debug, Args)]
-struct QueryProjectInsightsArgs {
     #[arg(
         long,
         default_value_os_t = default_root_path(),
@@ -1654,7 +1733,11 @@ struct QueryProjectInsightsArgs {
         help = "Read from this darc root"
     )]
     root: PathBuf,
+}
 
+/// Queries the project insights payload for one configured project.
+#[derive(Debug, Args)]
+struct QueryProjectInsightsArgs {
     #[arg(
         long = "project-id",
         help_heading = "Scope",
@@ -1678,11 +1761,7 @@ struct QueryProjectInsightsArgs {
         help = "Maximum indexed turns to inspect"
     )]
     turn_limit: usize,
-}
 
-/// Queries one turn insights payload.
-#[derive(Debug, Args)]
-struct QueryTurnInsightsArgs {
     #[arg(
         long,
         default_value_os_t = default_root_path(),
@@ -1690,7 +1769,11 @@ struct QueryTurnInsightsArgs {
         help = "Read from this darc root"
     )]
     root: PathBuf,
+}
 
+/// Queries one turn insights payload.
+#[derive(Debug, Args)]
+struct QueryTurnInsightsArgs {
     #[arg(
         long = "project-id",
         help_heading = "Scope",
@@ -1733,6 +1816,14 @@ struct QueryTurnInsightsArgs {
         help = "Query this turn ordinal; alternative to positional TURN_ORDINAL"
     )]
     turn_ordinal: Option<u64>,
+
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Read from this darc root"
+    )]
+    root: PathBuf,
 }
 
 /// Audit Codex rollout schema compatibility against stable release tags.
@@ -1855,8 +1946,12 @@ where
     T: Into<OsString>,
 {
     let args = args.into_iter().map(Into::into).collect::<Vec<_>>();
-    match Cli::try_parse_from(args.clone()) {
-        Ok(cli) => run_cli(cli),
+    let mut command = cli_command();
+    match command.try_get_matches_from_mut(args.clone()) {
+        Ok(matches) => match Cli::from_arg_matches(&matches) {
+            Ok(cli) => run_cli(cli),
+            Err(error) => clap_error_exit(error, &args),
+        },
         Err(error) => clap_error_exit(error, &args),
     }
 }

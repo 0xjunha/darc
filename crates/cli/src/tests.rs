@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{Result, anyhow};
-use clap::{ColorChoice, CommandFactory, Parser};
+use clap::{ColorChoice, Parser};
 use darc_core::{
     IndexReport, RefreshAllBestEffortReport, RefreshProgress, RefreshProjectAttempt,
     RefreshProjectFailure, RefreshReport, SourceKind, SyncReport,
@@ -21,7 +21,7 @@ use darc_test_utils::{unique_test_dir, write_file};
 use serde_json::Value;
 
 use super::{
-    Cli, ColorArg, Commands, HELP_STYLES, claude_schema_audit_exit_code,
+    Cli, ColorArg, Commands, HELP_STYLES, claude_schema_audit_exit_code, cli_command,
     codex_schema_audit_exit_code, format_claude_schema_audit_report,
     format_codex_schema_audit_report, format_query_clap_error, format_query_error,
     parse_window_days, resolve_query_time_bound_at, should_auto_color_output, should_color_output,
@@ -40,7 +40,7 @@ fn compatible_report() -> CodexSchemaAuditReport {
 
 /// Renders long help for one nested command path.
 fn help_for_command_path(path: &[&str]) -> String {
-    let mut command = Cli::command();
+    let mut command = cli_command();
     let mut current = &mut command;
     for name in path {
         current = current
@@ -48,6 +48,18 @@ fn help_for_command_path(path: &[&str]) -> String {
             .unwrap_or_else(|| panic!("subcommand `{name}` should be present"));
     }
     current.render_long_help().to_string()
+}
+
+/// Asserts that the given help sections appear in the expected order.
+fn assert_contains_in_order(haystack: &str, needles: &[&str]) {
+    let mut cursor = 0;
+    for needle in needles {
+        let tail = &haystack[cursor..];
+        let Some(offset) = tail.find(needle) else {
+            panic!("expected `{needle}` after byte {cursor} in:\n{haystack}");
+        };
+        cursor += offset + needle.len();
+    }
 }
 
 fn compatible_claude_report() -> ClaudeSchemaAuditReport {
@@ -117,7 +129,7 @@ fn parses_hidden_codex_schema_audit_command() {
 
 #[test]
 fn top_level_help_points_to_common_workflows() {
-    let help = Cli::command().render_long_help().to_string();
+    let help = cli_command().render_long_help().to_string();
 
     assert!(help.contains("Archive, index, and query coding-agent sessions"));
     assert!(help.contains("Common workflows:"));
@@ -135,7 +147,7 @@ fn top_level_help_points_to_common_workflows() {
 
 #[test]
 fn help_uses_terminal_color_auto() {
-    let mut command = Cli::command();
+    let mut command = cli_command();
     command.build();
 
     assert_eq!(command.get_color(), ColorChoice::Auto);
@@ -152,7 +164,7 @@ fn help_uses_terminal_color_auto() {
 
 #[test]
 fn rendered_help_is_plain_but_carries_ansi_styles() {
-    let styled = Cli::command().render_long_help();
+    let styled = cli_command().render_long_help();
     let plain = styled.to_string();
     let ansi = styled.ansi().to_string();
 
@@ -268,6 +280,8 @@ fn service_help_marks_feature_beta_and_macos_only() {
 
     assert!(help.contains("beta background Darc refresh service"));
     assert!(help.contains("currently beta and supports macOS LaunchAgents only"));
+    assert!(help.contains("Workspace:"));
+    assert!(help.contains("Use this Darc root instead of the default"));
 }
 
 #[test]
@@ -792,17 +806,20 @@ fn write_config_fixture(root: &Path, config: &SharedConfig) -> Result<()> {
 #[test]
 fn human_command_help_groups_options() {
     let status_help = help_for_command_path(&["status"]);
-    assert!(status_help.contains("Workspace:"));
-    assert!(status_help.contains("Scope:"));
-    assert!(status_help.contains("Mode:"));
-    assert!(status_help.contains("Output:"));
+    assert_contains_in_order(&status_help, &["Scope:", "Mode:", "Output:", "Workspace:"]);
 
     let sync_help = help_for_command_path(&["sync"]);
-    assert!(sync_help.contains("Workspace:"));
-    assert!(sync_help.contains("Mode:"));
-    assert!(sync_help.contains("Selection:"));
+    assert_contains_in_order(&sync_help, &["Mode:", "Selection:", "Workspace:"]);
     assert!(sync_help.contains("Preview pending copies without writing files"));
     assert!(sync_help.contains("darc sync --dry-run"));
+
+    let refresh_help = help_for_command_path(&["refresh"]);
+    assert_contains_in_order(
+        &refresh_help,
+        &["Selection:", "Scope:", "Mode:", "Workspace:"],
+    );
+    assert!(refresh_help.contains("--watch"));
+    assert!(refresh_help.contains("Quiet period before a watched refresh"));
 }
 
 #[test]
@@ -954,7 +971,21 @@ fn project_link_help_keeps_safety_contract() {
     let help = help_for_command_path(&["project", "link"]);
     assert!(help.contains("This command is non-destructive."));
     assert!(help.contains("It does not run `darc refresh` or remove the source project."));
+    assert!(help.contains("Configured source project name"));
     assert!(help.contains("--dry-run"));
+}
+
+#[test]
+fn project_remove_and_rename_help_explain_project_argument() {
+    let remove_help = help_for_command_path(&["project", "remove"]);
+    assert!(remove_help.contains("matched against the configured project `name`"));
+    assert!(remove_help.contains("Configured project name to remove"));
+    assert_contains_in_order(&remove_help, &["Mode:", "Workspace:"]);
+
+    let rename_help = help_for_command_path(&["project", "rename-from"]);
+    assert!(rename_help.contains("Run the command from the new project directory"));
+    assert!(rename_help.contains("Old configured project name"));
+    assert_contains_in_order(&rename_help, &["Mode:", "Workspace:"]);
 }
 
 #[test]
@@ -1381,22 +1412,74 @@ fn list_turns_help_omits_removed_grep_surface() {
 fn search_help_mentions_tool_output_opt_in() {
     let help = help_for_command_path(&["search"]);
 
+    assert!(!help.contains("Options:"));
+    assert!(help.contains("Help:"));
     assert!(help.contains("--include-tool-output"));
     assert!(help.contains("--field"));
     assert!(help.contains("--exclude-field"));
-    assert!(help.contains("--match-limit <N>"));
+    assert!(help.contains("--match-limit <MATCH_LIMIT>"));
     assert!(help.contains("Maximum nested matches per literal/regex turn hit [default: 20]"));
     assert!(help.contains("literal and regex"));
     assert!(help.contains("Accepted fields:"));
     assert!(help.contains("messages: user-message, final-answer"));
     assert!(help.contains("path-fragment"));
+    assert!(help.contains("Mode-specific query forms:"));
+    assert!(help.contains("use --query when the text starts with '-'"));
     assert!(help.contains("Workspace:"));
     assert!(help.contains("Scope:"));
     assert!(help.contains("Search:"));
     assert!(help.contains("Evidence:"));
     assert!(help.contains("Time Filters:"));
     assert!(help.contains("Result Size:"));
+    assert!(help.contains("Presentation:"));
+    assert!(!help.contains("Output:"));
+    assert_contains_in_order(
+        &help,
+        &[
+            "Search:",
+            "Scope:",
+            "Evidence:",
+            "Time Filters:",
+            "Result Size:",
+            "Workspace:",
+            "Presentation:",
+            "Help:",
+            "Examples:",
+        ],
+    );
     assert!(help.contains("darc search \"panic unwrap\" --limit 5"));
+    assert!(help.contains("darc search --mode regex --query \"error\\s+code\" --since 7d"));
+}
+
+#[test]
+fn trailer_help_headers_are_white_not_green() {
+    let root_ansi = cli_command().render_long_help().ansi().to_string();
+    assert!(root_ansi.contains("\x1b[1;97mCommon workflows:\x1b[0m"));
+    assert!(!root_ansi.contains("\x1b[1;92mCommon workflows:\x1b[0m"));
+
+    let mut command = cli_command();
+    let search = command
+        .find_subcommand_mut("search")
+        .expect("search subcommand should be present");
+    let styled = search.render_long_help();
+    let plain = styled.to_string();
+    let ansi = styled.ansi().to_string();
+
+    assert!(plain.contains("Examples:"));
+    assert!(!plain.contains("\x1b["));
+    assert!(ansi.contains("\x1b[1;97mExamples:\x1b[0m"));
+    assert!(!ansi.contains("\x1b[1;92mExamples:\x1b[0m"));
+
+    for path in [&["sync"][..], &["index"][..]] {
+        let mut command = cli_command();
+        let mut current = &mut command;
+        for name in path {
+            current = current.find_subcommand_mut(name).unwrap();
+        }
+        let ansi = current.render_long_help().ansi().to_string();
+        assert!(ansi.contains("\x1b[1;97mExamples:\x1b[0m"));
+        assert!(!ansi.contains("\x1b[1;92mExamples:\x1b[0m"));
+    }
 }
 
 #[test]
@@ -1413,6 +1496,17 @@ fn list_files_help_mentions_path_and_co_touch_modes() {
     assert!(help.contains("Selection:"));
     assert!(help.contains("Time Filters:"));
     assert!(help.contains("Result Size:"));
+    assert!(help.contains("Workspace:"));
+    assert_contains_in_order(
+        &help,
+        &[
+            "Scope:",
+            "Selection:",
+            "Time Filters:",
+            "Result Size:",
+            "Workspace:",
+        ],
+    );
 }
 
 #[test]
@@ -1501,7 +1595,7 @@ fn formats_query_clap_errors_as_json() {
 
 #[test]
 fn codex_schema_audit_help_mentions_github_tokens() {
-    let mut command = Cli::command();
+    let mut command = cli_command();
     let help = command
         .find_subcommand_mut("codex-schema-audit")
         .expect("hidden subcommand should still be present")
@@ -1515,7 +1609,7 @@ fn codex_schema_audit_help_mentions_github_tokens() {
 
 #[test]
 fn claude_schema_audit_help_mentions_explicit_host_auth() {
-    let mut command = Cli::command();
+    let mut command = cli_command();
     let help = command
         .find_subcommand_mut("claude-schema-audit")
         .expect("hidden subcommand should still be present")
