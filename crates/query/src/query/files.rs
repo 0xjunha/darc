@@ -267,24 +267,12 @@ fn query_touched_path_file_rows(
             .context("failed to prepare touched-path file row query")?;
         rows.extend(
             statement
-                .query_map(params_from_iter(params), |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                        row.get::<_, String>(3)?,
-                    ))
-                })
+                .query_map(params_from_iter(params), read_touched_path_file_row)
                 .context("failed to query touched-path file rows")?
                 .map(|row| {
                     let (provider, session_id, repo_relative_path, path) =
                         row.context("failed to read touched-path file row")?;
-                    Ok((
-                        parse_provider(&provider)?,
-                        session_id,
-                        repo_relative_path,
-                        path,
-                    ))
+                    Ok((provider, session_id, repo_relative_path, path))
                 })
                 .collect::<Result<Vec<_>>>()?,
         );
@@ -332,6 +320,30 @@ fn build_touched_path_file_rows_sql(row_count: usize, path_selector: &PathQueryS
             COALESCE(file_accesses.repo_relative_path, file_accesses.path) COLLATE NOCASE ASC
         "
         ),
+    )
+}
+
+/// Reads one distinct session/path row from SQLite.
+fn read_touched_path_file_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TouchedPathFileRow> {
+    let provider = row.get::<_, String>(0)?;
+    let provider = parse_provider(&provider).map_err(to_rusqlite_error)?;
+    Ok((
+        provider,
+        row.get(1)?,
+        row.get::<_, Option<String>>(2)?,
+        row.get(3)?,
+    ))
+}
+
+/// Converts one query-layer error into a rusqlite callback error.
+fn to_rusqlite_error(error: anyhow::Error) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        0,
+        rusqlite::types::Type::Text,
+        Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            error.to_string(),
+        )),
     )
 }
 
@@ -428,16 +440,19 @@ fn build_files_query(
             })
         }
         (None, Some(seed_path)) => {
-            let files = query_co_touched_files(
+            let (files, has_more) = query_co_touched_files(
                 connection,
-                request.project_id,
-                request.project_root,
-                request.provider,
-                request.since,
-                request.until,
-                seed_path,
+                CoTouchedFilePageRequest {
+                    project_id: request.project_id,
+                    project_root: request.project_root,
+                    provider: request.provider,
+                    since: request.since,
+                    until: request.until,
+                    seed_path,
+                    limit: request.limit,
+                    offset: request.offset,
+                },
             )?;
-            let (files, has_more) = paginate_ranked_rows(files, request.limit, request.offset)?;
             Ok(FilesQueryData {
                 project_id: request.project_id.to_owned(),
                 mode: FilesQueryMode::CoTouchedWith,
@@ -751,77 +766,33 @@ fn query_file_session_matches(
 /// Queries files that co-occur with one seed path in the same sessions.
 fn query_co_touched_files(
     connection: &Connection,
-    project_id: &str,
-    project_root: Option<&Path>,
-    provider: Option<SourceKind>,
-    since: Option<&str>,
-    until: Option<&str>,
-    seed_path: &str,
-) -> Result<Vec<FilePivotSummary>> {
-    let seed_path = normalize_project_scoped_query_path(project_root, seed_path);
+    request: CoTouchedFilePageRequest<'_>,
+) -> Result<(Vec<FilePivotSummary>, bool)> {
+    let seed_path = normalize_project_scoped_query_path(request.project_root, request.seed_path);
     let Some(seed_path) = seed_path else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), false));
     };
-    let seed_selector = build_path_query_selector(project_root, &seed_path);
-    let seed_rows = query_raw_session_file_rows(
+    let page_limit = request
+        .limit
+        .checked_add(1)
+        .context("query limit exceeds usize range")?;
+    let rows = query_co_touched_file_page(
         connection,
-        project_id,
-        SessionFileQueryFilters {
-            provider,
-            session_id: None,
-            since,
-            until,
-            path_selector: Some(&seed_selector),
+        CoTouchedFilePageRequest {
+            project_id: request.project_id,
+            project_root: request.project_root,
+            provider: request.provider,
+            since: request.since,
+            until: request.until,
+            seed_path: &seed_path,
+            limit: page_limit,
+            offset: request.offset,
         },
     )?;
-    let seed_session_keys = aggregate_session_file_rows(seed_rows, project_root)
+    let has_more = rows.len() > request.limit;
+    let files = rows
         .into_iter()
-        .filter(|row| row.path.eq_ignore_ascii_case(&seed_path))
-        .map(|row| SessionKey {
-            provider: row.provider,
-            session_id: row.session_id,
-        })
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    let aggregates = query_raw_session_file_rows_for_session_keys(
-        connection,
-        project_id,
-        &seed_session_keys,
-        since,
-        until,
-    )?;
-    let aggregates = aggregate_session_file_rows(aggregates, project_root);
-
-    let mut files_by_session = BTreeMap::<SessionKey, Vec<AggregatedSessionFileRow>>::new();
-    for row in aggregates {
-        files_by_session
-            .entry(SessionKey {
-                provider: row.provider,
-                session_id: row.session_id.clone(),
-            })
-            .or_default()
-            .push(row);
-    }
-
-    let mut co_touched_counts = BTreeMap::<String, u64>::new();
-    for rows in files_by_session.values() {
-        if !rows
-            .iter()
-            .any(|row| row.path.eq_ignore_ascii_case(&seed_path))
-        {
-            continue;
-        }
-        for row in rows
-            .iter()
-            .filter(|row| !row.path.eq_ignore_ascii_case(&seed_path))
-        {
-            *co_touched_counts.entry(row.path.clone()).or_default() += 1;
-        }
-    }
-
-    let mut files = co_touched_counts
-        .into_iter()
+        .take(request.limit)
         .map(|(path, co_touch_count)| FilePivotSummary {
             path,
             co_touch_count: Some(co_touch_count),
@@ -833,13 +804,184 @@ fn query_co_touched_files(
             last_touched_at: None,
         })
         .collect::<Vec<_>>();
-    files.sort_by(|left, right| {
-        right
-            .co_touch_count
-            .cmp(&left.co_touch_count)
-            .then_with(|| left.path.cmp(&right.path))
-    });
-    Ok(files)
+    Ok((files, has_more))
+}
+
+/// Stores one paginated co-touched file query.
+struct CoTouchedFilePageRequest<'a> {
+    project_id: &'a str,
+    project_root: Option<&'a Path>,
+    provider: Option<SourceKind>,
+    since: Option<&'a str>,
+    until: Option<&'a str>,
+    seed_path: &'a str,
+    limit: usize,
+    offset: usize,
+}
+
+/// Queries one co-touched file page directly from distinct session/path rows.
+fn query_co_touched_file_page(
+    connection: &Connection,
+    request: CoTouchedFilePageRequest<'_>,
+) -> Result<Vec<(String, u64)>> {
+    let selector = PathQuerySelector::Exact {
+        relative: request.seed_path.to_owned(),
+        absolute: absolute_project_path(request.project_root, request.seed_path),
+    };
+    let sql = build_co_touched_file_page_sql(&selector);
+    let provider = request.provider.map(SourceKind::directory_name);
+    let mut params = vec![
+        Value::Text(request.project_id.to_owned()),
+        optional_text_value(provider),
+        optional_text_value(request.since),
+        optional_text_value(request.until),
+    ];
+    params.extend(selector.params());
+    params.extend(project_root_display_params(request.project_root));
+    params.push(Value::Integer(
+        i64::try_from(request.limit).context("query limit exceeds SQLite INTEGER range")?,
+    ));
+    params.push(Value::Integer(
+        i64::try_from(request.offset).context("query offset exceeds SQLite INTEGER range")?,
+    ));
+
+    let mut statement = connection
+        .prepare(&sql)
+        .context("failed to prepare co-touched file query")?;
+    statement
+        .query_map(params_from_iter(params), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
+        .context("failed to query co-touched files")?
+        .map(|row| {
+            let (path, co_touch_count) = row.context("failed to read co-touched file row")?;
+            Ok((path, sql_count_to_u64(co_touch_count)?))
+        })
+        .collect()
+}
+
+/// Builds one direct co-touched file page query.
+fn build_co_touched_file_page_sql(seed_selector: &PathQuerySelector) -> String {
+    let seed_path_filter = seed_selector.sql_predicate(5, 6);
+    let display_path = sql_display_path_for_access("file_accesses");
+    format!(
+        "
+    WITH seed_sessions AS (
+        SELECT DISTINCT
+            file_accesses.provider,
+            file_accesses.session_id
+        FROM file_accesses
+        INNER JOIN turns AS seed_turns
+            ON seed_turns.project_id = file_accesses.project_id
+            AND seed_turns.provider = file_accesses.provider
+            AND seed_turns.session_id = file_accesses.session_id
+            AND seed_turns.turn_ordinal = file_accesses.turn_ordinal
+        WHERE file_accesses.project_id = ?1
+            AND (?2 IS NULL OR file_accesses.provider = ?2)
+            AND (?3 IS NULL OR seed_turns.started_at >= ?3)
+            AND (?4 IS NULL OR seed_turns.started_at < ?4)
+            AND file_accesses.access_type IN ('read', 'write', 'edit')
+            AND NULLIF(TRIM(file_accesses.path), '') IS NOT NULL
+            AND {seed_path_filter}
+    ),
+    session_paths AS (
+        SELECT DISTINCT
+            file_accesses.provider,
+            file_accesses.session_id,
+            {display_path} AS display_path
+        FROM seed_sessions
+        INNER JOIN file_accesses
+            ON file_accesses.project_id = ?1
+            AND file_accesses.provider = seed_sessions.provider
+            AND file_accesses.session_id = seed_sessions.session_id
+        INNER JOIN turns
+            ON turns.project_id = file_accesses.project_id
+            AND turns.provider = file_accesses.provider
+            AND turns.session_id = file_accesses.session_id
+            AND turns.turn_ordinal = file_accesses.turn_ordinal
+        WHERE file_accesses.access_type IN ('read', 'write', 'edit')
+            AND NULLIF(TRIM(file_accesses.path), '') IS NOT NULL
+            AND (?3 IS NULL OR turns.started_at >= ?3)
+            AND (?4 IS NULL OR turns.started_at < ?4)
+    )
+    SELECT
+        display_path,
+        COUNT(*) AS co_touch_count
+    FROM session_paths
+    WHERE NULLIF(TRIM(display_path), '') IS NOT NULL
+        AND display_path <> ?5 COLLATE NOCASE
+    GROUP BY display_path
+    ORDER BY
+        co_touch_count DESC,
+        display_path COLLATE NOCASE ASC
+    LIMIT ?11 OFFSET ?12
+"
+    )
+}
+
+/// Builds the SQL expression matching Darc's project-root display path rules.
+fn sql_display_path_for_access(table_alias: &str) -> String {
+    let path = format!("TRIM({table_alias}.path)");
+    format!(
+        "CASE
+            WHEN NULLIF(TRIM({table_alias}.repo_relative_path), '') IS NOT NULL
+                THEN TRIM({table_alias}.repo_relative_path)
+            WHEN ?7 IS NOT NULL AND {path} = ?7
+                THEN ''
+            WHEN ?7 IS NOT NULL AND {path} LIKE ?8 ESCAPE '!'
+                THEN SUBSTR({path}, LENGTH(?7) + 2)
+            WHEN ?9 IS NOT NULL AND {path} = ?9
+                THEN ''
+            WHEN ?9 IS NOT NULL AND {path} LIKE ?10 ESCAPE '!'
+                THEN SUBSTR({path}, LENGTH(?9) + 2)
+            ELSE NULL
+        END"
+    )
+}
+
+/// Builds project-root parameters used by SQL-side path display normalization.
+fn project_root_display_params(project_root: Option<&Path>) -> Vec<Value> {
+    let project_root = project_root.map(normalize_path_string);
+    let project_root_like = project_root.as_deref().map(project_root_child_like_pattern);
+    let private_root = project_root.as_deref().and_then(private_path_variant);
+    let private_root_like = private_root.as_deref().map(project_root_child_like_pattern);
+    [
+        optional_owned_text_value(project_root),
+        optional_owned_text_value(project_root_like),
+        optional_owned_text_value(private_root),
+        optional_owned_text_value(private_root_like),
+    ]
+    .into()
+}
+
+/// Returns a `LIKE` pattern matching direct descendants of one normalized root path.
+fn project_root_child_like_pattern(root: &str) -> String {
+    if root == "/" {
+        "/%".to_owned()
+    } else {
+        format!("{}/%", escape_like_pattern(root))
+    }
+}
+
+/// Returns the macOS `/private` alternate spelling for one normalized root path.
+fn private_path_variant(path: &str) -> Option<String> {
+    path.strip_prefix("/private")
+        .map(str::to_owned)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            (!path.starts_with("/private/") && path.starts_with('/'))
+                .then(|| format!("/private{path}"))
+        })
+}
+
+/// Converts optional owned string filters into SQLite values.
+fn optional_owned_text_value(value: Option<String>) -> Value {
+    value.map_or(Value::Null, Value::Text)
+}
+
+/// Converts optional borrowed string filters into SQLite values.
+fn optional_text_value(value: Option<&str>) -> Value {
+    value.map_or(Value::Null, |value| Value::Text(value.to_owned()))
 }
 
 /// Queries grouped raw file rows for one provider/session/time selector set.
@@ -886,42 +1028,6 @@ where
         visit(build_raw_session_file_row(row)?)?;
     }
     Ok(())
-}
-
-/// Queries grouped raw file rows for one requested session set.
-fn query_raw_session_file_rows_for_session_keys(
-    connection: &Connection,
-    project_id: &str,
-    session_keys: &[SessionKey],
-    since: Option<&str>,
-    until: Option<&str>,
-) -> Result<Vec<RawSessionFileRow>> {
-    if session_keys.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let mut rows = Vec::new();
-    for session_chunk in session_keys.chunks(MAX_SESSION_KEYS_PER_QUERY) {
-        let sql = build_requested_session_file_rows_sql(session_chunk.len());
-        let mut statement = connection
-            .prepare(&sql)
-            .context("failed to prepare requested session file rows query")?;
-        let mut params = build_session_key_values_params(project_id, session_chunk.iter())?;
-        params.push(since.map_or(Value::Null, |value| Value::Text(value.to_owned())));
-        params.push(until.map_or(Value::Null, |value| Value::Text(value.to_owned())));
-        let chunk_rows = statement
-            .query_map(params_from_iter(params), read_raw_session_file_row)
-            .context("failed to query requested session file rows")?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .context("failed to read requested session file rows")?;
-        rows.extend(
-            chunk_rows
-                .into_iter()
-                .map(build_raw_session_file_row)
-                .collect::<Result<Vec<_>>>()?,
-        );
-    }
-    Ok(rows)
 }
 
 /// Reads one raw grouped file row from SQLite before type normalization.
@@ -1201,57 +1307,6 @@ fn build_session_file_rows_sql(path_selector: Option<&PathQuerySelector>) -> Str
     )
 }
 
-/// Builds one requested-session grouped file-row query SQL.
-fn build_requested_session_file_rows_sql(row_count: usize) -> String {
-    let since_param = row_count
-        .checked_mul(2)
-        .and_then(|value| value.checked_add(2))
-        .expect("placeholder index should stay within usize range");
-    let until_param = since_param
-        .checked_add(1)
-        .expect("placeholder index should stay within usize range");
-    let select_sql = format!(
-        "
-        SELECT
-            file_accesses.provider,
-            file_accesses.session_id,
-            file_accesses.repo_relative_path,
-            file_accesses.path,
-            SUM(CASE WHEN file_accesses.access_type = 'read' THEN 1 ELSE 0 END) AS read_count,
-            SUM(CASE WHEN file_accesses.access_type IN ('write', 'edit') THEN 1 ELSE 0 END) AS write_count,
-            MIN(file_accesses.turn_ordinal) AS first_turn_ordinal,
-            MAX(file_accesses.turn_ordinal) AS last_turn_ordinal,
-            MIN(turns.started_at) AS first_touched_at,
-            MAX(turns.started_at) AS last_touched_at
-        FROM requested
-        INNER JOIN file_accesses
-            ON file_accesses.project_id = ?1
-            AND file_accesses.provider = requested.provider
-            AND file_accesses.session_id = requested.session_id
-        INNER JOIN turns
-            ON turns.project_id = file_accesses.project_id
-            AND turns.provider = file_accesses.provider
-            AND turns.session_id = file_accesses.session_id
-            AND turns.turn_ordinal = file_accesses.turn_ordinal
-        WHERE file_accesses.access_type IN ('read', 'write', 'edit')
-            AND NULLIF(TRIM(file_accesses.path), '') IS NOT NULL
-            AND (?{since_param} IS NULL OR turns.started_at >= ?{since_param})
-            AND (?{until_param} IS NULL OR turns.started_at < ?{until_param})
-        GROUP BY
-            file_accesses.provider,
-            file_accesses.session_id,
-            file_accesses.repo_relative_path,
-            file_accesses.path
-        ORDER BY
-            last_touched_at DESC,
-            file_accesses.provider ASC,
-            file_accesses.session_id ASC,
-            COALESCE(file_accesses.repo_relative_path, file_accesses.path) COLLATE NOCASE ASC
-        "
-    );
-    build_session_key_values_query_sql(row_count, &select_sql)
-}
-
 /// Builds one SQLite parameter list for one grouped file-row query.
 fn build_session_file_rows_params(
     project_id: &str,
@@ -1428,10 +1483,6 @@ pub(super) fn smoke_test_sql(connection: &Connection) -> Result<()> {
             })),
         ),
         (
-            "requested session file rows query",
-            build_requested_session_file_rows_sql(1),
-        ),
-        (
             "touched-path requested session file rows query",
             build_touched_path_file_rows_sql(
                 1,
@@ -1440,6 +1491,13 @@ pub(super) fn smoke_test_sql(connection: &Connection) -> Result<()> {
                     absolute: Some("/tmp/repo/README.md".to_owned()),
                 },
             ),
+        ),
+        (
+            "co-touched file page query",
+            build_co_touched_file_page_sql(&PathQuerySelector::Exact {
+                relative: "README.md".to_owned(),
+                absolute: Some("/tmp/repo/README.md".to_owned()),
+            }),
         ),
         (
             "requested session paths query",
