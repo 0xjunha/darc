@@ -21,12 +21,13 @@ use clap::{
 };
 use darc_core::config::load_config;
 use darc_core::query::{
-    DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, DEFAULT_SEARCH_MATCH_LIMIT,
-    DEFAULT_TURN_STEP_LIMIT, DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT, FilesQueryRequest,
-    QueryProtocolError, ResolveSessionQueryRequest, ResolvedQueryProject, ResolvedSessionMatch,
-    SearchEvidenceField, SearchMode, SearchSnippetMatcher, SearchTurnsQueryData,
-    SearchTurnsRequest, SessionBundleQueryRequest, SessionBundleView, SessionsQueryRequest,
-    SessionsView, TurnDetailOptions, TurnsQueryRequest, TurnsView, query_files_for_project,
+    DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_QUERY_PAGE_LIMIT, DEFAULT_RESOLVE_SESSION_MATCH_LIMIT,
+    DEFAULT_SEARCH_MATCH_LIMIT, DEFAULT_SESSION_BUNDLE_TURN_LIMIT, DEFAULT_TURN_STEP_LIMIT,
+    DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT, FilesQueryRequest, QueryProtocolError,
+    ResolveSessionQueryRequest, ResolvedQueryProject, ResolvedSessionMatch, SearchEvidenceField,
+    SearchMode, SearchSnippetMatcher, SearchTurnsQueryData, SearchTurnsRequest,
+    SessionBundleQueryRequest, SessionBundleView, SessionsQueryRequest, SessionsView,
+    TurnDetailOptions, TurnsQueryRequest, TurnsView, query_files_for_project,
     query_project_insight_report_for_project, query_resolve_sessions,
     query_search_turns_for_project, query_session_bundle_for_project,
     query_session_files_for_project, query_sessions_for_project, query_turn_for_project,
@@ -629,7 +630,7 @@ struct SearchArgs {
 
     #[arg(
         long,
-        default_value_t = 50,
+        default_value_t = DEFAULT_QUERY_PAGE_LIMIT,
         help_heading = "Result Size",
         help = "Maximum turn hits to return"
     )]
@@ -918,7 +919,7 @@ struct QuerySessionsArgs {
 
     #[arg(
         long,
-        default_value_t = 50,
+        default_value_t = DEFAULT_QUERY_PAGE_LIMIT,
         help_heading = "Result Size",
         help = "Maximum sessions to return"
     )]
@@ -992,7 +993,7 @@ struct ListSessionsArgs {
 
     #[arg(
         long,
-        default_value_t = 50,
+        default_value_t = DEFAULT_QUERY_PAGE_LIMIT,
         help_heading = "Result Size",
         help = "Maximum sessions to return"
     )]
@@ -1072,7 +1073,7 @@ struct QueryTurnsArgs {
 
     #[arg(
         long,
-        default_value_t = 50,
+        default_value_t = DEFAULT_QUERY_PAGE_LIMIT,
         help_heading = "Result Size",
         help = "Maximum turns to return"
     )]
@@ -1149,7 +1150,7 @@ struct QueryFilesArgs {
 
     #[arg(
         long,
-        default_value_t = 50,
+        default_value_t = DEFAULT_QUERY_PAGE_LIMIT,
         help_heading = "Result Size",
         help = "Maximum rows to return"
     )]
@@ -1251,7 +1252,9 @@ struct ListFilesArgs {
     #[arg(
         long,
         help_heading = "Result Size",
-        help = "Maximum rows to return in top/path/co-touch modes [default: 50]"
+        help = default_query_page_limit_help(
+            "Maximum rows to return in top/path/co-touch modes"
+        )
     )]
     limit: Option<usize>,
 
@@ -1379,7 +1382,7 @@ struct QuerySessionBundleArgs {
 
     #[arg(
         long = "turn-limit",
-        default_value_t = 50,
+        default_value_t = DEFAULT_SESSION_BUNDLE_TURN_LIMIT,
         help_heading = "Result Size",
         help = "Maximum turn details to return"
     )]
@@ -1619,7 +1622,7 @@ struct QuerySearchTurnsArgs {
 
     #[arg(
         long,
-        default_value_t = 50,
+        default_value_t = DEFAULT_QUERY_PAGE_LIMIT,
         help_heading = "Result Size",
         help = "Maximum turn hits to return"
     )]
@@ -2143,7 +2146,7 @@ fn run_list_files(output: &QueryOutput, args: ListFilesArgs) -> Result<()> {
             co_touched_with: args.co_touched_with,
             since: args.since,
             until: args.until,
-            limit: args.limit.unwrap_or(50),
+            limit: args.limit.unwrap_or(DEFAULT_QUERY_PAGE_LIMIT),
             offset: args.offset.unwrap_or(0),
             matched_path_limit: args
                 .matched_path_limit
@@ -3303,6 +3306,11 @@ fn search_match_limit_help() -> String {
     format!(
         "Maximum nested matches per literal/regex turn hit [default: {DEFAULT_SEARCH_MATCH_LIMIT}]"
     )
+}
+
+/// Returns help text for one default row-page limit.
+fn default_query_page_limit_help(prefix: &str) -> String {
+    format!("{prefix} [default: {DEFAULT_QUERY_PAGE_LIMIT}]")
 }
 
 /// Converts one parsed provider argument back into the shared source kind.

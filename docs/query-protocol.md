@@ -98,15 +98,15 @@ controls terminal-only ANSI presentation; the default is `--color auto`.
 - `darc query files` accepts at most one of positional path, `--path`, or `--co-touched-with`; omit all three for most-touched mode (`mode=top`)
 - `--since` and `--until` on `darc list files` and `darc query files` apply to most-touched (`mode=top`), path, and
   co-touch modes
-- `--limit` and `--offset` are accepted by `darc query sessions`, `darc query turns`, `darc query search turns`, every `darc query files` mode, and the top/path/co-touch modes of `darc list files`; these row/turn-hit limits default to `--limit 50 --offset 0`
+- `--limit` and `--offset` are accepted by `darc query sessions`, `darc query turns`, `darc query search turns`, every `darc query files` mode, and the top/path/co-touch modes of `darc list files`; these row/turn-hit limits default to `--limit 10 --offset 0`
 - `--limit 0` returns an empty page while preserving `has_more`; this is useful as a cheap probe for whether matching
   rows exist
 - `--matched-path-limit` caps per-row `matched_paths` previews in `darc list files` path mode, `darc query files` path mode, and file-search modes; it defaults to `20`, and `--include-all-matched-paths` removes that preview cap
-- `--turn-limit` and `--turn-offset` on `darc query session-bundle` bound embedded turn details and default to `--turn-limit 50 --turn-offset 0`
+- `--turn-limit` and `--turn-offset` on `darc query session-bundle` bound embedded turn details and default to `--turn-limit 5 --turn-offset 0`
 - `--session-view` on `darc query session-bundle` defaults to `compact`, which caps the embedded first prompt and final agent message the same way `darc query sessions --view compact` does; pass `--session-view full` when the complete text pair is needed
 - embedded `session_files` in `darc query session-bundle` is capped at 100 file rows; use `darc query session-files` when a caller needs the standalone full file list
 - `darc query turn` and `darc query session-bundle` default to `--view narrative`; pass `--view full` when raw tool arguments, outputs, or payload blobs are needed
-- `--step-limit` and `--step-offset` on `darc query turn` and `darc query session-bundle` bound returned turn steps and default to `--step-limit 50 --step-offset 0`
+- `--step-limit` and `--step-offset` on `darc query turn` and `darc query session-bundle` bound returned turn steps and default to `--step-limit 10 --step-offset 0`
 - `--turn-limit` on `darc query insights project` is an inspection bound over indexed turns, not response pagination; the previous `--limit` spelling is accepted as a compatibility alias, and the response echoes `turn_limit`, `inspected_turn_count`, and `turns_has_more`
 - `--recent-session-limit` and `--recent-session-offset` on `darc query insights workspace` bound the `recent_sessions` preview and default to `--recent-session-limit 50 --recent-session-offset 0`
 - `--include-tool-output` on `darc query search turns` is accepted only with `--mode literal` or `--mode regex`
@@ -222,7 +222,7 @@ protocol commands remain available under `darc query ...` for clients that want 
     --project-id repo-abc123 \
     11111111 \
     --view oneline \
-    --limit 50
+    --limit 10
   ```
 
 ## Success envelope

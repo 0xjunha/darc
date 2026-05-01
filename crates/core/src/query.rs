@@ -8,18 +8,19 @@ use anyhow::{Context, Result, bail};
 use darc_index::INDEX_DB_FILE_NAME;
 use darc_paths::SourceKind;
 pub use darc_query::{
-    DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, DEFAULT_SEARCH_MATCH_LIMIT,
-    DEFAULT_TURN_STEP_LIMIT, DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT, DailyTimeStat,
-    FilePivotSummary, FileSessionSummary, FileUsageStat, FilesQueryData, FilesQueryMode,
-    FilesQueryRequest, ProjectInsights, ProjectSummary, ProjectTimeStat, ResolveSessionQueryData,
-    ResolveSessionQueryRequest, ResolvedSessionMatch, RootAvailability, RootInfo,
-    SearchEvidenceField, SearchMode, SearchSnippetMatcher, SearchTurnHit, SearchTurnMatch,
-    SearchTurnsQueryData, SearchTurnsRequest, SessionBundleQueryData, SessionBundleQueryRequest,
-    SessionBundleView, SessionFileSummary, SessionFilesQueryData, SessionKind, SessionRuntimeStat,
-    SessionSummary, SessionsQueryData, SessionsQueryRequest, SessionsView, ShellCommandSummary,
-    ToolUsageStat, TurnDetail, TurnDetailInsights, TurnDetailOptions, TurnInsights, TurnSummary,
-    TurnsQueryData, TurnsQueryRequest, TurnsView, WorkspaceDailyTimeStat, WorkspaceInsights,
-    WorkspaceQueryData, search_snippet_match_range,
+    DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_QUERY_PAGE_LIMIT, DEFAULT_RESOLVE_SESSION_MATCH_LIMIT,
+    DEFAULT_SEARCH_MATCH_LIMIT, DEFAULT_SESSION_BUNDLE_TURN_LIMIT, DEFAULT_TURN_STEP_LIMIT,
+    DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT, DailyTimeStat, FilePivotSummary, FileSessionSummary,
+    FileUsageStat, FilesQueryData, FilesQueryMode, FilesQueryRequest, ProjectInsights,
+    ProjectSummary, ProjectTimeStat, ResolveSessionQueryData, ResolveSessionQueryRequest,
+    ResolvedSessionMatch, RootAvailability, RootInfo, SearchEvidenceField, SearchMode,
+    SearchSnippetMatcher, SearchTurnHit, SearchTurnMatch, SearchTurnsQueryData, SearchTurnsRequest,
+    SessionBundleQueryData, SessionBundleQueryRequest, SessionBundleView, SessionFileSummary,
+    SessionFilesQueryData, SessionKind, SessionRuntimeStat, SessionSummary, SessionsQueryData,
+    SessionsQueryRequest, SessionsView, ShellCommandSummary, ToolUsageStat, TurnDetail,
+    TurnDetailInsights, TurnDetailOptions, TurnInsights, TurnSummary, TurnsQueryData,
+    TurnsQueryRequest, TurnsView, WorkspaceDailyTimeStat, WorkspaceInsights, WorkspaceQueryData,
+    search_snippet_match_range,
 };
 use darc_query::{
     ProjectIndexAggregate, list_project_index_aggregates, lookup_project_session_matches,

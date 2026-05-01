@@ -137,7 +137,8 @@ commands cover project-scoped search, compact turn skims, file/session pivots, a
   the current directory. They also accept `--provider` when a corpus mixes Codex and Claude history.
 - `darc list sessions` defaults to compact first-prompt and final-message previews for browsing; pass `--view full`
   when you need the full text pair. Preview rows include returned and total character counts, and edited file lists are
-  deduplicated and always complete for each returned session. Use `--touching <path-or-glob>` to list sessions that
+  deduplicated and always complete for each returned session. List and search pages default to 10 rows so agents can
+  start compactly; pass `--limit` when you need a larger page. Use `--touching <path-or-glob>` to list sessions that
   touched a path.
 - `darc list turns <session-id-or-prefix>` lists one known session, resolving an unambiguous UUID prefix and inferring
   the provider unless the id or prefix is ambiguous.
@@ -146,7 +147,8 @@ commands cover project-scoped search, compact turn skims, file/session pivots, a
   `darc list files --session <session-id-or-prefix>` returns the full per-session file summary.
   `darc list files --co-touched-with <path>` returns files touched in the same sessions as a seed path.
 - `darc show session <session-id-or-prefix>` returns a bounded session bundle: compact session summary, paginated
-  turn details, and a capped `session_files` preview. Use `--turn-limit` / `--turn-offset` to page turn details,
+  turn details, and a capped `session_files` preview. It defaults to 5 embedded turns. Use `--turn-limit` /
+  `--turn-offset` to page turn details,
   `--step-limit` / `--step-offset` to page steps inside each returned turn, and `darc list files --session <id>` when
   you need the standalone full file list. Turn detail and session bundle reads default to narrative payloads; pass
   `--view full`, `--step-limit`, or `--include-raw` only when more detail is needed.

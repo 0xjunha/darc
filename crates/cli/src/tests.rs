@@ -1395,7 +1395,7 @@ fn parses_query_files_path_command() {
             && co_touched_with.is_none()
             && since.as_deref() == Some("30d")
             && until.as_deref() == Some("2026-04-07T00:00:00Z")
-            && limit == 50
+            && limit == darc_core::query::DEFAULT_QUERY_PAGE_LIMIT
             && offset == 0
     ));
 }
@@ -1513,7 +1513,7 @@ fn parses_query_session_bundle_command() {
             && session_id.is_none()
             && matches!(session_view, super::SessionListViewArg::Compact)
             && matches!(view, super::ViewArg::Narrative)
-            && turn_limit == 50
+            && turn_limit == darc_core::query::DEFAULT_SESSION_BUNDLE_TURN_LIMIT
             && turn_offset == 0
             && step_limit == darc_core::query::DEFAULT_TURN_STEP_LIMIT
             && step_offset == 0
@@ -1565,7 +1565,7 @@ fn parses_query_turns_session_scope_command() {
             && session_id_arg.as_deref() == Some("session-1")
             && session_id.is_none()
             && matches!(view, super::TurnListViewArg::Full)
-            && limit == 50
+            && limit == darc_core::query::DEFAULT_QUERY_PAGE_LIMIT
             && offset == 0
     ));
 }

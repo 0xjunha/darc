@@ -5,6 +5,9 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use darc_core::query::{
+    DEFAULT_QUERY_PAGE_LIMIT, DEFAULT_SESSION_BUNDLE_TURN_LIMIT, DEFAULT_TURN_STEP_LIMIT,
+};
 use darc_index::open_index_database;
 use darc_paths::SourceKind;
 use darc_test_utils::{
@@ -599,7 +602,7 @@ fn sessions_query_defaults_project_id_from_current_directory() -> Result<()> {
     let value = parse_json(&output.stdout, "stdout")?;
     assert_eq!(value["schema"], "darc.query.sessions.v1");
     assert_eq!(value["data"]["project_id"], "repo-abc123");
-    assert_eq!(value["data"]["limit"], 50);
+    assert_eq!(value["data"]["limit"], DEFAULT_QUERY_PAGE_LIMIT);
     assert_eq!(value["data"]["offset"], 0);
     assert_eq!(value["data"]["has_more"], false);
 
@@ -727,7 +730,7 @@ fn sessions_query_applies_touched_path_filter() -> Result<()> {
     let value = parse_json(&output.stdout, "stdout")?;
     assert_eq!(value["schema"], "darc.query.sessions.v1");
     assert_eq!(value["data"]["touched_path"], touched_path);
-    assert_eq!(value["data"]["limit"], 50);
+    assert_eq!(value["data"]["limit"], DEFAULT_QUERY_PAGE_LIMIT);
     assert_eq!(value["data"]["offset"], 0);
     assert_eq!(value["data"]["has_more"], false);
     assert_eq!(
@@ -767,7 +770,7 @@ fn files_query_path_mode_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["mode"], "path");
     assert_eq!(value["data"]["path"], path);
     assert_eq!(value["data"]["co_touched_with"], Value::Null);
-    assert_eq!(value["data"]["limit"], 50);
+    assert_eq!(value["data"]["limit"], DEFAULT_QUERY_PAGE_LIMIT);
     assert_eq!(value["data"]["offset"], 0);
     assert_eq!(value["data"]["has_more"], false);
     assert_eq!(
@@ -938,10 +941,13 @@ fn session_bundle_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["session_id"], PRIMARY_SESSION_ID);
     assert_eq!(value["data"]["session_view"], "compact");
     assert_eq!(value["data"]["view"], "narrative");
-    assert_eq!(value["data"]["turn_limit"], 50);
+    assert_eq!(
+        value["data"]["turn_limit"],
+        DEFAULT_SESSION_BUNDLE_TURN_LIMIT
+    );
     assert_eq!(value["data"]["turn_offset"], 0);
     assert_eq!(value["data"]["turns_has_more"], false);
-    assert_eq!(value["data"]["step_limit"], 50);
+    assert_eq!(value["data"]["step_limit"], DEFAULT_TURN_STEP_LIMIT);
     assert_eq!(value["data"]["step_offset"], 0);
     assert_eq!(value["data"]["session_file_limit"], 100);
     assert_eq!(value["data"]["session_files_has_more"], false);
@@ -1354,7 +1360,7 @@ fn turns_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["since"], Value::Null);
     assert_eq!(value["data"]["until"], Value::Null);
     assert_eq!(value["data"]["view"], "full");
-    assert_eq!(value["data"]["limit"], 50);
+    assert_eq!(value["data"]["limit"], DEFAULT_QUERY_PAGE_LIMIT);
     assert_eq!(value["data"]["offset"], 0);
     assert_eq!(value["data"]["has_more"], false);
     assert_eq!(value["data"]["turns"][0]["turn_id"], "turn-1");
@@ -1498,7 +1504,7 @@ fn turns_query_applies_since_and_until_filters_in_session_mode() -> Result<()> {
     let value = parse_json(&output.stdout, "stdout")?;
     assert_eq!(value["data"]["since"], "2026-04-06T10:00:00Z");
     assert_eq!(value["data"]["until"], "2026-04-06T10:03:00Z");
-    assert_eq!(value["data"]["limit"], 50);
+    assert_eq!(value["data"]["limit"], DEFAULT_QUERY_PAGE_LIMIT);
     assert_eq!(value["data"]["offset"], 0);
     assert_eq!(value["data"]["has_more"], false);
     assert_eq!(
@@ -1582,7 +1588,7 @@ fn turns_query_oneline_view_emits_compact_rows() -> Result<()> {
     let value = parse_json(&oneline_output.stdout, "stdout")?;
     assert_eq!(value["schema"], "darc.query.turns.v1");
     assert_eq!(value["data"]["view"], "oneline");
-    assert_eq!(value["data"]["limit"], 50);
+    assert_eq!(value["data"]["limit"], DEFAULT_QUERY_PAGE_LIMIT);
     assert_eq!(value["data"]["offset"], 0);
     assert_eq!(value["data"]["has_more"], false);
     assert_eq!(value["data"]["turns"][0]["turn_ordinal"], 0);
@@ -1981,7 +1987,7 @@ fn turn_query_emits_success_envelope_and_raw_field() -> Result<()> {
     let value = parse_json(&output.stdout, "stdout")?;
     assert_eq!(value["schema"], "darc.query.turn.v1");
     assert_eq!(value["data"]["session_id"], PRIMARY_SESSION_ID);
-    assert_eq!(value["data"]["step_limit"], 50);
+    assert_eq!(value["data"]["step_limit"], DEFAULT_TURN_STEP_LIMIT);
     assert_eq!(value["data"]["step_offset"], 0);
     assert_eq!(value["data"]["steps_has_more"], false);
     assert_eq!(value["data"]["steps"][0]["type"], "tool_call");
@@ -2019,7 +2025,7 @@ fn turn_query_can_embed_derived_insights() -> Result<()> {
     let value = parse_json(&output.stdout, "stdout")?;
     assert_eq!(value["schema"], "darc.query.turn.v1");
     assert_eq!(value["data"]["step_count"], 2);
-    assert_eq!(value["data"]["step_limit"], 50);
+    assert_eq!(value["data"]["step_limit"], DEFAULT_TURN_STEP_LIMIT);
     assert_eq!(value["data"]["step_offset"], 0);
     assert_eq!(value["data"]["steps_has_more"], false);
     assert_eq!(value["data"]["insights"]["primary_model"], "gpt-5.4");
