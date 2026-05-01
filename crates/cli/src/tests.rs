@@ -1898,6 +1898,8 @@ fn list_files_help_mentions_path_and_co_touch_modes() {
     assert!(help.contains("--co-touched-with"));
     assert!(help.contains("--matched-path-limit"));
     assert!(help.contains("most-touched files"));
+    assert!(help.contains("paginated per-session file summary"));
+    assert!(help.contains("top/path/co-touch/session modes"));
     assert!(help.contains("Selection:"));
     assert!(help.contains("Time Filters:"));
     assert!(help.contains("Result Size:"));

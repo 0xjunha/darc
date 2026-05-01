@@ -1,7 +1,7 @@
 use std::{fs, path::Path};
 
 use anyhow::{Context, Result, bail};
-use darc_index::{INDEX_DB_FILE_NAME, open_index_database};
+use darc_index::{INDEX_DB_FILE_NAME, count_project_index_rows_read_only, open_index_database};
 use rusqlite::params;
 
 use super::{
@@ -91,7 +91,7 @@ fn build_remove_preview(
     project: &crate::config::ProjectConfig,
 ) -> Result<RemovePreviewReport> {
     let (indexed_sessions_removed, indexed_turns_removed) =
-        count_project_index_rows(&root.join(INDEX_DB_FILE_NAME), &project.id)?;
+        count_project_index_rows_read_only(&root.join(INDEX_DB_FILE_NAME), &project.id)?;
 
     Ok(RemovePreviewReport {
         project_name: project.name.clone(),
@@ -102,24 +102,6 @@ fn build_remove_preview(
         indexed_turns_would_remove: indexed_turns_removed,
         config_would_change: true,
     })
-}
-
-/// Counts one project's indexed SQLite rows without modifying them.
-fn count_project_index_rows(index_db_path: &Path, project_id: &str) -> Result<(usize, usize)> {
-    if !index_db_path.exists() {
-        return Ok((0, 0));
-    }
-
-    let connection = open_index_database(index_db_path)?;
-    Ok((
-        count_project_rows(
-            &connection,
-            COUNT_PROJECT_SESSIONS_SQL,
-            "sessions",
-            project_id,
-        )?,
-        count_project_rows(&connection, COUNT_PROJECT_TURNS_SQL, "turns", project_id)?,
-    ))
 }
 
 /// Deletes one archived project sessions directory when it exists.

@@ -296,7 +296,7 @@ pub(crate) fn preview_rename_project_from(
         source_project_id: prepared.source_project.id,
         total_known_paths: prepared.total_known_paths,
         new_known_paths: prepared.new_known_paths,
-        config_would_change: prepared.config_written,
+        config_would_change: prepared.config_written || remove_preview.config_would_change,
         source_sessions_root: remove_preview.sessions_root,
         source_archive_would_delete: remove_preview.archive_would_delete,
         indexed_sessions_would_remove: remove_preview.indexed_sessions_would_remove,

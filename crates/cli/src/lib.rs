@@ -1212,7 +1212,7 @@ struct ListFilesArgs {
         long,
         value_name = "SESSION_ID",
         help_heading = "Selection",
-        help = "Return the full per-session file summary for this session id or unambiguous UUID prefix"
+        help = "Return a paginated per-session file summary for this session id or unambiguous UUID prefix"
     )]
     session: Option<String>,
 
@@ -1241,7 +1241,7 @@ struct ListFilesArgs {
         long,
         help_heading = "Result Size",
         help = default_query_page_limit_help(
-            "Maximum rows to return in top/path/co-touch modes"
+            "Maximum rows to return in top/path/co-touch/session modes"
         )
     )]
     limit: Option<usize>,
@@ -1249,7 +1249,7 @@ struct ListFilesArgs {
     #[arg(
         long,
         help_heading = "Result Size",
-        help = "Number of rows to skip in top/path/co-touch modes [default: 0]"
+        help = "Number of rows to skip in top/path/co-touch/session modes [default: 0]"
     )]
     offset: Option<usize>,
 

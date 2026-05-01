@@ -4,7 +4,7 @@ pub(crate) mod schema;
 use std::{fs, path::Path, time::Duration};
 
 use anyhow::{Context, Result};
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags, params};
 
 use self::{
     migrations::{
@@ -33,10 +33,99 @@ pub fn open_index_database(path: &Path) -> Result<Connection> {
     Ok(connection)
 }
 
+/// Counts one project's indexed rows without initializing or migrating SQLite.
+pub fn count_project_index_rows_read_only(path: &Path, project_id: &str) -> Result<(usize, usize)> {
+    if !path.exists() {
+        return Ok((0, 0));
+    }
+
+    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .with_context(|| format!("failed to open index database {} read-only", path.display()))?;
+    connection
+        .busy_timeout(Duration::from_secs(5))
+        .context("failed to configure SQLite busy timeout")?;
+
+    let mut session_count =
+        count_project_rows_if_table_exists(&connection, SchemaTable::Sessions, project_id)?;
+    let mut turn_count =
+        count_project_rows_if_table_exists(&connection, SchemaTable::Turns, project_id)?;
+
+    if !normalized_codex_index_has_rows(&connection)? {
+        session_count += count_project_rows_if_table_exists(
+            &connection,
+            SchemaTable::CodexSessions,
+            project_id,
+        )?;
+        turn_count +=
+            count_project_rows_if_table_exists(&connection, SchemaTable::CodexTurns, project_id)?;
+    }
+
+    Ok((session_count, turn_count))
+}
+
 /// Ensures the index database file and schema exist.
 pub fn ensure_index_database(path: &Path) -> Result<()> {
     let _connection = open_index_database(path)?;
     Ok(())
+}
+
+/// Counts rows for one project in a table when that table already exists.
+fn count_project_rows_if_table_exists(
+    connection: &Connection,
+    table: SchemaTable,
+    project_id: &str,
+) -> Result<usize> {
+    if !has_table(connection, table)? {
+        return Ok(0);
+    }
+
+    let sql = format!(
+        "SELECT COUNT(*) FROM {} WHERE project_id = ?1",
+        table.sql_name()
+    );
+    let count: i64 = connection
+        .query_row(&sql, params![project_id], |row| row.get(0))
+        .with_context(|| {
+            format!(
+                "failed to count indexed {} rows for project `{project_id}`",
+                table.sql_name()
+            )
+        })?;
+    usize::try_from(count)
+        .with_context(|| format!("indexed {} count exceeds usize range", table.sql_name()))
+}
+
+/// Returns whether normalized Codex rows already exist in the index.
+fn normalized_codex_index_has_rows(connection: &Connection) -> Result<bool> {
+    Ok(
+        table_has_provider_rows(connection, SchemaTable::Sessions, "codex")?
+            || table_has_provider_rows(connection, SchemaTable::Turns, "codex")?,
+    )
+}
+
+/// Returns whether one table has rows for a stored provider value.
+fn table_has_provider_rows(
+    connection: &Connection,
+    table: SchemaTable,
+    provider: &str,
+) -> Result<bool> {
+    if !has_table(connection, table)? {
+        return Ok(false);
+    }
+
+    let sql = format!(
+        "SELECT EXISTS(SELECT 1 FROM {} WHERE provider = ?1 LIMIT 1)",
+        table.sql_name()
+    );
+    let has_rows: bool = connection
+        .query_row(&sql, params![provider], |row| row.get(0))
+        .with_context(|| {
+            format!(
+                "failed to inspect indexed {} provider rows",
+                table.sql_name()
+            )
+        })?;
+    Ok(has_rows)
 }
 
 /// Creates the supported SQLite schema when missing.
@@ -84,7 +173,10 @@ mod tests {
     use darc_paths::SourceKind;
     use rusqlite::Connection;
 
-    use super::{INDEX_DB_SCHEMA_VERSION, migrations, open_index_database, schema};
+    use super::{
+        INDEX_DB_SCHEMA_VERSION, count_project_index_rows_read_only, migrations,
+        open_index_database, schema,
+    };
     use crate::test_support::{
         IndexedSessionFixture, IndexedTurnFixture, create_pre_analytics_index_schema,
         insert_indexed_session, insert_indexed_turn, insert_pre_analytics_turn,
@@ -286,6 +378,26 @@ mod tests {
         assert_eq!(user_version, INDEX_DB_SCHEMA_VERSION);
         assert!(!sqlite_table_exists(&migrated, "codex_sessions")?);
         assert!(!sqlite_table_exists(&migrated, "codex_turns")?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn count_project_index_rows_read_only_counts_legacy_rows_without_migrating() -> Result<()> {
+        let path = unique_db_path("read-only-count-legacy");
+        let connection = Connection::open(&path)?;
+        seed_legacy_codex_index(&connection)?;
+        drop(connection);
+
+        let (session_count, turn_count) = count_project_index_rows_read_only(&path, "project")?;
+
+        assert_eq!(session_count, 1);
+        assert_eq!(turn_count, 1);
+        let reopened = Connection::open(&path)?;
+        assert!(sqlite_table_exists(&reopened, "codex_sessions")?);
+        assert!(sqlite_table_exists(&reopened, "codex_turns")?);
+        assert!(!sqlite_table_exists(&reopened, "sessions")?);
+        assert!(!sqlite_table_exists(&reopened, "turns")?);
 
         Ok(())
     }
