@@ -14,8 +14,8 @@ The daily happy path is `darc refresh`, which runs `sync` and `index` together.
 - Registers local projects in a shared `~/.darc` workspace and resolves the active project from the current checkout.
 - Archives matching Claude and Codex session history into a per-project rollout archive.
 - Rebuilds a normalized SQLite index from archived rollouts for insights, reporting, and downstream tooling.
-- Exposes canonical JSON read commands for listing, showing, searching, resolving, and stats, backed by stable
-  machine-readable `darc.query.*` payload schemas for downstream clients.
+- Exposes canonical JSON read commands for listing, showing, searching, resolving, stats, and status preflight, backed
+  by stable machine-readable `darc.query.*` and `darc.status.*` payload schemas for downstream clients.
 - Derives indexed insights at workspace, project, and turn scope without requiring clients to open `index.sqlite`
   directly.
 - Surfaces best-effort per-turn and per-session stats such as model, token usage, effective agent runtime, and
@@ -93,13 +93,13 @@ darc service status
 - `darc init` detects local sources and creates the shared Darc config.
 - `darc refresh` is the daily happy path. It runs `sync` then `index` for the active project, or every registered
   project with `--all`. Add `--watch` to keep the same refresh workflow running in the foreground.
-- `darc status` shows health for the active project. Add `--json` for a machine-readable active-project preflight,
-  `--workspace` to summarize every configured project, and `--check` to run sync planning without writing manifests,
-  config, archives, or SQLite.
+- `darc status` shows health for the active project. Add `--json` for a machine-readable active-project preflight
+  with JSON error envelopes, `--workspace` to summarize every configured project, and `--check` to run sync planning
+  without writing manifests, config, archives, or SQLite.
 - `darc sync` archives matching Claude and Codex sessions for the active project.
 - `darc index` indexes archived sessions into SQLite.
-- `darc list`, `darc show`, `darc search`, `darc stats`, and `darc resolve` are the canonical JSON read surface for
-  coding agents. They reuse the query protocol envelopes; see [Query protocol](docs/query-protocol.md).
+- `darc list`, `darc show`, `darc search`, `darc stats`, `darc resolve`, and `darc status --json` are the JSON read
+  surface for coding agents; see [Query protocol](docs/query-protocol.md).
 - `darc project link`, `darc project remove`, and `darc project rename-from` manage renamed or merged projects.
   Use `--dry-run` to preview project config or cleanup changes before writing.
 - `darc service` manages the beta background refresh service. Service management is currently macOS-only; see

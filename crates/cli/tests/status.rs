@@ -220,6 +220,45 @@ fn status_json_reports_active_project_counts() -> Result<()> {
 }
 
 #[test]
+fn status_json_runtime_errors_emit_structured_stderr() -> Result<()> {
+    let root = unique_test_dir("cli-status-json-runtime-error");
+    fs::create_dir_all(&root)?;
+
+    let output = run_status(
+        &root,
+        &["status", "--root", root.to_str().unwrap(), "--json"],
+    )?;
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let value: Value = serde_json::from_slice(&output.stderr)?;
+    assert_eq!(value["schema"], "darc.error.v1");
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("shared config not found"))
+    );
+
+    Ok(())
+}
+
+#[test]
+fn status_json_parse_errors_emit_structured_stderr() -> Result<()> {
+    let root = unique_test_dir("cli-status-json-parse-error");
+    fs::create_dir_all(&root)?;
+    let output = run_status(&root, &["status", "--json", "--bad-flag"])?;
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let value: Value = serde_json::from_slice(&output.stderr)?;
+    assert_eq!(value["schema"], "darc.error.v1");
+    assert_eq!(value["error"]["code"], "invalid_arguments");
+    assert_eq!(value["error"]["details"]["clap_kind"], "UnknownArgument");
+
+    Ok(())
+}
+
+#[test]
 fn index_output_uses_distinct_summary_heading() -> Result<()> {
     let root = unique_test_dir("cli-index-heading");
     let project = project_fixture(&root, "repo", "repo-abc123");
@@ -439,6 +478,41 @@ fn status_check_json_reports_pending_sync_without_writes() -> Result<()> {
         true
     );
     assert!(!manifest_path.exists());
+
+    Ok(())
+}
+
+#[test]
+fn status_check_json_failures_emit_structured_stderr() -> Result<()> {
+    let root = unique_test_dir("cli-status-check-json-failed");
+    let project = project_fixture(&root, "repo", "repo-abc123");
+    fs::create_dir_all(Path::new(&project.local_path))?;
+    fs::create_dir_all(Path::new(&project.sessions_root))?;
+    write_config_fixture(
+        &root,
+        vec![project_fixture(&root, "repo", "repo-abc123")],
+        SourcesFixture::default(),
+    )?;
+
+    let output = run_status(
+        Path::new(&project.local_path),
+        &[
+            "status",
+            "--root",
+            root.to_str().unwrap(),
+            "--check",
+            "--json",
+        ],
+    )?;
+
+    assert!(!output.status.success());
+    let stdout: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(stdout["schema"], "darc.status.project.v1");
+    assert_eq!(stdout["data"]["project"]["sync_check"]["status"], "failed");
+    let stderr: Value = serde_json::from_slice(&output.stderr)?;
+    assert_eq!(stderr["schema"], "darc.error.v1");
+    assert_eq!(stderr["error"]["code"], "status_check_failed");
+    assert_eq!(stderr["error"]["details"]["scope"], "project");
 
     Ok(())
 }

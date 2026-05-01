@@ -67,7 +67,7 @@ presentation; the default is `--color auto`. Status JSON emits the same envelope
 
 - project-scoped queries accept optional `--project-id`; when omitted, Darc resolves the configured project from the current directory
 - `darc show workspace` and `darc list projects` include nullable `active_project` with the cwd-resolved project id, name, and current root when the current directory matches a configured project; a neutral cwd returns `active_project: null` without adding a root issue
-- `darc status --json` reports the same active-project status as human `darc status`; add `--check` to include a non-mutating sync plan under `data.project.sync_check`
+- `darc status --json` reports the same active-project status as human `darc status`; add `--check` to include a non-mutating sync plan under `data.project.sync_check`; failed JSON status checks write the status report to stdout, return non-zero, and write a `darc.error.v1` envelope to stderr
 - canonical read commands accept shared `--root` and `--color` options before or after nested subcommands, so both
   `darc list --root ~/.darc sessions` and `darc list sessions --root ~/.darc` are valid
 - `--color auto` adds ANSI syntax color only when stdout is a terminal, `NO_COLOR` is unset, and `TERM` is not `dumb`; piped, redirected, and captured output remains plain JSON by default
@@ -245,7 +245,7 @@ Fields:
 
 ## Error envelope
 
-Query runtime failures and query argument parse failures return non-zero exit status and write a structured error envelope to `stderr`.
+JSON read runtime failures and argument parse failures return non-zero exit status and write a structured error envelope to `stderr`.
 
 ```json
 {
@@ -276,6 +276,7 @@ Current stable JSON read error codes:
 - `invalid_arguments`: JSON read command arguments were rejected before dispatch, for example because an option was unknown, required input was missing, or two options conflicted
 - `missing_required_identity`: a session id, turn ordinal, query, or similar read identity was not supplied in any accepted positional or flag form
 - `conflicting_identity_arguments`: the same read identity was supplied in incompatible positional and flag forms
+- `status_check_failed`: `darc status --json --check` or `darc status --workspace --json --check` completed its status report but at least one sync-check plan failed
 - `invalid_session_id`: the supplied resolver query or data-command session id is not a UUID or accepted UUID-prefix shape
 - `unknown_session`: the full UUID or prefix did not resolve to an indexed session
 - `ambiguous_session`: `darc resolve session --pick-one` found more than one candidate, or a session-scoped data command found multiple matching sessions; pass `--provider`, `--project-id`, or a longer prefix to choose one session

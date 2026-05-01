@@ -1866,6 +1866,7 @@ fn run_cli(cli: Cli) -> i32 {
     match cli.command {
         Commands::Init(args) => standard_exit(run_init(args)),
         Commands::Refresh(args) => standard_exit(run_refresh(args)),
+        Commands::Status(args) if args.json => json_exit(run_status(args)),
         Commands::Status(args) => standard_exit(run_status(args)),
         Commands::List(args) => query_exit(run_list(args)),
         Commands::Show(args) => query_exit(run_show(args)),
@@ -1900,10 +1901,11 @@ fn clap_error_exit(error: clap::Error, args: &[OsString]) -> i32 {
 
 /// Returns whether the raw CLI arguments target one JSON read surface.
 fn is_json_read_invocation(args: &[OsString]) -> bool {
-    matches!(
-        args.get(1).and_then(|arg| arg.to_str()),
-        Some("list" | "show" | "search" | "stats" | "resolve")
-    )
+    match args.get(1).and_then(|arg| arg.to_str()) {
+        Some("list" | "show" | "search" | "stats" | "resolve") => true,
+        Some("status") => args.iter().any(|arg| arg == "--json"),
+        _ => false,
+    }
 }
 
 /// Returns whether Clap is carrying a normal display request instead of an error.
@@ -1922,8 +1924,8 @@ fn standard_exit(result: Result<()>) -> i32 {
     }
 }
 
-/// Maps query command results to JSON-only machine-readable output.
-fn query_exit(result: Result<()>) -> i32 {
+/// Maps JSON command results to machine-readable output.
+fn json_exit(result: Result<()>) -> i32 {
     match result {
         Ok(()) => 0,
         Err(error) => {
@@ -1932,6 +1934,11 @@ fn query_exit(result: Result<()>) -> i32 {
             1
         }
     }
+}
+
+/// Maps canonical query command results to JSON-only machine-readable output.
+fn query_exit(result: Result<()>) -> i32 {
+    json_exit(result)
 }
 
 /// Dispatches the supported canonical list commands.
@@ -2986,6 +2993,7 @@ fn format_query_error(error: &anyhow::Error) -> String {
         .collect::<Vec<_>>();
     let structured = error.downcast_ref::<QueryProtocolError>();
     let read_validation = error.downcast_ref::<ReadValidationError>();
+    let status_json = error.downcast_ref::<StatusJsonError>();
     let payload = QueryErrorEnvelope {
         schema: "darc.error.v1",
         generated_at: current_utc_timestamp(),
@@ -2994,10 +3002,12 @@ fn format_query_error(error: &anyhow::Error) -> String {
             message: error.to_string(),
             code: structured
                 .map(QueryProtocolError::code)
-                .or_else(|| read_validation.map(|error| error.code)),
+                .or_else(|| read_validation.map(|error| error.code))
+                .or_else(|| status_json.map(|error| error.code)),
             details: structured
                 .map(QueryProtocolError::details)
-                .or_else(|| read_validation.map(|error| error.details.clone())),
+                .or_else(|| read_validation.map(|error| error.details.clone()))
+                .or_else(|| status_json.map(|error| error.details.clone())),
             causes,
         },
     };
@@ -3484,6 +3494,37 @@ impl std::fmt::Display for ReadValidationError {
 }
 
 impl std::error::Error for ReadValidationError {}
+
+/// Stores one structured status JSON error.
+#[derive(Debug)]
+struct StatusJsonError {
+    message: String,
+    code: &'static str,
+    details: JsonValue,
+}
+
+impl StatusJsonError {
+    /// Builds one failed status check error.
+    fn check_failed(scope: &'static str, message: &'static str) -> Self {
+        Self {
+            message: message.to_owned(),
+            code: "status_check_failed",
+            details: json!({
+                "scope": scope,
+                "check": true,
+            }),
+        }
+    }
+}
+
+impl std::fmt::Display for StatusJsonError {
+    /// Writes the user-facing status error message.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for StatusJsonError {}
 
 /// Prepares and optionally writes the shared init draft.
 fn run_init(args: InitArgs) -> Result<()> {
@@ -4977,10 +5018,18 @@ fn run_status(args: StatusArgs) -> Result<()> {
         if args.json {
             let output = QueryOutput::new(ColorArg::Never);
             print_json_envelope(&output, "darc.status.workspace.v1", &report)?;
-            return status_check_exit(report.has_failed_check(), "workspace status check failed");
+            return status_check_exit(
+                report.has_failed_check(),
+                "workspace",
+                "workspace status check failed",
+            );
         }
         print_workspace_status(&report);
-        return status_check_exit(report.has_failed_check(), "workspace status check failed");
+        return status_check_exit(
+            report.has_failed_check(),
+            "workspace",
+            "workspace status check failed",
+        );
     }
 
     let report = status_project(Some(args.root), args.check)
@@ -4988,16 +5037,20 @@ fn run_status(args: StatusArgs) -> Result<()> {
     if args.json {
         let output = QueryOutput::new(ColorArg::Never);
         print_json_envelope(&output, "darc.status.project.v1", &report)?;
-        return status_check_exit(report.has_failed_check(), "status check failed");
+        return status_check_exit(report.has_failed_check(), "project", "status check failed");
     }
     print_project_status(&report);
-    status_check_exit(report.has_failed_check(), "status check failed")
+    status_check_exit(report.has_failed_check(), "project", "status check failed")
 }
 
 /// Converts an optional status sync-check failure into the final CLI exit result.
-fn status_check_exit(has_failed_check: bool, message: &'static str) -> Result<()> {
+fn status_check_exit(
+    has_failed_check: bool,
+    scope: &'static str,
+    message: &'static str,
+) -> Result<()> {
     if has_failed_check {
-        bail!("{message}");
+        return Err(StatusJsonError::check_failed(scope, message).into());
     }
     Ok(())
 }
