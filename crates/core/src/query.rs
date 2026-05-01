@@ -16,16 +16,17 @@ pub use darc_query::{
     ResolvedSessionMatch, RootAvailability, RootInfo, SearchEvidenceField, SearchMode,
     SearchSnippetMatcher, SearchTurnHit, SearchTurnMatch, SearchTurnsQueryData, SearchTurnsRequest,
     SessionBundleQueryData, SessionBundleQueryRequest, SessionBundleView, SessionFileSummary,
-    SessionFilesQueryData, SessionKind, SessionRuntimeStat, SessionSummary, SessionsQueryData,
-    SessionsQueryRequest, SessionsView, ShellCommandSummary, ToolUsageStat, TurnDetail,
-    TurnDetailInsights, TurnDetailOptions, TurnInsights, TurnSummary, TurnsQueryData,
-    TurnsQueryRequest, TurnsView, WorkspaceDailyTimeStat, WorkspaceInsights, WorkspaceQueryData,
-    search_snippet_match_range,
+    SessionFilesQueryData, SessionFilesQueryRequest, SessionKind, SessionRuntimeStat,
+    SessionSummary, SessionsQueryData, SessionsQueryRequest, SessionsView, ShellCommandSummary,
+    ToolUsageStat, TurnDetail, TurnDetailInsights, TurnDetailOptions, TurnInsights, TurnSummary,
+    TurnsQueryData, TurnsQueryRequest, TurnsView, WorkspaceDailyTimeStat, WorkspaceInsights,
+    WorkspaceQueryData, search_snippet_match_range,
 };
 use darc_query::{
-    ProjectIndexAggregate, list_project_index_aggregates, lookup_project_session_matches,
-    query_project_files, query_project_insights, query_project_session_bundle,
-    query_project_session_files, query_project_sessions, query_project_turns as query_index_turns,
+    ProjectIndexAggregate, display_path_for_access, list_project_index_aggregates,
+    lookup_project_session_matches, query_project_files, query_project_insights,
+    query_project_session_bundle, query_project_session_files, query_project_sessions,
+    query_project_turns as query_index_turns,
     query_resolve_sessions as query_index_resolve_sessions,
     query_search_turns as query_project_search_turns,
     query_session_turn_details as query_project_session_turn_details, query_turn_detail,
@@ -154,7 +155,7 @@ pub fn query_sessions_for_project(
     request: SessionsQueryRequest<'_>,
 ) -> Result<SessionsQueryData> {
     let context = &project.context;
-    query_project_sessions(
+    let mut data = query_project_sessions(
         &context.root.database_path,
         SessionsQueryRequest {
             project_id: &context.project.id,
@@ -162,7 +163,9 @@ pub fn query_sessions_for_project(
             provider: request.provider,
             ..request
         },
-    )
+    )?;
+    normalize_sessions_output_paths(&mut data, &context.project);
+    Ok(data)
 }
 
 /// Queries the session-list payload for one configured project.
@@ -180,7 +183,7 @@ pub fn query_files_for_project(
     request: FilesQueryRequest<'_>,
 ) -> Result<FilesQueryData> {
     let context = &project.context;
-    query_project_files(
+    let mut data = query_project_files(
         &context.root.database_path,
         FilesQueryRequest {
             project_id: &context.project.id,
@@ -188,7 +191,9 @@ pub fn query_files_for_project(
             provider: request.provider,
             ..request
         },
-    )
+    )?;
+    normalize_files_output_paths(&mut data, &context.project);
+    Ok(data)
 }
 
 /// Queries one file-pivot payload for one configured project.
@@ -275,15 +280,23 @@ pub fn query_session_files_for_project(
     project: &ResolvedQueryProject,
     provider: SourceKind,
     session_id: &str,
+    limit: usize,
+    offset: usize,
 ) -> Result<SessionFilesQueryData> {
     let context = &project.context;
-    query_project_session_files(
+    let mut data = query_project_session_files(
         &context.root.database_path,
-        &context.project.id,
-        provider,
-        session_id,
-        Some(context.project.local_path.as_path()),
-    )
+        SessionFilesQueryRequest {
+            project_id: &context.project.id,
+            project_root: Some(context.project.local_path.as_path()),
+            provider,
+            session_id,
+            limit,
+            offset,
+        },
+    )?;
+    normalize_session_files_output_paths(&mut data, &context.project);
+    Ok(data)
 }
 
 /// Queries one session-scoped per-file access summary payload.
@@ -292,9 +305,11 @@ pub fn query_session_files(
     project_id: &str,
     provider: SourceKind,
     session_id: &str,
+    limit: usize,
+    offset: usize,
 ) -> Result<SessionFilesQueryData> {
     let project = resolve_query_project(root, Some(project_id))?;
-    query_session_files_for_project(&project, provider, session_id)
+    query_session_files_for_project(&project, provider, session_id, limit, offset)
 }
 
 /// Queries one composite session bundle for one already-resolved configured provider session.
@@ -303,14 +318,16 @@ pub fn query_session_bundle_for_project(
     request: SessionBundleQueryRequest<'_>,
 ) -> Result<SessionBundleQueryData> {
     let context = &project.context;
-    query_project_session_bundle(
+    let mut data = query_project_session_bundle(
         &context.root.database_path,
         SessionBundleQueryRequest {
             project_id: &context.project.id,
             project_root: Some(context.project.local_path.as_path()),
             ..request
         },
-    )
+    )?;
+    normalize_session_bundle_output_paths(&mut data, &context.project);
+    Ok(data)
 }
 
 /// Queries one composite session bundle for one configured provider session.
@@ -355,7 +372,7 @@ pub fn query_turn_for_project(
     options: TurnDetailOptions,
 ) -> Result<TurnDetail> {
     let context = &project.context;
-    query_turn_detail(
+    let mut data = query_turn_detail(
         &context.root.database_path,
         &context.project.id,
         Some(context.project.local_path.as_path()),
@@ -363,7 +380,9 @@ pub fn query_turn_for_project(
         session_id,
         turn_ordinal,
         options,
-    )
+    )?;
+    normalize_turn_detail_output_paths(&mut data, &context.project);
+    Ok(data)
 }
 
 /// Queries one full turn-detail payload for one configured provider session turn.
@@ -406,14 +425,16 @@ pub fn query_turn_insight_report_for_project(
     turn_ordinal: u64,
 ) -> Result<TurnInsights> {
     let context = &project.context;
-    query_turn_insights(
+    let mut data = query_turn_insights(
         &context.root.database_path,
         &context.project.id,
         Some(context.project.local_path.as_path()),
         provider,
         session_id,
         turn_ordinal,
-    )
+    )?;
+    normalize_turn_insights_output_paths(&mut data, &context.project);
+    Ok(data)
 }
 
 /// Queries the turn insights payload for one configured provider session turn.
@@ -434,14 +455,16 @@ pub fn query_search_turns_for_project(
     request: SearchTurnsRequest<'_>,
 ) -> Result<SearchTurnsQueryData> {
     let context = &project.context;
-    query_project_search_turns(
+    let mut data = query_project_search_turns(
         &context.root.database_path,
         SearchTurnsRequest {
             project_id: &context.project.id,
             project_root: Some(context.project.local_path.as_path()),
             ..request
         },
-    )
+    )?;
+    normalize_search_output_paths(&mut data, &context.project);
+    Ok(data)
 }
 
 /// Queries one paginated turn-search payload for one configured project.
@@ -477,13 +500,15 @@ pub fn query_project_insight_report_for_project(
     limit: usize,
 ) -> Result<ProjectInsights> {
     let context = &project.context;
-    query_project_insights(
+    let mut data = query_project_insights(
         &context.root.database_path,
         &context.project.id,
         Some(context.project.local_path.as_path()),
         provider,
         limit,
-    )
+    )?;
+    normalize_project_insights_output_paths(&mut data, &context.project);
+    Ok(data)
 }
 
 /// Queries the project insights payload for one configured project.
@@ -819,6 +844,142 @@ fn aggregate_map(
         .into_iter()
         .map(|aggregate| (aggregate.project_id.clone(), aggregate))
         .collect()
+}
+
+/// Normalizes session-list file paths against every configured project root.
+fn normalize_sessions_output_paths(data: &mut SessionsQueryData, project: &ProjectConfig) {
+    for session in &mut data.sessions {
+        normalize_session_summary_paths(session, project);
+    }
+}
+
+/// Normalizes one session summary's edited file paths against every configured project root.
+fn normalize_session_summary_paths(session: &mut SessionSummary, project: &ProjectConfig) {
+    session.edited_files = normalize_path_list(std::mem::take(&mut session.edited_files), project);
+}
+
+/// Normalizes file-query output paths against every configured project root.
+fn normalize_files_output_paths(data: &mut FilesQueryData, project: &ProjectConfig) {
+    for file in &mut data.files {
+        file.path = normalize_known_project_path(&file.path, project);
+    }
+    for session in &mut data.sessions {
+        normalize_file_session_summary_paths(session, project);
+    }
+}
+
+/// Normalizes one file-session summary's matched paths against every configured project root.
+fn normalize_file_session_summary_paths(session: &mut FileSessionSummary, project: &ProjectConfig) {
+    session.matched_paths =
+        normalize_path_list(std::mem::take(&mut session.matched_paths), project);
+    if !session.matched_paths_truncated {
+        session.matched_paths_count =
+            u64::try_from(session.matched_paths.len()).unwrap_or(u64::MAX);
+    }
+}
+
+/// Normalizes one session-files payload against every configured project root.
+fn normalize_session_files_output_paths(data: &mut SessionFilesQueryData, project: &ProjectConfig) {
+    for file in &mut data.files {
+        normalize_session_file_summary_path(file, project);
+    }
+}
+
+/// Normalizes one session file summary against every configured project root.
+fn normalize_session_file_summary_path(file: &mut SessionFileSummary, project: &ProjectConfig) {
+    let original = file.path.clone();
+    let normalized = normalize_known_project_path(&original, project);
+    if file.repo_relative_path.is_none() && normalized != original {
+        file.repo_relative_path = Some(normalized.clone());
+    }
+    file.path = normalized;
+    if let Some(repo_relative_path) = file.repo_relative_path.take() {
+        file.repo_relative_path = Some(normalize_known_project_path(&repo_relative_path, project));
+    }
+}
+
+/// Normalizes one session-bundle payload against every configured project root.
+fn normalize_session_bundle_output_paths(
+    data: &mut SessionBundleQueryData,
+    project: &ProjectConfig,
+) {
+    normalize_session_summary_paths(&mut data.session, project);
+    normalize_session_files_output_paths(&mut data.session_files, project);
+    for turn in &mut data.turns {
+        normalize_turn_detail_output_paths(turn, project);
+    }
+}
+
+/// Normalizes one turn-detail payload against every configured project root.
+fn normalize_turn_detail_output_paths(data: &mut TurnDetail, project: &ProjectConfig) {
+    if let Some(insights) = data.insights.as_mut() {
+        normalize_turn_detail_insights_paths(insights, project);
+    }
+}
+
+/// Normalizes one embedded turn-insights payload against every configured project root.
+fn normalize_turn_detail_insights_paths(
+    insights: &mut TurnDetailInsights,
+    project: &ProjectConfig,
+) {
+    normalize_file_usage_paths(&mut insights.files, project);
+}
+
+/// Normalizes one turn-insights payload against every configured project root.
+fn normalize_turn_insights_output_paths(data: &mut TurnInsights, project: &ProjectConfig) {
+    normalize_file_usage_paths(&mut data.files, project);
+}
+
+/// Normalizes search matched paths against every configured project root.
+fn normalize_search_output_paths(data: &mut SearchTurnsQueryData, project: &ProjectConfig) {
+    for hit in &mut data.hits {
+        normalize_search_hit_paths(hit, project);
+    }
+}
+
+/// Normalizes one search hit's matched paths against every configured project root.
+fn normalize_search_hit_paths(hit: &mut SearchTurnHit, project: &ProjectConfig) {
+    hit.matched_paths = normalize_path_list(std::mem::take(&mut hit.matched_paths), project);
+    if !hit.matched_paths_truncated {
+        hit.matched_paths_count = u64::try_from(hit.matched_paths.len()).unwrap_or(u64::MAX);
+    }
+}
+
+/// Normalizes one project-insights payload against every configured project root.
+fn normalize_project_insights_output_paths(data: &mut ProjectInsights, project: &ProjectConfig) {
+    normalize_file_usage_paths(&mut data.most_read_files, project);
+    normalize_file_usage_paths(&mut data.most_written_files, project);
+}
+
+/// Normalizes file-usage paths against every configured project root.
+fn normalize_file_usage_paths(files: &mut [FileUsageStat], project: &ProjectConfig) {
+    for file in files {
+        file.path = normalize_known_project_path(&file.path, project);
+    }
+}
+
+/// Normalizes and deduplicates one path list against every configured project root.
+fn normalize_path_list(paths: Vec<String>, project: &ProjectConfig) -> Vec<String> {
+    paths
+        .into_iter()
+        .map(|path| normalize_known_project_path(&path, project))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+/// Converts an absolute path under one configured project root to project-relative text.
+fn normalize_known_project_path(path: &str, project: &ProjectConfig) -> String {
+    let trimmed = path.trim();
+    project_path_roots(project)
+        .find_map(|root| display_path_for_access(Some(root), None, trimmed))
+        .unwrap_or_else(|| trimmed.to_owned())
+}
+
+/// Iterates over every configured root that can identify this project.
+fn project_path_roots(project: &ProjectConfig) -> impl Iterator<Item = &Path> {
+    std::iter::once(project.local_path.as_path())
+        .chain(project.known_paths.iter().map(PathBuf::as_path))
 }
 
 /// Returns an error when the shared config file is unavailable.

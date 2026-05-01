@@ -13,8 +13,8 @@ use super::{
     sql_count_to_u64,
 };
 use crate::query::files::{
-    PathQuerySelector, build_path_query_selector, glob_match_options, normalize_query_path_pattern,
-    path_matches_glob,
+    PathQuerySelector, build_path_query_selector, display_path_for_access, glob_match_options,
+    normalize_query_path_pattern, path_matches_glob,
 };
 
 const KEYWORD_SEARCH_SQL: &str = "
@@ -108,7 +108,6 @@ struct FilePathGlobRow {
     agent_answer_total_chars: Option<u64>,
     repo_relative_path: Option<String>,
     path: String,
-    matched_path: String,
 }
 
 /// Stores one in-progress file-search hit while grouping SQL rows.
@@ -243,8 +242,11 @@ pub struct SearchSnippetMatcher {
 
 /// Stores the supported snippet presentation matching strategies.
 enum SearchSnippetMatcherKind {
+    Keyword(Vec<String>),
     Literal(String),
     Regex(EvidenceMatcher),
+    FileName(String),
+    PathFragment(String),
     Unsupported,
 }
 
@@ -280,12 +282,12 @@ impl SearchSnippetMatcher {
     /// Builds one reusable search snippet matcher.
     pub fn new(mode: SearchMode, query: &str) -> Result<Self> {
         let kind = match mode {
+            SearchMode::Keyword => SearchSnippetMatcherKind::Keyword(tokenize_fts_query(query)?),
             SearchMode::Literal => SearchSnippetMatcherKind::Literal(query.to_owned()),
             SearchMode::Regex => SearchSnippetMatcherKind::Regex(build_regex_matcher(query)?),
-            SearchMode::Keyword
-            | SearchMode::FileName
-            | SearchMode::FilePath
-            | SearchMode::PathFragment => SearchSnippetMatcherKind::Unsupported,
+            SearchMode::FileName => SearchSnippetMatcherKind::FileName(query.to_owned()),
+            SearchMode::PathFragment => SearchSnippetMatcherKind::PathFragment(query.to_owned()),
+            SearchMode::FilePath => SearchSnippetMatcherKind::Unsupported,
         };
         Ok(Self { kind })
     }
@@ -293,8 +295,13 @@ impl SearchSnippetMatcher {
     /// Returns the first matching byte range in one rendered snippet.
     pub fn find(&self, snippet: &str) -> Option<Range<usize>> {
         match &self.kind {
+            SearchSnippetMatcherKind::Keyword(tokens) => keyword_match_range(snippet, tokens),
             SearchSnippetMatcherKind::Literal(query) => literal_match_range(snippet, query),
             SearchSnippetMatcherKind::Regex(matcher) => matcher.find_match(snippet),
+            SearchSnippetMatcherKind::FileName(query) => file_name_match_range(snippet, query),
+            SearchSnippetMatcherKind::PathFragment(query) => {
+                case_insensitive_match_range(snippet, query)
+            }
             SearchSnippetMatcherKind::Unsupported => None,
         }
     }
@@ -1175,6 +1182,33 @@ fn literal_match_range(text: &str, query: &str) -> Option<Range<usize>> {
     text.find(query).map(|start| start..start + query.len())
 }
 
+/// Returns the earliest visible keyword token match in one rendered snippet.
+fn keyword_match_range(text: &str, tokens: &[String]) -> Option<Range<usize>> {
+    tokens
+        .iter()
+        .filter_map(|token| case_insensitive_match_range(text, token))
+        .min_by_key(|range| (range.start, range.end - range.start))
+}
+
+/// Returns a file-name query match constrained to the basename of one path.
+fn file_name_match_range(path: &str, query: &str) -> Option<Range<usize>> {
+    let basename_start = path.rfind(['/', '\\']).map_or(0, |index| index + 1);
+    case_insensitive_match_range(&path[basename_start..], query)
+        .map(|range| basename_start + range.start..basename_start + range.end)
+}
+
+/// Returns the first case-insensitive byte range when it maps cleanly to the original text.
+fn case_insensitive_match_range(text: &str, query: &str) -> Option<Range<usize>> {
+    if text.is_ascii() && query.is_ascii() {
+        let text_lower = text.to_ascii_lowercase();
+        let query_lower = query.to_ascii_lowercase();
+        return text_lower
+            .find(&query_lower)
+            .map(|start| start..start + query.len());
+    }
+    literal_match_range(text, query)
+}
+
 /// Reads one candidate turn for turn-ordered evidence search.
 fn read_evidence_search_turn(row: &rusqlite::Row<'_>) -> Result<EvidenceSearchTurn> {
     let provider_key = row.get::<_, String>(0)?;
@@ -1341,7 +1375,6 @@ fn query_file_path_glob_turn_batch(
                 row.get::<_, Option<String>>(7)?,
                 row.get::<_, Option<String>>(8)?,
                 row.get::<_, String>(9)?,
-                row.get::<_, String>(10)?,
             ))
         })
         .context("failed to query file-path glob search rows")?
@@ -1363,7 +1396,6 @@ fn query_file_path_glob_turn_batch(
                 final_answer_text,
                 repo_relative_path,
                 path,
-                matched_path,
             )| {
                 let provider = parse_provider(&provider)?;
                 let turn_ordinal = sql_count_to_u64(turn_ordinal)?;
@@ -1392,7 +1424,6 @@ fn query_file_path_glob_turn_batch(
                         .map(|preview| preview.total_chars),
                     repo_relative_path,
                     path,
-                    matched_path,
                 })
             },
         )
@@ -1412,6 +1443,16 @@ fn optional_text_value(value: Option<&str>) -> Value {
 /// Builds one optional agent-answer preview with its size metadata.
 fn optional_agent_answer_preview(text: Option<&str>) -> Option<super::TextPreview> {
     text.map(preview_text)
+}
+
+/// Returns the public display path for one search file-access match.
+fn display_search_matched_path(
+    project_root: Option<&Path>,
+    repo_relative_path: Option<&str>,
+    path: &str,
+) -> String {
+    display_path_for_access(project_root, repo_relative_path, path)
+        .unwrap_or_else(|| path.trim().to_owned())
 }
 
 /// Groups glob-verified path rows back into turn hits.
@@ -1478,7 +1519,13 @@ fn record_glob_path_match(
         row.repo_relative_path.as_deref(),
         &row.path,
     ) {
-        accumulator.matched_paths.insert(row.matched_path);
+        accumulator
+            .matched_paths
+            .insert(display_search_matched_path(
+                project_root,
+                row.repo_relative_path.as_deref(),
+                &row.path,
+            ));
     }
 }
 
@@ -1563,8 +1610,7 @@ fn build_file_path_glob_turn_batch_sql(path_selector: &PathQuerySelector) -> Str
             candidate_turns.user_message,
             candidate_turns.final_answer_text,
             file_accesses.repo_relative_path,
-            file_accesses.path,
-            {matched_path} AS matched_path
+            file_accesses.path
         FROM candidate_turns
         INNER JOIN file_accesses
             ON file_accesses.project_id = ?1
@@ -1577,7 +1623,7 @@ fn build_file_path_glob_turn_batch_sql(path_selector: &PathQuerySelector) -> Str
             candidate_turns.provider ASC,
             candidate_turns.session_id ASC,
             candidate_turns.turn_ordinal ASC,
-            matched_path COLLATE NOCASE ASC
+            {matched_path} COLLATE NOCASE ASC
         "
     )
 }
@@ -1672,7 +1718,8 @@ fn query_file_hits_stage(
                     row.get::<_, String>(5)?,
                     row.get::<_, String>(6)?,
                     row.get::<_, Option<String>>(7)?,
-                    row.get::<_, String>(8)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, String>(9)?,
                 ))
             },
         )
@@ -1691,11 +1738,17 @@ fn query_file_hits_stage(
                 status,
                 user_message,
                 final_answer_text,
-                matched_path,
+                repo_relative_path,
+                path,
             )| {
                 let user_prompt_preview = preview_text(&user_message);
                 let agent_answer_preview =
                     optional_agent_answer_preview(final_answer_text.as_deref());
+                let matched_path = display_search_matched_path(
+                    scope.project_root,
+                    repo_relative_path.as_deref(),
+                    &path,
+                );
                 Ok(FileSearchRow {
                     provider: parse_provider(&provider)?,
                     session_id,
@@ -1860,7 +1913,8 @@ fn build_file_search_stage_sql(kind: FileSearchKind, stage: FileSearchStage) -> 
             matched_turns.status,
             matched_turns.user_message,
             matched_turns.final_answer_text,
-            {matched_path} AS matched_path
+            file_accesses.repo_relative_path,
+            file_accesses.path
         FROM matched_turns
         INNER JOIN file_accesses
             ON file_accesses.project_id = ?1
@@ -1874,7 +1928,7 @@ fn build_file_search_stage_sql(kind: FileSearchKind, stage: FileSearchStage) -> 
             matched_turns.provider ASC,
             matched_turns.session_id ASC,
             matched_turns.turn_ordinal ASC,
-            matched_path COLLATE NOCASE ASC
+            {matched_path} COLLATE NOCASE ASC
         "
     )
 }

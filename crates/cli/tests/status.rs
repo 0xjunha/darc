@@ -86,13 +86,18 @@ fn write_config_fixture(
     )
 }
 
-/// Runs one status command in a given directory.
-fn run_status(cwd: &Path, args: &[&str]) -> Result<std::process::Output> {
+/// Runs one darc command in a given directory.
+fn run_darc(cwd: &Path, args: &[&str]) -> Result<std::process::Output> {
     Command::new(darc_binary())
         .args(args)
         .current_dir(cwd)
         .output()
-        .context("failed to run darc status")
+        .context("failed to run darc")
+}
+
+/// Runs one status command in a given directory.
+fn run_status(cwd: &Path, args: &[&str]) -> Result<std::process::Output> {
+    run_darc(cwd, args)
 }
 
 /// Inserts one indexed session and turn for a configured project.
@@ -174,6 +179,37 @@ fn status_reports_active_project_counts() -> Result<()> {
     assert!(stdout.contains("  Turns: 1"));
     assert!(stdout.contains("Status"));
     assert!(stdout.contains("  Overall: ok"));
+
+    Ok(())
+}
+
+#[test]
+fn index_output_uses_distinct_summary_heading() -> Result<()> {
+    let root = unique_test_dir("cli-index-heading");
+    let project = project_fixture(&root, "repo", "repo-abc123");
+    fs::create_dir_all(Path::new(&project.local_path))?;
+    fs::create_dir_all(Path::new(&project.sessions_root))?;
+    write_config_fixture(
+        &root,
+        vec![project_fixture(&root, "repo", "repo-abc123")],
+        SourcesFixture::default(),
+    )?;
+
+    let output = run_darc(
+        Path::new(&project.local_path),
+        &["index", "--root", root.to_str().unwrap()],
+    )?;
+
+    assert!(
+        output.status.success(),
+        "index failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!contains_ansi(&output.stdout));
+    let stdout = String::from_utf8(output.stdout)?;
+    assert_eq!(stdout.lines().filter(|line| *line == "Index").count(), 1);
+    assert!(stdout.contains("Indexed Data"));
+    assert!(stdout.contains("  Overall: indexed"));
 
     Ok(())
 }

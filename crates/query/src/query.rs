@@ -13,7 +13,7 @@ pub use darc_index::evidence::EvidenceField as SearchEvidenceField;
 use darc_index::open_index_database;
 use darc_paths::SourceKind;
 use darc_rollout::model::{NormalizedTokenUsage, NormalizedTurnStatus, NormalizedTurnStep};
-pub use files::{query_project_files, query_project_session_files};
+pub use files::{display_path_for_access, query_project_files, query_project_session_files};
 #[cfg(test)]
 pub(crate) use insights::{build_project_insights, build_workspace_insights};
 pub use insights::{query_project_insights, query_workspace_insights};
@@ -327,6 +327,17 @@ pub struct FilesQueryRequest<'a> {
     pub matched_path_limit: Option<usize>,
 }
 
+/// Collects the supported inputs for one session-file query request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionFilesQueryRequest<'a> {
+    pub project_id: &'a str,
+    pub project_root: Option<&'a Path>,
+    pub provider: SourceKind,
+    pub session_id: &'a str,
+    pub limit: usize,
+    pub offset: usize,
+}
+
 /// Stores one session-scoped per-file access summary row.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SessionFileSummary {
@@ -345,6 +356,9 @@ pub struct SessionFilesQueryData {
     pub provider: SourceKind,
     pub session_id: String,
     pub file_count: u64,
+    pub limit: u64,
+    pub offset: u64,
+    pub has_more: bool,
     pub files: Vec<SessionFileSummary>,
 }
 

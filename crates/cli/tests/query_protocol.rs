@@ -213,6 +213,61 @@ fn insert_absolute_project_file_read_turn(root: &Path, turn_ordinal: i64) -> Res
     Ok(())
 }
 
+/// Adds one known-path worktree and an edit turn that references it by absolute path.
+fn insert_known_project_file_edit_turn(
+    root: &Path,
+    turn_ordinal: i64,
+) -> Result<(PathBuf, String)> {
+    let known_root = root.join("known-worktree");
+    fs::create_dir_all(known_root.join("src"))?;
+    let mut project = project_fixture(root, "repo-abc123");
+    project.known_paths = vec![known_root.to_string_lossy().into_owned()];
+    write_config_fixture(root, vec![project])?;
+
+    let connection = open_index_database(&root.join("index.sqlite"))?;
+    let relative_path = "src/known.rs".to_owned();
+    let file_path = known_root
+        .join(&relative_path)
+        .to_string_lossy()
+        .into_owned();
+    let arguments = json!({ "file_path": file_path }).to_string();
+    let steps_json = json!([
+        {
+            "type": "tool_call",
+            "timestamp": "2026-04-06T10:05:01Z",
+            "call_id": "call-known",
+            "name": "Edit",
+            "arguments": arguments
+        }
+    ])
+    .to_string();
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            turn_id: Some("turn-known-path"),
+            completed_at: Some("2026-04-06T10:05:05Z"),
+            user_message: "Edit one known worktree file",
+            final_answer_at: Some("2026-04-06T10:05:05Z"),
+            final_answer_text: Some("Done."),
+            step_count: 1,
+            tool_call_count: 1,
+            tool_output_count: 0,
+            changed_file_count: 1,
+            duration_ms: 2_000,
+            ..IndexedTurnFixture::new(
+                "repo-abc123",
+                SourceKind::Codex,
+                PRIMARY_SESSION_ID,
+                turn_ordinal,
+                "2026-04-06T10:05:00Z",
+                "completed",
+                &steps_json,
+            )
+        },
+    )?;
+    Ok((known_root, relative_path))
+}
+
 /// Runs the compiled `darc` binary and returns its captured output.
 fn run_darc<I, S>(args: I) -> Result<std::process::Output>
 where
@@ -910,11 +965,36 @@ fn session_files_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["project_id"], "repo-abc123");
     assert_eq!(value["data"]["provider"], "codex");
     assert_eq!(value["data"]["session_id"], PRIMARY_SESSION_ID);
+    assert_eq!(value["data"]["file_count"], 1);
+    assert_eq!(value["data"]["limit"], DEFAULT_QUERY_PAGE_LIMIT);
+    assert_eq!(value["data"]["offset"], 0);
+    assert_eq!(value["data"]["has_more"], false);
     assert_eq!(value["data"]["files"][0]["path"], "README.md");
     assert_eq!(value["data"]["files"][0]["read_count"], 1);
     assert_eq!(value["data"]["files"][0]["write_count"], 0);
     assert_eq!(value["data"]["files"][0]["first_turn_ordinal"], 0);
     assert_eq!(value["data"]["files"][0]["last_turn_ordinal"], 0);
+
+    let bounded = run_darc([
+        "list",
+        "files",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--session",
+        PRIMARY_SESSION_ID,
+        "--limit",
+        "0",
+    ])?;
+    assert!(bounded.status.success());
+    let bounded_value = parse_json(&bounded.stdout, "stdout")?;
+    assert_eq!(bounded_value["schema"], "darc.query.session_files.v1");
+    assert_eq!(bounded_value["data"]["limit"], 0);
+    assert_eq!(bounded_value["data"]["offset"], 0);
+    assert_eq!(bounded_value["data"]["file_count"], 1);
+    assert_eq!(bounded_value["data"]["has_more"], true);
+    assert_eq!(bounded_value["data"]["files"].as_array().unwrap().len(), 0);
 
     remove_root(&root)?;
     Ok(())
@@ -2106,6 +2186,114 @@ fn turn_query_embedded_insights_normalize_absolute_project_paths() -> Result<()>
 }
 
 #[test]
+fn read_surfaces_normalize_known_project_paths() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-known-paths")?;
+    let (known_root, relative_path) = insert_known_project_file_edit_turn(&root, 1)?;
+    let root_arg = root.to_string_lossy();
+    let known_prefix = known_root.to_string_lossy().into_owned();
+
+    let sessions = run_darc([
+        "list",
+        "sessions",
+        "--root",
+        root_arg.as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--limit",
+        "1",
+    ])?;
+    assert!(sessions.status.success());
+    assert!(!String::from_utf8_lossy(&sessions.stdout).contains(&known_prefix));
+    let value = parse_json(&sessions.stdout, "stdout")?;
+    assert_eq!(
+        value["data"]["sessions"][0]["edited_files"],
+        serde_json::json!([relative_path.as_str()])
+    );
+
+    let session = run_darc([
+        "show",
+        "session",
+        "--root",
+        root_arg.as_ref(),
+        "--project-id",
+        "repo-abc123",
+        PRIMARY_SESSION_ID,
+        "--turn-limit",
+        "0",
+    ])?;
+    assert!(session.status.success());
+    assert!(!String::from_utf8_lossy(&session.stdout).contains(&known_prefix));
+    let value = parse_json(&session.stdout, "stdout")?;
+    assert_eq!(
+        value["data"]["session"]["edited_files"],
+        serde_json::json!([relative_path.as_str()])
+    );
+
+    let turn = run_darc([
+        "show",
+        "turn",
+        "--root",
+        root_arg.as_ref(),
+        "--project-id",
+        "repo-abc123",
+        PRIMARY_SESSION_ID,
+        "1",
+        "--include-insights",
+    ])?;
+    assert!(turn.status.success());
+    assert!(!String::from_utf8_lossy(&turn.stdout).contains(&known_prefix));
+    let value = parse_json(&turn.stdout, "stdout")?;
+    assert_eq!(
+        value["data"]["insights"]["files"][0]["path"],
+        relative_path.as_str()
+    );
+
+    let project_stats = run_darc([
+        "stats",
+        "project",
+        "--root",
+        root_arg.as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--provider",
+        "codex",
+        "--turn-limit",
+        "1000",
+    ])?;
+    assert!(project_stats.status.success());
+    assert!(!String::from_utf8_lossy(&project_stats.stdout).contains(&known_prefix));
+    let value = parse_json(&project_stats.stdout, "stdout")?;
+    assert_eq!(
+        value["data"]["most_written_files"][0]["path"],
+        relative_path.as_str()
+    );
+
+    let search = run_darc([
+        "search",
+        "--root",
+        root_arg.as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--mode",
+        "file-name",
+        "known.rs",
+        "--limit",
+        "5",
+    ])?;
+    assert!(search.status.success());
+    assert!(!String::from_utf8_lossy(&search.stdout).contains(&known_prefix));
+    let value = parse_json(&search.stdout, "stdout")?;
+    assert_eq!(
+        value["data"]["hits"][0]["matched_paths"],
+        serde_json::json!([relative_path.as_str()])
+    );
+    assert_eq!(value["data"]["hits"][0]["matched_paths_count"], 1);
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
 fn turn_query_narrative_view_strips_bulky_fields() -> Result<()> {
     let root = create_query_fixture_root("cli-query-turn-narrative")?;
     let output = run_darc([
@@ -2181,6 +2369,26 @@ fn search_turns_query_emits_keyword_search_envelope() -> Result<()> {
         value["data"]["hits"][0]["matched_paths"],
         Value::Array(vec![])
     );
+
+    let colored = run_darc([
+        "query",
+        "--color",
+        "always",
+        "search",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "Inspect",
+    ])?;
+
+    assert!(colored.status.success());
+    assert!(contains_ansi(&colored.stdout));
+    assert!(contains_highlighted_text(&colored.stdout, "Inspect"));
+    let stripped = strip_ansi(&colored.stdout);
+    let colored_value = parse_json(&stripped, "stripped stdout")?;
+    assert_eq!(colored_value, value);
 
     remove_root(&root)?;
     Ok(())
@@ -2292,6 +2500,29 @@ fn search_turns_query_emits_file_search_envelope() -> Result<()> {
     assert_eq!(value["data"]["hits"][0]["matched_paths"][0], "README.md");
     assert_eq!(value["data"]["hits"][0]["matched_paths_truncated"], false);
 
+    let colored = run_darc([
+        "query",
+        "--color",
+        "always",
+        "search",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--mode",
+        "file-name",
+        "--query",
+        "README.md",
+    ])?;
+
+    assert!(colored.status.success());
+    assert!(contains_ansi(&colored.stdout));
+    assert!(contains_highlighted_text(&colored.stdout, "README.md"));
+    let stripped = strip_ansi(&colored.stdout);
+    let colored_value = parse_json(&stripped, "stripped stdout")?;
+    assert_eq!(colored_value, value);
+
     let path_output = run_darc([
         "query",
         "search",
@@ -2315,6 +2546,29 @@ fn search_turns_query_emits_file_search_envelope() -> Result<()> {
         "README.md"
     );
 
+    let colored_path = run_darc([
+        "query",
+        "--color",
+        "always",
+        "search",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--mode",
+        "file-path",
+        "--query",
+        "README.md",
+    ])?;
+
+    assert!(colored_path.status.success());
+    assert!(contains_ansi(&colored_path.stdout));
+    assert!(contains_highlighted_text(&colored_path.stdout, "README.md"));
+    let path_stripped = strip_ansi(&colored_path.stdout);
+    let colored_path_value = parse_json(&path_stripped, "stripped stdout")?;
+    assert_eq!(colored_path_value, path_value);
+
     let fragment_output = run_darc([
         "query",
         "search",
@@ -2326,7 +2580,7 @@ fn search_turns_query_emits_file_search_envelope() -> Result<()> {
         "--mode",
         "path-fragment",
         "--query",
-        "README",
+        "readme",
     ])?;
 
     assert!(fragment_output.status.success());
@@ -2336,6 +2590,32 @@ fn search_turns_query_emits_file_search_envelope() -> Result<()> {
         fragment_value["data"]["hits"][0]["matched_paths"][0],
         "README.md"
     );
+
+    let colored_fragment = run_darc([
+        "query",
+        "--color",
+        "always",
+        "search",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--mode",
+        "path-fragment",
+        "--query",
+        "readme",
+    ])?;
+
+    assert!(colored_fragment.status.success());
+    assert!(contains_ansi(&colored_fragment.stdout));
+    assert!(contains_highlighted_text(
+        &colored_fragment.stdout,
+        "README"
+    ));
+    let fragment_stripped = strip_ansi(&colored_fragment.stdout);
+    let colored_fragment_value = parse_json(&fragment_stripped, "stripped stdout")?;
+    assert_eq!(colored_fragment_value, fragment_value);
 
     remove_root(&root)?;
     Ok(())

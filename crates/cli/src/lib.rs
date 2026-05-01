@@ -451,7 +451,7 @@ enum ListCommands {
     Turns(QueryTurnsArgs),
     /// List most-touched files, sessions touching one path, session files, or co-touched files.
     #[command(
-        long_about = "List most-touched files, sessions touching one path, session files, or co-touched files.\n\nWith no mode flag, this ranks files by touches across the project. Pass PATH or --path to return sessions that touched matching paths. Use `--session` for the full per-session file summary. Use `--co-touched-with` for files touched in the same sessions as a seed path. Result pagination applies to top, path, and co-touch modes; session mode currently returns the full per-session file summary."
+        long_about = "List most-touched files, sessions touching one path, session files, or co-touched files.\n\nWith no mode flag, this ranks files by touches across the project. Pass PATH or --path to return sessions that touched matching paths. Use `--session` for the paginated per-session file summary. Use `--co-touched-with` for files touched in the same sessions as a seed path."
     )]
     Files(ListFilesArgs),
 }
@@ -1294,6 +1294,22 @@ struct QuerySessionFilesArgs {
         help = "Query this session id or unambiguous UUID prefix; alternative to positional SESSION_ID"
     )]
     session_id: Option<String>,
+
+    #[arg(
+        long,
+        default_value_t = DEFAULT_QUERY_PAGE_LIMIT,
+        help_heading = "Result Size",
+        help = "Maximum file rows to return"
+    )]
+    limit: usize,
+
+    #[arg(
+        long,
+        default_value_t = 0,
+        help_heading = "Result Size",
+        help = "Number of file rows to skip"
+    )]
+    offset: usize,
 }
 
 /// Queries one composite session bundle payload.
@@ -2086,13 +2102,11 @@ fn run_list_files(output: &QueryOutput, args: ListFilesArgs) -> Result<()> {
     if let Some(session_id) = args.session {
         if args.since.is_some()
             || args.until.is_some()
-            || args.limit.is_some()
-            || args.offset.is_some()
             || args.matched_path_limit.is_some()
             || args.include_all_matched_paths
         {
             bail!(
-                "list files --session does not accept --since, --until, --limit, --offset, --matched-path-limit, or --include-all-matched-paths"
+                "list files --session does not accept --since, --until, --matched-path-limit, or --include-all-matched-paths"
             );
         }
         return run_query_session_files(
@@ -2103,6 +2117,8 @@ fn run_list_files(output: &QueryOutput, args: ListFilesArgs) -> Result<()> {
                 provider: args.provider,
                 session_id_arg: None,
                 session_id: Some(session_id),
+                limit: args.limit.unwrap_or(DEFAULT_QUERY_PAGE_LIMIT),
+                offset: args.offset.unwrap_or(0),
             },
         );
     }
@@ -2280,7 +2296,13 @@ fn run_query_session_files(output: &QueryOutput, args: QuerySessionFilesArgs) ->
         args.provider.map(provider_arg_to_source_kind),
         session_id,
     )?;
-    let data = query_session_files_for_project(&project, session.provider, &session.session_id)?;
+    let data = query_session_files_for_project(
+        &project,
+        session.provider,
+        &session.session_id,
+        args.limit,
+        args.offset,
+    )?;
     print_json_envelope(output, "darc.query.session_files.v1", &data)
 }
 
@@ -2843,25 +2865,65 @@ fn color_json(json: &str) -> String {
     output
 }
 
-/// Adds ANSI match highlighting to nested search-match snippet strings.
+/// Adds ANSI match highlighting to mode-specific search result strings.
 fn color_search_turns_json(json: &str, data: &SearchTurnsQueryData) -> Result<String> {
     let mut colored = color_json(json);
-    if !matches!(data.mode, SearchMode::Literal | SearchMode::Regex) {
-        return Ok(colored);
-    }
-
-    let mut cursor = 0;
     let matcher = SearchSnippetMatcher::new(data.mode, &data.query)?;
+    match data.mode {
+        SearchMode::Keyword => {
+            color_search_snippets(&mut colored, data, &matcher);
+        }
+        SearchMode::Literal | SearchMode::Regex => {
+            color_search_match_snippets(&mut colored, data, &matcher);
+        }
+        SearchMode::FileName | SearchMode::PathFragment => {
+            color_search_matched_paths(&mut colored, data, &matcher);
+        }
+        SearchMode::FilePath => {
+            color_search_matched_path_items(&mut colored, data, |path| Some(0..path.len()));
+        }
+    }
+    Ok(colored)
+}
+
+/// Highlights top-level keyword search snippets where a visible query term appears.
+fn color_search_snippets(
+    colored: &mut String,
+    data: &SearchTurnsQueryData,
+    matcher: &SearchSnippetMatcher,
+) {
+    let mut cursor = 0;
+    for hit in &data.hits {
+        let Some(snippet) = &hit.snippet else {
+            continue;
+        };
+        let Some(range) = non_empty_match(matcher.find(snippet)) else {
+            continue;
+        };
+        let Some((value_start, token_len)) = find_colored_snippet_value(colored, snippet, cursor)
+        else {
+            continue;
+        };
+        let highlighted = color_json_string_with_match(snippet, range);
+        colored.replace_range(value_start..value_start + token_len, &highlighted);
+        cursor = value_start + highlighted.len();
+    }
+}
+
+/// Highlights nested exact-search match snippets where the exact matcher still finds the term.
+fn color_search_match_snippets(
+    colored: &mut String,
+    data: &SearchTurnsQueryData,
+    matcher: &SearchSnippetMatcher,
+) {
+    let mut cursor = 0;
     for hit in &data.hits {
         for matched in &hit.matches {
-            let Some(range) = matcher.find(&matched.snippet) else {
+            let Some(range) = non_empty_match(matcher.find(&matched.snippet)) else {
                 continue;
             };
-            if range.is_empty() {
-                continue;
-            }
             let Some((value_start, token_len)) =
-                find_colored_snippet_value(&colored, &matched.snippet, cursor)
+                find_colored_snippet_value(colored, &matched.snippet, cursor)
             else {
                 continue;
             };
@@ -2870,7 +2932,49 @@ fn color_search_turns_json(json: &str, data: &SearchTurnsQueryData) -> Result<St
             cursor = value_start + highlighted.len();
         }
     }
-    Ok(colored)
+}
+
+/// Highlights matched file path strings for file-search modes with literal display spans.
+fn color_search_matched_paths(
+    colored: &mut String,
+    data: &SearchTurnsQueryData,
+    matcher: &SearchSnippetMatcher,
+) {
+    color_search_matched_path_items(colored, data, |path| matcher.find(path));
+}
+
+/// Highlights matched path items with ranges selected by the caller.
+fn color_search_matched_path_items(
+    colored: &mut String,
+    data: &SearchTurnsQueryData,
+    path_range: impl Fn(&str) -> Option<std::ops::Range<usize>>,
+) {
+    let mut cursor = 0;
+    for hit in &data.hits {
+        let Some(mut path_cursor) = find_colored_array_start(colored, "matched_paths", cursor)
+        else {
+            continue;
+        };
+        for path in &hit.matched_paths {
+            let Some(range) = non_empty_match(path_range(path)) else {
+                continue;
+            };
+            let Some((value_start, token_len)) =
+                find_colored_string_value(colored, path, path_cursor)
+            else {
+                continue;
+            };
+            let highlighted = color_json_string_with_match(path, range);
+            colored.replace_range(value_start..value_start + token_len, &highlighted);
+            path_cursor = value_start + highlighted.len();
+        }
+        cursor = path_cursor;
+    }
+}
+
+/// Drops empty presentation matches before rendering highlight escape codes.
+fn non_empty_match(range: Option<std::ops::Range<usize>>) -> Option<std::ops::Range<usize>> {
+    range.filter(|range| !range.is_empty())
 }
 
 /// Appends one ANSI-colored JSON token to the rendered output.
@@ -2890,6 +2994,20 @@ fn find_colored_snippet_value(
     let token = color_json_string(snippet);
     let target = format!("{key_prefix}{token}");
     let value_start = cursor + colored.get(cursor..)?.find(&target)? + key_prefix.len();
+    Some((value_start, token.len()))
+}
+
+/// Returns the byte index after one colored array key prefix.
+fn find_colored_array_start(colored: &str, key: &str, cursor: usize) -> Option<usize> {
+    let key_prefix =
+        format!("{ANSI_KEY}\"{key}\"{ANSI_RESET}{ANSI_BOLD}:{ANSI_RESET} {ANSI_BOLD}[{ANSI_RESET}");
+    Some(cursor + colored.get(cursor..)?.find(&key_prefix)? + key_prefix.len())
+}
+
+/// Returns the next colored string value matching `value`.
+fn find_colored_string_value(colored: &str, value: &str, cursor: usize) -> Option<(usize, usize)> {
+    let token = color_json_string(value);
+    let value_start = cursor + colored.get(cursor..)?.find(&token)?;
     Some((value_start, token.len()))
 }
 
@@ -5343,7 +5461,7 @@ fn print_sync_result(style: HumanStyle, report: &SyncReport) {
 
 /// Prints one index summary block.
 fn print_index_summary(style: HumanStyle, report: &IndexReport) {
-    print_section(style, "Index");
+    print_section(style, "Indexed Data");
     print_field(style, 2, "Providers", format_sources(&report.providers));
     print_field(
         style,
