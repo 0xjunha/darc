@@ -298,6 +298,26 @@ fn parse_json(bytes: &[u8], stream: &str) -> Result<Value> {
     serde_json::from_slice(bytes).with_context(|| format!("failed to parse {stream} JSON"))
 }
 
+/// Asserts that two CLI envelopes match except for their volatile generation time.
+fn assert_envelopes_eq_except_generated_at(left: &Value, right: &Value) {
+    assert!(
+        left["generated_at"]
+            .as_str()
+            .is_some_and(|generated_at| generated_at.ends_with('Z'))
+    );
+    assert!(
+        right["generated_at"]
+            .as_str()
+            .is_some_and(|generated_at| generated_at.ends_with('Z'))
+    );
+
+    let mut left = left.clone();
+    let mut right = right.clone();
+    left.as_object_mut().unwrap().remove("generated_at");
+    right.as_object_mut().unwrap().remove("generated_at");
+    assert_eq!(left, right);
+}
+
 /// Returns whether captured output contains an ANSI control sequence.
 fn contains_ansi(bytes: &[u8]) -> bool {
     bytes.windows(2).any(|window| window == b"\x1b[")
@@ -2396,7 +2416,7 @@ fn search_turns_query_emits_keyword_search_envelope() -> Result<()> {
     assert!(contains_highlighted_text(&colored.stdout, "Inspect"));
     let stripped = strip_ansi(&colored.stdout);
     let colored_value = parse_json(&stripped, "stripped stdout")?;
-    assert_eq!(colored_value, value);
+    assert_envelopes_eq_except_generated_at(&colored_value, &value);
 
     remove_root(&root)?;
     Ok(())
@@ -2521,7 +2541,7 @@ fn search_turns_query_emits_file_search_envelope() -> Result<()> {
     assert!(contains_highlighted_text(&colored.stdout, "README.md"));
     let stripped = strip_ansi(&colored.stdout);
     let colored_value = parse_json(&stripped, "stripped stdout")?;
-    assert_eq!(colored_value, value);
+    assert_envelopes_eq_except_generated_at(&colored_value, &value);
 
     let path_output = run_darc([
         "search",
@@ -2563,7 +2583,7 @@ fn search_turns_query_emits_file_search_envelope() -> Result<()> {
     assert!(contains_highlighted_text(&colored_path.stdout, "README.md"));
     let path_stripped = strip_ansi(&colored_path.stdout);
     let colored_path_value = parse_json(&path_stripped, "stripped stdout")?;
-    assert_eq!(colored_path_value, path_value);
+    assert_envelopes_eq_except_generated_at(&colored_path_value, &path_value);
 
     let fragment_output = run_darc([
         "search",
@@ -2607,7 +2627,7 @@ fn search_turns_query_emits_file_search_envelope() -> Result<()> {
     ));
     let fragment_stripped = strip_ansi(&colored_fragment.stdout);
     let colored_fragment_value = parse_json(&fragment_stripped, "stripped stdout")?;
-    assert_eq!(colored_fragment_value, fragment_value);
+    assert_envelopes_eq_except_generated_at(&colored_fragment_value, &fragment_value);
 
     remove_root(&root)?;
     Ok(())
