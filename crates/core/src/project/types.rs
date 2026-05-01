@@ -29,6 +29,18 @@ pub struct RemoveReport {
     pub config_written: bool,
 }
 
+/// Reports what one destructive project removal would change.
+#[derive(Debug, Clone)]
+pub struct RemovePreviewReport {
+    pub project_name: String,
+    pub project_id: String,
+    pub sessions_root: PathBuf,
+    pub archive_would_delete: bool,
+    pub indexed_sessions_would_remove: usize,
+    pub indexed_turns_would_remove: usize,
+    pub config_would_change: bool,
+}
+
 /// Collects optional provider filters for the refresh workflow.
 #[derive(Debug, Clone, Default)]
 pub struct RefreshOptions {
@@ -149,4 +161,21 @@ pub struct RenameReport {
     pub sync: SyncReport,
     pub index: IndexReport,
     pub remove: RemoveReport,
+}
+
+/// Reports what one project rename workflow would change before running it.
+#[derive(Debug, Clone)]
+pub struct RenamePreviewReport {
+    pub target_project_name: String,
+    pub target_project_id: String,
+    pub target_project_root: PathBuf,
+    pub source_project_name: String,
+    pub source_project_id: String,
+    pub new_known_paths: Vec<PathBuf>,
+    pub total_known_paths: usize,
+    pub config_would_change: bool,
+    pub source_sessions_root: PathBuf,
+    pub source_archive_would_delete: bool,
+    pub indexed_sessions_would_remove: usize,
+    pub indexed_turns_would_remove: usize,
 }

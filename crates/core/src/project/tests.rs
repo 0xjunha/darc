@@ -10,11 +10,13 @@ use darc_index::{INDEX_DB_FILE_NAME, open_index_database};
 use rusqlite::params;
 
 use super::{
-    RefreshOptions, RefreshProgress, refresh_all_projects, refresh_all_projects_best_effort,
-    refresh_all_projects_best_effort_with_progress,
+    RefreshOptions, RefreshProgress, preview_remove_project, refresh_all_projects,
+    refresh_all_projects_best_effort, refresh_all_projects_best_effort_with_progress,
     registry::load_normalized_shared_config,
     remove_project,
-    workflow::{link_project_from, refresh_project_from, rename_project_from},
+    workflow::{
+        link_project_from, preview_rename_project_from, refresh_project_from, rename_project_from,
+    },
 };
 use crate::{
     active_project::load_active_project,
@@ -397,6 +399,66 @@ fn remove_project_deletes_archive_and_index_rows() -> Result<()> {
     )?;
     assert_eq!(remaining_source_sessions, 0);
     assert_eq!(remaining_target_sessions, 1);
+
+    Ok(())
+}
+
+#[test]
+fn preview_remove_project_reports_changes_without_writes() -> Result<()> {
+    let root = unique_test_dir(&format!("remove-preview-{}", timestamp_seed()));
+    let project_root = root.join("repo");
+    let sessions_root = root.join("projects/repo-123/sessions");
+    fs::create_dir_all(&project_root)?;
+    write_file(
+        &sessions_root.join("codex/rollout.jsonl"),
+        "{\"type\":\"session_meta\"}\n",
+    )?;
+
+    write_config(
+        &root,
+        &SharedConfig::new(
+            root.clone(),
+            vec![ProjectConfig {
+                id: "repo-123".into(),
+                name: "repo".into(),
+                local_path: project_root,
+                git_upstream: None,
+                sessions_root: sessions_root.clone(),
+                known_paths: Vec::new(),
+            }],
+            SourcesConfig::default(),
+        ),
+    )?;
+
+    let index_db_path = root.join(INDEX_DB_FILE_NAME);
+    let connection = open_index_database(&index_db_path)?;
+    connection.execute(
+        "INSERT INTO sessions (project_id, provider, session_id, parent_session_id, session_kind, archive_path, cwd) VALUES (?1, 'codex', 'repo-session', NULL, 'primary', 'codex/rollout.jsonl', '/tmp/repo')",
+        params!["repo-123"],
+    )?;
+    connection.execute(
+        "INSERT INTO turns (project_id, provider, session_id, turn_ordinal, started_at, status, user_message, steps_json) VALUES (?1, 'codex', 'repo-session', 0, '2026-04-01T10:00:00Z', 'completed', 'Inspect', '[]')",
+        params!["repo-123"],
+    )?;
+
+    let report = preview_remove_project(Some(root.clone()), "repo")?;
+
+    assert_eq!(report.project_name, "repo");
+    assert_eq!(report.project_id, "repo-123");
+    assert!(report.archive_would_delete);
+    assert_eq!(report.indexed_sessions_would_remove, 1);
+    assert_eq!(report.indexed_turns_would_remove, 1);
+    assert!(report.config_would_change);
+    assert!(sessions_root.exists());
+
+    let config = load_normalized_shared_config(&root.join(CONFIG_FILE_NAME))?;
+    assert_eq!(config.projects.len(), 1);
+    let remaining_sessions: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sessions WHERE project_id = 'repo-123'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(remaining_sessions, 1);
 
     Ok(())
 }
@@ -856,6 +918,77 @@ fn rename_project_links_syncs_indexes_and_removes_source() -> Result<()> {
     )?;
     assert_eq!(target_sessions, 1);
     assert_eq!(source_sessions, 0);
+
+    Ok(())
+}
+
+#[test]
+fn preview_rename_project_reports_workflow_without_writes() -> Result<()> {
+    let root = unique_test_dir(&format!("rename-preview-{}", timestamp_seed()));
+    let target_root = root.join("darc");
+    let source_root = root.join("memstack");
+    let source_sessions_root = root.join("projects/memstack-456/sessions");
+    let target_sessions_root = root.join("projects/darc-123/sessions");
+    fs::create_dir_all(&target_root)?;
+    fs::create_dir_all(&source_root)?;
+    write_file(
+        &source_sessions_root.join("codex/previous.jsonl"),
+        "{\"type\":\"session_meta\"}\n",
+    )?;
+
+    write_config(
+        &root,
+        &SharedConfig::new(
+            root.clone(),
+            vec![
+                ProjectConfig {
+                    id: "darc-123".into(),
+                    name: "darc".into(),
+                    local_path: target_root.clone(),
+                    git_upstream: None,
+                    sessions_root: target_sessions_root,
+                    known_paths: Vec::new(),
+                },
+                ProjectConfig {
+                    id: "memstack-456".into(),
+                    name: "memstack".into(),
+                    local_path: source_root.clone(),
+                    git_upstream: None,
+                    sessions_root: source_sessions_root.clone(),
+                    known_paths: Vec::new(),
+                },
+            ],
+            SourcesConfig::default(),
+        ),
+    )?;
+
+    let connection = open_index_database(&root.join(INDEX_DB_FILE_NAME))?;
+    connection.execute(
+        "INSERT INTO sessions (project_id, provider, session_id, parent_session_id, session_kind, archive_path, cwd) VALUES (?1, 'codex', 'stale-session', NULL, 'primary', 'codex/previous.jsonl', '/tmp/memstack')",
+        params!["memstack-456"],
+    )?;
+
+    let report = preview_rename_project_from(&target_root, root.clone(), "memstack")?;
+
+    assert_eq!(report.target_project_name, "darc");
+    assert_eq!(report.source_project_name, "memstack");
+    assert_eq!(report.source_sessions_root, source_sessions_root);
+    assert_eq!(report.new_known_paths, vec![fs::canonicalize(source_root)?]);
+    assert_eq!(report.total_known_paths, 1);
+    assert!(report.config_would_change);
+    assert!(report.source_archive_would_delete);
+    assert_eq!(report.indexed_sessions_would_remove, 1);
+    assert_eq!(report.indexed_turns_would_remove, 0);
+    assert!(source_sessions_root.exists());
+
+    let config = load_normalized_shared_config(&root.join(CONFIG_FILE_NAME))?;
+    assert_eq!(config.projects.len(), 2);
+    assert!(
+        config
+            .projects
+            .iter()
+            .any(|project| project.name == "memstack")
+    );
 
     Ok(())
 }

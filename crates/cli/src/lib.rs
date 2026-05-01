@@ -40,9 +40,9 @@ use darc_core::{
     RefreshProgress, RefreshProjectAttempt, RefreshProjectFailure, RefreshReport, SkippedRollout,
     SourceKind, StatusProject, StatusSource, StatusSyncCheck, StatusSyncPlan, SyncOptions,
     SyncReport, WorkspaceStatusReport, default_root_path, execute_sync, index_project_sessions,
-    link_project, prepare_init, prepare_sync, refresh_all_projects_best_effort_with_progress,
-    refresh_project_with_progress, remove_project, rename_project, status_project,
-    status_workspace, write_init,
+    link_project, prepare_init, prepare_sync, preview_remove_project, preview_rename_project,
+    refresh_all_projects_best_effort_with_progress, refresh_project_with_progress, remove_project,
+    rename_project, status_project, status_workspace, write_init,
 };
 use darc_paths::{
     current_utc_timestamp, resolve_query_time_bound as resolve_shared_query_time_bound,
@@ -126,7 +126,7 @@ enum Commands {
     Resolve(ResolveArgs),
     #[command(
         about = "Manage configured Darc projects",
-        long_about = "Manage configured Darc projects.\n\nProject commands update the shared Darc workspace configuration and project archive/index state."
+        long_about = "Manage configured Darc projects.\n\nProject commands inspect or update the shared Darc workspace configuration and project archive/index state."
     )]
     Project(ProjectArgs),
     #[command(
@@ -138,14 +138,14 @@ enum Commands {
     #[command(
         hide = true,
         about = "Remove one configured project and its archived/indexed data",
-        long_about = "Remove one configured project and its archived/indexed data.\n\nThe PROJECT argument is matched against the configured project `name` in ~/.darc/config.toml.\nThe name must identify exactly one configured project.\n\nThis command deletes:\n- the project entry from config.toml\n- the project's archived sessions directory under ~/.darc/projects/...\n- the project's indexed SQLite rows\n\nYou can run this command from any directory."
+        long_about = "Remove one configured project and its archived/indexed data.\n\nThe PROJECT argument is matched against the configured project `name` in ~/.darc/config.toml.\nThe name must identify exactly one configured project.\n\nThis command deletes:\n- the project entry from config.toml\n- the project's archived sessions directory under ~/.darc/projects/...\n- the project's indexed SQLite rows\n\nUse `--dry-run` to preview the resolved project and deletion counts without writing.\nYou can run this command from any directory."
     )]
     Remove(RemoveArgs),
     #[command(
         hide = true,
         name = "rename-from",
         about = "Rebuild one old project's history into the current renamed project",
-        long_about = "Rebuild one old project's history into the current renamed project.\n\nUse this when you just renamed a project from one name to another.\nRun the command from the new project directory, and pass the old project name.\n\nExample:\n- Darc config still contains a project named `old-project`.\n- You renamed the checkout to `/path/to/new-project`.\n- Run `cd /path/to/new-project && darc rename-from old-project`.\n\nThis command bootstraps or reuses the current project as the target, links the old project's paths into it, runs `darc refresh`, and removes the old source project after those steps succeed.\n\nIn other words, it is the safe built-in workflow for:\n`darc link <old-project> && darc refresh && darc remove <old-project>`\n\nIf ~/.darc/config.toml does not exist yet, run `darc init` first."
+        long_about = "Rebuild one old project's history into the current renamed project.\n\nUse this when you just renamed a project from one name to another.\nRun the command from the new project directory, and pass the old project name.\n\nExample:\n- Darc config still contains a project named `old-project`.\n- You renamed the checkout to `/path/to/new-project`.\n- Run `cd /path/to/new-project && darc rename-from old-project`.\n\nThis command bootstraps or reuses the current project as the target, links the old project's paths into it, runs `darc refresh`, and removes the old source project after those steps succeed.\n\nIn other words, it is the safe built-in workflow for:\n`darc link <old-project> && darc refresh && darc remove <old-project>`\n\nUse `--dry-run` to preview the link target and cleanup counts without writing.\nIf ~/.darc/config.toml does not exist yet, run `darc init` first."
     )]
     RenameFrom(RenameArgs),
     #[command(
@@ -375,6 +375,13 @@ struct RemoveArgs {
     )]
     root: PathBuf,
 
+    #[arg(
+        long,
+        help_heading = "Mode",
+        help = "Preview removal without writing config, archive, or index changes"
+    )]
+    dry_run: bool,
+
     #[arg(value_name = "PROJECT")]
     project: String,
 }
@@ -389,6 +396,13 @@ struct RenameArgs {
         help = "Use this Darc root instead of the default"
     )]
     root: PathBuf,
+
+    #[arg(
+        long,
+        help_heading = "Mode",
+        help = "Preview rename workflow without writing config, archive, or index changes"
+    )]
+    dry_run: bool,
 
     #[arg(value_name = "PROJECT")]
     project: String,
@@ -3687,9 +3701,54 @@ fn run_link(args: LinkArgs) -> Result<()> {
 
 /// Removes one configured project and its archived/indexed data.
 fn run_remove(args: RemoveArgs) -> Result<()> {
-    let report = remove_project(Some(args.root), &args.project)?;
     let style = HumanStyle::stdout();
+    if args.dry_run {
+        let report = preview_remove_project(Some(args.root), &args.project)?;
+        print_section(style, "Remove Preview");
+        print_field(style, 2, "Project", &report.project_name);
+        print_field(style, 2, "Project ID", style.muted(&report.project_id));
+        print_field(
+            style,
+            2,
+            "Archive",
+            style.path(report.sessions_root.display()),
+        );
+        println!();
+        print_section(style, "Would Delete");
+        if report.archive_would_delete {
+            print_field(style, 2, "Archive", style.warn("yes"));
+        } else {
+            print_field(style, 2, "Archive", style.muted("not present"));
+        }
+        print_field(
+            style,
+            2,
+            "Indexed sessions",
+            style.count(report.indexed_sessions_would_remove),
+        );
+        print_field(
+            style,
+            2,
+            "Indexed turns",
+            style.count(report.indexed_turns_would_remove),
+        );
+        print_field(
+            style,
+            2,
+            "Config",
+            if report.config_would_change {
+                style.warn("would update")
+            } else {
+                style.muted("unchanged")
+            },
+        );
+        println!();
+        print_section(style, "Status");
+        print_field(style, 2, "Overall", style.ok("dry run only"));
+        return Ok(());
+    }
 
+    let report = remove_project(Some(args.root), &args.project)?;
     print_section(style, "Remove");
     print_field(style, 2, "Project", &report.project_name);
     print_field(style, 2, "Project ID", style.muted(&report.project_id));
@@ -3729,9 +3788,93 @@ fn run_remove(args: RemoveArgs) -> Result<()> {
 
 /// Rebuilds one configured project's history under the active project's id.
 fn run_rename_from(args: RenameArgs) -> Result<()> {
-    let report = rename_project(Some(args.root), &args.project)?;
     let style = HumanStyle::stdout();
+    if args.dry_run {
+        let report = preview_rename_project(Some(args.root), &args.project)?;
+        print_section(style, "Rename Preview");
+        print_field(style, 2, "Project", &report.target_project_name);
+        print_field(
+            style,
+            2,
+            "Project ID",
+            style.muted(&report.target_project_id),
+        );
+        print_field(style, 2, "Renamed from", &report.source_project_name);
+        print_field(
+            style,
+            2,
+            "Source ID",
+            style.muted(&report.source_project_id),
+        );
+        print_field(
+            style,
+            2,
+            "Project root",
+            style.path(report.target_project_root.display()),
+        );
+        print_field(
+            style,
+            2,
+            "Known paths",
+            format!(
+                "{} total, {} would add",
+                style.count(report.total_known_paths),
+                style.count(report.new_known_paths.len())
+            ),
+        );
+        println!();
+        print_section(style, "Would Run");
+        print_field(style, 2, "Refresh", "sync and index target project");
+        print_field(
+            style,
+            2,
+            "Source archive",
+            style.path(report.source_sessions_root.display()),
+        );
+        if report.source_archive_would_delete {
+            print_field(
+                style,
+                2,
+                "Source archive cleanup",
+                style.warn("would delete"),
+            );
+        } else {
+            print_field(
+                style,
+                2,
+                "Source archive cleanup",
+                style.muted("not present"),
+            );
+        }
+        print_field(
+            style,
+            2,
+            "Indexed sessions cleanup",
+            style.count(report.indexed_sessions_would_remove),
+        );
+        print_field(
+            style,
+            2,
+            "Indexed turns cleanup",
+            style.count(report.indexed_turns_would_remove),
+        );
+        print_field(
+            style,
+            2,
+            "Config",
+            if report.config_would_change {
+                style.warn("would update")
+            } else {
+                style.muted("unchanged")
+            },
+        );
+        println!();
+        print_section(style, "Status");
+        print_field(style, 2, "Overall", style.ok("dry run only"));
+        return Ok(());
+    }
 
+    let report = rename_project(Some(args.root), &args.project)?;
     print_section(style, "Rename");
     print_field(style, 2, "Project", &report.link.target_project_name);
     print_field(style, 2, "Renamed from", &report.link.source_project_name);

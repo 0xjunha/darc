@@ -8,10 +8,14 @@ use anyhow::{Context, Result, bail};
 use super::{
     link::prepare_link,
     registry::{registered_projects, write_shared_config},
-    remove::{remove_project_by_id, remove_project_named},
+    remove::{
+        preview_remove_project_by_id, preview_remove_project_named, remove_project_by_id,
+        remove_project_named,
+    },
     types::{
         LinkReport, RefreshAllBestEffortReport, RefreshAllReport, RefreshOptions, RefreshProgress,
-        RefreshProjectAttempt, RefreshProjectFailure, RefreshReport, RemoveReport, RenameReport,
+        RefreshProjectAttempt, RefreshProjectFailure, RefreshReport, RemovePreviewReport,
+        RemoveReport, RenamePreviewReport, RenameReport,
     },
 };
 use crate::{
@@ -73,11 +77,33 @@ pub fn remove_project(root: Option<PathBuf>, project_name: &str) -> Result<Remov
     remove_project_named(&root.unwrap_or_else(default_root_path), project_name)
 }
 
+/// Previews one named project removal without changing config, archive storage, or SQLite.
+pub fn preview_remove_project(
+    root: Option<PathBuf>,
+    project_name: &str,
+) -> Result<RemovePreviewReport> {
+    preview_remove_project_named(&root.unwrap_or_else(default_root_path), project_name)
+}
+
 /// Renames one historical project into the active project by rebuilding under the active id.
 pub fn rename_project(root: Option<PathBuf>, source_name: &str) -> Result<RenameReport> {
     let current_dir =
         env::current_dir().context("unable to resolve the current working directory")?;
     rename_project_from(
+        &current_dir,
+        root.unwrap_or_else(default_root_path),
+        source_name,
+    )
+}
+
+/// Previews one project rename workflow without writing config, archive files, or SQLite.
+pub fn preview_rename_project(
+    root: Option<PathBuf>,
+    source_name: &str,
+) -> Result<RenamePreviewReport> {
+    let current_dir =
+        env::current_dir().context("unable to resolve the current working directory")?;
+    preview_rename_project_from(
         &current_dir,
         root.unwrap_or_else(default_root_path),
         source_name,
@@ -250,6 +276,31 @@ pub(crate) fn rename_project_from(
         sync: refresh.sync,
         index: refresh.index,
         remove,
+    })
+}
+
+/// Previews the full rename workflow from one explicit active project directory.
+pub(crate) fn preview_rename_project_from(
+    current_dir: &Path,
+    root: PathBuf,
+    source_name: &str,
+) -> Result<RenamePreviewReport> {
+    let prepared = prepare_link(current_dir, &root, source_name)?;
+    let remove_preview = preview_remove_project_by_id(&root, &prepared.source_project.id)?;
+
+    Ok(RenamePreviewReport {
+        target_project_name: prepared.target_project.name,
+        target_project_id: prepared.target_project.id,
+        target_project_root: prepared.current_root,
+        source_project_name: prepared.source_project.name,
+        source_project_id: prepared.source_project.id,
+        total_known_paths: prepared.total_known_paths,
+        new_known_paths: prepared.new_known_paths,
+        config_would_change: prepared.config_written,
+        source_sessions_root: remove_preview.sessions_root,
+        source_archive_would_delete: remove_preview.archive_would_delete,
+        indexed_sessions_would_remove: remove_preview.indexed_sessions_would_remove,
+        indexed_turns_would_remove: remove_preview.indexed_turns_would_remove,
     })
 }
 

@@ -102,6 +102,7 @@ darc service status
 - `darc query` remains available as the lower-level machine-readable protocol namespace for clients that need the
   explicit command matrix.
 - `darc project link`, `darc project remove`, and `darc project rename-from` manage renamed or merged projects.
+  Use `--dry-run` with destructive project commands to preview cleanup before writing.
 - `darc service` manages the beta background refresh service. Service management is currently macOS-only; see
   [Background refresh service](docs/service.md).
 
