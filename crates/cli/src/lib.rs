@@ -5365,7 +5365,7 @@ fn print_sync_result(style: HumanStyle, report: &SyncReport) {
 
 /// Prints one index summary block.
 fn print_index_summary(style: HumanStyle, report: &IndexReport) {
-    print_section(style, "Index");
+    print_section(style, "Indexed Data");
     print_field(style, 2, "Providers", format_sources(&report.providers));
     print_field(
         style,
