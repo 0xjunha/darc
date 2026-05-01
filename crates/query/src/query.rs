@@ -237,7 +237,7 @@ pub struct ResolvedSessionMatch {
     pub session_id: String,
 }
 
-/// Stores the session-resolution payload returned by `darc query resolve-session`.
+/// Stores the session-resolution payload returned by `darc resolve session`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ResolveSessionQueryData {
     pub query: String,

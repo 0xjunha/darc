@@ -8,7 +8,6 @@ use crate::{
 const CLAUDE_TOOLS: &str = "Bash,Read";
 const CLAUDE_ALLOWED_TOOLS: &str = concat!(
     "Read,",
-    "Bash(darc query:*),",
     "Bash(darc list:*),",
     "Bash(darc show:*),",
     "Bash(darc search:*),",

@@ -219,7 +219,7 @@ pub fn query_resolve_sessions(
     )
 }
 
-/// Resolves one `darc query` session id or UUID prefix against one project and optional provider filter.
+/// Resolves one read-command session id or UUID prefix against one project and optional provider filter.
 pub fn resolve_query_session_id(
     root: Option<PathBuf>,
     project_id: &str,
@@ -230,7 +230,7 @@ pub fn resolve_query_session_id(
     resolve_query_session_id_for_project(&project, provider, session_id)
 }
 
-/// Resolves one `darc query` session id or UUID prefix against one already-resolved project.
+/// Resolves one read-command session id or UUID prefix against one already-resolved project.
 pub fn resolve_query_session_id_for_project(
     project: &ResolvedQueryProject,
     provider: Option<SourceKind>,
@@ -260,7 +260,7 @@ pub fn resolve_query_search_session_id_for_project(
     )
 }
 
-/// Resolves one `darc query` session id or UUID prefix plus provider against one project.
+/// Resolves one read-command session id or UUID prefix plus provider against one project.
 pub fn resolve_query_session_for_project(
     project: &ResolvedQueryProject,
     provider: Option<SourceKind>,
