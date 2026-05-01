@@ -130,8 +130,15 @@ fn top_level_help_points_to_common_workflows() {
     assert!(help.contains("Archive, index, and query coding-agent sessions"));
     assert!(help.contains("Common workflows:"));
     assert!(help.contains("darc status"));
-    assert!(help.contains("darc query search turns \"panic\" --limit 5"));
+    assert!(help.contains("darc search \"panic\" --limit 5"));
+    assert!(help.contains("darc show session <SESSION_ID> --turn-limit 5"));
     assert!(help.contains("darc help <command>"));
+    assert!(help.contains("  search "));
+    assert!(help.contains("  project "));
+    assert!(!help.contains("  query "));
+    assert!(!help.contains("  link "));
+    assert!(!help.contains("  remove "));
+    assert!(!help.contains("  rename-from "));
 }
 
 #[test]
@@ -231,6 +238,24 @@ fn refresh_command_accepts_watch_options() {
             && min_interval.as_deref() == Some("60s")
             && reconcile_interval.as_deref() == Some("10m")
     ));
+}
+
+#[test]
+fn refresh_watch_options_require_watch_mode() {
+    for flag in [
+        "--debounce",
+        "--min-interval",
+        "--reconcile-interval",
+        "--poll",
+    ] {
+        let mut args = vec!["darc", "refresh", flag];
+        if flag != "--poll" {
+            args.push("30s");
+        }
+        let error = Cli::try_parse_from(args).unwrap_err();
+
+        assert!(error.to_string().contains("--watch"));
+    }
 }
 
 #[test]
@@ -905,6 +930,243 @@ fn parses_rename_command() {
 }
 
 #[test]
+fn parses_project_management_namespace() {
+    let link = Cli::try_parse_from(["darc", "project", "link", "memstack"]).unwrap();
+    assert!(matches!(
+        link.command,
+        Commands::Project(super::ProjectArgs {
+            command: super::ProjectCommands::Link(super::LinkArgs { project, .. }),
+        }) if project == "memstack"
+    ));
+
+    let remove = Cli::try_parse_from(["darc", "project", "remove", "memstack"]).unwrap();
+    assert!(matches!(
+        remove.command,
+        Commands::Project(super::ProjectArgs {
+            command: super::ProjectCommands::Remove(super::RemoveArgs { project, .. }),
+        }) if project == "memstack"
+    ));
+
+    let rename = Cli::try_parse_from(["darc", "project", "rename-from", "memstack"]).unwrap();
+    assert!(matches!(
+        rename.command,
+        Commands::Project(super::ProjectArgs {
+            command: super::ProjectCommands::RenameFrom(super::RenameArgs { project, .. }),
+        }) if project == "memstack"
+    ));
+}
+
+#[test]
+fn canonical_read_commands_accept_shared_options_around_subcommands() {
+    let cli = Cli::try_parse_from([
+        "darc",
+        "list",
+        "--root",
+        "/tmp/darc-root",
+        "sessions",
+        "--color",
+        "never",
+        "--limit",
+        "1",
+    ])
+    .unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::List(super::ListArgs {
+            root,
+            color: super::ColorArg::Never,
+            command: super::ListCommands::Sessions(super::ListSessionsArgs {
+                limit,
+                ..
+            }),
+        }) if root.as_path() == Path::new("/tmp/darc-root") && limit == 1
+    ));
+
+    let cli = Cli::try_parse_from([
+        "darc",
+        "stats",
+        "workspace",
+        "--root",
+        "/tmp/darc-root",
+        "--color",
+        "never",
+    ])
+    .unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Stats(super::StatsArgs {
+            root,
+            color: super::ColorArg::Never,
+            command: super::StatsCommands::Workspace(_),
+        }) if root.as_path() == Path::new("/tmp/darc-root")
+    ));
+}
+
+#[test]
+fn parses_canonical_list_show_search_stats_and_resolve_commands() {
+    let sessions = Cli::try_parse_from([
+        "darc",
+        "list",
+        "sessions",
+        "--project-id",
+        "repo-abc123",
+        "--touching",
+        "docs/**",
+        "--limit",
+        "5",
+    ])
+    .unwrap();
+    assert!(matches!(
+        sessions.command,
+        Commands::List(super::ListArgs {
+            command: super::ListCommands::Sessions(super::ListSessionsArgs {
+                project_id,
+                touching,
+                limit,
+                ..
+            }),
+            ..
+        }) if project_id.as_deref() == Some("repo-abc123")
+            && touching.as_deref() == Some("docs/**")
+            && limit == 5
+    ));
+
+    let files = Cli::try_parse_from([
+        "darc",
+        "list",
+        "files",
+        "--session",
+        "11111111",
+        "--provider",
+        "codex",
+    ])
+    .unwrap();
+    assert!(matches!(
+        files.command,
+        Commands::List(super::ListArgs {
+            command: super::ListCommands::Files(super::ListFilesArgs {
+                session,
+                provider,
+                ..
+            }),
+            ..
+        }) if session.as_deref() == Some("11111111")
+            && matches!(provider, Some(super::ProviderArg::Codex))
+    ));
+
+    let path_files = Cli::try_parse_from([
+        "darc",
+        "list",
+        "files",
+        "crates/cli/src/lib.rs",
+        "--matched-path-limit",
+        "1",
+    ])
+    .unwrap();
+    assert!(matches!(
+        path_files.command,
+        Commands::List(super::ListArgs {
+            command: super::ListCommands::Files(super::ListFilesArgs {
+                path_arg,
+                matched_path_limit,
+                ..
+            }),
+            ..
+        }) if path_arg.as_deref() == Some("crates/cli/src/lib.rs")
+            && matched_path_limit == Some(1)
+    ));
+
+    let flagged_path_files =
+        Cli::try_parse_from(["darc", "list", "files", "--path", "docs/**"]).unwrap();
+    assert!(matches!(
+        flagged_path_files.command,
+        Commands::List(super::ListArgs {
+            command: super::ListCommands::Files(super::ListFilesArgs {
+                path,
+                ..
+            }),
+            ..
+        }) if path.as_deref() == Some("docs/**")
+    ));
+
+    let show =
+        Cli::try_parse_from(["darc", "show", "session", "11111111", "--turn-limit", "3"]).unwrap();
+    assert!(matches!(
+        show.command,
+        Commands::Show(super::ShowArgs {
+            command: super::ShowCommands::Session(super::QuerySessionBundleArgs {
+                session_id_arg,
+                turn_limit,
+                ..
+            }),
+            ..
+        }) if session_id_arg.as_deref() == Some("11111111") && turn_limit == 3
+    ));
+
+    let search = Cli::try_parse_from([
+        "darc",
+        "search",
+        "--mode",
+        "literal",
+        "--query",
+        "--output-last-message",
+        "--field",
+        "user-message",
+    ])
+    .unwrap();
+    assert!(matches!(
+        search.command,
+        Commands::Search(super::SearchArgs {
+            mode,
+            query,
+            fields,
+            ..
+        }) if matches!(mode, super::SearchModeArg::Literal)
+            && query.as_deref() == Some("--output-last-message")
+            && fields == [super::SearchEvidenceField::UserMessage]
+    ));
+
+    let path_search =
+        Cli::try_parse_from(["darc", "search", "--mode", "file-path", "docs/**"]).unwrap();
+    assert!(matches!(
+        path_search.command,
+        Commands::Search(super::SearchArgs {
+            mode,
+            query_arg,
+            ..
+        }) if matches!(mode, super::SearchModeArg::FilePath)
+            && query_arg.as_deref() == Some("docs/**")
+    ));
+
+    assert!(Cli::try_parse_from(["darc", "search", "--regex", "panic"]).is_err());
+    assert!(Cli::try_parse_from(["darc", "search", "--path", "docs/**"]).is_err());
+
+    let stats = Cli::try_parse_from(["darc", "stats", "project", "--turn-limit", "5"]).unwrap();
+    assert!(matches!(
+        stats.command,
+        Commands::Stats(super::StatsArgs {
+            command: super::StatsCommands::Project(super::QueryProjectInsightsArgs {
+                turn_limit,
+                ..
+            }),
+            ..
+        }) if turn_limit == 5
+    ));
+
+    let resolve = Cli::try_parse_from(["darc", "resolve", "session", "11111111"]).unwrap();
+    assert!(matches!(
+        resolve.command,
+        Commands::Resolve(super::ResolveArgs {
+            command: super::ResolveCommands::Session(super::QueryResolveSessionArgs {
+                input,
+                ..
+            }),
+            ..
+        }) if input == "11111111"
+    ));
+}
+
+#[test]
 fn parses_query_workspace_command() {
     let cli = Cli::try_parse_from(["darc", "query", "workspace"]).unwrap();
     assert!(matches!(
@@ -1142,7 +1404,7 @@ fn parses_query_files_path_command() {
             && co_touched_with.is_none()
             && since.as_deref() == Some("30d")
             && until.as_deref() == Some("2026-04-07T00:00:00Z")
-            && limit == 50
+            && limit == darc_core::query::DEFAULT_QUERY_PAGE_LIMIT
             && offset == 0
     ));
 }
@@ -1260,7 +1522,7 @@ fn parses_query_session_bundle_command() {
             && session_id.is_none()
             && matches!(session_view, super::SessionListViewArg::Compact)
             && matches!(view, super::ViewArg::Narrative)
-            && turn_limit == 50
+            && turn_limit == darc_core::query::DEFAULT_SESSION_BUNDLE_TURN_LIMIT
             && turn_offset == 0
             && step_limit == darc_core::query::DEFAULT_TURN_STEP_LIMIT
             && step_offset == 0
@@ -1312,7 +1574,7 @@ fn parses_query_turns_session_scope_command() {
             && session_id_arg.as_deref() == Some("session-1")
             && session_id.is_none()
             && matches!(view, super::TurnListViewArg::Full)
-            && limit == 50
+            && limit == darc_core::query::DEFAULT_QUERY_PAGE_LIMIT
             && offset == 0
     ));
 }
@@ -1613,6 +1875,20 @@ fn query_files_help_mentions_path_and_co_touch_modes() {
     assert!(help.contains("--path"));
     assert!(help.contains("--co-touched-with"));
     assert!(help.contains("--limit"));
+    assert!(help.contains("most-touched files"));
+    assert!(help.contains("Selection:"));
+    assert!(help.contains("Time Filters:"));
+    assert!(help.contains("Result Size:"));
+}
+
+#[test]
+fn list_files_help_mentions_path_and_co_touch_modes() {
+    let help = help_for_command_path(&["list", "files"]);
+
+    assert!(help.contains("[PATH]"));
+    assert!(help.contains("--path"));
+    assert!(help.contains("--co-touched-with"));
+    assert!(help.contains("--matched-path-limit"));
     assert!(help.contains("most-touched files"));
     assert!(help.contains("Selection:"));
     assert!(help.contains("Time Filters:"));

@@ -14,8 +14,8 @@ The daily happy path is `darc refresh`, which runs `sync` and `index` together.
 - Registers local projects in a shared `~/.darc` workspace and resolves the active project from the current checkout.
 - Archives matching Claude and Codex session history into a per-project rollout archive.
 - Rebuilds a normalized SQLite index from archived rollouts for insights, reporting, and downstream tooling.
-- Exposes a stable machine-readable `darc query` protocol for workspace, session, turn, file-pivot, search, and
-  insights data.
+- Exposes canonical JSON read commands for listing, showing, searching, resolving, and stats, backed by a stable
+  machine-readable `darc query` protocol for downstream clients.
 - Derives indexed insights at workspace, project, and turn scope without requiring clients to open `index.sqlite`
   directly.
 - Surfaces best-effort per-turn and per-session stats such as model, token usage, effective agent runtime, and
@@ -97,15 +97,17 @@ darc service status
   project, and `--check` to run sync planning without writing manifests, config, archives, or SQLite.
 - `darc sync` archives matching Claude and Codex sessions for the active project.
 - `darc index` indexes archived sessions into SQLite.
-- `darc query` exposes the machine-readable read protocol for workspace, session, turn, file-pivot, search, and
-  insights data. Query commands emit JSON by default; see [Query protocol](docs/query-protocol.md).
-- `darc link`, `darc remove`, and `darc rename-from` manage renamed or merged projects.
+- `darc list`, `darc show`, `darc search`, `darc stats`, and `darc resolve` are the canonical JSON read surface for
+  coding agents. They reuse the query protocol envelopes; see [Query protocol](docs/query-protocol.md).
+- `darc query` remains available as the lower-level machine-readable protocol namespace for clients that need the
+  explicit command matrix.
+- `darc project link`, `darc project remove`, and `darc project rename-from` manage renamed or merged projects.
 - `darc service` manages the beta background refresh service. Service management is currently macOS-only; see
   [Background refresh service](docs/service.md).
 
 ## Session And Turn Stats
 
-Darc now exposes best-effort session and turn stats through `darc query`.
+Darc now exposes best-effort session and turn stats through `darc list`, `darc show`, and `darc stats`.
 
 - turn rows and turn insights can include `primary_model`, `total_token_count`, `token_usage`,
   `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, and `removed_line_count`
@@ -120,58 +122,63 @@ Darc now exposes best-effort session and turn stats through `darc query`.
 
 See [Query protocol](docs/query-protocol.md) for the exact payload contract and semantics.
 
-## Query Workflows
+## Read Workflows
 
-Darc's read-side query surface now covers project-scoped search, compact turn skims, file/session pivots, and
-single-call session bundles.
+Darc's read-side CLI emits JSON envelopes by default because coding agents are the primary users. The canonical
+commands cover project-scoped search, compact turn skims, file/session pivots, and bounded single-call session detail.
 
-- `darc query search turns <query>` defaults to keyword search and also supports literal, regex, file-name,
-  glob-compatible file-path, and path-fragment modes with optional provider/session/time filters. Literal and regex
-  search skip bulky tool outputs by default; add `--include-tool-output` for forensic searches over command output,
-  logs, or stack traces, use `--field` / `--exclude-field` to narrow exact evidence fields, and use `--match-limit`
-  to cap nested evidence matches per returned turn hit.
-- project-scoped `darc query` commands accept optional `--project-id`; when omitted, Darc resolves the configured
-  project from the current directory. Project pivots such as `sessions`, `files`, and `insights project` also accept
-  `--provider` when a corpus mixes Codex and Claude history.
-- `darc query sessions` defaults to compact first-prompt and final-message previews for browsing; pass `--view full`
+- `darc search <query>` searches indexed turns and returns turn hits. Every hit carries `session_id` and
+  `turn_ordinal` for follow-up reads. Search defaults to keyword mode; use
+  `--mode <literal|regex|file-name|file-path|path-fragment>` for other modes. Literal and regex search skip bulky
+  tool outputs by default; add `--include-tool-output` for forensic searches over command output, logs, or stack
+  traces, use `--field` / `--exclude-field` to narrow exact evidence fields, and use `--match-limit` to cap nested
+  evidence matches per returned turn hit.
+- project-scoped read commands accept optional `--project-id`; when omitted, Darc resolves the configured project from
+  the current directory. They also accept `--provider` when a corpus mixes Codex and Claude history.
+- `darc list sessions` defaults to compact first-prompt and final-message previews for browsing; pass `--view full`
   when you need the full text pair. Preview rows include returned and total character counts, and edited file lists are
-  deduplicated and always complete for each returned session.
-- `darc query turns` lists one known session by full UUID, inferring the provider unless the id is cross-provider
-  ambiguous; content discovery lives under `darc query search turns`.
-- `darc query files` ranks most-touched files for initial discovery. `darc query files <path>`,
-  `darc query session-files <session-id>`, and `darc query session-bundle <session-id>` let clients pivot between
-  matched files, touched sessions, per-session file summaries, and bounded one-call session detail bundles. File pivots
-  accept provider and time filters in most-touched, path, and co-touch modes. Session bundles cap embedded
-  `session_files` previews at 100 rows; use `darc query session-files` for the standalone full list. Turn detail and
-  session bundle reads default to narrative payloads and bounded step pages; pass `--view full`, `--step-limit`, or
-  `--include-raw` only when more detail is needed.
+  deduplicated and always complete for each returned session. List and search pages default to 10 rows so agents can
+  start compactly; pass `--limit` when you need a larger page. Use `--touching <path-or-glob>` to list sessions that
+  touched a path.
+- `darc list turns <session-id-or-prefix>` lists one known session, resolving an unambiguous UUID prefix and inferring
+  the provider unless the id or prefix is ambiguous.
+- `darc list files` ranks most-touched files for initial discovery. `darc list files <path-or-glob>` or
+  `darc list files --path <path-or-glob>` returns sessions that touched matching paths.
+  `darc list files --session <session-id-or-prefix>` returns the full per-session file summary.
+  `darc list files --co-touched-with <path>` returns files touched in the same sessions as a seed path.
+- `darc show session <session-id-or-prefix>` returns a bounded session bundle: compact session summary, paginated
+  turn details, and a capped `session_files` preview. It defaults to 5 embedded turns. Use `--turn-limit` /
+  `--turn-offset` to page turn details,
+  `--step-limit` / `--step-offset` to page steps inside each returned turn, and `darc list files --session <id>` when
+  you need the standalone full file list. Turn detail and session bundle reads default to narrative payloads; pass
+  `--view full`, `--step-limit`, or `--include-raw` only when more detail is needed.
 - Broad file/path queries cap each row's `matched_paths` preview by default; use `--matched-path-limit` or
   `--include-all-matched-paths` when you need more path evidence per result. Search/file payloads expose count fields
   such as `matched_paths_count`, `matches_count`, and `session_file_count` so agents can estimate returned context.
-- `darc query resolve-session` explicitly expands a UUID prefix before you call session-scoped data commands and
-  includes `project_id` with each match for multi-project roots.
+- Session-scoped reads accept a full UUID or an unambiguous UUID prefix. Use `darc resolve session <prefix>` when a
+  prefix is ambiguous or when you want the candidate list with `project_id`, `provider`, and canonical `session_id`.
 
 For compact-first agent exploration, start with small list/search pages, then drill down:
 
 ```bash
-darc query sessions --limit 5
-darc query files --limit 10
-darc query search turns "panic unwrap" --limit 5
-darc query turns "$ID" --view oneline --limit 10
-darc query turn "$ID" 0 --step-limit 10
-darc query session-bundle "$ID" --turn-limit 5 --step-limit 10
+darc list sessions --limit 5
+darc list files --limit 10
+darc search "panic unwrap" --limit 5
+darc list turns "$ID" --view oneline --limit 10
+darc show turn "$ID" 0 --step-limit 10
+darc show session "$ID" --turn-limit 5 --step-limit 10
 ```
 
 Examples:
 
 ```bash
-darc query search turns \
+darc search \
   --project-id repo-abc123 \
   "panic unwrap"
 ```
 
 ```bash
-darc query search turns \
+darc search \
   --project-id repo-abc123 \
   --mode literal \
   --query "--output-last-message" \
@@ -180,7 +187,7 @@ darc query search turns \
 ```
 
 ```bash
-darc query search turns \
+darc search \
   --project-id repo-abc123 \
   --mode regex \
   "panic: .*" \
@@ -188,30 +195,37 @@ darc query search turns \
 ```
 
 ```bash
-darc query files \
+darc list files \
   --project-id repo-abc123 \
   --since 30d \
   --limit 20
 ```
 
 ```bash
-darc query files \
+darc list files \
   --project-id repo-abc123 \
-  "src/components/**/*.rs" \
+  src/components/planner.rs \
+  --limit 20
+```
+
+```bash
+darc list sessions \
+  --project-id repo-abc123 \
+  --touching "src/components/**/*.rs" \
   --since 30d
 ```
 
 ```bash
-darc query files \
+darc list files \
   --project-id repo-abc123 \
   --co-touched-with src/components/planner.rs \
   --since 30d
 ```
 
 ```bash
-ID=$(darc query resolve-session 11111111 --pick-one | jq -r '.data.match.session_id')
+ID=$(darc resolve session 11111111 --pick-one | jq -r '.data.match.session_id')
 
-darc query session-bundle \
+darc show session \
   --project-id repo-abc123 \
   "$ID" \
   --turn-limit 20 \

@@ -273,7 +273,7 @@ const PROJECT_SESSION_MATCHES_SQL: &str = "
     FROM sessions
     WHERE project_id = ?1
         AND (?2 IS NULL OR provider = ?2)
-        AND session_id = ?3 COLLATE NOCASE
+        AND session_id LIKE ?3 || '%' COLLATE NOCASE
     ORDER BY
         provider ASC,
         session_id ASC
@@ -881,7 +881,7 @@ pub(crate) fn query_project_session_id(
     Ok(session_id)
 }
 
-/// Queries exact project-scoped session matches for provider inference.
+/// Queries project-scoped session matches for provider and prefix inference.
 pub fn lookup_project_session_matches(
     index_db_path: &Path,
     project_id: &str,
@@ -893,7 +893,7 @@ pub fn lookup_project_session_matches(
     query_project_session_matches(&connection, project_id, provider, session_id, limit)
 }
 
-/// Queries exact project-scoped session matches from one open SQLite connection.
+/// Queries project-scoped session matches from one open SQLite connection.
 fn query_project_session_matches(
     connection: &Connection,
     project_id: &str,

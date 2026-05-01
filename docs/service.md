@@ -57,6 +57,9 @@ Command-line flags override config values:
 darc refresh --watch --all --debounce 15s --min-interval 60s --reconcile-interval 10m
 ```
 
+The watch tuning flags `--debounce`, `--min-interval`, `--reconcile-interval`, and `--poll` are valid only with
+`--watch`; one-shot `darc refresh` ignores the watch loop entirely.
+
 The reconcile interval is a safety refresh measured from the previous refresh attempt. With the default `10m`, `status`
 can show a last refresh timestamp that is several minutes old even when the service is healthy.
 

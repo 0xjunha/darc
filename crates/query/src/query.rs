@@ -79,8 +79,14 @@ pub const DEFAULT_MATCHED_PATH_LIMIT: usize = 20;
 /// Caps per-hit exact-search evidence match previews unless callers ask for more.
 pub const DEFAULT_SEARCH_MATCH_LIMIT: usize = 20;
 
+/// Caps default row pages for agent-facing browse and search commands.
+pub const DEFAULT_QUERY_PAGE_LIMIT: usize = 10;
+
+/// Caps default embedded turn pages in composite session bundles.
+pub const DEFAULT_SESSION_BUNDLE_TURN_LIMIT: usize = 5;
+
 /// Caps turn-detail step previews unless callers ask for a larger page.
-pub const DEFAULT_TURN_STEP_LIMIT: usize = 50;
+pub const DEFAULT_TURN_STEP_LIMIT: usize = 10;
 
 /// Caps workspace-insight recent session previews unless callers ask for a larger page.
 pub const DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT: usize = 50;

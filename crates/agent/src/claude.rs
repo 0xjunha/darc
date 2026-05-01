@@ -6,8 +6,19 @@ use crate::{
 };
 
 const CLAUDE_TOOLS: &str = "Bash,Read";
-const CLAUDE_ALLOWED_TOOLS: &str =
-    "Read,Bash(darc query:*),Bash(rg:*),Bash(git log:*),Bash(git show:*),Bash(git diff:*)";
+const CLAUDE_ALLOWED_TOOLS: &str = concat!(
+    "Read,",
+    "Bash(darc query:*),",
+    "Bash(darc list:*),",
+    "Bash(darc show:*),",
+    "Bash(darc search:*),",
+    "Bash(darc stats:*),",
+    "Bash(darc resolve:*),",
+    "Bash(rg:*),",
+    "Bash(git log:*),",
+    "Bash(git show:*),",
+    "Bash(git diff:*)",
+);
 const CLAUDE_PROVIDER_AUTH_ENV_VARS: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "CLAUDE_CODE_USE_BEDROCK",

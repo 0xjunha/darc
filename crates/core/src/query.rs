@@ -8,18 +8,19 @@ use anyhow::{Context, Result, bail};
 use darc_index::INDEX_DB_FILE_NAME;
 use darc_paths::SourceKind;
 pub use darc_query::{
-    DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, DEFAULT_SEARCH_MATCH_LIMIT,
-    DEFAULT_TURN_STEP_LIMIT, DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT, DailyTimeStat,
-    FilePivotSummary, FileSessionSummary, FileUsageStat, FilesQueryData, FilesQueryMode,
-    FilesQueryRequest, ProjectInsights, ProjectSummary, ProjectTimeStat, ResolveSessionQueryData,
-    ResolveSessionQueryRequest, ResolvedSessionMatch, RootAvailability, RootInfo,
-    SearchEvidenceField, SearchMode, SearchSnippetMatcher, SearchTurnHit, SearchTurnMatch,
-    SearchTurnsQueryData, SearchTurnsRequest, SessionBundleQueryData, SessionBundleQueryRequest,
-    SessionBundleView, SessionFileSummary, SessionFilesQueryData, SessionKind, SessionRuntimeStat,
-    SessionSummary, SessionsQueryData, SessionsQueryRequest, SessionsView, ShellCommandSummary,
-    ToolUsageStat, TurnDetail, TurnDetailInsights, TurnDetailOptions, TurnInsights, TurnSummary,
-    TurnsQueryData, TurnsQueryRequest, TurnsView, WorkspaceDailyTimeStat, WorkspaceInsights,
-    WorkspaceQueryData, search_snippet_match_range,
+    DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_QUERY_PAGE_LIMIT, DEFAULT_RESOLVE_SESSION_MATCH_LIMIT,
+    DEFAULT_SEARCH_MATCH_LIMIT, DEFAULT_SESSION_BUNDLE_TURN_LIMIT, DEFAULT_TURN_STEP_LIMIT,
+    DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT, DailyTimeStat, FilePivotSummary, FileSessionSummary,
+    FileUsageStat, FilesQueryData, FilesQueryMode, FilesQueryRequest, ProjectInsights,
+    ProjectSummary, ProjectTimeStat, ResolveSessionQueryData, ResolveSessionQueryRequest,
+    ResolvedSessionMatch, RootAvailability, RootInfo, SearchEvidenceField, SearchMode,
+    SearchSnippetMatcher, SearchTurnHit, SearchTurnMatch, SearchTurnsQueryData, SearchTurnsRequest,
+    SessionBundleQueryData, SessionBundleQueryRequest, SessionBundleView, SessionFileSummary,
+    SessionFilesQueryData, SessionKind, SessionRuntimeStat, SessionSummary, SessionsQueryData,
+    SessionsQueryRequest, SessionsView, ShellCommandSummary, ToolUsageStat, TurnDetail,
+    TurnDetailInsights, TurnDetailOptions, TurnInsights, TurnSummary, TurnsQueryData,
+    TurnsQueryRequest, TurnsView, WorkspaceDailyTimeStat, WorkspaceInsights, WorkspaceQueryData,
+    search_snippet_match_range,
 };
 use darc_query::{
     ProjectIndexAggregate, list_project_index_aggregates, lookup_project_session_matches,
@@ -213,7 +214,7 @@ pub fn query_resolve_sessions(
     )
 }
 
-/// Resolves one strict `darc query` session id against one project and optional provider filter.
+/// Resolves one `darc query` session id or UUID prefix against one project and optional provider filter.
 pub fn resolve_query_session_id(
     root: Option<PathBuf>,
     project_id: &str,
@@ -224,7 +225,7 @@ pub fn resolve_query_session_id(
     resolve_query_session_id_for_project(&project, provider, session_id)
 }
 
-/// Resolves one strict `darc query` session id against one already-resolved project.
+/// Resolves one `darc query` session id or UUID prefix against one already-resolved project.
 pub fn resolve_query_session_id_for_project(
     project: &ResolvedQueryProject,
     provider: Option<SourceKind>,
@@ -239,14 +240,14 @@ pub fn resolve_query_session_id_for_project(
     )
 }
 
-/// Resolves one strict search session-id filter without forcing cross-provider disambiguation.
+/// Resolves one search session-id filter, accepting an unambiguous UUID prefix.
 pub fn resolve_query_search_session_id_for_project(
     project: &ResolvedQueryProject,
     provider: Option<SourceKind>,
     session_id: &str,
 ) -> Result<String> {
     let context = &project.context;
-    validate_project_session_filter_id(
+    validate_project_search_session_filter_id(
         &context.root.database_path,
         &context.project.id,
         provider,
@@ -254,7 +255,7 @@ pub fn resolve_query_search_session_id_for_project(
     )
 }
 
-/// Resolves one strict `darc query` session id plus provider against one project.
+/// Resolves one `darc query` session id or UUID prefix plus provider against one project.
 pub fn resolve_query_session_for_project(
     project: &ResolvedQueryProject,
     provider: Option<SourceKind>,
@@ -570,7 +571,7 @@ impl QueryProtocolError {
     pub fn invalid_data_session_id(input: &str) -> Self {
         Self::InvalidDataSessionId {
             input: input.to_owned(),
-            message: format!("Session id `{input}` must be the full UUID."),
+            message: format!("Session id `{input}` must be a UUID or UUID prefix."),
         }
     }
 
@@ -582,12 +583,10 @@ impl QueryProtocolError {
         }
     }
 
-    /// Builds one structured unknown-session error for one strict data command.
+    /// Builds one structured unknown-session error for one data command.
     pub fn unknown_data_session(input: &str, looks_like_prefix: bool) -> Self {
         let message = if looks_like_prefix {
-            format!(
-                "No session found for id `{input}`. The session id must be the full UUID. Try `darc query resolve-session {input}` to expand a prefix."
-            )
+            format!("No session matched prefix `{input}`.")
         } else {
             format!("No session found for id `{input}`.")
         };
@@ -646,20 +645,31 @@ impl QueryProtocolError {
         }
     }
 
-    /// Builds one structured ambiguity error for one strict data command.
-    pub fn ambiguous_data_session(input: &str, matches: Vec<ResolvedSessionMatch>) -> Self {
+    /// Builds one structured ambiguity error for one data command.
+    pub fn ambiguous_data_session(
+        input: &str,
+        matches: Vec<ResolvedSessionMatch>,
+        truncated: bool,
+    ) -> Self {
+        let match_count = matches.len();
         let provider_count = matches
             .iter()
             .map(|candidate| candidate.provider)
             .collect::<BTreeSet<_>>()
             .len();
-        let message = format!(
-            "Session id `{input}` matched {provider_count} providers in this project. Pass --provider to choose one."
-        );
+        let message = if truncated {
+            format!(
+                "Session id or prefix `{input}` matched at least {match_count} sessions across {provider_count} providers in this project. Use a longer prefix or pass --provider."
+            )
+        } else {
+            format!(
+                "Session id or prefix `{input}` matched {match_count} sessions across {provider_count} providers in this project. Use a longer prefix or pass --provider."
+            )
+        };
         Self::AmbiguousSession {
             query: input.to_owned(),
             matches,
-            truncated: false,
+            truncated,
             message,
         }
     }
@@ -852,8 +862,6 @@ enum SessionIdShape {
 }
 
 const UUID_TEXT_LEN: usize = 36;
-const MIN_STRICT_SESSION_PREFIX_LEN: usize = 8;
-
 /// Validates one resolver input and returns its trimmed canonical query text.
 fn validate_resolve_session_query(query: &str) -> Result<&str> {
     let query = query.trim();
@@ -865,7 +873,7 @@ fn validate_resolve_session_query(query: &str) -> Result<&str> {
     }
 }
 
-/// Validates one strict session id and resolves the canonical stored session id for the project.
+/// Validates one session id or UUID prefix and resolves the canonical stored session id.
 fn validate_project_session_id(
     index_db_path: &Path,
     project_id: &str,
@@ -875,31 +883,44 @@ fn validate_project_session_id(
     Ok(validate_project_session_ref(index_db_path, project_id, provider, session_id)?.session_id)
 }
 
-/// Validates one strict session-id filter without rejecting cross-provider matches.
-fn validate_project_session_filter_id(
+/// Validates one search session-id filter and resolves a canonical stored session id.
+fn validate_project_search_session_filter_id(
     index_db_path: &Path,
     project_id: &str,
     provider: Option<SourceKind>,
     session_id: &str,
 ) -> Result<String> {
     let session_id = session_id.trim();
-    match classify_strict_session_input(session_id) {
-        SessionIdShape::Prefix => {
-            return Err(QueryProtocolError::unknown_data_session(session_id, true).into());
-        }
+    match classify_resolve_session_input(session_id) {
         SessionIdShape::Invalid => {
             return Err(QueryProtocolError::invalid_data_session_id(session_id).into());
         }
-        SessionIdShape::FullUuid => {}
+        SessionIdShape::FullUuid | SessionIdShape::Prefix => {}
     }
-    lookup_project_session_matches(index_db_path, project_id, provider, session_id, 1)?
-        .into_iter()
-        .next()
-        .map(|resolved| resolved.session_id)
-        .ok_or_else(|| QueryProtocolError::unknown_data_session(session_id, false).into())
+    let is_full_uuid = is_full_uuid_text(session_id);
+    let (matches, truncated) =
+        lookup_project_session_matches_for_error(index_db_path, project_id, provider, session_id)?;
+    match matches.as_slice() {
+        [] => Err(QueryProtocolError::unknown_data_session(session_id, !is_full_uuid).into()),
+        [resolved] => Ok(resolved.session_id.clone()),
+        _ => {
+            let distinct_session_ids = matches
+                .iter()
+                .map(|candidate| candidate.session_id.as_str())
+                .collect::<BTreeSet<_>>();
+            if distinct_session_ids.len() == 1 && (is_full_uuid || !truncated) {
+                Ok(matches[0].session_id.clone())
+            } else {
+                Err(
+                    QueryProtocolError::ambiguous_data_session(session_id, matches, truncated)
+                        .into(),
+                )
+            }
+        }
+    }
 }
 
-/// Validates one strict session id and resolves its canonical provider/session identity.
+/// Validates one session id or UUID prefix and resolves its canonical provider/session identity.
 fn validate_project_session_ref(
     index_db_path: &Path,
     project_id: &str,
@@ -907,36 +928,45 @@ fn validate_project_session_ref(
     session_id: &str,
 ) -> Result<ResolvedQuerySession> {
     let session_id = session_id.trim();
-    match classify_strict_session_input(session_id) {
-        SessionIdShape::Prefix => {
-            return Err(QueryProtocolError::unknown_data_session(session_id, true).into());
-        }
+    match classify_resolve_session_input(session_id) {
         SessionIdShape::Invalid => {
             return Err(QueryProtocolError::invalid_data_session_id(session_id).into());
         }
-        SessionIdShape::FullUuid => {}
+        SessionIdShape::FullUuid | SessionIdShape::Prefix => {}
     }
-    let matches =
-        lookup_project_session_matches(index_db_path, project_id, provider, session_id, 2)?;
+    let (matches, truncated) =
+        lookup_project_session_matches_for_error(index_db_path, project_id, provider, session_id)?;
     match matches.as_slice() {
-        [] => Err(QueryProtocolError::unknown_data_session(session_id, false).into()),
+        [] => Err(QueryProtocolError::unknown_data_session(
+            session_id,
+            !is_full_uuid_text(session_id),
+        )
+        .into()),
         [resolved] => Ok(ResolvedQuerySession {
             provider: resolved.provider,
             session_id: resolved.session_id.clone(),
         }),
-        _ => Err(QueryProtocolError::ambiguous_data_session(session_id, matches).into()),
+        _ => Err(QueryProtocolError::ambiguous_data_session(session_id, matches, truncated).into()),
     }
 }
 
-/// Classifies one data-command session id using the strict full-UUID contract.
-fn classify_strict_session_input(input: &str) -> SessionIdShape {
-    if is_full_uuid_text(input) {
-        SessionIdShape::FullUuid
-    } else if input.len() >= MIN_STRICT_SESSION_PREFIX_LEN && is_uuid_prefix_text(input) {
-        SessionIdShape::Prefix
-    } else {
-        SessionIdShape::Invalid
+/// Looks up a bounded session-match preview plus whether more matches were omitted.
+fn lookup_project_session_matches_for_error(
+    index_db_path: &Path,
+    project_id: &str,
+    provider: Option<SourceKind>,
+    session_id: &str,
+) -> Result<(Vec<ResolvedSessionMatch>, bool)> {
+    let limit = DEFAULT_RESOLVE_SESSION_MATCH_LIMIT
+        .checked_add(1)
+        .context("session match limit exceeds usize range")?;
+    let mut matches =
+        lookup_project_session_matches(index_db_path, project_id, provider, session_id, limit)?;
+    let truncated = matches.len() > DEFAULT_RESOLVE_SESSION_MATCH_LIMIT;
+    if truncated {
+        matches.truncate(DEFAULT_RESOLVE_SESSION_MATCH_LIMIT);
     }
+    Ok((matches, truncated))
 }
 
 /// Classifies one resolver input, allowing any non-empty UUID prefix.

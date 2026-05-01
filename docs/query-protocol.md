@@ -1,16 +1,41 @@
 # Darc Query Protocol
 
-`darc query` is the machine-readable read protocol for desktop and other clients.
+Darc's read-side CLI emits machine-readable JSON envelopes for coding agents, desktop, and other clients. The
+canonical user-facing surface is `darc list`, `darc show`, `darc search`, `darc stats`, and `darc resolve`; the
+`darc query` namespace remains available as the lower-level protocol surface with the same payload contracts.
 
-Use it instead of:
+Use these JSON read commands instead of:
 
 - opening `index.sqlite` directly
 - parsing human-oriented command output
 - deriving analytics from raw `steps_json` outside `darc`
 
-## Commands
+## Canonical Read Commands
 
-Query commands emit pretty-printed JSON envelopes on stdout. `darc query --color <auto|always|never> ...`
+The canonical read commands emit the same schema ids documented below:
+
+- `darc list projects` and `darc show workspace` emit `darc.query.workspace.v1`
+- `darc list sessions` emits `darc.query.sessions.v1`
+- `darc list turns <session-id-or-prefix>` emits `darc.query.turns.v1`
+- `darc list files` emits `darc.query.files.v1` in most-touched mode
+- `darc list files <path-or-glob>` and `darc list files --path <path-or-glob>` emit `darc.query.files.v1` in path
+  mode
+- `darc list files --session <session-id-or-prefix>` emits `darc.query.session_files.v1`
+- `darc list files --co-touched-with <path>` emits `darc.query.files.v1` in co-touch mode
+- `darc show session <session-id-or-prefix>` emits `darc.query.session_bundle.v1`
+- `darc show turn <session-id-or-prefix> <turn-ordinal>` emits `darc.query.turn.v1`
+- `darc search <query>` searches indexed turns and emits `darc.query.search.turns.v1`; every hit includes
+  `session_id` and `turn_ordinal`
+- `darc stats workspace`, `darc stats project`, and `darc stats turn <session-id-or-prefix> <turn-ordinal>` emit the
+  corresponding `darc.query.insights.*.v1` payloads
+- `darc resolve session <uuid-or-prefix>` emits `darc.query.resolve_session.v1`
+
+Each top-level read command accepts `--color <auto|always|never>` and `--root <path>` before or after its subcommand
+or arguments. Color is terminal-only presentation; the default is `--color auto`.
+
+## Protocol Commands
+
+`darc query` commands emit pretty-printed JSON envelopes on stdout. `darc query --color <auto|always|never> ...`
 controls terminal-only ANSI presentation; the default is `--color auto`.
 
 ### Workspace
@@ -25,27 +50,29 @@ controls terminal-only ANSI presentation; the default is `--color auto`.
 - `darc query files [--root <path>] [--project-id <id>] [--provider <provider>] <path-or-glob> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>] [--matched-path-limit <n>|--include-all-matched-paths]`
 - `darc query files [--root <path>] [--project-id <id>] [--provider <provider>] --path <path-or-glob> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>] [--matched-path-limit <n>|--include-all-matched-paths]`
 - `darc query files [--root <path>] [--project-id <id>] [--provider <provider>] --co-touched-with <path> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>]`
-- `darc query session-files [--root <path>] [--project-id <id>] [--provider <provider>] <session-id>`
-- `darc query session-files [--root <path>] [--project-id <id>] [--provider <provider>] --session-id <session-id>`
-- `darc query session-bundle [--root <path>] [--project-id <id>] [--provider <provider>] <session-id> [--session-view <compact|full>] [--view <full|narrative>] [--turn-limit <n>] [--turn-offset <n>] [--step-limit <n>] [--step-offset <n>]`
-- `darc query turns [--root <path>] [--project-id <id>] [--provider <provider>] <session-id> [--view <full|oneline>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>]`
-- `darc query turn [--root <path>] [--project-id <id>] [--provider <provider>] <session-id> <turn-ordinal> [--view <full|narrative>] [--step-limit <n>] [--step-offset <n>] [--include-raw] [--include-insights]`
+- `darc query session-files [--root <path>] [--project-id <id>] [--provider <provider>] <session-id-or-prefix>`
+- `darc query session-files [--root <path>] [--project-id <id>] [--provider <provider>] --session-id <session-id-or-prefix>`
+- `darc query session-bundle [--root <path>] [--project-id <id>] [--provider <provider>] <session-id-or-prefix> [--session-view <compact|full>] [--view <full|narrative>] [--turn-limit <n>] [--turn-offset <n>] [--step-limit <n>] [--step-offset <n>]`
+- `darc query turns [--root <path>] [--project-id <id>] [--provider <provider>] <session-id-or-prefix> [--view <full|oneline>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>]`
+- `darc query turn [--root <path>] [--project-id <id>] [--provider <provider>] <session-id-or-prefix> <turn-ordinal> [--view <full|narrative>] [--step-limit <n>] [--step-offset <n>] [--include-raw] [--include-insights]`
 
 ### Search
 
-- `darc query search turns [--root <path>] [--project-id <id>] [--provider <provider>] [--session-id <id>] <query> [--mode <keyword|literal|regex|file-name|file-path|path-fragment>] [--include-tool-output] [--field <field>] [--exclude-field <field>] [--match-limit <n>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>] [--matched-path-limit <n>|--include-all-matched-paths]`
-- `darc query search turns [--root <path>] [--project-id <id>] [--provider <provider>] [--session-id <id>] --query <query> [--mode <keyword|literal|regex|file-name|file-path|path-fragment>] [--include-tool-output] [--field <field>] [--exclude-field <field>] [--match-limit <n>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>] [--matched-path-limit <n>|--include-all-matched-paths]`
+- `darc query search turns [--root <path>] [--project-id <id>] [--provider <provider>] [--session-id <id-or-prefix>] <query> [--mode <keyword|literal|regex|file-name|file-path|path-fragment>] [--include-tool-output] [--field <field>] [--exclude-field <field>] [--match-limit <n>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>] [--matched-path-limit <n>|--include-all-matched-paths]`
+- `darc query search turns [--root <path>] [--project-id <id>] [--provider <provider>] [--session-id <id-or-prefix>] --query <query> [--mode <keyword|literal|regex|file-name|file-path|path-fragment>] [--include-tool-output] [--field <field>] [--exclude-field <field>] [--match-limit <n>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>] [--matched-path-limit <n>|--include-all-matched-paths]`
 
 ### Insights
 
 - `darc query insights workspace [--root <path>] [--window <days>d] [--recent-session-limit <n>] [--recent-session-offset <n>]`
 - `darc query insights project [--root <path>] [--project-id <id>] [--provider <provider>] [--turn-limit <n>]`
-- `darc query insights turn [--root <path>] [--project-id <id>] [--provider <provider>] <session-id> <turn-ordinal>`
-- `darc query insights turn [--root <path>] [--project-id <id>] [--provider <provider>] --session-id <session-id> --turn-ordinal <n>`
+- `darc query insights turn [--root <path>] [--project-id <id>] [--provider <provider>] <session-id-or-prefix> <turn-ordinal>`
+- `darc query insights turn [--root <path>] [--project-id <id>] [--provider <provider>] --session-id <session-id-or-prefix> --turn-ordinal <n>`
 
 ## Argument rules
 
 - project-scoped queries accept optional `--project-id`; when omitted, Darc resolves the configured project from the current directory
+- canonical read commands accept shared `--root` and `--color` options before or after nested subcommands, so both
+  `darc list --root ~/.darc sessions` and `darc list sessions --root ~/.darc` are valid
 - `--color auto` adds ANSI syntax color only when stdout is a terminal, `NO_COLOR` is unset, and `TERM` is not `dumb`; piped, redirected, and captured output remains plain JSON by default
 - use `--color always` for terminal pagers such as `less -R`, or `--color never` for plain JSON in every environment
 - colored `literal` and `regex` search output may highlight matched substrings inside `data.hits[*].matches[*].snippet`; this is terminal presentation only and does not add response fields
@@ -54,54 +81,69 @@ controls terminal-only ANSI presentation; the default is `--color auto`.
 - `darc query resolve-session` accepts either one full UUID or one UUID prefix and returns `project_id`, `provider`, and `session_id` for each match
 - `darc query search turns` defaults to `--mode keyword`; pass `--mode` only for literal, regex, or file/path search modes
 - `darc query search turns` accepts query text positionally or with `--query`; use `--query` for query text that begins with `-`
-- `darc query files` with no path selector ranks most-touched files; positional `<path-or-glob>` uses path mode, and `--path` is the explicit equivalent
-- session-scoped commands require a session id supplied either positionally or with `--session-id`; Darc infers `--provider` when that session id is unique within the project
+- `darc search` is the canonical turn-search command; its default mode is keyword, and
+  `--mode <literal|regex|file-name|file-path|path-fragment>` selects the other turn search modes without requiring
+  the word `turns` in the command
+- `darc stats workspace`, `darc stats project`, and `darc stats turn` are the canonical names for the protocol
+  `insights` payloads
+- `darc list files` and `darc query files` with no path selector rank most-touched files; positional
+  `<path-or-glob>` uses path mode, and `--path` is the explicit equivalent
+- session-scoped commands require a full session id or UUID prefix supplied either positionally or with `--session-id`;
+  Darc infers `--provider` when that id or prefix is unique within the project
 - turn-scoped commands require a turn ordinal supplied either positionally or with `--turn-ordinal`
 - do not pass both positional and flag forms for the same value
-- pass `--provider` when the same session id exists for multiple providers
+- pass `--provider` when the same session id or prefix exists for multiple providers
+- `darc list files` accepts at most one of positional path, `--path`, `--session`, or `--co-touched-with`; omit all
+  four for most-touched mode (`mode=top`)
 - `darc query files` accepts at most one of positional path, `--path`, or `--co-touched-with`; omit all three for most-touched mode (`mode=top`)
-- `--since` and `--until` on `darc query files` apply to most-touched (`mode=top`), path, and co-touch modes
-- `--limit` and `--offset` are accepted by `darc query sessions`, `darc query turns`, `darc query search turns`, and every `darc query files` mode; these row/turn-hit limits default to `--limit 50 --offset 0`
-- `--matched-path-limit` caps per-row `matched_paths` previews in `darc query files` path mode and file-search modes; it defaults to `20`, and `--include-all-matched-paths` removes that preview cap
-- `--turn-limit` and `--turn-offset` on `darc query session-bundle` bound embedded turn details and default to `--turn-limit 50 --turn-offset 0`
+- `--since` and `--until` on `darc list files` and `darc query files` apply to most-touched (`mode=top`), path, and
+  co-touch modes
+- `--limit` and `--offset` are accepted by `darc query sessions`, `darc query turns`, `darc query search turns`, every `darc query files` mode, and the top/path/co-touch modes of `darc list files`; these row/turn-hit limits default to `--limit 10 --offset 0`
+- `--limit 0` returns an empty page while preserving `has_more`; this is useful as a cheap probe for whether matching
+  rows exist
+- `--matched-path-limit` caps per-row `matched_paths` previews in `darc list files` path mode, `darc query files` path mode, and file-search modes; it defaults to `20`, and `--include-all-matched-paths` removes that preview cap
+- `--turn-limit` and `--turn-offset` on `darc query session-bundle` bound embedded turn details and default to `--turn-limit 5 --turn-offset 0`
 - `--session-view` on `darc query session-bundle` defaults to `compact`, which caps the embedded first prompt and final agent message the same way `darc query sessions --view compact` does; pass `--session-view full` when the complete text pair is needed
 - embedded `session_files` in `darc query session-bundle` is capped at 100 file rows; use `darc query session-files` when a caller needs the standalone full file list
 - `darc query turn` and `darc query session-bundle` default to `--view narrative`; pass `--view full` when raw tool arguments, outputs, or payload blobs are needed
-- `--step-limit` and `--step-offset` on `darc query turn` and `darc query session-bundle` bound returned turn steps and default to `--step-limit 50 --step-offset 0`
+- `--step-limit` and `--step-offset` on `darc query turn` and `darc query session-bundle` bound returned turn steps and default to `--step-limit 10 --step-offset 0`
 - `--turn-limit` on `darc query insights project` is an inspection bound over indexed turns, not response pagination; the previous `--limit` spelling is accepted as a compatibility alias, and the response echoes `turn_limit`, `inspected_turn_count`, and `turns_has_more`
 - `--recent-session-limit` and `--recent-session-offset` on `darc query insights workspace` bound the `recent_sessions` preview and default to `--recent-session-limit 50 --recent-session-offset 0`
 - `--include-tool-output` on `darc query search turns` is accepted only with `--mode literal` or `--mode regex`
 - `--field` and `--exclude-field` on `darc query search turns` are accepted only with `--mode literal` or `--mode regex`; field values accept CLI kebab-case such as `user-message` and stable protocol snake_case such as `user_message`
 - `--match-limit` on `darc query search turns` is accepted only with `--mode literal` or `--mode regex`; it caps nested `matches` entries per returned turn hit and defaults to `20`
 - `--field tool-output` requires `--include-tool-output`
-- session-scoped data commands require a full UUID session id; malformed ids return `invalid_session_id`, unknown UUIDs return `unknown_session`, ambiguous cross-provider UUIDs return `ambiguous_session`, and UUID-like prefixes fail explicitly instead of auto-resolving
+- session-scoped data commands accept a full UUID session id or an unambiguous UUID prefix; malformed ids return
+  `invalid_session_id`, unknown ids or prefixes return `unknown_session`, and ambiguous prefixes or cross-provider ids
+  return `ambiguous_session`
 
 ## Common Workflows
 
-The protocol is intentionally composable. A few common read patterns are now first-class:
+The read surface is intentionally composable. Prefer the canonical commands for day-to-day use; the equivalent
+protocol commands remain available under `darc query ...` for clients that want the explicit protocol namespace.
 
 - compact-first exploration for coding agents:
 
   ```bash
-  darc query sessions --limit 5
-  darc query files --limit 10
-  darc query search turns "staged init" --limit 5
-  darc query turns 11111111-1111-4111-8111-111111111111 --view oneline --limit 10
-  darc query turn 11111111-1111-4111-8111-111111111111 0 --step-limit 10
-  darc query session-bundle 11111111-1111-4111-8111-111111111111 --turn-limit 5 --step-limit 10
+  darc list sessions --limit 5
+  darc list files --limit 10
+  darc search "staged init" --limit 5
+  darc list turns 11111111 --view oneline --limit 10
+  darc show turn 11111111 0 --step-limit 10
+  darc show session 11111111 --turn-limit 5 --step-limit 10
   ```
 
 - terminal review with explicit color policy:
 
   ```bash
-  darc query --color always search turns "staged init" --limit 5 | less -R
-  darc query --color never search turns "staged init" --limit 5
+  darc search --color always "staged init" --limit 5 | less -R
+  darc search --color never "staged init" --limit 5
   ```
 
 - find planning turns by content:
 
   ```bash
-  darc query search turns \
+  darc search \
     --root ~/.darc \
     --project-id repo-abc123 \
     "staged init" \
@@ -111,7 +153,7 @@ The protocol is intentionally composable. A few common read patterns are now fir
 - verify exact evidence text without regex escaping; literal and regex searches skip bulky tool outputs by default:
 
   ```bash
-  darc query search turns \
+  darc search \
     --root ~/.darc \
     --project-id repo-abc123 \
     --mode literal \
@@ -122,7 +164,7 @@ The protocol is intentionally composable. A few common read patterns are now fir
 - search command output or logs explicitly for forensic work:
 
   ```bash
-  darc query search turns \
+  darc search \
     --root ~/.darc \
     --project-id repo-abc123 \
     --mode regex \
@@ -133,7 +175,7 @@ The protocol is intentionally composable. A few common read patterns are now fir
 - list most-touched files for initial discovery:
 
   ```bash
-  darc query files \
+  darc list files \
     --root ~/.darc \
     --project-id repo-abc123 \
     --since 30d \
@@ -143,28 +185,28 @@ The protocol is intentionally composable. A few common read patterns are now fir
 - pivot from a file path to the sessions that touched it:
 
   ```bash
-  darc query files \
+  darc list files \
     --root ~/.darc \
     --project-id repo-abc123 \
-    "src/components/planner.rs" \
+    src/components/planner.rs \
     --limit 20
   ```
 
 - inspect all in-project files touched by one session:
 
   ```bash
-  darc query session-files \
+  darc list files \
     --root ~/.darc \
     --project-id repo-abc123 \
-    11111111-1111-4111-8111-111111111111
+    --session 11111111
   ```
 
 - fetch one session summary, narrative turn detail, and touched files in one call:
 
   ```bash
-  ID=$(darc query resolve-session 11111111 --pick-one | jq -r '.data.match.session_id')
+  ID=$(darc resolve session 11111111 --pick-one | jq -r '.data.match.session_id')
 
-  darc query session-bundle \
+  darc show session \
     --root ~/.darc \
     --project-id repo-abc123 \
     "$ID" \
@@ -175,12 +217,12 @@ The protocol is intentionally composable. A few common read patterns are now fir
 - skim one long session as one compact row per turn:
 
   ```bash
-  darc query turns \
+  darc list turns \
     --root ~/.darc \
     --project-id repo-abc123 \
-    11111111-1111-4111-8111-111111111111 \
+    11111111 \
     --view oneline \
-    --limit 50
+    --limit 10
   ```
 
 ## Success envelope
@@ -214,7 +256,7 @@ Query runtime failures and query argument parse failures return non-zero exit st
   "darc_version": "0.1.0",
   "error": {
     "code": "unknown_session",
-    "message": "No session found for id `11111111`. The session id must be the full UUID. Try `darc query resolve-session 11111111` to expand a prefix.",
+    "message": "No session matched prefix `11111111`.",
     "details": {
       "session": "11111111",
       "looks_like_prefix": true
@@ -234,9 +276,9 @@ Fields:
 Current stable query error codes:
 
 - `invalid_arguments`: the `darc query` arguments were rejected before query dispatch, for example because an option was unknown, required input was missing, or two options conflicted
-- `invalid_session_id`: the supplied resolver query or data-command session id is not a full UUID or accepted UUID-prefix shape
-- `unknown_session`: the full UUID or explicit prefix did not resolve to an indexed session
-- `ambiguous_session`: `darc query resolve-session --pick-one` found more than one candidate, or a session-scoped data command found the same full UUID under multiple providers; pass `--provider` to choose one provider
+- `invalid_session_id`: the supplied resolver query or data-command session id is not a UUID or accepted UUID-prefix shape
+- `unknown_session`: the full UUID or prefix did not resolve to an indexed session
+- `ambiguous_session`: `darc query resolve-session --pick-one` found more than one candidate, or a session-scoped data command found multiple matching sessions; pass `--provider`, `--project-id`, or a longer prefix to choose one session
 
 ## Schema ids
 
@@ -399,8 +441,10 @@ Today:
 - `aborted_turn_count` counts indexed turns in that session where `status` is `aborted`
 - `edited_files` is the distinct project-scoped display list from session-scoped `file_accesses` rows with `access_type` of `edit` or `write`, preferring repo-relative paths for in-project files, excluding null or whitespace-only paths, and ordering by display path ascending
 - `darc.query.turns.v1` remains session-scoped and keeps non-null top-level `provider` and `session_id`; provider is inferred unless the session id is cross-provider ambiguous
-- session-scoped data commands do not auto-resolve UUID prefixes; callers must expand prefixes explicitly with `darc query resolve-session`
-- `query files <glob>` / `query files --path <glob>` and `--touched-path <glob>` on `query sessions` currently use the Rust `glob` crate syntax, matched case-insensitively against one canonical project-scoped display path per access
+- session-scoped data commands auto-resolve unambiguous UUID prefixes and reject ambiguous prefixes with `ambiguous_session`
+- `list files <glob>` / `list files --path <glob>`, `query files <glob>` / `query files --path <glob>`, and
+  `--touched-path <glob>` on `query sessions` currently use the Rust `glob` crate syntax, matched
+  case-insensitively against one canonical project-scoped display path per access
 - absolute query paths under the configured project root are normalized down to project-relative form before matching, so `/repo/README.md` and `README.md` hit the same indexed access
 - out-of-project paths are not exposed and do not participate in these path-matching filters
 - turn rows include `user_prompt_preview`, `user_prompt_preview_chars`, `user_prompt_total_chars`, `agent_answer_preview`, `agent_answer_preview_chars`, `agent_answer_total_chars`, `primary_model`, `total_token_count`, `token_usage`, `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, and `removed_line_count`
@@ -428,7 +472,9 @@ Today:
 - `mode=path` session rows report `provider`, `session_id`, `touch_count`, `read_count`, `write_count`, `first_turn_ordinal`, `last_turn_ordinal`, `first_touched_at`, `last_touched_at`, deterministic `matched_paths`, and `matched_paths_truncated`
 - `matched_paths` is the canonical matched file preview for that session, ordered by display path ascending
 - `matched_paths_truncated=true` means additional matched paths were omitted from the preview; pass `--matched-path-limit <n>` to raise the cap or `--include-all-matched-paths` to remove it
-- `query files` path mode currently excludes derived `list` accesses, and obvious directory-only operands are omitted during extraction, so directory listings, search roots, and `mkdir`-style directory writes do not count as file touches
+- `list files` and `query files` path mode currently exclude derived `list` accesses, and obvious directory-only
+  operands are omitted during extraction, so directory listings, search roots, and `mkdir`-style directory writes do not
+  count as file touches
 - `mode=co_touched_with` treats the seed path as one exact canonical display path, normalizing project-root absolute paths down to project-relative form when possible
 - `mode=co_touched_with` only considers project-scoped in-repo file identities and does not expose or rank external absolute paths
 - `mode=co_touched_with` applies `--since` and `--until` to both seed-path matches and returned co-touch rows using `turns.started_at`, with inclusive lower-bound and exclusive upper-bound semantics
@@ -460,7 +506,9 @@ Today:
 
 ### Session resolution
 
-`darc.query.resolve_session.v1` is the explicit UUID-prefix expansion protocol for humans and scripts.
+`darc.query.resolve_session.v1` is the explicit UUID-prefix expansion protocol for humans and scripts. Session-scoped
+read commands already resolve unambiguous prefixes; use this payload when a prefix is ambiguous or when a caller wants
+the candidate list before choosing.
 
 Today:
 
@@ -516,7 +564,8 @@ Today:
 - each literal or regex turn hit returns at most `match_limit` nested `matches`, defaulting to 20; `matches_count` is the returned nested match count, and `matches_truncated=true` means additional matching evidence rows in that turn were omitted from the preview
 - literal and regex search are not content-index backed; narrow provider, session, or time filters for broad audits when latency matters
 - `mode=file_name` searches the derived `file_accesses.file_name` basename field
-- `mode=file_path` treats the query text as the same case-insensitive project-scoped glob shape used by `darc query files`
+- `mode=file_path` treats the query text as the same case-insensitive project-scoped glob shape used by
+  `darc list files` and `darc query files`
 - `mode=path_fragment` searches derived path fields from `file_accesses.repo_relative_path` and `file_accesses.path` with exact/prefix/substring ranking
 - all search modes return turn identities, top-level turn metadata, `user_prompt_preview`, `user_prompt_preview_chars`, `user_prompt_total_chars`, nullable `agent_answer_preview`, nullable `agent_answer_preview_chars`, nullable `agent_answer_total_chars`, nullable `since` / `until` request echoes, nullable `matched_path_limit`, nullable `match_limit`, `include_tool_output`, `fields`, `excluded_fields`, and optional `snippet` / `matched_paths` / `matches` fields plus `matched_paths_count`, `matched_paths_truncated`, `matches_count`, and `matches_truncated`
 - `matched_paths` is empty for keyword search and populated for file-name, file-path, or path-fragment hits
