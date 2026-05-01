@@ -4537,8 +4537,8 @@ fn search_turns_file_modes_match_derived_paths() -> Result<()> {
         &connection,
         IndexedTurnFixture {
             user_message: "Inspect the main source file",
-            step_count: 1,
-            tool_call_count: 1,
+            step_count: 2,
+            tool_call_count: 2,
             duration_ms: 3_000,
             ..IndexedTurnFixture::new(
                 "repo-a",
@@ -4547,7 +4547,7 @@ fn search_turns_file_modes_match_derived_paths() -> Result<()> {
                 0,
                 "2026-04-06T11:00:00Z",
                 "completed",
-                r##"[{"type":"tool_call","timestamp":"2026-04-06T11:00:01Z","call_id":"call-1","name":"Read","arguments":"{\"file_path\":\"src/main,old.rs\"}"}]"##,
+                r##"[{"type":"tool_call","timestamp":"2026-04-06T11:00:01Z","call_id":"call-1","name":"Read","arguments":"{\"file_path\":\"src/main,old.rs\"}"},{"type":"tool_call","timestamp":"2026-04-06T11:00:02Z","call_id":"call-2","name":"Edit","arguments":"{\"file_path\":\"/tmp/repo-a/src/main,old.rs\"}"}]"##,
             )
         },
     )?;
@@ -4556,7 +4556,7 @@ fn search_turns_file_modes_match_derived_paths() -> Result<()> {
         &index_path,
         SearchTurnsRequest {
             project_id: "repo-a",
-            project_root: None,
+            project_root: Some(Path::new("/tmp/repo-a")),
             mode: SearchMode::FileName,
             query: "main,old.rs",
             include_tool_output: false,
@@ -4616,7 +4616,7 @@ fn search_turns_file_modes_match_derived_paths() -> Result<()> {
         &index_path,
         SearchTurnsRequest {
             project_id: "repo-a",
-            project_root: None,
+            project_root: Some(Path::new("/tmp/repo-a")),
             mode: SearchMode::PathFragment,
             query: "main,old",
             include_tool_output: false,
@@ -4641,18 +4641,22 @@ fn search_turns_file_modes_match_derived_paths() -> Result<()> {
         file_name_result.hits[0].matched_paths,
         vec!["src/main,old.rs"]
     );
+    assert_eq!(file_name_result.hits[0].matched_paths_count, 1);
     assert_eq!(
         file_path_result.hits[0].matched_paths,
         vec!["src/main,old.rs"]
     );
+    assert_eq!(file_path_result.hits[0].matched_paths_count, 1);
     assert_eq!(
         glob_path_result.hits[0].matched_paths,
         vec!["src/main,old.rs"]
     );
+    assert_eq!(glob_path_result.hits[0].matched_paths_count, 1);
     assert_eq!(
         path_fragment_result.hits[0].matched_paths,
         vec!["src/main,old.rs"]
     );
+    assert_eq!(path_fragment_result.hits[0].matched_paths_count, 1);
 
     fs::remove_dir_all(
         index_path
