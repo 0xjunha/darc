@@ -17,7 +17,7 @@ pub use init::{DetectedRolloutSource, InitDraft, default_root_path, prepare_init
 pub use project::{
     LinkReport, RefreshAllBestEffortReport, RefreshAllReport, RefreshOptions, RefreshProgress,
     RefreshProjectAttempt, RefreshProjectFailure, RefreshReport, RemovePreviewReport, RemoveReport,
-    RenamePreviewReport, RenameReport, link_project, preview_remove_project,
+    RenamePreviewReport, RenameReport, link_project, preview_link_project, preview_remove_project,
     preview_rename_project, refresh_all_projects, refresh_all_projects_best_effort,
     refresh_all_projects_best_effort_with_progress, refresh_project, refresh_project_with_progress,
     remove_project, rename_project,

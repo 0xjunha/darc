@@ -795,6 +795,7 @@ fn human_command_help_groups_options() {
     assert!(status_help.contains("Workspace:"));
     assert!(status_help.contains("Scope:"));
     assert!(status_help.contains("Mode:"));
+    assert!(status_help.contains("Output:"));
 
     let sync_help = help_for_command_path(&["sync"]);
     assert!(sync_help.contains("Workspace:"));
@@ -946,6 +947,14 @@ fn parses_project_management_namespace() {
             command: super::ProjectCommands::RenameFrom(super::RenameArgs { project, .. }),
         }) if project == "memstack"
     ));
+}
+
+#[test]
+fn project_link_help_keeps_safety_contract() {
+    let help = help_for_command_path(&["project", "link"]);
+    assert!(help.contains("This command is non-destructive."));
+    assert!(help.contains("It does not run `darc refresh` or remove the source project."));
+    assert!(help.contains("--dry-run"));
 }
 
 #[test]

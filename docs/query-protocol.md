@@ -1,8 +1,9 @@
 # Darc Query Protocol
 
 Darc's read-side CLI emits machine-readable JSON envelopes for coding agents, desktop, and other clients. The
-callable read surface is `darc list`, `darc show`, `darc search`, `darc stats`, and `darc resolve`. The schema ids
-retain the `darc.query.*` prefix because they describe payload contracts, not the CLI namespace.
+callable read surface is `darc list`, `darc show`, `darc search`, `darc stats`, `darc resolve`, and
+`darc status --json`. Most schema ids retain the `darc.query.*` prefix because they describe payload contracts, not
+the CLI namespace; status uses `darc.status.*` schemas.
 
 Use these JSON read commands instead of:
 
@@ -15,6 +16,8 @@ Use these JSON read commands instead of:
 The canonical read commands emit the same schema ids documented below:
 
 - `darc list projects` and `darc show workspace` emit `darc.query.workspace.v1`
+- `darc status --json` emits `darc.status.project.v1` for the active cwd-resolved project
+- `darc status --workspace --json` emits `darc.status.workspace.v1`
 - `darc list sessions` emits `darc.query.sessions.v1`
 - `darc list turns <session-id-or-prefix>` emits `darc.query.turns.v1`
 - `darc list files` emits `darc.query.files.v1` in most-touched mode
@@ -30,16 +33,19 @@ The canonical read commands emit the same schema ids documented below:
   corresponding `darc.query.insights.*.v1` payloads
 - `darc resolve session <uuid-or-prefix>` emits `darc.query.resolve_session.v1`
 
-Each top-level read command accepts `--color <auto|always|never>` and `--root <path>` before or after its subcommand
-or arguments. Color is terminal-only presentation; the default is `--color auto`.
+Each canonical query command accepts `--color <auto|always|never>` and `--root <path>` before or after its subcommand
+or arguments. Color is terminal-only presentation; the default is `--color auto`. `darc status --json` emits plain
+JSON and accepts `--root`.
 
 ## Command Matrix
 
-Read commands emit pretty-printed JSON envelopes on stdout. `--color <auto|always|never>` controls terminal-only ANSI
-presentation; the default is `--color auto`.
+Query commands emit pretty-printed JSON envelopes on stdout. `--color <auto|always|never>` controls terminal-only ANSI
+presentation; the default is `--color auto`. Status JSON emits the same envelope shape without ANSI color.
 
 - `darc list projects [--root <path>]`
 - `darc show workspace [--root <path>]`
+- `darc status --json [--root <path>] [--check]`
+- `darc status --workspace --json [--root <path>] [--check]`
 - `darc resolve session <uuid-or-prefix> [--root <path>] [--project-id <id>] [--provider <provider>] [--pick-one]`
 - `darc list sessions [--root <path>] [--project-id <id>] [--provider <provider>] [--view <compact|full>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--touching <glob>] [--limit <n>] [--offset <n>]`
 - `darc list files [--root <path>] [--project-id <id>] [--provider <provider>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>]`
@@ -60,6 +66,8 @@ presentation; the default is `--color auto`.
 ## Argument rules
 
 - project-scoped queries accept optional `--project-id`; when omitted, Darc resolves the configured project from the current directory
+- `darc show workspace` and `darc list projects` include nullable `active_project` with the cwd-resolved project id, name, and current root when the current directory matches a configured project; a neutral cwd returns `active_project: null` without adding a root issue
+- `darc status --json` reports the same active-project status as human `darc status`; add `--check` to include a non-mutating sync plan under `data.project.sync_check`; failed JSON status checks write the status report to stdout, return non-zero, and write a `darc.error.v1` envelope to stderr
 - canonical read commands accept shared `--root` and `--color` options before or after nested subcommands, so both
   `darc list --root ~/.darc sessions` and `darc list sessions --root ~/.darc` are valid
 - `--color auto` adds ANSI syntax color only when stdout is a terminal, `NO_COLOR` is unset, and `TERM` is not `dumb`; piped, redirected, and captured output remains plain JSON by default
@@ -237,7 +245,7 @@ Fields:
 
 ## Error envelope
 
-Query runtime failures and query argument parse failures return non-zero exit status and write a structured error envelope to `stderr`.
+JSON read runtime failures and argument parse failures return non-zero exit status and write a structured error envelope to `stderr`.
 
 ```json
 {
@@ -263,9 +271,12 @@ Fields:
 - `error.details`: optional structured metadata for known error codes
 - `error.causes`: causal chain in outer-to-inner order, excluding the top-level message
 
-Current stable query error codes:
+Current stable JSON read error codes:
 
 - `invalid_arguments`: JSON read command arguments were rejected before dispatch, for example because an option was unknown, required input was missing, or two options conflicted
+- `missing_required_identity`: a session id, turn ordinal, query, or similar read identity was not supplied in any accepted positional or flag form
+- `conflicting_identity_arguments`: the same read identity was supplied in incompatible positional and flag forms
+- `status_check_failed`: `darc status --json --check` or `darc status --workspace --json --check` completed its status report but at least one sync-check plan failed
 - `invalid_session_id`: the supplied resolver query or data-command session id is not a UUID or accepted UUID-prefix shape
 - `unknown_session`: the full UUID or prefix did not resolve to an indexed session
 - `ambiguous_session`: `darc resolve session --pick-one` found more than one candidate, or a session-scoped data command found multiple matching sessions; pass `--provider`, `--project-id`, or a longer prefix to choose one session
@@ -286,6 +297,8 @@ Current schema ids:
 - `darc.query.insights.workspace.v1`
 - `darc.query.insights.project.v1`
 - `darc.query.insights.turn.v1`
+- `darc.status.project.v1`
+- `darc.status.workspace.v1`
 - `darc.error.v1`
 
 Clients should branch on `schema`, not on `darc_version`.
@@ -454,7 +467,7 @@ Today:
 - `mode=top` applies `--since` and `--until` to touched turns using `turns.started_at`, with inclusive lower-bound and exclusive upper-bound semantics
 - `mode=top` ranks file rows by higher `touch_count`, then higher `session_count`, then newer `last_touched_at`, then `path` ascending
 - `mode=top` applies `--limit` and `--offset` after ranking the project-wide touched files
-- `mode=top` file rows report `path`, nullable `co_touch_count`, `touch_count`, `session_count`, `read_count`, `write_count`, `first_touched_at`, and `last_touched_at`; `co_touch_count` is `null` in `mode=top`
+- `mode=top` file rows report `path`, `touch_count`, `session_count`, `read_count`, `write_count`, `first_touched_at`, and `last_touched_at`; co-touch-only fields are omitted
 - `mode=path` applies `--since` and `--until` to touched turns using `turns.started_at`, with inclusive lower-bound and exclusive upper-bound semantics
 - `mode=path` ranks session rows by higher `touch_count`, then newer `last_touched_at`, then `provider`, then `session_id`
 - `mode=path` applies `--limit` and `--offset` after ranking the matching sessions
@@ -469,7 +482,7 @@ Today:
 - `mode=co_touched_with` applies `--since` and `--until` to both seed-path matches and returned co-touch rows using `turns.started_at`, with inclusive lower-bound and exclusive upper-bound semantics
 - `mode=co_touched_with` ranks file rows by higher `co_touch_count`, then `path` ascending
 - `mode=co_touched_with` applies `--limit` and `--offset` after ranking the co-touched files
-- `mode=co_touched_with` file rows report `path`, non-null `co_touch_count`, and nullable top-mode metrics; top-mode metrics are `null` in co-touch mode
+- `mode=co_touched_with` file rows report `path` and `co_touch_count`; top-mode metrics are omitted
 - `darc.query.session_files.v1` reports `project_id`, `provider`, `session_id`, total `file_count`, `limit`, `offset`, `has_more`, and deterministic paginated `files`
 - `session_files` rows report canonical `path`, best-effort `repo_relative_path`, `read_count`, `write_count`, `first_turn_ordinal`, and `last_turn_ordinal`
 - `session_files` rows collapse equivalent absolute, repo-relative, and `./`-prefixed accesses for the same in-repo file onto one canonical display path before counting

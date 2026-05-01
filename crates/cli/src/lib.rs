@@ -36,13 +36,14 @@ use darc_core::query::{
     resolve_query_search_session_id_for_project, resolve_query_session_for_project,
 };
 use darc_core::{
-    IndexOptions, IndexReport, InitDraft, RefreshAllBestEffortReport, RefreshOptions,
+    IndexOptions, IndexReport, InitDraft, LinkReport, RefreshAllBestEffortReport, RefreshOptions,
     RefreshProgress, RefreshProjectAttempt, RefreshProjectFailure, RefreshReport, SkippedRollout,
     SourceKind, StatusProject, StatusSource, StatusSyncCheck, StatusSyncPlan, SyncOptions,
     SyncReport, WorkspaceStatusReport, default_root_path, execute_sync, index_project_sessions,
-    link_project, prepare_init, prepare_sync, preview_remove_project, preview_rename_project,
-    refresh_all_projects_best_effort_with_progress, refresh_project_with_progress, remove_project,
-    rename_project, status_project, status_workspace, write_init,
+    link_project, prepare_init, prepare_sync, preview_link_project, preview_remove_project,
+    preview_rename_project, refresh_all_projects_best_effort_with_progress,
+    refresh_project_with_progress, remove_project, rename_project, status_project,
+    status_workspace, write_init,
 };
 use darc_paths::{
     current_utc_timestamp, resolve_query_time_bound as resolve_shared_query_time_bound,
@@ -68,6 +69,8 @@ const HELP_STYLES: Styles = Styles::styled()
     .error(AnsiColor::BrightRed.on_default().bold())
     .valid(AnsiColor::BrightGreen.on_default())
     .invalid(AnsiColor::BrightYellow.on_default());
+
+const LINK_LONG_ABOUT: &str = "Link one configured project's historical paths into the current project.\n\nRun this command from the target project directory.\nThe PROJECT argument is the old or source project name already stored in ~/.darc/config.toml.\n\nExample:\n- You renamed `/path/to/old-project` to `/path/to/new-project`.\n- Darc still has a configured project named `old-project`.\n- Run `cd /path/to/new-project && darc project link old-project`.\n\nThis command is non-destructive.\nIt updates config so the current project knows the source project's old local_path and known_paths.\nIt does not run `darc refresh` or remove the source project.\n\nUse `--dry-run` to preview the target project, source project, and known-path changes without writing config.";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -132,7 +135,7 @@ enum Commands {
     #[command(
         hide = true,
         about = "Link one configured project's historical paths into the current project",
-        long_about = "Link one configured project's historical paths into the current project.\n\nRun this command from the target project directory.\nThe PROJECT argument is the old or source project name already stored in ~/.darc/config.toml.\n\nExample:\n- You renamed `/path/to/old-project` to `/path/to/new-project`.\n- Darc still has a configured project named `old-project`.\n- Run `cd /path/to/new-project && darc link old-project`.\n\nThis command is non-destructive.\nIt updates config so the current project knows the source project's old local_path and known_paths.\nIt does not run `darc refresh` or remove the source project."
+        long_about = LINK_LONG_ABOUT
     )]
     Link(LinkArgs),
     #[command(
@@ -313,6 +316,13 @@ struct StatusArgs {
         help = "Run sync planning without writing manifests, config, archives, or SQLite"
     )]
     check: bool,
+
+    #[arg(
+        long,
+        help_heading = "Output",
+        help = "Write status as a machine-readable JSON envelope"
+    )]
+    json: bool,
 }
 
 /// Sync matching Claude and Codex sessions into the project archive.
@@ -352,6 +362,13 @@ struct LinkArgs {
         help = "Use this Darc root instead of the default"
     )]
     root: PathBuf,
+
+    #[arg(
+        long,
+        help_heading = "Mode",
+        help = "Preview link changes without writing config"
+    )]
+    dry_run: bool,
 
     #[arg(value_name = "PROJECT")]
     project: String,
@@ -731,6 +748,10 @@ struct ProjectArgs {
 #[derive(Debug, Subcommand)]
 enum ProjectCommands {
     /// Link one configured project's historical paths into the current project.
+    #[command(
+        about = "Link one configured project's historical paths into the current project",
+        long_about = LINK_LONG_ABOUT
+    )]
     Link(LinkArgs),
     /// Remove one configured project and its archived/indexed data.
     Remove(RemoveArgs),
@@ -1845,6 +1866,7 @@ fn run_cli(cli: Cli) -> i32 {
     match cli.command {
         Commands::Init(args) => standard_exit(run_init(args)),
         Commands::Refresh(args) => standard_exit(run_refresh(args)),
+        Commands::Status(args) if args.json => json_exit(run_status(args)),
         Commands::Status(args) => standard_exit(run_status(args)),
         Commands::List(args) => query_exit(run_list(args)),
         Commands::Show(args) => query_exit(run_show(args)),
@@ -1879,10 +1901,11 @@ fn clap_error_exit(error: clap::Error, args: &[OsString]) -> i32 {
 
 /// Returns whether the raw CLI arguments target one JSON read surface.
 fn is_json_read_invocation(args: &[OsString]) -> bool {
-    matches!(
-        args.get(1).and_then(|arg| arg.to_str()),
-        Some("list" | "show" | "search" | "stats" | "resolve")
-    )
+    match args.get(1).and_then(|arg| arg.to_str()) {
+        Some("list" | "show" | "search" | "stats" | "resolve") => true,
+        Some("status") => args.iter().any(|arg| arg == "--json"),
+        _ => false,
+    }
 }
 
 /// Returns whether Clap is carrying a normal display request instead of an error.
@@ -1901,8 +1924,8 @@ fn standard_exit(result: Result<()>) -> i32 {
     }
 }
 
-/// Maps query command results to JSON-only machine-readable output.
-fn query_exit(result: Result<()>) -> i32 {
+/// Maps JSON command results to machine-readable output.
+fn json_exit(result: Result<()>) -> i32 {
     match result {
         Ok(()) => 0,
         Err(error) => {
@@ -1911,6 +1934,11 @@ fn query_exit(result: Result<()>) -> i32 {
             1
         }
     }
+}
+
+/// Maps canonical query command results to JSON-only machine-readable output.
+fn query_exit(result: Result<()>) -> i32 {
+    json_exit(result)
 }
 
 /// Dispatches the supported canonical list commands.
@@ -2964,14 +2992,22 @@ fn format_query_error(error: &anyhow::Error) -> String {
         .map(ToString::to_string)
         .collect::<Vec<_>>();
     let structured = error.downcast_ref::<QueryProtocolError>();
+    let read_validation = error.downcast_ref::<ReadValidationError>();
+    let status_json = error.downcast_ref::<StatusJsonError>();
     let payload = QueryErrorEnvelope {
         schema: "darc.error.v1",
         generated_at: current_utc_timestamp(),
         darc_version: env!("CARGO_PKG_VERSION"),
         error: QueryErrorData {
             message: error.to_string(),
-            code: structured.map(QueryProtocolError::code),
-            details: structured.map(QueryProtocolError::details),
+            code: structured
+                .map(QueryProtocolError::code)
+                .or_else(|| read_validation.map(|error| error.code))
+                .or_else(|| status_json.map(|error| error.code)),
+            details: structured
+                .map(QueryProtocolError::details)
+                .or_else(|| read_validation.map(|error| error.details.clone()))
+                .or_else(|| status_json.map(|error| error.details.clone())),
             causes,
         },
     };
@@ -3017,9 +3053,11 @@ fn optional_named_or_positional<'a>(
     positional_value: Option<&'a str>,
 ) -> Result<Option<&'a str>> {
     match (flag_value, positional_value) {
-        (Some(_), Some(_)) => {
-            bail!("pass {value_label} either as {positional_name} or {flag_name}, not both")
-        }
+        (Some(_), Some(_)) => Err(ReadValidationError::conflicting_identity_arguments(
+            format!("pass {value_label} either as {positional_name} or {flag_name}, not both"),
+            &[value_label, positional_name, flag_name],
+        )
+        .into()),
         (Some(value), None) | (None, Some(value)) => Ok(Some(value)),
         (None, None) => Ok(None),
     }
@@ -3041,7 +3079,8 @@ fn required_named_or_positional<'a>(
         positional_value,
     )?
     .ok_or_else(|| {
-        anyhow!("read command requires {value_label} as {positional_name} or {flag_name}")
+        ReadValidationError::missing_required_identity(value_label, flag_name, positional_name)
+            .into()
     })
 }
 
@@ -3071,19 +3110,33 @@ fn resolve_turn_identity_args<'a>(
         (None, None, Some(session_id_arg), Some(turn_ordinal_arg)) => {
             Ok((session_id_arg, parse_turn_ordinal_arg(turn_ordinal_arg)?))
         }
-        (Some(_), Some(_), Some(_), _) | (Some(_), Some(_), None, Some(_)) => bail!(
-            "pass turn identity either as SESSION_ID TURN_ORDINAL or with --session-id/--turn-ordinal, not both"
-        ),
-        (Some(_), None, None, None) => {
-            bail!("read command requires turn ordinal as TURN_ORDINAL or --turn-ordinal")
+        (Some(_), Some(_), Some(_), _) | (Some(_), Some(_), None, Some(_)) => {
+            Err(ReadValidationError::conflicting_identity_arguments(
+                "pass turn identity either as SESSION_ID TURN_ORDINAL or with --session-id/--turn-ordinal, not both",
+                &["SESSION_ID", "TURN_ORDINAL", "--session-id", "--turn-ordinal"],
+            )
+            .into())
         }
-        (None, Some(_), None, None) => {
-            bail!("read command requires session id as SESSION_ID or --session-id")
-        }
-        (None, None, None, None) => bail!(
-            "read command requires session id and turn ordinal as SESSION_ID TURN_ORDINAL or --session-id/--turn-ordinal"
-        ),
-        _ => bail!("unexpected extra positional turn identity arguments"),
+        (Some(_), None, None, None) => Err(ReadValidationError::missing_turn_identity(
+            "read command requires turn ordinal as TURN_ORDINAL or --turn-ordinal",
+            &["turn_ordinal"],
+        )
+        .into()),
+        (None, Some(_), None, None) => Err(ReadValidationError::missing_turn_identity(
+            "read command requires session id as SESSION_ID or --session-id",
+            &["session_id"],
+        )
+        .into()),
+        (None, None, None, None) => Err(ReadValidationError::missing_turn_identity(
+            "read command requires session id and turn ordinal as SESSION_ID TURN_ORDINAL or --session-id/--turn-ordinal",
+            &["session_id", "turn_ordinal"],
+        )
+        .into()),
+        _ => Err(ReadValidationError::conflicting_identity_arguments(
+            "unexpected extra positional turn identity arguments",
+            &["SESSION_ID", "TURN_ORDINAL", "--session-id", "--turn-ordinal"],
+        )
+        .into()),
     }
 }
 
@@ -3386,6 +3439,93 @@ struct QueryErrorData {
     causes: Vec<String>,
 }
 
+/// Stores one structured validation error raised by canonical JSON read commands.
+#[derive(Debug)]
+struct ReadValidationError {
+    message: String,
+    code: &'static str,
+    details: JsonValue,
+}
+
+impl ReadValidationError {
+    /// Builds one missing identity error for a read command.
+    fn missing_required_identity(
+        value_label: &str,
+        flag_name: &str,
+        positional_name: &str,
+    ) -> Self {
+        let message =
+            format!("read command requires {value_label} as {positional_name} or {flag_name}");
+        Self {
+            message,
+            code: "missing_required_identity",
+            details: json!({
+                "value": value_label,
+                "flag": flag_name,
+                "positional": positional_name,
+            }),
+        }
+    }
+
+    /// Builds one missing turn identity error for a read command.
+    fn missing_turn_identity(message: &'static str, missing: &[&str]) -> Self {
+        Self {
+            message: message.to_owned(),
+            code: "missing_required_identity",
+            details: json!({ "missing": missing }),
+        }
+    }
+
+    /// Builds one conflicting identity error for a read command.
+    fn conflicting_identity_arguments(message: impl Into<String>, conflicts: &[&str]) -> Self {
+        Self {
+            message: message.into(),
+            code: "conflicting_identity_arguments",
+            details: json!({ "conflicts": conflicts }),
+        }
+    }
+}
+
+impl std::fmt::Display for ReadValidationError {
+    /// Writes the user-facing validation message.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ReadValidationError {}
+
+/// Stores one structured status JSON error.
+#[derive(Debug)]
+struct StatusJsonError {
+    message: String,
+    code: &'static str,
+    details: JsonValue,
+}
+
+impl StatusJsonError {
+    /// Builds one failed status check error.
+    fn check_failed(scope: &'static str, message: &'static str) -> Self {
+        Self {
+            message: message.to_owned(),
+            code: "status_check_failed",
+            details: json!({
+                "scope": scope,
+                "check": true,
+            }),
+        }
+    }
+}
+
+impl std::fmt::Display for StatusJsonError {
+    /// Writes the user-facing status error message.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for StatusJsonError {}
+
 /// Prepares and optionally writes the shared init draft.
 fn run_init(args: InitArgs) -> Result<()> {
     let draft = prepare_init(Some(args.root))?;
@@ -3523,10 +3663,40 @@ fn format_init_status(draft: &InitDraft, dry_run: bool) -> String {
 
 /// Links one configured project's historical paths into the active project.
 fn run_link(args: LinkArgs) -> Result<()> {
-    let report = link_project(Some(args.root), &args.project)?;
     let style = HumanStyle::stdout();
+    if args.dry_run {
+        let report = preview_link_project(Some(args.root), &args.project)?;
+        print_section(style, "Link Preview");
+        print_link_report(style, &report);
+        println!();
+        print_section(style, "Would Update");
+        if report.config_written {
+            print_field(style, 2, "Config", style.warn("yes"));
+        } else {
+            print_field(style, 2, "Config", style.muted("unchanged"));
+        }
+        println!();
+        print_section(style, "Status");
+        print_field(style, 2, "Overall", style.ok("dry run only"));
+        return Ok(());
+    }
 
+    let report = link_project(Some(args.root), &args.project)?;
     print_section(style, "Link");
+    print_link_report(style, &report);
+    println!();
+    print_section(style, "Status");
+    if report.config_written {
+        print_field(style, 2, "Config", style.ok("updated"));
+    } else {
+        print_field(style, 2, "Config", style.ok("already covered linked paths"));
+    }
+
+    Ok(())
+}
+
+/// Prints the shared project-link identity and known-path summary.
+fn print_link_report(style: HumanStyle, report: &LinkReport) {
     print_field(style, 2, "Target project", &report.target_project_name);
     print_field(
         style,
@@ -3557,15 +3727,6 @@ fn run_link(args: LinkArgs) -> Result<()> {
             style.count(report.new_known_paths.len())
         ),
     );
-    println!();
-    print_section(style, "Status");
-    if report.config_written {
-        print_field(style, 2, "Config", style.ok("updated"));
-    } else {
-        print_field(style, 2, "Config", style.ok("already covered linked paths"));
-    }
-
-    Ok(())
 }
 
 /// Removes one configured project and its archived/indexed data.
@@ -4854,20 +5015,42 @@ fn refresh_all_exit_status(report: &RefreshAllBestEffortReport) -> Result<()> {
 fn run_status(args: StatusArgs) -> Result<()> {
     if args.workspace {
         let report = status_workspace(Some(args.root), args.check)?;
+        if args.json {
+            let output = QueryOutput::new(ColorArg::Never);
+            print_json_envelope(&output, "darc.status.workspace.v1", &report)?;
+            return status_check_exit(
+                report.has_failed_check(),
+                "workspace",
+                "workspace status check failed",
+            );
+        }
         print_workspace_status(&report);
-        return status_check_exit(report.has_failed_check(), "workspace status check failed");
+        return status_check_exit(
+            report.has_failed_check(),
+            "workspace",
+            "workspace status check failed",
+        );
     }
 
     let report = status_project(Some(args.root), args.check)
         .map_err(add_init_hint_for_unconfigured_project)?;
+    if args.json {
+        let output = QueryOutput::new(ColorArg::Never);
+        print_json_envelope(&output, "darc.status.project.v1", &report)?;
+        return status_check_exit(report.has_failed_check(), "project", "status check failed");
+    }
     print_project_status(&report);
-    status_check_exit(report.has_failed_check(), "status check failed")
+    status_check_exit(report.has_failed_check(), "project", "status check failed")
 }
 
 /// Converts an optional status sync-check failure into the final CLI exit result.
-fn status_check_exit(has_failed_check: bool, message: &'static str) -> Result<()> {
+fn status_check_exit(
+    has_failed_check: bool,
+    scope: &'static str,
+    message: &'static str,
+) -> Result<()> {
     if has_failed_check {
-        bail!("{message}");
+        return Err(StatusJsonError::check_failed(scope, message).into());
     }
     Ok(())
 }
