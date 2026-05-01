@@ -1106,7 +1106,8 @@ fn parses_canonical_list_show_search_stats_and_resolve_commands() {
     let search = Cli::try_parse_from([
         "darc",
         "search",
-        "--literal",
+        "--mode",
+        "literal",
         "--query",
         "--output-last-message",
         "--field",
@@ -1116,21 +1117,29 @@ fn parses_canonical_list_show_search_stats_and_resolve_commands() {
     assert!(matches!(
         search.command,
         Commands::Search(super::SearchArgs {
-            literal,
+            mode,
             query,
             fields,
             ..
-        }) if literal
+        }) if matches!(mode, super::SearchModeArg::Literal)
             && query.as_deref() == Some("--output-last-message")
             && fields == [super::SearchEvidenceField::UserMessage]
     ));
 
-    let path_search = Cli::try_parse_from(["darc", "search", "--path", "docs/**"]).unwrap();
+    let path_search =
+        Cli::try_parse_from(["darc", "search", "--mode", "file-path", "docs/**"]).unwrap();
     assert!(matches!(
         path_search.command,
-        Commands::Search(super::SearchArgs { path, .. })
-            if path.as_deref() == Some("docs/**")
+        Commands::Search(super::SearchArgs {
+            mode,
+            query_arg,
+            ..
+        }) if matches!(mode, super::SearchModeArg::FilePath)
+            && query_arg.as_deref() == Some("docs/**")
     ));
+
+    assert!(Cli::try_parse_from(["darc", "search", "--regex", "panic"]).is_err());
+    assert!(Cli::try_parse_from(["darc", "search", "--path", "docs/**"]).is_err());
 
     let stats = Cli::try_parse_from(["darc", "stats", "project", "--turn-limit", "5"]).unwrap();
     assert!(matches!(

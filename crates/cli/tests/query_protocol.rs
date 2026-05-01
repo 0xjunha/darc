@@ -398,7 +398,8 @@ fn canonical_read_commands_emit_query_envelopes() -> Result<()> {
         root_arg.as_ref(),
         "--project-id",
         "repo-abc123",
-        "--path",
+        "--mode",
+        "file-path",
         "README.md",
     ])?;
     assert!(path_search.status.success());
@@ -2745,7 +2746,8 @@ fn canonical_search_errors_use_canonical_mode_language() -> Result<()> {
         root.to_string_lossy().as_ref(),
         "--project-id",
         "repo-abc123",
-        "--path",
+        "--mode",
+        "file-path",
         "README.md",
         "--field",
         "user-message",

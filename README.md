@@ -128,11 +128,11 @@ Darc's read-side CLI emits JSON envelopes by default because coding agents are t
 commands cover project-scoped search, compact turn skims, file/session pivots, and bounded single-call session detail.
 
 - `darc search <query>` searches indexed turns and returns turn hits. Every hit carries `session_id` and
-  `turn_ordinal` for follow-up reads. Search defaults to keyword mode; use `--literal`, `--regex`, `--path`,
-  `--file-name`, or `--path-fragment` for other modes. Literal and regex search skip bulky tool outputs by default;
-  add `--include-tool-output` for forensic searches over command output, logs, or stack traces, use `--field` /
-  `--exclude-field` to narrow exact evidence fields, and use `--match-limit` to cap nested evidence matches per
-  returned turn hit.
+  `turn_ordinal` for follow-up reads. Search defaults to keyword mode; use
+  `--mode <literal|regex|file-name|file-path|path-fragment>` for other modes. Literal and regex search skip bulky
+  tool outputs by default; add `--include-tool-output` for forensic searches over command output, logs, or stack
+  traces, use `--field` / `--exclude-field` to narrow exact evidence fields, and use `--match-limit` to cap nested
+  evidence matches per returned turn hit.
 - project-scoped read commands accept optional `--project-id`; when omitted, Darc resolves the configured project from
   the current directory. They also accept `--provider` when a corpus mixes Codex and Claude history.
 - `darc list sessions` defaults to compact first-prompt and final-message previews for browsing; pass `--view full`
@@ -180,7 +180,7 @@ darc search \
 ```bash
 darc search \
   --project-id repo-abc123 \
-  --literal \
+  --mode literal \
   --query "--output-last-message" \
   --exclude-field tool-arguments \
   --since 14d
@@ -189,7 +189,7 @@ darc search \
 ```bash
 darc search \
   --project-id repo-abc123 \
-  --regex \
+  --mode regex \
   "panic: .*" \
   --include-tool-output
 ```

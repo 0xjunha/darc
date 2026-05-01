@@ -81,9 +81,9 @@ controls terminal-only ANSI presentation; the default is `--color auto`.
 - `darc query resolve-session` accepts either one full UUID or one UUID prefix and returns `project_id`, `provider`, and `session_id` for each match
 - `darc query search turns` defaults to `--mode keyword`; pass `--mode` only for literal, regex, or file/path search modes
 - `darc query search turns` accepts query text positionally or with `--query`; use `--query` for query text that begins with `-`
-- `darc search` is the canonical turn-search command; its default mode is keyword, and `--literal`, `--regex`,
-  `--path`, `--file-name`, and `--path-fragment` select the other turn search modes without requiring the word
-  `turns` in the command
+- `darc search` is the canonical turn-search command; its default mode is keyword, and
+  `--mode <literal|regex|file-name|file-path|path-fragment>` selects the other turn search modes without requiring
+  the word `turns` in the command
 - `darc stats workspace`, `darc stats project`, and `darc stats turn` are the canonical names for the protocol
   `insights` payloads
 - `darc list files` and `darc query files` with no path selector rank most-touched files; positional
@@ -156,7 +156,7 @@ protocol commands remain available under `darc query ...` for clients that want 
   darc search \
     --root ~/.darc \
     --project-id repo-abc123 \
-    --literal \
+    --mode literal \
     --query "--output-last-message" \
     --exclude-field tool-arguments
   ```
@@ -167,7 +167,7 @@ protocol commands remain available under `darc query ...` for clients that want 
   darc search \
     --root ~/.darc \
     --project-id repo-abc123 \
-    --regex \
+    --mode regex \
     "panic: .*" \
     --include-tool-output
   ```

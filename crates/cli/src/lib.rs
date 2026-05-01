@@ -110,8 +110,8 @@ enum Commands {
     Show(ShowArgs),
     #[command(
         about = "Search indexed turns and return matching turn hits",
-        long_about = "Search indexed turns and return matching turn hits.\n\nDarc search is turn-scoped: every hit includes the session id and turn ordinal needed for follow-up `darc show turn` or `darc show session` calls. Text search defaults to keyword mode. Use flags for literal, regex, or file-path search modes.",
-        after_help = "Examples:\n  darc search \"panic unwrap\" --limit 5\n  darc search --literal --query \"--output-last-message\" --field user-message\n  darc search --path docs/query-protocol.md --limit 5"
+        long_about = "Search indexed turns and return matching turn hits.\n\nDarc search is turn-scoped: every hit includes the session id and turn ordinal needed for follow-up `darc show turn` or `darc show session` calls. Search defaults to keyword mode. Pass --mode for literal, regex, file-name, file-path, or path-fragment search modes.",
+        after_help = "Examples:\n  darc search \"panic unwrap\" --limit 5\n  darc search --mode literal --query \"--output-last-message\" --field user-message\n  darc search --mode file-path docs/query-protocol.md --limit 5"
     )]
     Search(SearchArgs),
     #[command(
@@ -539,7 +539,19 @@ struct SearchArgs {
     )]
     session_id: Option<String>,
 
-    #[arg(value_name = "QUERY", help = "Search indexed turns for this text")]
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = SearchModeArg::Keyword,
+        help_heading = "Search",
+        help = "Search in this mode"
+    )]
+    mode: SearchModeArg,
+
+    #[arg(
+        value_name = "QUERY",
+        help = "Search for this text, file glob, or path fragment"
+    )]
     query_arg: Option<String>,
 
     #[arg(
@@ -547,47 +559,9 @@ struct SearchArgs {
         allow_hyphen_values = true,
         value_name = "QUERY",
         help_heading = "Search",
-        help = "Search indexed turns for this text"
+        help = "Search for this text, file glob, or path fragment"
     )]
     query: Option<String>,
-
-    #[arg(
-        long,
-        help_heading = "Search",
-        help = "Search exact literal text instead of keyword terms"
-    )]
-    literal: bool,
-
-    #[arg(
-        long,
-        help_heading = "Search",
-        help = "Search with a regular expression instead of keyword terms"
-    )]
-    regex: bool,
-
-    #[arg(
-        long,
-        value_name = "PATH_OR_GLOB",
-        help_heading = "Search",
-        help = "Search touched file paths and return matching turn hits"
-    )]
-    path: Option<String>,
-
-    #[arg(
-        long = "file-name",
-        value_name = "NAME",
-        help_heading = "Search",
-        help = "Search touched file names and return matching turn hits"
-    )]
-    file_name: Option<String>,
-
-    #[arg(
-        long = "path-fragment",
-        value_name = "TEXT",
-        help_heading = "Search",
-        help = "Search touched path fragments and return matching turn hits"
-    )]
-    path_fragment: Option<String>,
 
     #[arg(
         long,
@@ -3139,15 +3113,22 @@ impl From<ListSessionsArgs> for QuerySessionsArgs {
 impl SearchArgs {
     /// Converts canonical search flags into the existing turn-search query shape.
     fn into_query_search_turns_args(self) -> Result<QuerySearchTurnsArgs> {
-        let (mode, query_arg, query) = self.resolve_mode_and_query()?;
+        let query = required_named_or_positional(
+            "query text",
+            "--query",
+            self.query.as_deref(),
+            "QUERY",
+            self.query_arg.as_deref(),
+        )?
+        .to_owned();
         Ok(QuerySearchTurnsArgs {
             root: self.root,
             project_id: self.project_id,
             provider: self.provider,
             session_id: self.session_id,
-            mode,
-            query_arg,
-            query,
+            mode: self.mode,
+            query_arg: Some(query),
+            query: None,
             include_tool_output: self.include_tool_output,
             fields: self.fields,
             excluded_fields: self.excluded_fields,
@@ -3160,69 +3141,6 @@ impl SearchArgs {
             include_all_matched_paths: self.include_all_matched_paths,
         })
     }
-
-    /// Resolves the selected search mode and query text from canonical flags.
-    fn resolve_mode_and_query(&self) -> Result<(SearchModeArg, Option<String>, Option<String>)> {
-        let selected_modes = usize::from(self.literal)
-            + usize::from(self.regex)
-            + usize::from(self.path.is_some())
-            + usize::from(self.file_name.is_some())
-            + usize::from(self.path_fragment.is_some());
-        if selected_modes > 1 {
-            bail!(
-                "pass only one search mode: --literal, --regex, --path, --file-name, or --path-fragment"
-            );
-        }
-
-        if let Some(query) = &self.path {
-            ensure_no_text_query(self.query_arg.as_deref(), self.query.as_deref(), "--path")?;
-            return Ok((SearchModeArg::FilePath, Some(query.clone()), None));
-        }
-        if let Some(query) = &self.file_name {
-            ensure_no_text_query(
-                self.query_arg.as_deref(),
-                self.query.as_deref(),
-                "--file-name",
-            )?;
-            return Ok((SearchModeArg::FileName, Some(query.clone()), None));
-        }
-        if let Some(query) = &self.path_fragment {
-            ensure_no_text_query(
-                self.query_arg.as_deref(),
-                self.query.as_deref(),
-                "--path-fragment",
-            )?;
-            return Ok((SearchModeArg::PathFragment, Some(query.clone()), None));
-        }
-
-        let mode = if self.literal {
-            SearchModeArg::Literal
-        } else if self.regex {
-            SearchModeArg::Regex
-        } else {
-            SearchModeArg::Keyword
-        };
-        let query = required_named_or_positional(
-            "query text",
-            "--query",
-            self.query.as_deref(),
-            "QUERY",
-            self.query_arg.as_deref(),
-        )?;
-        Ok((mode, Some(query.to_owned()), None))
-    }
-}
-
-/// Rejects a positional or --query text value when a value-bearing search mode flag is used.
-fn ensure_no_text_query(
-    query_arg: Option<&str>,
-    query: Option<&str>,
-    mode_flag: &str,
-) -> Result<()> {
-    if query_arg.is_some() || query.is_some() {
-        bail!("do not pass QUERY or --query when using {mode_flag}");
-    }
-    Ok(())
 }
 
 /// Returns whether one string is a full canonical UUID text value.
