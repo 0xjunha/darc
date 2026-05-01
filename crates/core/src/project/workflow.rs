@@ -72,6 +72,17 @@ pub fn link_project(root: Option<PathBuf>, source_name: &str) -> Result<LinkRepo
     )
 }
 
+/// Previews one project link without writing the shared config.
+pub fn preview_link_project(root: Option<PathBuf>, source_name: &str) -> Result<LinkReport> {
+    let current_dir =
+        env::current_dir().context("unable to resolve the current working directory")?;
+    preview_link_project_from(
+        &current_dir,
+        root.unwrap_or_else(default_root_path),
+        source_name,
+    )
+}
+
 /// Removes one named project from config, archive storage, and SQLite.
 pub fn remove_project(root: Option<PathBuf>, project_name: &str) -> Result<RemoveReport> {
     remove_project_named(&root.unwrap_or_else(default_root_path), project_name)
@@ -235,6 +246,25 @@ pub(crate) fn link_project_from(
         write_shared_config(&prepared.config_path, &prepared.config)?;
     }
 
+    Ok(LinkReport {
+        target_project_name: prepared.target_project.name,
+        target_project_id: prepared.target_project.id,
+        target_project_root: prepared.current_root,
+        source_project_name: prepared.source_project.name,
+        source_project_id: prepared.source_project.id,
+        total_known_paths: prepared.total_known_paths,
+        new_known_paths: prepared.new_known_paths,
+        config_written: prepared.config_written,
+    })
+}
+
+/// Previews one named project link from one explicit active project directory.
+pub(crate) fn preview_link_project_from(
+    current_dir: &Path,
+    root: PathBuf,
+    source_name: &str,
+) -> Result<LinkReport> {
+    let prepared = prepare_link(current_dir, &root, source_name)?;
     Ok(LinkReport {
         target_project_name: prepared.target_project.name,
         target_project_id: prepared.target_project.id,

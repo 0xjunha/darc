@@ -359,17 +359,22 @@ fn remove_root(root: &Path) -> Result<()> {
 #[test]
 fn workspace_query_emits_success_envelope() -> Result<()> {
     let root = create_query_fixture_root("cli-query-workspace")?;
-    let output = run_darc([
-        "show",
-        "workspace",
-        "--root",
-        root.to_string_lossy().as_ref(),
-    ])?;
+    let output = run_darc_in_dir(
+        &root.join("repo"),
+        [
+            "show",
+            "workspace",
+            "--root",
+            root.to_string_lossy().as_ref(),
+        ],
+    )?;
 
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
     let value = parse_json(&output.stdout, "stdout")?;
     assert_eq!(value["schema"], "darc.query.workspace.v1");
+    assert_eq!(value["data"]["active_project"]["project_id"], "repo-abc123");
+    assert_eq!(value["data"]["active_project"]["project_name"], "repo");
     assert_eq!(value["data"]["projects"][0]["id"], "repo-abc123");
     assert_eq!(value["data"]["projects"][0]["session_count"], 1);
     assert_eq!(value["data"]["projects"][0]["turn_count"], 1);
@@ -741,6 +746,31 @@ fn query_parse_errors_emit_structured_json() -> Result<()> {
 }
 
 #[test]
+fn canonical_runtime_validation_errors_emit_stable_codes() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-runtime-validation-code")?;
+    let output = run_darc([
+        "list",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+    ])?;
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let value = parse_json(&output.stderr, "stderr")?;
+    assert_eq!(value["schema"], "darc.error.v1");
+    assert_eq!(value["error"]["code"], "missing_required_identity");
+    assert_eq!(value["error"]["details"]["value"], "session id");
+    assert_eq!(value["error"]["details"]["flag"], "--session-id");
+    assert_eq!(value["error"]["details"]["positional"], "SESSION_ID");
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
 fn canonical_unknown_arguments_emit_structured_json() -> Result<()> {
     let output = run_darc(["show", "workspace", "--json"])?;
 
@@ -923,6 +953,10 @@ fn files_query_without_selector_emits_most_touched_files() -> Result<()> {
     assert_eq!(value["data"]["files"][0]["session_count"], 1);
     assert_eq!(value["data"]["files"][0]["read_count"], 1);
     assert_eq!(value["data"]["files"][0]["write_count"], 0);
+    let file = value["data"]["files"][0]
+        .as_object()
+        .context("top file row should be an object")?;
+    assert!(!file.contains_key("co_touch_count"));
 
     remove_root(&root)?;
     Ok(())
@@ -959,6 +993,28 @@ fn files_query_rejects_explicit_empty_selector() -> Result<()> {
 #[test]
 fn files_query_co_touched_mode_accepts_time_bounds() -> Result<()> {
     let root = create_query_fixture_root("cli-query-files-co-touch-time")?;
+    let connection = open_index_database(&root.join("index.sqlite"))?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            turn_id: Some("turn-co-touch"),
+            completed_at: Some("2026-04-06T10:10:05Z"),
+            user_message: "Read two files together",
+            step_count: 2,
+            tool_call_count: 2,
+            duration_ms: 5_000,
+            ..IndexedTurnFixture::new(
+                "repo-abc123",
+                SourceKind::Codex,
+                PRIMARY_SESSION_ID,
+                1,
+                "2026-04-06T10:10:00Z",
+                "completed",
+                r#"[{"type":"tool_call","timestamp":"2026-04-06T10:10:01Z","call_id":"call-co-1","name":"Read","arguments":"{\"file_path\":\"README.md\"}"},{"type":"tool_call","timestamp":"2026-04-06T10:10:02Z","call_id":"call-co-2","name":"Read","arguments":"{\"file_path\":\"src/lib.rs\"}"}]"#,
+            )
+        },
+    )?;
+    drop(connection);
 
     let output = run_darc([
         "list",
@@ -985,7 +1041,15 @@ fn files_query_co_touched_mode_accepts_time_bounds() -> Result<()> {
     assert_eq!(value["data"]["since"], "2026-04-06T09:00:00Z");
     assert_eq!(value["data"]["until"], "2026-04-07T00:00:00Z");
     assert_eq!(value["data"]["sessions"], Value::Array(vec![]));
-    assert_eq!(value["data"]["files"], Value::Array(vec![]));
+    assert_eq!(value["data"]["files"][0]["path"], "src/lib.rs");
+    assert_eq!(value["data"]["files"][0]["co_touch_count"], 1);
+    let file = value["data"]["files"][0]
+        .as_object()
+        .context("co-touch file row should be an object")?;
+    assert!(!file.contains_key("touch_count"));
+    assert!(!file.contains_key("session_count"));
+    assert!(!file.contains_key("read_count"));
+    assert!(!file.contains_key("write_count"));
 
     remove_root(&root)?;
     Ok(())

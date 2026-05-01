@@ -93,14 +93,15 @@ darc service status
 - `darc init` detects local sources and creates the shared Darc config.
 - `darc refresh` is the daily happy path. It runs `sync` then `index` for the active project, or every registered
   project with `--all`. Add `--watch` to keep the same refresh workflow running in the foreground.
-- `darc status` shows human-readable health for the active project. Add `--workspace` to summarize every configured
-  project, and `--check` to run sync planning without writing manifests, config, archives, or SQLite.
+- `darc status` shows health for the active project. Add `--json` for a machine-readable active-project preflight,
+  `--workspace` to summarize every configured project, and `--check` to run sync planning without writing manifests,
+  config, archives, or SQLite.
 - `darc sync` archives matching Claude and Codex sessions for the active project.
 - `darc index` indexes archived sessions into SQLite.
 - `darc list`, `darc show`, `darc search`, `darc stats`, and `darc resolve` are the canonical JSON read surface for
   coding agents. They reuse the query protocol envelopes; see [Query protocol](docs/query-protocol.md).
 - `darc project link`, `darc project remove`, and `darc project rename-from` manage renamed or merged projects.
-  Use `--dry-run` with destructive project commands to preview cleanup before writing.
+  Use `--dry-run` to preview project config or cleanup changes before writing.
 - `darc service` manages the beta background refresh service. Service management is currently macOS-only; see
   [Background refresh service](docs/service.md).
 

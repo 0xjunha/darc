@@ -144,10 +144,19 @@ pub struct ProjectSummary {
     pub last_activity_at: Option<String>,
 }
 
+/// Stores the project resolved from the current working directory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ActiveProjectSummary {
+    pub project_id: String,
+    pub project_name: String,
+    pub current_root: PathBuf,
+}
+
 /// Stores the full workspace query payload for project browsing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WorkspaceQueryData {
     pub root: RootInfo,
+    pub active_project: Option<ActiveProjectSummary>,
     pub projects: Vec<ProjectSummary>,
 }
 
@@ -285,12 +294,19 @@ pub struct FileSessionSummary {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FilePivotSummary {
     pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub co_touch_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub touch_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub session_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub read_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub write_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub first_touched_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last_touched_at: Option<String>,
 }
 

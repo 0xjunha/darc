@@ -6,6 +6,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use darc_query::{ProjectIndexAggregate, list_project_index_aggregates};
+use serde::Serialize;
 use serde_json::Value as JsonValue;
 
 use crate::{
@@ -17,7 +18,7 @@ use crate::{
 };
 
 /// Stores the project-scoped status report shown by `darc status`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ProjectStatusReport {
     pub root: RootInfo,
     pub sources: Vec<StatusSource>,
@@ -32,7 +33,7 @@ impl ProjectStatusReport {
 }
 
 /// Stores the workspace-scoped status report shown by `darc status --workspace`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct WorkspaceStatusReport {
     pub root: RootInfo,
     pub sources: Vec<StatusSource>,
@@ -68,7 +69,7 @@ impl WorkspaceStatusReport {
 }
 
 /// Stores one configured source's availability for status output.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StatusSource {
     pub kind: SourceKind,
     pub configured: bool,
@@ -78,7 +79,7 @@ pub struct StatusSource {
 }
 
 /// Stores one configured project's archive, index, and optional sync-check status.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct StatusProject {
     pub id: String,
     pub name: String,
@@ -105,14 +106,15 @@ impl StatusProject {
 }
 
 /// Stores one optional sync dry-run outcome for status output.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case", tag = "status", content = "data")]
 pub enum StatusSyncCheck {
     Planned(StatusSyncPlan),
     Failed(StatusSyncFailure),
 }
 
 /// Stores the non-mutating sync plan summary used by `darc status --check`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct StatusSyncPlan {
     pub sources: Vec<SourceKind>,
     pub sessions_to_copy: usize,
@@ -126,7 +128,7 @@ pub struct StatusSyncPlan {
 }
 
 /// Stores one failed sync dry-run for status output.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct StatusSyncFailure {
     pub message: String,
 }

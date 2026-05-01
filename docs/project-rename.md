@@ -22,6 +22,8 @@ cd /path/to/new-project
 darc project link old-project
 ```
 
+Add `--dry-run` to preview the target, source, and known-path changes without writing config.
+
 This means:
 
 - current directory `/path/to/new-project` is the target project

@@ -7,6 +7,7 @@ use darc_test_utils::{
     IndexedSessionFixture, IndexedTurnFixture, insert_indexed_session, insert_indexed_turn,
     unique_test_dir, write_file,
 };
+use serde_json::Value;
 
 const PRIMARY_SESSION_ID: &str = "11111111-1111-4111-8111-111111111111";
 
@@ -184,6 +185,41 @@ fn status_reports_active_project_counts() -> Result<()> {
 }
 
 #[test]
+fn status_json_reports_active_project_counts() -> Result<()> {
+    let root = unique_test_dir("cli-status-project-json");
+    let project = project_fixture(&root, "repo", "repo-abc123");
+    fs::create_dir_all(Path::new(&project.local_path))?;
+    fs::create_dir_all(Path::new(&project.sessions_root))?;
+    write_config_fixture(
+        &root,
+        vec![project_fixture(&root, "repo", "repo-abc123")],
+        SourcesFixture::default(),
+    )?;
+    insert_index_fixture(&root, "repo-abc123", Path::new(&project.local_path))?;
+
+    let output = run_status(
+        Path::new(&project.local_path),
+        &["status", "--root", root.to_str().unwrap(), "--json"],
+    )?;
+
+    assert!(
+        output.status.success(),
+        "status failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    assert!(!contains_ansi(&output.stdout));
+    let value: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(value["schema"], "darc.status.project.v1");
+    assert_eq!(value["data"]["project"]["id"], "repo-abc123");
+    assert_eq!(value["data"]["project"]["name"], "repo");
+    assert_eq!(value["data"]["project"]["session_count"], 1);
+    assert_eq!(value["data"]["project"]["turn_count"], 1);
+
+    Ok(())
+}
+
+#[test]
 fn index_output_uses_distinct_summary_heading() -> Result<()> {
     let root = unique_test_dir("cli-index-heading");
     let project = project_fixture(&root, "repo", "repo-abc123");
@@ -257,6 +293,51 @@ fn status_workspace_reports_all_projects() -> Result<()> {
 }
 
 #[test]
+fn status_workspace_json_reports_all_projects() -> Result<()> {
+    let root = unique_test_dir("cli-status-workspace-json");
+    let repo_a = project_fixture(&root, "repo-a", "repo-a-123");
+    let repo_b = project_fixture(&root, "repo-b", "repo-b-456");
+    fs::create_dir_all(Path::new(&repo_a.local_path))?;
+    fs::create_dir_all(Path::new(&repo_a.sessions_root))?;
+    fs::create_dir_all(Path::new(&repo_b.local_path))?;
+    fs::create_dir_all(Path::new(&repo_b.sessions_root))?;
+    write_config_fixture(
+        &root,
+        vec![
+            project_fixture(&root, "repo-a", "repo-a-123"),
+            project_fixture(&root, "repo-b", "repo-b-456"),
+        ],
+        SourcesFixture::default(),
+    )?;
+    insert_index_fixture(&root, "repo-a-123", Path::new(&repo_a.local_path))?;
+
+    let output = run_status(
+        &root,
+        &[
+            "status",
+            "--root",
+            root.to_str().unwrap(),
+            "--workspace",
+            "--json",
+        ],
+    )?;
+
+    assert!(
+        output.status.success(),
+        "status failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    assert!(!contains_ansi(&output.stdout));
+    let value: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(value["schema"], "darc.status.workspace.v1");
+    assert_eq!(value["data"]["projects"].as_array().unwrap().len(), 2);
+    assert_eq!(value["data"]["projects"][0]["id"], "repo-a-123");
+
+    Ok(())
+}
+
+#[test]
 fn status_check_reports_pending_sync_without_writes() -> Result<()> {
     let root = unique_test_dir("cli-status-check");
     let project = project_fixture(&root, "repo", "repo-abc123");
@@ -298,6 +379,65 @@ fn status_check_reports_pending_sync_without_writes() -> Result<()> {
     assert!(stdout.contains("  Providers: Codex"));
     assert!(stdout.contains("  Sessions: 1 pending, 0 unchanged"));
     assert!(stdout.contains("  Manifest: would update"));
+    assert!(!manifest_path.exists());
+
+    Ok(())
+}
+
+#[test]
+fn status_check_json_reports_pending_sync_without_writes() -> Result<()> {
+    let root = unique_test_dir("cli-status-check-json");
+    let project = project_fixture(&root, "repo", "repo-abc123");
+    let codex_home = root.join(".codex");
+    let codex_sessions = codex_home.join("sessions");
+    fs::create_dir_all(Path::new(&project.local_path))?;
+    fs::create_dir_all(Path::new(&project.sessions_root))?;
+    write_codex_rollout(
+        &codex_sessions,
+        PRIMARY_SESSION_ID,
+        Path::new(&project.local_path),
+    )?;
+    write_config_fixture(
+        &root,
+        vec![project_fixture(&root, "repo", "repo-abc123")],
+        SourcesFixture {
+            codex: Some(CodexSourceFixture {
+                enabled: true,
+                home: codex_home.to_string_lossy().into_owned(),
+                sessions_root: codex_sessions.to_string_lossy().into_owned(),
+            }),
+        },
+    )?;
+
+    let manifest_path = Path::new(&project.sessions_root).join(".manifest.json");
+    let output = run_status(
+        Path::new(&project.local_path),
+        &[
+            "status",
+            "--root",
+            root.to_str().unwrap(),
+            "--check",
+            "--json",
+        ],
+    )?;
+
+    assert!(
+        output.status.success(),
+        "status failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    let value: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(value["schema"], "darc.status.project.v1");
+    assert_eq!(value["data"]["project"]["sync_check"]["status"], "planned");
+    assert_eq!(
+        value["data"]["project"]["sync_check"]["data"]["sessions_to_copy"],
+        1
+    );
+    assert_eq!(
+        value["data"]["project"]["sync_check"]["data"]["manifest_written"],
+        true
+    );
     assert!(!manifest_path.exists());
 
     Ok(())

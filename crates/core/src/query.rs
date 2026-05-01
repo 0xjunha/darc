@@ -8,8 +8,9 @@ use anyhow::{Context, Result, bail};
 use darc_index::INDEX_DB_FILE_NAME;
 use darc_paths::SourceKind;
 pub use darc_query::{
-    DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_QUERY_PAGE_LIMIT, DEFAULT_RESOLVE_SESSION_MATCH_LIMIT,
-    DEFAULT_SEARCH_MATCH_LIMIT, DEFAULT_SESSION_BUNDLE_TURN_LIMIT, DEFAULT_TURN_STEP_LIMIT,
+    ActiveProjectSummary, DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_QUERY_PAGE_LIMIT,
+    DEFAULT_RESOLVE_SESSION_MATCH_LIMIT, DEFAULT_SEARCH_MATCH_LIMIT,
+    DEFAULT_SESSION_BUNDLE_TURN_LIMIT, DEFAULT_TURN_STEP_LIMIT,
     DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT, DailyTimeStat, FilePivotSummary, FileSessionSummary,
     FileUsageStat, FilesQueryData, FilesQueryMode, FilesQueryRequest, ProjectInsights,
     ProjectSummary, ProjectTimeStat, ResolveSessionQueryData, ResolveSessionQueryRequest,
@@ -53,6 +54,7 @@ pub fn query_workspace(root: Option<PathBuf>) -> WorkspaceQueryData {
     else {
         return WorkspaceQueryData {
             root: root_info,
+            active_project: None,
             projects: Vec::new(),
         };
     };
@@ -66,8 +68,27 @@ pub fn query_workspace(root: Option<PathBuf>) -> WorkspaceQueryData {
             ));
             return WorkspaceQueryData {
                 root: root_info,
+                active_project: None,
                 projects: Vec::new(),
             };
+        }
+    };
+
+    let active_project = match env::current_dir()
+        .context("unable to resolve the current working directory")
+        .and_then(|current_dir| load_active_project(&current_dir, &root_info.resolved_root_path))
+    {
+        Ok(active_project) => Some(ActiveProjectSummary {
+            project_id: active_project.project.id,
+            project_name: active_project.project.name,
+            current_root: active_project.current_root,
+        }),
+        Err(error) => {
+            root_info.issues.push(format!(
+                "Active project could not be resolved: {}",
+                error.root_cause()
+            ));
+            None
         }
     };
 
@@ -116,6 +137,7 @@ pub fn query_workspace(root: Option<PathBuf>) -> WorkspaceQueryData {
 
     WorkspaceQueryData {
         root: root_info,
+        active_project,
         projects,
     }
 }
