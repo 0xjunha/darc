@@ -13,7 +13,7 @@ pub use darc_index::evidence::EvidenceField as SearchEvidenceField;
 use darc_index::open_index_database;
 use darc_paths::SourceKind;
 use darc_rollout::model::{NormalizedTokenUsage, NormalizedTurnStatus, NormalizedTurnStep};
-pub use files::{query_project_files, query_project_session_files};
+pub use files::{display_path_for_access, query_project_files, query_project_session_files};
 #[cfg(test)]
 pub(crate) use insights::{build_project_insights, build_workspace_insights};
 pub use insights::{query_project_insights, query_workspace_insights};

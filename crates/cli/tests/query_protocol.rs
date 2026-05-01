@@ -213,6 +213,61 @@ fn insert_absolute_project_file_read_turn(root: &Path, turn_ordinal: i64) -> Res
     Ok(())
 }
 
+/// Adds one known-path worktree and an edit turn that references it by absolute path.
+fn insert_known_project_file_edit_turn(
+    root: &Path,
+    turn_ordinal: i64,
+) -> Result<(PathBuf, String)> {
+    let known_root = root.join("known-worktree");
+    fs::create_dir_all(known_root.join("src"))?;
+    let mut project = project_fixture(root, "repo-abc123");
+    project.known_paths = vec![known_root.to_string_lossy().into_owned()];
+    write_config_fixture(root, vec![project])?;
+
+    let connection = open_index_database(&root.join("index.sqlite"))?;
+    let relative_path = "src/known.rs".to_owned();
+    let file_path = known_root
+        .join(&relative_path)
+        .to_string_lossy()
+        .into_owned();
+    let arguments = json!({ "file_path": file_path }).to_string();
+    let steps_json = json!([
+        {
+            "type": "tool_call",
+            "timestamp": "2026-04-06T10:05:01Z",
+            "call_id": "call-known",
+            "name": "Edit",
+            "arguments": arguments
+        }
+    ])
+    .to_string();
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            turn_id: Some("turn-known-path"),
+            completed_at: Some("2026-04-06T10:05:05Z"),
+            user_message: "Edit one known worktree file",
+            final_answer_at: Some("2026-04-06T10:05:05Z"),
+            final_answer_text: Some("Done."),
+            step_count: 1,
+            tool_call_count: 1,
+            tool_output_count: 0,
+            changed_file_count: 1,
+            duration_ms: 2_000,
+            ..IndexedTurnFixture::new(
+                "repo-abc123",
+                SourceKind::Codex,
+                PRIMARY_SESSION_ID,
+                turn_ordinal,
+                "2026-04-06T10:05:00Z",
+                "completed",
+                &steps_json,
+            )
+        },
+    )?;
+    Ok((known_root, relative_path))
+}
+
 /// Runs the compiled `darc` binary and returns its captured output.
 fn run_darc<I, S>(args: I) -> Result<std::process::Output>
 where
@@ -2125,6 +2180,114 @@ fn turn_query_embedded_insights_normalize_absolute_project_paths() -> Result<()>
     let value = parse_json(&output.stdout, "stdout")?;
     assert_eq!(value["schema"], "darc.query.turn.v1");
     assert_eq!(value["data"]["insights"]["files"][0]["path"], "src/lib.rs");
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn read_surfaces_normalize_known_project_paths() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-known-paths")?;
+    let (known_root, relative_path) = insert_known_project_file_edit_turn(&root, 1)?;
+    let root_arg = root.to_string_lossy();
+    let known_prefix = known_root.to_string_lossy().into_owned();
+
+    let sessions = run_darc([
+        "list",
+        "sessions",
+        "--root",
+        root_arg.as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--limit",
+        "1",
+    ])?;
+    assert!(sessions.status.success());
+    assert!(!String::from_utf8_lossy(&sessions.stdout).contains(&known_prefix));
+    let value = parse_json(&sessions.stdout, "stdout")?;
+    assert_eq!(
+        value["data"]["sessions"][0]["edited_files"],
+        serde_json::json!([relative_path.as_str()])
+    );
+
+    let session = run_darc([
+        "show",
+        "session",
+        "--root",
+        root_arg.as_ref(),
+        "--project-id",
+        "repo-abc123",
+        PRIMARY_SESSION_ID,
+        "--turn-limit",
+        "0",
+    ])?;
+    assert!(session.status.success());
+    assert!(!String::from_utf8_lossy(&session.stdout).contains(&known_prefix));
+    let value = parse_json(&session.stdout, "stdout")?;
+    assert_eq!(
+        value["data"]["session"]["edited_files"],
+        serde_json::json!([relative_path.as_str()])
+    );
+
+    let turn = run_darc([
+        "show",
+        "turn",
+        "--root",
+        root_arg.as_ref(),
+        "--project-id",
+        "repo-abc123",
+        PRIMARY_SESSION_ID,
+        "1",
+        "--include-insights",
+    ])?;
+    assert!(turn.status.success());
+    assert!(!String::from_utf8_lossy(&turn.stdout).contains(&known_prefix));
+    let value = parse_json(&turn.stdout, "stdout")?;
+    assert_eq!(
+        value["data"]["insights"]["files"][0]["path"],
+        relative_path.as_str()
+    );
+
+    let project_stats = run_darc([
+        "stats",
+        "project",
+        "--root",
+        root_arg.as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--provider",
+        "codex",
+        "--turn-limit",
+        "1000",
+    ])?;
+    assert!(project_stats.status.success());
+    assert!(!String::from_utf8_lossy(&project_stats.stdout).contains(&known_prefix));
+    let value = parse_json(&project_stats.stdout, "stdout")?;
+    assert_eq!(
+        value["data"]["most_written_files"][0]["path"],
+        relative_path.as_str()
+    );
+
+    let search = run_darc([
+        "search",
+        "--root",
+        root_arg.as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--mode",
+        "file-name",
+        "known.rs",
+        "--limit",
+        "5",
+    ])?;
+    assert!(search.status.success());
+    assert!(!String::from_utf8_lossy(&search.stdout).contains(&known_prefix));
+    let value = parse_json(&search.stdout, "stdout")?;
+    assert_eq!(
+        value["data"]["hits"][0]["matched_paths"],
+        serde_json::json!([relative_path.as_str()])
+    );
+    assert_eq!(value["data"]["hits"][0]["matched_paths_count"], 1);
 
     remove_root(&root)?;
     Ok(())
