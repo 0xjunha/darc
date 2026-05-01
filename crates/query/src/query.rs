@@ -327,6 +327,17 @@ pub struct FilesQueryRequest<'a> {
     pub matched_path_limit: Option<usize>,
 }
 
+/// Collects the supported inputs for one session-file query request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionFilesQueryRequest<'a> {
+    pub project_id: &'a str,
+    pub project_root: Option<&'a Path>,
+    pub provider: SourceKind,
+    pub session_id: &'a str,
+    pub limit: usize,
+    pub offset: usize,
+}
+
 /// Stores one session-scoped per-file access summary row.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SessionFileSummary {
@@ -345,6 +356,9 @@ pub struct SessionFilesQueryData {
     pub provider: SourceKind,
     pub session_id: String,
     pub file_count: u64,
+    pub limit: u64,
+    pub offset: u64,
+    pub has_more: bool,
     pub files: Vec<SessionFileSummary>,
 }
 

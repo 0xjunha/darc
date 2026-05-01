@@ -50,8 +50,8 @@ controls terminal-only ANSI presentation; the default is `--color auto`.
 - `darc query files [--root <path>] [--project-id <id>] [--provider <provider>] <path-or-glob> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>] [--matched-path-limit <n>|--include-all-matched-paths]`
 - `darc query files [--root <path>] [--project-id <id>] [--provider <provider>] --path <path-or-glob> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>] [--matched-path-limit <n>|--include-all-matched-paths]`
 - `darc query files [--root <path>] [--project-id <id>] [--provider <provider>] --co-touched-with <path> [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>]`
-- `darc query session-files [--root <path>] [--project-id <id>] [--provider <provider>] <session-id-or-prefix>`
-- `darc query session-files [--root <path>] [--project-id <id>] [--provider <provider>] --session-id <session-id-or-prefix>`
+- `darc query session-files [--root <path>] [--project-id <id>] [--provider <provider>] <session-id-or-prefix> [--limit <n>] [--offset <n>]`
+- `darc query session-files [--root <path>] [--project-id <id>] [--provider <provider>] --session-id <session-id-or-prefix> [--limit <n>] [--offset <n>]`
 - `darc query session-bundle [--root <path>] [--project-id <id>] [--provider <provider>] <session-id-or-prefix> [--session-view <compact|full>] [--view <full|narrative>] [--turn-limit <n>] [--turn-offset <n>] [--step-limit <n>] [--step-offset <n>]`
 - `darc query turns [--root <path>] [--project-id <id>] [--provider <provider>] <session-id-or-prefix> [--view <full|oneline>] [--since <iso-8601|<days>d>] [--until <iso-8601|<days>d>] [--limit <n>] [--offset <n>]`
 - `darc query turn [--root <path>] [--project-id <id>] [--provider <provider>] <session-id-or-prefix> <turn-ordinal> [--view <full|narrative>] [--step-limit <n>] [--step-offset <n>] [--include-raw] [--include-insights]`
@@ -98,13 +98,13 @@ controls terminal-only ANSI presentation; the default is `--color auto`.
 - `darc query files` accepts at most one of positional path, `--path`, or `--co-touched-with`; omit all three for most-touched mode (`mode=top`)
 - `--since` and `--until` on `darc list files` and `darc query files` apply to most-touched (`mode=top`), path, and
   co-touch modes
-- `--limit` and `--offset` are accepted by `darc query sessions`, `darc query turns`, `darc query search turns`, every `darc query files` mode, and the top/path/co-touch modes of `darc list files`; these row/turn-hit limits default to `--limit 10 --offset 0`
+- `--limit` and `--offset` are accepted by `darc query sessions`, `darc query turns`, `darc query session-files`, `darc query search turns`, every `darc query files` mode, and every `darc list files` mode; these row/turn-hit limits default to `--limit 10 --offset 0`
 - `--limit 0` returns an empty page while preserving `has_more`; this is useful as a cheap probe for whether matching
   rows exist
 - `--matched-path-limit` caps per-row `matched_paths` previews in `darc list files` path mode, `darc query files` path mode, and file-search modes; it defaults to `20`, and `--include-all-matched-paths` removes that preview cap
 - `--turn-limit` and `--turn-offset` on `darc query session-bundle` bound embedded turn details and default to `--turn-limit 5 --turn-offset 0`
 - `--session-view` on `darc query session-bundle` defaults to `compact`, which caps the embedded first prompt and final agent message the same way `darc query sessions --view compact` does; pass `--session-view full` when the complete text pair is needed
-- embedded `session_files` in `darc query session-bundle` is capped at 100 file rows; use `darc query session-files` when a caller needs the standalone full file list
+- embedded `session_files` in `darc query session-bundle` is capped at 100 file rows; use paginated `darc query session-files` when a caller needs the standalone file list
 - `darc query turn` and `darc query session-bundle` default to `--view narrative`; pass `--view full` when raw tool arguments, outputs, or payload blobs are needed
 - `--step-limit` and `--step-offset` on `darc query turn` and `darc query session-bundle` bound returned turn steps and default to `--step-limit 10 --step-offset 0`
 - `--turn-limit` on `darc query insights project` is an inspection bound over indexed turns, not response pagination; the previous `--limit` spelling is accepted as a compatibility alias, and the response echoes `turn_limit`, `inspected_turn_count`, and `turns_has_more`
@@ -481,7 +481,7 @@ Today:
 - `mode=co_touched_with` ranks file rows by higher `co_touch_count`, then `path` ascending
 - `mode=co_touched_with` applies `--limit` and `--offset` after ranking the co-touched files
 - `mode=co_touched_with` file rows report `path`, non-null `co_touch_count`, and nullable top-mode metrics; top-mode metrics are `null` in co-touch mode
-- `darc.query.session_files.v1` reports `project_id`, `provider`, `session_id`, `file_count`, and deterministic `files`
+- `darc.query.session_files.v1` reports `project_id`, `provider`, `session_id`, total `file_count`, `limit`, `offset`, `has_more`, and deterministic paginated `files`
 - `session_files` rows report canonical `path`, best-effort `repo_relative_path`, `read_count`, `write_count`, `first_turn_ordinal`, and `last_turn_ordinal`
 - `session_files` rows collapse equivalent absolute, repo-relative, and `./`-prefixed accesses for the same in-repo file onto one canonical display path before counting
 - `session_files` rows omit out-of-project accesses, exclude derived `list` accesses, and omit directory-only operands that Darc filtered during extraction
@@ -500,7 +500,7 @@ Today:
 - `step_limit` and `step_offset` describe the step page applied to each embedded turn detail
 - `session_view=compact` is the default and caps the embedded `session.first_user_prompt` and `session.final_agent_message` at 500 characters; `session_view=full` keeps both complete fields
 - `session_file_limit` is currently `100`; `session_file_count` is the total session-file row count before the embedded cap, and `session_files_has_more=true` means more session file rows existed than the embedded preview returned
-- `session_files` reuses the `darc.query.session_files.v1` payload shape, bounded by `session_file_limit`
+- `session_files` reuses the `darc.query.session_files.v1` payload shape with `limit=session_file_limit` and `offset=0`
 - `view=narrative` applies the same step projection rules as `darc query turn --view narrative`
 - `view=full` keeps the full normalized turn-step payload with `raw_steps_json` still forced to `null`
 

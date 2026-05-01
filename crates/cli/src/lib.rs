@@ -451,7 +451,7 @@ enum ListCommands {
     Turns(QueryTurnsArgs),
     /// List most-touched files, sessions touching one path, session files, or co-touched files.
     #[command(
-        long_about = "List most-touched files, sessions touching one path, session files, or co-touched files.\n\nWith no mode flag, this ranks files by touches across the project. Pass PATH or --path to return sessions that touched matching paths. Use `--session` for the full per-session file summary. Use `--co-touched-with` for files touched in the same sessions as a seed path. Result pagination applies to top, path, and co-touch modes; session mode currently returns the full per-session file summary."
+        long_about = "List most-touched files, sessions touching one path, session files, or co-touched files.\n\nWith no mode flag, this ranks files by touches across the project. Pass PATH or --path to return sessions that touched matching paths. Use `--session` for the paginated per-session file summary. Use `--co-touched-with` for files touched in the same sessions as a seed path."
     )]
     Files(ListFilesArgs),
 }
@@ -1294,6 +1294,22 @@ struct QuerySessionFilesArgs {
         help = "Query this session id or unambiguous UUID prefix; alternative to positional SESSION_ID"
     )]
     session_id: Option<String>,
+
+    #[arg(
+        long,
+        default_value_t = DEFAULT_QUERY_PAGE_LIMIT,
+        help_heading = "Result Size",
+        help = "Maximum file rows to return"
+    )]
+    limit: usize,
+
+    #[arg(
+        long,
+        default_value_t = 0,
+        help_heading = "Result Size",
+        help = "Number of file rows to skip"
+    )]
+    offset: usize,
 }
 
 /// Queries one composite session bundle payload.
@@ -2086,13 +2102,11 @@ fn run_list_files(output: &QueryOutput, args: ListFilesArgs) -> Result<()> {
     if let Some(session_id) = args.session {
         if args.since.is_some()
             || args.until.is_some()
-            || args.limit.is_some()
-            || args.offset.is_some()
             || args.matched_path_limit.is_some()
             || args.include_all_matched_paths
         {
             bail!(
-                "list files --session does not accept --since, --until, --limit, --offset, --matched-path-limit, or --include-all-matched-paths"
+                "list files --session does not accept --since, --until, --matched-path-limit, or --include-all-matched-paths"
             );
         }
         return run_query_session_files(
@@ -2103,6 +2117,8 @@ fn run_list_files(output: &QueryOutput, args: ListFilesArgs) -> Result<()> {
                 provider: args.provider,
                 session_id_arg: None,
                 session_id: Some(session_id),
+                limit: args.limit.unwrap_or(DEFAULT_QUERY_PAGE_LIMIT),
+                offset: args.offset.unwrap_or(0),
             },
         );
     }
@@ -2280,7 +2296,13 @@ fn run_query_session_files(output: &QueryOutput, args: QuerySessionFilesArgs) ->
         args.provider.map(provider_arg_to_source_kind),
         session_id,
     )?;
-    let data = query_session_files_for_project(&project, session.provider, &session.session_id)?;
+    let data = query_session_files_for_project(
+        &project,
+        session.provider,
+        &session.session_id,
+        args.limit,
+        args.offset,
+    )?;
     print_json_envelope(output, "darc.query.session_files.v1", &data)
 }
 

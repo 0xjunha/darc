@@ -910,11 +910,36 @@ fn session_files_query_emits_success_envelope() -> Result<()> {
     assert_eq!(value["data"]["project_id"], "repo-abc123");
     assert_eq!(value["data"]["provider"], "codex");
     assert_eq!(value["data"]["session_id"], PRIMARY_SESSION_ID);
+    assert_eq!(value["data"]["file_count"], 1);
+    assert_eq!(value["data"]["limit"], DEFAULT_QUERY_PAGE_LIMIT);
+    assert_eq!(value["data"]["offset"], 0);
+    assert_eq!(value["data"]["has_more"], false);
     assert_eq!(value["data"]["files"][0]["path"], "README.md");
     assert_eq!(value["data"]["files"][0]["read_count"], 1);
     assert_eq!(value["data"]["files"][0]["write_count"], 0);
     assert_eq!(value["data"]["files"][0]["first_turn_ordinal"], 0);
     assert_eq!(value["data"]["files"][0]["last_turn_ordinal"], 0);
+
+    let bounded = run_darc([
+        "list",
+        "files",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--session",
+        PRIMARY_SESSION_ID,
+        "--limit",
+        "0",
+    ])?;
+    assert!(bounded.status.success());
+    let bounded_value = parse_json(&bounded.stdout, "stdout")?;
+    assert_eq!(bounded_value["schema"], "darc.query.session_files.v1");
+    assert_eq!(bounded_value["data"]["limit"], 0);
+    assert_eq!(bounded_value["data"]["offset"], 0);
+    assert_eq!(bounded_value["data"]["file_count"], 1);
+    assert_eq!(bounded_value["data"]["has_more"], true);
+    assert_eq!(bounded_value["data"]["files"].as_array().unwrap().len(), 0);
 
     remove_root(&root)?;
     Ok(())

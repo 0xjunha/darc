@@ -25,8 +25,8 @@ use crate::query::{
     DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_SEARCH_MATCH_LIMIT, DEFAULT_TURN_STEP_LIMIT,
     DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT, FilesQueryMode, FilesQueryRequest, LocalDate,
     ProjectInsights, SearchMode, SearchTurnsRequest, SessionBundleQueryRequest, SessionBundleView,
-    SessionKind, SessionsQueryRequest, SessionsView, TurnDetailOptions, TurnInsights,
-    TurnsQueryRequest, TurnsView, build_project_insights, build_turn_insights,
+    SessionFilesQueryRequest, SessionKind, SessionsQueryRequest, SessionsView, TurnDetailOptions,
+    TurnInsights, TurnsQueryRequest, TurnsView, build_project_insights, build_turn_insights,
     build_workspace_insights, open_existing_index_database, parse_session_kind,
     query_project_files, query_project_session_bundle, query_project_session_files,
     query_project_sessions, query_project_turns, query_search_turns, query_session_turn_details,
@@ -2091,10 +2091,14 @@ fn query_session_files_collapses_absolute_and_relative_paths() -> Result<()> {
 
     let result = query_project_session_files(
         &index_path,
-        "repo-a",
-        SourceKind::Codex,
-        "session-1",
-        Some(Path::new("/tmp/repo-a")),
+        SessionFilesQueryRequest {
+            project_id: "repo-a",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            provider: SourceKind::Codex,
+            session_id: "session-1",
+            limit: 50,
+            offset: 0,
+        },
     )?;
 
     assert_eq!(
@@ -2116,6 +2120,22 @@ fn query_session_files_collapses_absolute_and_relative_paths() -> Result<()> {
             ("src/components/context.rs", 1, 0, 3, 3),
         ]
     );
+    let limited = query_project_session_files(
+        &index_path,
+        SessionFilesQueryRequest {
+            project_id: "repo-a",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            provider: SourceKind::Codex,
+            session_id: "session-1",
+            limit: 1,
+            offset: 0,
+        },
+    )?;
+    assert_eq!(limited.file_count, 2);
+    assert_eq!(limited.limit, 1);
+    assert_eq!(limited.offset, 0);
+    assert!(limited.has_more);
+    assert_eq!(limited.files[0].path, "src/components/planner.rs");
 
     fs::remove_dir_all(
         index_path
@@ -2170,10 +2190,14 @@ fn query_session_files_normalize_dot_relative_paths() -> Result<()> {
 
     let result = query_project_session_files(
         &index_path,
-        "repo-a",
-        SourceKind::Codex,
-        "session-1",
-        Some(Path::new("/tmp/repo-a")),
+        SessionFilesQueryRequest {
+            project_id: "repo-a",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            provider: SourceKind::Codex,
+            session_id: "session-1",
+            limit: 50,
+            offset: 0,
+        },
     )?;
 
     assert_eq!(
@@ -2238,10 +2262,14 @@ fn query_session_files_exclude_out_of_project_and_list_only_paths() -> Result<()
 
     let session_files = query_project_session_files(
         &index_path,
-        "repo-a",
-        SourceKind::Codex,
-        "session-1",
-        Some(Path::new("/tmp/repo-a")),
+        SessionFilesQueryRequest {
+            project_id: "repo-a",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            provider: SourceKind::Codex,
+            session_id: "session-1",
+            limit: 50,
+            offset: 0,
+        },
     )?;
     let co_touched = query_project_files(
         &index_path,

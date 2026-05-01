@@ -1464,6 +1464,10 @@ fn parses_query_session_files_command() {
         "--provider",
         "codex",
         "session-1",
+        "--limit",
+        "2",
+        "--offset",
+        "1",
     ])
     .unwrap();
     assert!(matches!(
@@ -1474,6 +1478,8 @@ fn parses_query_session_files_command() {
                 provider,
                 session_id_arg,
                 session_id,
+                limit,
+                offset,
                 ..
             }),
             ..
@@ -1481,6 +1487,8 @@ fn parses_query_session_files_command() {
             && matches!(provider, Some(super::ProviderArg::Codex))
             && session_id_arg.as_deref() == Some("session-1")
             && session_id.is_none()
+            && limit == 2
+            && offset == 1
     ));
 }
 

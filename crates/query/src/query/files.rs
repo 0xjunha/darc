@@ -12,8 +12,9 @@ use rusqlite::{Connection, params_from_iter, types::Value};
 
 use super::{
     FilePivotSummary, FileSessionSummary, FilesQueryData, FilesQueryMode, FilesQueryRequest,
-    SessionFileSummary, SessionFilesQueryData, SessionSummary, apply_matched_path_limit,
-    open_existing_index_database, paginate_ranked_rows, parse_provider, sql_count_to_u64,
+    SessionFileSummary, SessionFilesQueryData, SessionFilesQueryRequest, SessionSummary,
+    apply_matched_path_limit, open_existing_index_database, paginate_ranked_rows, parse_provider,
+    sql_count_to_u64,
 };
 
 const MAX_SESSION_KEYS_PER_QUERY: usize = 250;
@@ -183,13 +184,10 @@ pub fn query_project_files(
 /// Queries one session-scoped per-file summary payload from indexed file accesses.
 pub fn query_project_session_files(
     index_db_path: &Path,
-    project_id: &str,
-    provider: SourceKind,
-    session_id: &str,
-    project_root: Option<&Path>,
+    request: SessionFilesQueryRequest<'_>,
 ) -> Result<SessionFilesQueryData> {
     let connection = open_existing_index_database(index_db_path)?;
-    build_session_files_query(&connection, project_id, provider, session_id, project_root)
+    build_session_files_query(&connection, request)
 }
 
 /// Filters one session-summary candidate batch to sessions that touched a glob-matched file path.
@@ -499,23 +497,20 @@ fn apply_file_session_matched_path_limit(
 /// Builds one session-scoped per-file summary payload from canonicalized file touches.
 pub(crate) fn build_session_files_query(
     connection: &Connection,
-    project_id: &str,
-    provider: SourceKind,
-    session_id: &str,
-    project_root: Option<&Path>,
+    request: SessionFilesQueryRequest<'_>,
 ) -> Result<SessionFilesQueryData> {
     let rows = query_raw_session_file_rows(
         connection,
-        project_id,
+        request.project_id,
         SessionFileQueryFilters {
-            provider: Some(provider),
-            session_id: Some(session_id),
+            provider: Some(request.provider),
+            session_id: Some(request.session_id),
             since: None,
             until: None,
             path_selector: None,
         },
     )?;
-    let mut files = aggregate_session_file_rows(rows, project_root)
+    let mut files = aggregate_session_file_rows(rows, request.project_root)
         .into_iter()
         .map(|row| SessionFileSummary {
             path: row.path,
@@ -528,11 +523,15 @@ pub(crate) fn build_session_files_query(
         .collect::<Vec<_>>();
     sort_session_file_summaries(&mut files);
     let file_count = u64::try_from(files.len()).context("session file count exceeds u64 range")?;
+    let (files, has_more) = paginate_ranked_rows(files, request.limit, request.offset)?;
     Ok(SessionFilesQueryData {
-        project_id: project_id.to_owned(),
-        provider,
-        session_id: session_id.to_owned(),
+        project_id: request.project_id.to_owned(),
+        provider: request.provider,
+        session_id: request.session_id.to_owned(),
         file_count,
+        limit: u64::try_from(request.limit).context("query limit exceeds u64 range")?,
+        offset: u64::try_from(request.offset).context("query offset exceeds u64 range")?,
+        has_more,
         files,
     })
 }

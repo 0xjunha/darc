@@ -16,11 +16,11 @@ pub use darc_query::{
     ResolvedSessionMatch, RootAvailability, RootInfo, SearchEvidenceField, SearchMode,
     SearchSnippetMatcher, SearchTurnHit, SearchTurnMatch, SearchTurnsQueryData, SearchTurnsRequest,
     SessionBundleQueryData, SessionBundleQueryRequest, SessionBundleView, SessionFileSummary,
-    SessionFilesQueryData, SessionKind, SessionRuntimeStat, SessionSummary, SessionsQueryData,
-    SessionsQueryRequest, SessionsView, ShellCommandSummary, ToolUsageStat, TurnDetail,
-    TurnDetailInsights, TurnDetailOptions, TurnInsights, TurnSummary, TurnsQueryData,
-    TurnsQueryRequest, TurnsView, WorkspaceDailyTimeStat, WorkspaceInsights, WorkspaceQueryData,
-    search_snippet_match_range,
+    SessionFilesQueryData, SessionFilesQueryRequest, SessionKind, SessionRuntimeStat,
+    SessionSummary, SessionsQueryData, SessionsQueryRequest, SessionsView, ShellCommandSummary,
+    ToolUsageStat, TurnDetail, TurnDetailInsights, TurnDetailOptions, TurnInsights, TurnSummary,
+    TurnsQueryData, TurnsQueryRequest, TurnsView, WorkspaceDailyTimeStat, WorkspaceInsights,
+    WorkspaceQueryData, search_snippet_match_range,
 };
 use darc_query::{
     ProjectIndexAggregate, list_project_index_aggregates, lookup_project_session_matches,
@@ -275,14 +275,20 @@ pub fn query_session_files_for_project(
     project: &ResolvedQueryProject,
     provider: SourceKind,
     session_id: &str,
+    limit: usize,
+    offset: usize,
 ) -> Result<SessionFilesQueryData> {
     let context = &project.context;
     query_project_session_files(
         &context.root.database_path,
-        &context.project.id,
-        provider,
-        session_id,
-        Some(context.project.local_path.as_path()),
+        SessionFilesQueryRequest {
+            project_id: &context.project.id,
+            project_root: Some(context.project.local_path.as_path()),
+            provider,
+            session_id,
+            limit,
+            offset,
+        },
     )
 }
 
@@ -292,9 +298,11 @@ pub fn query_session_files(
     project_id: &str,
     provider: SourceKind,
     session_id: &str,
+    limit: usize,
+    offset: usize,
 ) -> Result<SessionFilesQueryData> {
     let project = resolve_query_project(root, Some(project_id))?;
-    query_session_files_for_project(&project, provider, session_id)
+    query_session_files_for_project(&project, provider, session_id, limit, offset)
 }
 
 /// Queries one composite session bundle for one already-resolved configured provider session.
