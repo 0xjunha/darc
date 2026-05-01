@@ -2,9 +2,12 @@ use std::{collections::BTreeSet, fmt::Write, path::Path, sync::OnceLock};
 
 use anyhow::{Context, Result};
 use darc_paths::SourceKind;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, params, params_from_iter, types::Value};
 
-use super::files::filter_session_summaries_by_touched_path;
+use super::files::{
+    TouchedSessionKey, TouchedSessionPageRequest, filter_session_summaries_by_touched_path,
+    query_exact_touched_session_page,
+};
 use super::turns::build_token_usage;
 use super::{
     ProjectIndexAggregate, ResolveSessionQueryData, ResolveSessionQueryRequest,
@@ -45,11 +48,53 @@ const PROJECT_INDEX_AGGREGATES_SQL: &str = "
 ";
 
 const PROJECT_SESSIONS_SQL: &str = "
-    WITH turn_stats AS (
+    WITH latest_session_turns AS (
         SELECT
             project_id,
             provider,
             session_id,
+            MAX(started_at) AS latest_turn_at
+        FROM turns
+        WHERE project_id = ?1
+            AND (?4 IS NULL OR provider = ?4)
+            AND (?5 IS NULL OR session_id = ?5)
+        GROUP BY project_id, provider, session_id
+    ),
+    filtered_session_keys AS (
+        SELECT
+            s.project_id,
+            s.provider,
+            s.session_id,
+            s.parent_session_id,
+            s.session_kind,
+            s.cwd,
+            latest_session_turns.latest_turn_at
+        FROM sessions AS s
+        LEFT JOIN latest_session_turns
+            ON latest_session_turns.project_id = s.project_id
+            AND latest_session_turns.provider = s.provider
+            AND latest_session_turns.session_id = s.session_id
+        WHERE s.project_id = ?1
+            AND (?2 IS NULL OR julianday(latest_session_turns.latest_turn_at) >= julianday(?2))
+            AND (?3 IS NULL OR julianday(latest_session_turns.latest_turn_at) < julianday(?3))
+            AND (?4 IS NULL OR s.provider = ?4)
+            AND (?5 IS NULL OR s.session_id = ?5)
+    ),
+    paged_session_keys AS (
+        SELECT *
+        FROM filtered_session_keys
+        ORDER BY
+            latest_turn_at IS NULL ASC,
+            latest_turn_at DESC,
+            provider ASC,
+            session_id DESC
+        LIMIT ?6 OFFSET ?7
+    ),
+    turn_stats AS (
+        SELECT
+            turns.project_id,
+            turns.provider,
+            turns.session_id,
             COUNT(*) AS turn_count,
             MIN(turn_ordinal) AS first_turn_ordinal,
             MAX(turn_ordinal) AS latest_turn_ordinal,
@@ -91,21 +136,22 @@ const PROJECT_SESSIONS_SQL: &str = "
             SUM(COALESCE(added_line_count, 0)) AS added_line_count,
             SUM(COALESCE(removed_line_count, 0)) AS removed_line_count
         FROM turns
-        WHERE project_id = ?1
-            AND (?4 IS NULL OR provider = ?4)
-            AND (?5 IS NULL OR session_id = ?5)
-        GROUP BY project_id, provider, session_id
+        INNER JOIN paged_session_keys
+            ON paged_session_keys.project_id = turns.project_id
+            AND paged_session_keys.provider = turns.provider
+            AND paged_session_keys.session_id = turns.session_id
+        GROUP BY turns.project_id, turns.provider, turns.session_id
     ),
-    filtered_sessions AS (
+    paged_sessions AS (
         SELECT
-            s.project_id,
-            s.provider,
-            s.session_id,
-            s.parent_session_id,
-            s.session_kind,
-            s.cwd,
+            paged_session_keys.project_id,
+            paged_session_keys.provider,
+            paged_session_keys.session_id,
+            paged_session_keys.parent_session_id,
+            paged_session_keys.session_kind,
+            paged_session_keys.cwd,
             COALESCE(turn_stats.turn_count, 0) AS turn_count,
-            turn_stats.latest_turn_at,
+            paged_session_keys.latest_turn_at,
             latest.status AS latest_status,
             latest.primary_model,
             turn_stats.total_token_count,
@@ -123,11 +169,11 @@ const PROJECT_SESSIONS_SQL: &str = "
             first_turn.user_message AS first_user_prompt,
             latest.final_answer_text AS final_agent_message,
             COALESCE(turn_stats.aborted_turn_count, 0) AS aborted_turn_count
-        FROM sessions AS s
+        FROM paged_session_keys
         LEFT JOIN turn_stats
-            ON turn_stats.project_id = s.project_id
-            AND turn_stats.provider = s.provider
-            AND turn_stats.session_id = s.session_id
+            ON turn_stats.project_id = paged_session_keys.project_id
+            AND turn_stats.provider = paged_session_keys.provider
+            AND turn_stats.session_id = paged_session_keys.session_id
         LEFT JOIN turns AS first_turn
             ON first_turn.project_id = turn_stats.project_id
             AND first_turn.provider = turn_stats.provider
@@ -138,21 +184,6 @@ const PROJECT_SESSIONS_SQL: &str = "
             AND latest.provider = turn_stats.provider
             AND latest.session_id = turn_stats.session_id
             AND latest.turn_ordinal = turn_stats.latest_turn_ordinal
-        WHERE s.project_id = ?1
-            AND (?2 IS NULL OR julianday(turn_stats.latest_turn_at) >= julianday(?2))
-            AND (?3 IS NULL OR julianday(turn_stats.latest_turn_at) < julianday(?3))
-            AND (?4 IS NULL OR s.provider = ?4)
-            AND (?5 IS NULL OR s.session_id = ?5)
-    ),
-    paged_sessions AS (
-        SELECT *
-        FROM filtered_sessions
-        ORDER BY
-            latest_turn_at IS NULL ASC,
-            latest_turn_at DESC,
-            provider ASC,
-            session_id DESC
-        LIMIT ?6 OFFSET ?7
     ),
     session_edited_files AS (
         SELECT
@@ -292,6 +323,35 @@ pub(crate) struct SessionSummaryQuery<'a> {
     limit: usize,
     offset: usize,
 }
+
+type RawSessionSummaryRow = (
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    i64,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    i64,
+    i64,
+    i64,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    i64,
+    String,
+);
 
 const TURN_SUMMARY_COLUMNS: &[&str] = &[
     "project_id",
@@ -474,6 +534,23 @@ fn query_touched_path_session_page(
     request: SessionsQueryRequest<'_>,
     touched_path: &str,
 ) -> Result<(Vec<SessionSummary>, bool)> {
+    if let Some((session_keys, has_more)) = query_exact_touched_session_page(
+        connection,
+        TouchedSessionPageRequest {
+            project_id: request.project_id,
+            project_root: request.project_root,
+            provider: request.provider,
+            since: request.since,
+            until: request.until,
+            touched_path,
+            limit: request.limit,
+            offset: request.offset,
+        },
+    )? {
+        let sessions = query_sessions_by_keys(connection, request, &session_keys)?;
+        return Ok((sessions, has_more));
+    }
+
     let desired_match_count = request
         .offset
         .checked_add(request.limit)
@@ -530,6 +607,220 @@ fn query_touched_path_session_page(
         .take(request.limit)
         .collect();
     Ok((sessions, has_more))
+}
+
+/// Builds session summaries for already ordered touched-path session keys.
+fn query_sessions_by_keys(
+    connection: &Connection,
+    request: SessionsQueryRequest<'_>,
+    session_keys: &[TouchedSessionKey],
+) -> Result<Vec<SessionSummary>> {
+    if session_keys.is_empty() {
+        return Ok(Vec::new());
+    }
+    let sql = build_selected_sessions_sql(session_keys.len());
+    let mut params = Vec::with_capacity(
+        session_keys
+            .len()
+            .checked_mul(3)
+            .and_then(|value| value.checked_add(1))
+            .context("session key parameter count exceeds usize range")?,
+    );
+    for (index, session_key) in session_keys.iter().enumerate() {
+        params.push(Value::Text(
+            session_key.provider.directory_name().to_owned(),
+        ));
+        params.push(Value::Text(session_key.session_id.clone()));
+        params.push(Value::Integer(
+            i64::try_from(index).context("session key index exceeds SQLite INTEGER range")?,
+        ));
+    }
+    params.push(Value::Text(request.project_id.to_owned()));
+    query_sessions_with_params(
+        connection,
+        &sql,
+        params_from_iter(params),
+        request.project_root,
+    )
+}
+
+/// Builds one keyed session-summary query preserving the supplied session order.
+fn build_selected_sessions_sql(session_count: usize) -> String {
+    let values = (0..session_count)
+        .map(|index| {
+            let base = index * 3;
+            format!("(?{}, ?{}, ?{})", base + 1, base + 2, base + 3)
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let project_id_param = session_count * 3 + 1;
+    format!(
+        "
+    WITH selected_session_keys(provider, session_id, sort_index) AS (
+        VALUES {values}
+    ),
+    turn_stats AS (
+        SELECT
+            turns.project_id,
+            turns.provider,
+            turns.session_id,
+            COUNT(*) AS turn_count,
+            MIN(turn_ordinal) AS first_turn_ordinal,
+            MAX(turn_ordinal) AS latest_turn_ordinal,
+            MAX(started_at) AS latest_turn_at,
+            SUM(CASE WHEN status = 'aborted' THEN 1 ELSE 0 END) AS aborted_turn_count,
+            CASE
+                WHEN COUNT(*) = COUNT(total_token_count) THEN SUM(COALESCE(total_token_count, 0))
+                ELSE NULL
+            END AS total_token_count,
+            CASE
+                WHEN COUNT(*) = COUNT(provider_total_token_count) THEN SUM(COALESCE(provider_total_token_count, 0))
+                ELSE NULL
+            END AS provider_total_token_count,
+            CASE
+                WHEN COUNT(*) = COUNT(input_uncached_token_count) THEN SUM(COALESCE(input_uncached_token_count, 0))
+                ELSE NULL
+            END AS input_uncached_token_count,
+            CASE
+                WHEN COUNT(*) = COUNT(cache_read_token_count) THEN SUM(COALESCE(cache_read_token_count, 0))
+                ELSE NULL
+            END AS cache_read_token_count,
+            CASE
+                WHEN COUNT(*) = COUNT(cache_write_token_count) THEN SUM(COALESCE(cache_write_token_count, 0))
+                ELSE NULL
+            END AS cache_write_token_count,
+            CASE
+                WHEN COUNT(*) = COUNT(output_token_count) THEN SUM(COALESCE(output_token_count, 0))
+                ELSE NULL
+            END AS output_token_count,
+            CASE
+                WHEN COUNT(*) = COUNT(reasoning_token_count) THEN SUM(COALESCE(reasoning_token_count, 0))
+                ELSE NULL
+            END AS reasoning_token_count,
+            CASE
+                WHEN COUNT(*) = COUNT(effective_agent_runtime_ms) THEN SUM(COALESCE(effective_agent_runtime_ms, 0))
+                ELSE NULL
+            END AS effective_agent_runtime_ms,
+            SUM(COALESCE(changed_file_count, 0)) AS changed_file_count,
+            SUM(COALESCE(added_line_count, 0)) AS added_line_count,
+            SUM(COALESCE(removed_line_count, 0)) AS removed_line_count
+        FROM turns
+        INNER JOIN selected_session_keys
+            ON selected_session_keys.provider = turns.provider
+            AND selected_session_keys.session_id = turns.session_id
+        WHERE turns.project_id = ?{project_id_param}
+        GROUP BY turns.project_id, turns.provider, turns.session_id
+    ),
+    paged_sessions AS (
+        SELECT
+            sessions.project_id,
+            sessions.provider,
+            sessions.session_id,
+            sessions.parent_session_id,
+            sessions.session_kind,
+            sessions.cwd,
+            COALESCE(turn_stats.turn_count, 0) AS turn_count,
+            turn_stats.latest_turn_at,
+            latest.status AS latest_status,
+            latest.primary_model,
+            turn_stats.total_token_count,
+            turn_stats.provider_total_token_count,
+            turn_stats.input_uncached_token_count,
+            turn_stats.cache_read_token_count,
+            turn_stats.cache_write_token_count,
+            turn_stats.output_token_count,
+            turn_stats.reasoning_token_count,
+            turn_stats.effective_agent_runtime_ms,
+            COALESCE(turn_stats.changed_file_count, 0) AS changed_file_count,
+            COALESCE(turn_stats.added_line_count, 0) AS added_line_count,
+            COALESCE(turn_stats.removed_line_count, 0) AS removed_line_count,
+            first_turn.started_at AS first_turn_at,
+            first_turn.user_message AS first_user_prompt,
+            latest.final_answer_text AS final_agent_message,
+            COALESCE(turn_stats.aborted_turn_count, 0) AS aborted_turn_count,
+            selected_session_keys.sort_index
+        FROM selected_session_keys
+        INNER JOIN sessions
+            ON sessions.project_id = ?{project_id_param}
+            AND sessions.provider = selected_session_keys.provider
+            AND sessions.session_id = selected_session_keys.session_id
+        LEFT JOIN turn_stats
+            ON turn_stats.project_id = sessions.project_id
+            AND turn_stats.provider = sessions.provider
+            AND turn_stats.session_id = sessions.session_id
+        LEFT JOIN turns AS first_turn
+            ON first_turn.project_id = turn_stats.project_id
+            AND first_turn.provider = turn_stats.provider
+            AND first_turn.session_id = turn_stats.session_id
+            AND first_turn.turn_ordinal = turn_stats.first_turn_ordinal
+        LEFT JOIN turns AS latest
+            ON latest.project_id = turn_stats.project_id
+            AND latest.provider = turn_stats.provider
+            AND latest.session_id = turn_stats.session_id
+            AND latest.turn_ordinal = turn_stats.latest_turn_ordinal
+    ),
+    session_edited_files AS (
+        SELECT
+            project_id,
+            provider,
+            session_id,
+            json_group_array(display_path) AS edited_files_json
+        FROM (
+            SELECT DISTINCT
+                file_accesses.project_id,
+                file_accesses.provider,
+                file_accesses.session_id,
+                TRIM(COALESCE(file_accesses.repo_relative_path, file_accesses.path)) AS display_path
+            FROM file_accesses
+            INNER JOIN paged_sessions
+                ON paged_sessions.project_id = file_accesses.project_id
+                AND paged_sessions.provider = file_accesses.provider
+                AND paged_sessions.session_id = file_accesses.session_id
+            WHERE file_accesses.access_type IN ('edit', 'write')
+                AND NULLIF(TRIM(COALESCE(file_accesses.repo_relative_path, file_accesses.path)), '') IS NOT NULL
+            ORDER BY
+                file_accesses.project_id ASC,
+                file_accesses.provider ASC,
+                file_accesses.session_id ASC,
+                display_path ASC
+        )
+        GROUP BY project_id, provider, session_id
+    )
+    SELECT
+        paged_sessions.project_id,
+        paged_sessions.provider,
+        paged_sessions.session_id,
+        paged_sessions.parent_session_id,
+        paged_sessions.session_kind,
+        paged_sessions.cwd,
+        paged_sessions.turn_count,
+        paged_sessions.latest_turn_at,
+        paged_sessions.latest_status,
+        paged_sessions.primary_model,
+        paged_sessions.total_token_count,
+        paged_sessions.provider_total_token_count,
+        paged_sessions.input_uncached_token_count,
+        paged_sessions.cache_read_token_count,
+        paged_sessions.cache_write_token_count,
+        paged_sessions.output_token_count,
+        paged_sessions.reasoning_token_count,
+        paged_sessions.effective_agent_runtime_ms,
+        paged_sessions.changed_file_count,
+        paged_sessions.added_line_count,
+        paged_sessions.removed_line_count,
+        paged_sessions.first_turn_at,
+        paged_sessions.first_user_prompt,
+        paged_sessions.final_agent_message,
+        paged_sessions.aborted_turn_count,
+        COALESCE(session_edited_files.edited_files_json, '[]')
+    FROM paged_sessions
+    LEFT JOIN session_edited_files
+        ON session_edited_files.project_id = paged_sessions.project_id
+        AND session_edited_files.provider = paged_sessions.provider
+        AND session_edited_files.session_id = paged_sessions.session_id
+    ORDER BY paged_sessions.sort_index ASC
+"
+    )
 }
 
 /// Queries the indexed turn list for one provider session.
@@ -703,135 +994,155 @@ pub(crate) fn query_sessions(
     let limit = i64::try_from(request.limit).context("query limit exceeds SQLite INTEGER range")?;
     let offset =
         i64::try_from(request.offset).context("query offset exceeds SQLite INTEGER range")?;
+    query_sessions_with_params(
+        connection,
+        PROJECT_SESSIONS_SQL,
+        params![
+            request.project_id,
+            request.since,
+            request.until,
+            provider,
+            request.session_id,
+            limit,
+            offset
+        ],
+        request.project_root,
+    )
+}
+
+/// Queries indexed sessions with a supplied session-summary SQL statement.
+fn query_sessions_with_params<P>(
+    connection: &Connection,
+    sql: &str,
+    params: P,
+    project_root: Option<&Path>,
+) -> Result<Vec<SessionSummary>>
+where
+    P: rusqlite::Params,
+{
     let mut statement = connection
-        .prepare(PROJECT_SESSIONS_SQL)
+        .prepare(sql)
         .context("failed to prepare indexed session query")?;
     let rows = statement
-        .query_map(
-            params![
-                request.project_id,
-                request.since,
-                request.until,
-                provider,
-                request.session_id,
-                limit,
-                offset
-            ],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, i64>(6)?,
-                    row.get::<_, Option<String>>(7)?,
-                    row.get::<_, Option<String>>(8)?,
-                    row.get::<_, Option<String>>(9)?,
-                    row.get::<_, Option<i64>>(10)?,
-                    row.get::<_, Option<i64>>(11)?,
-                    row.get::<_, Option<i64>>(12)?,
-                    row.get::<_, Option<i64>>(13)?,
-                    row.get::<_, Option<i64>>(14)?,
-                    row.get::<_, Option<i64>>(15)?,
-                    row.get::<_, Option<i64>>(16)?,
-                    row.get::<_, Option<i64>>(17)?,
-                    row.get::<_, i64>(18)?,
-                    row.get::<_, i64>(19)?,
-                    row.get::<_, i64>(20)?,
-                    row.get::<_, Option<String>>(21)?,
-                    row.get::<_, Option<String>>(22)?,
-                    row.get::<_, Option<String>>(23)?,
-                    row.get::<_, i64>(24)?,
-                    row.get::<_, String>(25)?,
-                ))
-            },
-        )
+        .query_map(params, read_raw_session_summary_row)
         .context("failed to query indexed sessions")?
         .collect::<rusqlite::Result<Vec<_>>>()
         .context("failed to read indexed session rows")?;
     rows.into_iter()
-        .map(
-            |(
-                project_id,
-                provider,
-                session_id,
-                parent_session_id,
-                session_kind,
-                cwd,
-                turn_count,
-                latest_turn_at,
-                latest_status,
-                primary_model,
-                total_token_count,
-                provider_total_token_count,
-                input_uncached_token_count,
-                cache_read_token_count,
-                cache_write_token_count,
-                output_token_count,
-                reasoning_token_count,
-                effective_agent_runtime_ms,
-                changed_file_count,
-                added_line_count,
-                removed_line_count,
-                first_turn_at,
-                first_user_prompt,
-                final_agent_message,
-                aborted_turn_count,
-                edited_files_json,
-            )|
-             -> Result<_> {
-                let first_user_prompt_chars = first_user_prompt.as_deref().map(count_chars_u64);
-                let final_agent_message_chars = final_agent_message.as_deref().map(count_chars_u64);
-                Ok(SessionSummary {
-                    project_id,
-                    provider: parse_provider(&provider)?,
-                    session_id,
-                    parent_session_id,
-                    session_kind: parse_session_kind(&session_kind)?,
-                    cwd,
-                    turn_count: sql_count_to_u64(turn_count)?,
-                    latest_turn_at,
-                    latest_status: latest_status
-                        .as_deref()
-                        .map(parse_turn_status)
-                        .transpose()?,
-                    primary_model,
-                    token_usage: build_token_usage(
-                        provider_total_token_count,
-                        input_uncached_token_count,
-                        cache_read_token_count,
-                        cache_write_token_count,
-                        output_token_count,
-                        reasoning_token_count,
-                        total_token_count,
-                    )?,
-                    total_token_count: optional_sql_count_to_u64(total_token_count)?,
-                    effective_agent_runtime_ms: optional_sql_count_to_u64(
-                        effective_agent_runtime_ms,
-                    )?,
-                    changed_file_count: sql_count_to_u64(changed_file_count)?,
-                    added_line_count: sql_count_to_u64(added_line_count)?,
-                    removed_line_count: sql_count_to_u64(removed_line_count)?,
-                    first_turn_at,
-                    first_user_prompt,
-                    first_user_prompt_truncated: false,
-                    first_user_prompt_chars,
-                    first_user_prompt_total_chars: first_user_prompt_chars,
-                    final_agent_message,
-                    final_agent_message_truncated: false,
-                    final_agent_message_chars,
-                    final_agent_message_total_chars: final_agent_message_chars,
-                    aborted_turn_count: sql_count_to_u64(aborted_turn_count)?,
-                    edited_files: normalize_edited_files(
-                        parse_edited_files_json(&edited_files_json)?,
-                        request.project_root,
-                    ),
-                })
-            },
-        )
+        .map(|row| build_session_summary(row, project_root))
         .collect()
+}
+
+/// Reads one raw session-summary row from SQLite before type normalization.
+fn read_raw_session_summary_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawSessionSummaryRow> {
+    Ok((
+        row.get::<_, String>(0)?,
+        row.get::<_, String>(1)?,
+        row.get::<_, String>(2)?,
+        row.get::<_, Option<String>>(3)?,
+        row.get::<_, String>(4)?,
+        row.get::<_, String>(5)?,
+        row.get::<_, i64>(6)?,
+        row.get::<_, Option<String>>(7)?,
+        row.get::<_, Option<String>>(8)?,
+        row.get::<_, Option<String>>(9)?,
+        row.get::<_, Option<i64>>(10)?,
+        row.get::<_, Option<i64>>(11)?,
+        row.get::<_, Option<i64>>(12)?,
+        row.get::<_, Option<i64>>(13)?,
+        row.get::<_, Option<i64>>(14)?,
+        row.get::<_, Option<i64>>(15)?,
+        row.get::<_, Option<i64>>(16)?,
+        row.get::<_, Option<i64>>(17)?,
+        row.get::<_, i64>(18)?,
+        row.get::<_, i64>(19)?,
+        row.get::<_, i64>(20)?,
+        row.get::<_, Option<String>>(21)?,
+        row.get::<_, Option<String>>(22)?,
+        row.get::<_, Option<String>>(23)?,
+        row.get::<_, i64>(24)?,
+        row.get::<_, String>(25)?,
+    ))
+}
+
+/// Converts one raw SQLite session-summary row into the public payload shape.
+fn build_session_summary(
+    row: RawSessionSummaryRow,
+    project_root: Option<&Path>,
+) -> Result<SessionSummary> {
+    let (
+        project_id,
+        provider,
+        session_id,
+        parent_session_id,
+        session_kind,
+        cwd,
+        turn_count,
+        latest_turn_at,
+        latest_status,
+        primary_model,
+        total_token_count,
+        provider_total_token_count,
+        input_uncached_token_count,
+        cache_read_token_count,
+        cache_write_token_count,
+        output_token_count,
+        reasoning_token_count,
+        effective_agent_runtime_ms,
+        changed_file_count,
+        added_line_count,
+        removed_line_count,
+        first_turn_at,
+        first_user_prompt,
+        final_agent_message,
+        aborted_turn_count,
+        edited_files_json,
+    ) = row;
+    let first_user_prompt_chars = first_user_prompt.as_deref().map(count_chars_u64);
+    let final_agent_message_chars = final_agent_message.as_deref().map(count_chars_u64);
+    Ok(SessionSummary {
+        project_id,
+        provider: parse_provider(&provider)?,
+        session_id,
+        parent_session_id,
+        session_kind: parse_session_kind(&session_kind)?,
+        cwd,
+        turn_count: sql_count_to_u64(turn_count)?,
+        latest_turn_at,
+        latest_status: latest_status
+            .as_deref()
+            .map(parse_turn_status)
+            .transpose()?,
+        primary_model,
+        token_usage: build_token_usage(
+            provider_total_token_count,
+            input_uncached_token_count,
+            cache_read_token_count,
+            cache_write_token_count,
+            output_token_count,
+            reasoning_token_count,
+            total_token_count,
+        )?,
+        total_token_count: optional_sql_count_to_u64(total_token_count)?,
+        effective_agent_runtime_ms: optional_sql_count_to_u64(effective_agent_runtime_ms)?,
+        changed_file_count: sql_count_to_u64(changed_file_count)?,
+        added_line_count: sql_count_to_u64(added_line_count)?,
+        removed_line_count: sql_count_to_u64(removed_line_count)?,
+        first_turn_at,
+        first_user_prompt,
+        first_user_prompt_truncated: false,
+        first_user_prompt_chars,
+        first_user_prompt_total_chars: first_user_prompt_chars,
+        final_agent_message,
+        final_agent_message_truncated: false,
+        final_agent_message_chars,
+        final_agent_message_total_chars: final_agent_message_chars,
+        aborted_turn_count: sql_count_to_u64(aborted_turn_count)?,
+        edited_files: normalize_edited_files(
+            parse_edited_files_json(&edited_files_json)?,
+            project_root,
+        ),
+    })
 }
 
 /// Queries one indexed session summary for one configured project session.
