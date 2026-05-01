@@ -77,8 +77,9 @@ presentation; the default is `--color auto`.
   `insights` payloads
 - `darc list files` with no path selector ranks most-touched files; positional `<path-or-glob>` uses path mode, and
   `--path` is the explicit equivalent
-- session-scoped commands require a full session id or UUID prefix supplied either positionally or with `--session-id`;
-  Darc infers `--provider` when that id or prefix is unique within the project
+- session-scoped read commands use the identity form shown in the command matrix: `darc list files` uses
+  `--session`, while `darc list turns`, `darc show session`, `darc show turn`, and `darc stats turn` accept a
+  positional session id or `--session-id`; Darc infers `--provider` when that id or prefix is unique within the project
 - turn-scoped commands require a turn ordinal supplied either positionally or with `--turn-ordinal`
 - do not pass both positional and flag forms for the same value
 - pass `--provider` when the same session id or prefix exists for multiple providers
@@ -419,7 +420,7 @@ Today:
 - top-level session-list payloads additionally echo the resolved `provider`, `since`, `until`, and `touched_path` request filters as nullable fields, plus non-null `limit`, `offset`, and `has_more` pagination fields
 - top-level turn-list payloads echo nullable `since` and `until` filters plus non-null `limit`, `offset`, and `has_more` pagination fields
 - optional `--since` and `--until` filters apply to `latest_turn_at`, using inclusive lower-bound and exclusive upper-bound semantics
-- optional `--touched-path` requires at least one session-scoped, project-scoped file access of any access type whose canonical display path matches the provided glob; Darc scans session candidates in `latest_turn_at` order after the `--since` / `--until` bounds and then applies touched-path pagination
+- optional `--touching` requires at least one session-scoped, project-scoped file access of any access type whose canonical display path matches the provided glob; Darc scans session candidates in `latest_turn_at` order after the `--since` / `--until` bounds and then applies the file-touch filter before pagination. The payload echoes this request as `touched_path`.
 - `--since` and `--until` accept absolute ISO-8601 text or relative `<days>d` shorthand such as `5d`
 - each `token_usage.*` session field is `null` unless every indexed turn in that session carried a value for that exact field
 - `total_token_count` and `effective_agent_runtime_ms` are currently `null` on a session row unless every indexed turn in that session carried a value for that field

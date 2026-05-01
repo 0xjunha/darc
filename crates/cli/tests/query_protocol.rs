@@ -762,8 +762,8 @@ fn non_query_parse_errors_stay_clap_text() -> Result<()> {
 }
 
 #[test]
-fn sessions_query_applies_touched_path_filter() -> Result<()> {
-    let root = create_query_fixture_root("cli-query-sessions-touched-path")?;
+fn sessions_query_applies_touching_filter() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-sessions-touching")?;
     insert_query_fixture_session(&root, SECONDARY_SESSION_ID, "2026-04-07T10:00:00Z")?;
     let touched_path = root.join("repo").join("README.md");
     let touched_path = touched_path.to_string_lossy().into_owned();
@@ -775,7 +775,7 @@ fn sessions_query_applies_touched_path_filter() -> Result<()> {
         root.to_string_lossy().as_ref(),
         "--project-id",
         "repo-abc123",
-        "--touched-path",
+        "--touching",
         &touched_path,
     ])?;
 
@@ -795,6 +795,35 @@ fn sessions_query_applies_touched_path_filter() -> Result<()> {
             .collect::<Vec<_>>(),
         vec![PRIMARY_SESSION_ID]
     );
+
+    remove_root(&root)?;
+    Ok(())
+}
+
+#[test]
+fn sessions_query_accepts_touched_path_alias() -> Result<()> {
+    let root = create_query_fixture_root("cli-query-sessions-touched-path-alias")?;
+    let touched_path = root.join("repo").join("README.md");
+    let touched_path = touched_path.to_string_lossy().into_owned();
+
+    let output = run_darc([
+        "list",
+        "sessions",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--touched-path",
+        &touched_path,
+        "--limit",
+        "0",
+    ])?;
+
+    assert!(output.status.success());
+    let value = parse_json(&output.stdout, "stdout")?;
+    assert_eq!(value["schema"], "darc.query.sessions.v1");
+    assert_eq!(value["data"]["touched_path"], touched_path);
+    assert_eq!(value["data"]["limit"], 0);
 
     remove_root(&root)?;
     Ok(())
