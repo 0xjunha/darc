@@ -340,7 +340,7 @@ fn remove_root(root: &Path) -> Result<()> {
 fn workspace_query_emits_success_envelope() -> Result<()> {
     let root = create_query_fixture_root("cli-query-workspace")?;
     let output = run_darc([
-        "query",
+        "show",
         "workspace",
         "--root",
         root.to_string_lossy().as_ref(),
@@ -502,14 +502,14 @@ fn workspace_query_color_flags_preserve_json_contract() -> Result<()> {
     let root = create_query_fixture_root("cli-query-color")?;
     let root_arg = root.to_string_lossy();
 
-    let default_output = run_darc(["query", "workspace", "--root", root_arg.as_ref()])?;
+    let default_output = run_darc(["show", "workspace", "--root", root_arg.as_ref()])?;
     assert!(default_output.status.success());
     assert!(!contains_ansi(&default_output.stdout));
     let default_value = parse_json(&default_output.stdout, "stdout")?;
     assert_eq!(default_value["schema"], "darc.query.workspace.v1");
 
     let never_output = run_darc([
-        "query",
+        "show",
         "--color",
         "never",
         "workspace",
@@ -522,7 +522,7 @@ fn workspace_query_color_flags_preserve_json_contract() -> Result<()> {
     assert_eq!(never_value["schema"], "darc.query.workspace.v1");
 
     let always_output = run_darc([
-        "query",
+        "show",
         "--color",
         "always",
         "workspace",
@@ -538,7 +538,7 @@ fn workspace_query_color_flags_preserve_json_contract() -> Result<()> {
     let always_with_no_color = Command::new(darc_binary())
         .env("NO_COLOR", "1")
         .args([
-            "query",
+            "show",
             "--color",
             "always",
             "workspace",
@@ -558,7 +558,7 @@ fn workspace_query_color_flags_preserve_json_contract() -> Result<()> {
 fn sessions_query_emits_success_envelope() -> Result<()> {
     let root = create_query_fixture_root("cli-query-sessions")?;
     let output = run_darc([
-        "query",
+        "list",
         "sessions",
         "--root",
         root.to_string_lossy().as_ref(),
@@ -646,7 +646,7 @@ fn sessions_query_defaults_project_id_from_current_directory() -> Result<()> {
     let output = run_darc_in_dir(
         &project_root,
         [
-            "query",
+            "list",
             "sessions",
             "--root",
             root.to_string_lossy().as_ref(),
@@ -672,7 +672,7 @@ fn sessions_query_without_project_id_rejects_unconfigured_current_directory() ->
     let output = run_darc_in_dir(
         &root,
         [
-            "query",
+            "list",
             "sessions",
             "--root",
             root.to_string_lossy().as_ref(),
@@ -697,9 +697,7 @@ fn sessions_query_without_project_id_rejects_unconfigured_current_directory() ->
 #[test]
 fn query_parse_errors_emit_structured_json() -> Result<()> {
     let output = run_darc([
-        "query",
         "search",
-        "turns",
         "foo",
         "--mode",
         "literal",
@@ -723,8 +721,8 @@ fn query_parse_errors_emit_structured_json() -> Result<()> {
 }
 
 #[test]
-fn query_unknown_arguments_emit_structured_json() -> Result<()> {
-    let output = run_darc(["query", "workspace", "--json"])?;
+fn canonical_unknown_arguments_emit_structured_json() -> Result<()> {
+    let output = run_darc(["show", "workspace", "--json"])?;
 
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
@@ -741,15 +739,14 @@ fn query_unknown_arguments_emit_structured_json() -> Result<()> {
 }
 
 #[test]
-fn query_help_stays_clap_text() -> Result<()> {
+fn query_namespace_is_no_longer_callable() -> Result<()> {
     let output = run_darc(["query", "--help"])?;
 
-    assert!(output.status.success());
-    assert!(output.stderr.is_empty());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Usage: darc query [OPTIONS] <COMMAND>"));
-    assert!(stdout.contains("--color <COLOR>"));
-    assert!(serde_json::from_slice::<Value>(&output.stdout).is_err());
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unrecognized subcommand 'query'"));
+    assert!(serde_json::from_slice::<Value>(&output.stderr).is_err());
     Ok(())
 }
 
@@ -772,7 +769,7 @@ fn sessions_query_applies_touched_path_filter() -> Result<()> {
     let touched_path = touched_path.to_string_lossy().into_owned();
 
     let output = run_darc([
-        "query",
+        "list",
         "sessions",
         "--root",
         root.to_string_lossy().as_ref(),
@@ -810,7 +807,7 @@ fn files_query_path_mode_emits_success_envelope() -> Result<()> {
     let path = path.to_string_lossy().into_owned();
 
     let output = run_darc([
-        "query",
+        "list",
         "files",
         "--root",
         root.to_string_lossy().as_ref(),
@@ -853,7 +850,7 @@ fn files_query_without_selector_emits_most_touched_files() -> Result<()> {
     let root = create_query_fixture_root("cli-query-files-top")?;
 
     let output = run_darc([
-        "query",
+        "list",
         "files",
         "--root",
         root.to_string_lossy().as_ref(),
@@ -887,7 +884,7 @@ fn files_query_rejects_explicit_empty_selector() -> Result<()> {
     let root = create_query_fixture_root("cli-query-files-empty-selector")?;
 
     let output = run_darc([
-        "query",
+        "list",
         "files",
         "--root",
         root.to_string_lossy().as_ref(),
@@ -915,7 +912,7 @@ fn files_query_co_touched_mode_accepts_time_bounds() -> Result<()> {
     let root = create_query_fixture_root("cli-query-files-co-touch-time")?;
 
     let output = run_darc([
-        "query",
+        "list",
         "files",
         "--root",
         root.to_string_lossy().as_ref(),
@@ -950,12 +947,13 @@ fn session_files_query_emits_success_envelope() -> Result<()> {
     let root = create_query_fixture_root("cli-query-session-files")?;
 
     let output = run_darc([
-        "query",
-        "session-files",
+        "list",
+        "files",
         "--root",
         root.to_string_lossy().as_ref(),
         "--project-id",
         "repo-abc123",
+        "--session",
         PRIMARY_SESSION_ID,
     ])?;
 
@@ -1005,12 +1003,13 @@ fn session_bundle_query_emits_success_envelope() -> Result<()> {
     let root = create_query_fixture_root("cli-query-session-bundle")?;
 
     let output = run_darc([
-        "query",
-        "session-bundle",
+        "show",
+        "session",
         "--root",
         root.to_string_lossy().as_ref(),
         "--project-id",
         "repo-abc123",
+        "--session-id",
         PRIMARY_SESSION_ID,
     ])?;
 
@@ -1065,12 +1064,13 @@ fn session_scoped_query_requires_provider_for_cross_provider_session_id() -> Res
     )?;
 
     let ambiguous_output = run_darc([
-        "query",
-        "session-files",
+        "list",
+        "files",
         "--root",
         root.to_string_lossy().as_ref(),
         "--project-id",
         "repo-abc123",
+        "--session",
         PRIMARY_SESSION_ID,
     ])?;
     assert!(!ambiguous_output.status.success());
@@ -1083,14 +1083,15 @@ fn session_scoped_query_requires_provider_for_cross_provider_session_id() -> Res
     );
 
     let provider_output = run_darc([
-        "query",
-        "session-files",
+        "list",
+        "files",
         "--root",
         root.to_string_lossy().as_ref(),
         "--project-id",
         "repo-abc123",
         "--provider",
         "codex",
+        "--session",
         PRIMARY_SESSION_ID,
     ])?;
     assert!(provider_output.status.success());
@@ -1105,15 +1106,15 @@ fn session_scoped_query_requires_provider_for_cross_provider_session_id() -> Res
 fn session_files_query_rejects_invalid_session_id() -> Result<()> {
     let root = create_query_fixture_root("cli-query-session-files-invalid-id")?;
     let output = run_darc([
-        "query",
-        "session-files",
+        "list",
+        "files",
         "--root",
         root.to_string_lossy().as_ref(),
         "--project-id",
         "repo-abc123",
         "--provider",
         "codex",
-        "--session-id",
+        "--session",
         "not-a-session",
     ])?;
 
@@ -1131,15 +1132,15 @@ fn session_files_query_rejects_invalid_session_id() -> Result<()> {
 fn session_files_query_accepts_unambiguous_prefix_session_id() -> Result<()> {
     let root = create_query_fixture_root("cli-query-session-files-prefix-id")?;
     let output = run_darc([
-        "query",
-        "session-files",
+        "list",
+        "files",
         "--root",
         root.to_string_lossy().as_ref(),
         "--project-id",
         "repo-abc123",
         "--provider",
         "codex",
-        "--session-id",
+        "--session",
         PRIMARY_SESSION_PREFIX,
     ])?;
 
@@ -1158,15 +1159,15 @@ fn session_scoped_query_rejects_ambiguous_prefix_session_id() -> Result<()> {
     insert_query_fixture_session(&root, SECONDARY_SESSION_ID, "2026-04-06T10:05:00Z")?;
 
     let output = run_darc([
-        "query",
-        "session-files",
+        "list",
+        "files",
         "--root",
         root.to_string_lossy().as_ref(),
         "--project-id",
         "repo-abc123",
         "--provider",
         "codex",
-        "--session-id",
+        "--session",
         PRIMARY_SESSION_PREFIX,
     ])?;
 
@@ -1196,15 +1197,15 @@ fn session_scoped_query_reports_truncated_ambiguous_prefix_session_id() -> Resul
     }
 
     let output = run_darc([
-        "query",
-        "session-files",
+        "list",
+        "files",
         "--root",
         root.to_string_lossy().as_ref(),
         "--project-id",
         "repo-abc123",
         "--provider",
         "codex",
-        "--session-id",
+        "--session",
         PRIMARY_SESSION_PREFIX,
     ])?;
 
@@ -1230,15 +1231,15 @@ fn session_scoped_query_reports_truncated_ambiguous_prefix_session_id() -> Resul
 fn session_files_query_rejects_unknown_uuid_session_id() -> Result<()> {
     let root = create_query_fixture_root("cli-query-session-files-unknown-id")?;
     let output = run_darc([
-        "query",
-        "session-files",
+        "list",
+        "files",
         "--root",
         root.to_string_lossy().as_ref(),
         "--project-id",
         "repo-abc123",
         "--provider",
         "codex",
-        "--session-id",
+        "--session",
         UNKNOWN_SESSION_ID,
     ])?;
 
@@ -1301,7 +1302,7 @@ fn sessions_query_includes_first_turn_abort_counts_and_edited_files() -> Result<
     drop(connection);
 
     let output = run_darc([
-        "query",
+        "list",
         "sessions",
         "--root",
         root.to_string_lossy().as_ref(),
@@ -1350,7 +1351,7 @@ fn sessions_query_applies_since_and_until_filters() -> Result<()> {
     insert_query_fixture_session(&root, SECONDARY_SESSION_ID, "2026-04-07T10:00:00Z")?;
 
     let since_output = run_darc([
-        "query",
+        "list",
         "sessions",
         "--root",
         root.to_string_lossy().as_ref(),
@@ -1372,7 +1373,7 @@ fn sessions_query_applies_since_and_until_filters() -> Result<()> {
     );
 
     let until_output = run_darc([
-        "query",
+        "list",
         "sessions",
         "--root",
         root.to_string_lossy().as_ref(),
@@ -1394,7 +1395,7 @@ fn sessions_query_applies_since_and_until_filters() -> Result<()> {
     );
 
     let bounded_output = run_darc([
-        "query",
+        "list",
         "sessions",
         "--root",
         root.to_string_lossy().as_ref(),
@@ -1425,7 +1426,7 @@ fn sessions_query_applies_since_and_until_filters() -> Result<()> {
 fn turns_query_emits_success_envelope() -> Result<()> {
     let root = create_query_fixture_root("cli-query-turns")?;
     let output = run_darc([
-        "query",
+        "list",
         "turns",
         "--root",
         root.to_string_lossy().as_ref(),
@@ -1500,7 +1501,7 @@ fn turns_query_emits_success_envelope() -> Result<()> {
 fn turns_query_rejects_invalid_absolute_time_bounds() -> Result<()> {
     let root = create_query_fixture_root("cli-query-turns-invalid-bound")?;
     let output = run_darc([
-        "query",
+        "list",
         "turns",
         "--root",
         root.to_string_lossy().as_ref(),
@@ -1565,7 +1566,7 @@ fn turns_query_applies_since_and_until_filters_in_session_mode() -> Result<()> {
     drop(connection);
 
     let output = run_darc([
-        "query",
+        "list",
         "turns",
         "--root",
         root.to_string_lossy().as_ref(),
@@ -1599,7 +1600,7 @@ fn turns_query_applies_since_and_until_filters_in_session_mode() -> Result<()> {
     );
 
     let page_output = run_darc([
-        "query",
+        "list",
         "turns",
         "--root",
         root.to_string_lossy().as_ref(),
@@ -1638,7 +1639,7 @@ fn turns_query_applies_since_and_until_filters_in_session_mode() -> Result<()> {
 fn turns_query_oneline_view_emits_compact_rows() -> Result<()> {
     let root = create_query_fixture_root("cli-query-turns-oneline")?;
     let full_output = run_darc([
-        "query",
+        "list",
         "turns",
         "--root",
         root.to_string_lossy().as_ref(),
@@ -1650,7 +1651,7 @@ fn turns_query_oneline_view_emits_compact_rows() -> Result<()> {
         PRIMARY_SESSION_ID,
     ])?;
     let oneline_output = run_darc([
-        "query",
+        "list",
         "turns",
         "--root",
         root.to_string_lossy().as_ref(),
@@ -1734,16 +1735,14 @@ fn search_turns_query_emits_literal_evidence_matches() -> Result<()> {
                 1,
                 "2026-04-06T10:05:00Z",
                 "completed",
-                r##"[{"type":"tool_call","timestamp":"2026-04-06T10:05:01Z","call_id":"call-2","name":"exec_command","arguments":"{\"cmd\":\"darc query search turns --mode literal --query --output-last-message\",\"workdir\":\"/tmp/repo\"}"},{"type":"tool_call_output","timestamp":"2026-04-06T10:05:02Z","call_id":"call-2","output":"DARC_CODEX_BIN=/tmp/darc"}]"##,
+                r##"[{"type":"tool_call","timestamp":"2026-04-06T10:05:01Z","call_id":"call-2","name":"exec_command","arguments":"{\"cmd\":\"darc search --mode literal --query --output-last-message\",\"workdir\":\"/tmp/repo\"}"},{"type":"tool_call_output","timestamp":"2026-04-06T10:05:02Z","call_id":"call-2","output":"DARC_CODEX_BIN=/tmp/darc"}]"##,
             )
         },
     )?;
     drop(connection);
 
     let output = run_darc([
-        "query",
         "search",
-        "turns",
         "--root",
         root.to_string_lossy().as_ref(),
         "--project-id",
@@ -1793,11 +1792,9 @@ fn search_turns_query_emits_literal_evidence_matches() -> Result<()> {
     );
 
     let literal_colored = run_darc([
-        "query",
+        "search",
         "--color",
         "always",
-        "search",
-        "turns",
         "--root",
         root.to_string_lossy().as_ref(),
         "--project-id",
@@ -1828,9 +1825,7 @@ fn search_turns_query_emits_literal_evidence_matches() -> Result<()> {
     );
 
     let literal_content_only = run_darc([
-        "query",
         "search",
-        "turns",
         "--root",
         root.to_string_lossy().as_ref(),
         "--project-id",
@@ -1855,9 +1850,7 @@ fn search_turns_query_emits_literal_evidence_matches() -> Result<()> {
     );
 
     let regex_perl_space = run_darc([
-        "query",
         "search",
-        "turns",
         "--root",
         root.to_string_lossy().as_ref(),
         "--project-id",
@@ -1879,11 +1872,9 @@ fn search_turns_query_emits_literal_evidence_matches() -> Result<()> {
     );
 
     let regex_colored = run_darc([
-        "query",
+        "search",
         "--color",
         "always",
-        "search",
-        "turns",
         "--root",
         root.to_string_lossy().as_ref(),
         "--project-id",
@@ -1910,9 +1901,7 @@ fn search_turns_query_emits_literal_evidence_matches() -> Result<()> {
     );
 
     let literal_without_tool_args = run_darc([
-        "query",
         "search",
-        "turns",
         "--root",
         root.to_string_lossy().as_ref(),
         "--project-id",
@@ -1934,9 +1923,7 @@ fn search_turns_query_emits_literal_evidence_matches() -> Result<()> {
     assert_eq!(excluded_value["data"]["hits"], Value::Array(vec![]));
 
     let literal_hidden_output = run_darc([
-        "query",
         "search",
-        "turns",
         "--root",
         root.to_string_lossy().as_ref(),
         "--project-id",
@@ -1953,9 +1940,7 @@ fn search_turns_query_emits_literal_evidence_matches() -> Result<()> {
     assert_eq!(hidden_value["data"]["hits"], Value::Array(vec![]));
 
     let literal_output = run_darc([
-        "query",
         "search",
-        "turns",
         "--root",
         root.to_string_lossy().as_ref(),
         "--project-id",
@@ -1976,9 +1961,7 @@ fn search_turns_query_emits_literal_evidence_matches() -> Result<()> {
     );
 
     let regex_output = run_darc([
-        "query",
         "search",
-        "turns",
         "--root",
         root.to_string_lossy().as_ref(),
         "--project-id",
@@ -2007,7 +1990,7 @@ fn search_turns_query_emits_literal_evidence_matches() -> Result<()> {
 fn turns_query_rejects_removed_grep_flag() -> Result<()> {
     let root = create_query_fixture_root("cli-query-turns-grep-removed")?;
     let output = run_darc([
-        "query",
+        "list",
         "turns",
         "--root",
         root.to_string_lossy().as_ref(),
@@ -2036,7 +2019,7 @@ fn turns_query_rejects_removed_grep_flag() -> Result<()> {
 
 #[test]
 fn turns_query_help_lists_positional_session_and_optional_provider() -> Result<()> {
-    let output = run_darc(["query", "turns", "--help"])?;
+    let output = run_darc(["list", "turns", "--help"])?;
 
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
@@ -2052,7 +2035,7 @@ fn turns_query_help_lists_positional_session_and_optional_provider() -> Result<(
 fn turn_query_emits_success_envelope_and_raw_field() -> Result<()> {
     let root = create_query_fixture_root("cli-query-turn")?;
     let output = run_darc([
-        "query",
+        "show",
         "turn",
         "--root",
         root.to_string_lossy().as_ref(),
@@ -2087,7 +2070,7 @@ fn turn_query_emits_success_envelope_and_raw_field() -> Result<()> {
 fn turn_query_can_embed_derived_insights() -> Result<()> {
     let root = create_query_fixture_root("cli-query-turn-with-insights")?;
     let output = run_darc([
-        "query",
+        "show",
         "turn",
         "--root",
         root.to_string_lossy().as_ref(),
@@ -2161,7 +2144,7 @@ fn turn_query_embedded_insights_normalize_absolute_project_paths() -> Result<()>
     let root = create_query_fixture_root("cli-query-turn-insights-paths")?;
     insert_absolute_project_file_read_turn(&root, 1)?;
     let output = run_darc([
-        "query",
+        "show",
         "turn",
         "--root",
         root.to_string_lossy().as_ref(),
@@ -2297,7 +2280,7 @@ fn read_surfaces_normalize_known_project_paths() -> Result<()> {
 fn turn_query_narrative_view_strips_bulky_fields() -> Result<()> {
     let root = create_query_fixture_root("cli-query-turn-narrative")?;
     let output = run_darc([
-        "query",
+        "show",
         "turn",
         "--root",
         root.to_string_lossy().as_ref(),
@@ -2331,9 +2314,7 @@ fn turn_query_narrative_view_strips_bulky_fields() -> Result<()> {
 fn search_turns_query_emits_keyword_search_envelope() -> Result<()> {
     let root = create_query_fixture_root("cli-query-search-keyword")?;
     let output = run_darc([
-        "query",
         "search",
-        "turns",
         "--root",
         root.to_string_lossy().as_ref(),
         "--project-id",
@@ -2371,11 +2352,9 @@ fn search_turns_query_emits_keyword_search_envelope() -> Result<()> {
     );
 
     let colored = run_darc([
-        "query",
+        "search",
         "--color",
         "always",
-        "search",
-        "turns",
         "--root",
         root.to_string_lossy().as_ref(),
         "--project-id",
@@ -2405,9 +2384,7 @@ fn search_turns_query_accepts_cross_provider_full_session_id_filter() -> Result<
     )?;
 
     let output = run_darc([
-        "query",
         "search",
-        "turns",
         "--root",
         root.to_string_lossy().as_ref(),
         "--project-id",
@@ -2444,9 +2421,7 @@ fn search_turns_query_reports_truncated_ambiguous_prefix_filter() -> Result<()> 
     }
 
     let output = run_darc([
-        "query",
         "search",
-        "turns",
         "--root",
         root.to_string_lossy().as_ref(),
         "--project-id",
@@ -2478,9 +2453,7 @@ fn search_turns_query_reports_truncated_ambiguous_prefix_filter() -> Result<()> 
 fn search_turns_query_emits_file_search_envelope() -> Result<()> {
     let root = create_query_fixture_root("cli-query-search-file")?;
     let output = run_darc([
-        "query",
         "search",
-        "turns",
         "--root",
         root.to_string_lossy().as_ref(),
         "--project-id",
@@ -2501,11 +2474,9 @@ fn search_turns_query_emits_file_search_envelope() -> Result<()> {
     assert_eq!(value["data"]["hits"][0]["matched_paths_truncated"], false);
 
     let colored = run_darc([
-        "query",
+        "search",
         "--color",
         "always",
-        "search",
-        "turns",
         "--root",
         root.to_string_lossy().as_ref(),
         "--project-id",
@@ -2524,9 +2495,7 @@ fn search_turns_query_emits_file_search_envelope() -> Result<()> {
     assert_eq!(colored_value, value);
 
     let path_output = run_darc([
-        "query",
         "search",
-        "turns",
         "--root",
         root.to_string_lossy().as_ref(),
         "--project-id",
@@ -2547,11 +2516,9 @@ fn search_turns_query_emits_file_search_envelope() -> Result<()> {
     );
 
     let colored_path = run_darc([
-        "query",
+        "search",
         "--color",
         "always",
-        "search",
-        "turns",
         "--root",
         root.to_string_lossy().as_ref(),
         "--project-id",
@@ -2570,9 +2537,7 @@ fn search_turns_query_emits_file_search_envelope() -> Result<()> {
     assert_eq!(colored_path_value, path_value);
 
     let fragment_output = run_darc([
-        "query",
         "search",
-        "turns",
         "--root",
         root.to_string_lossy().as_ref(),
         "--project-id",
@@ -2592,11 +2557,9 @@ fn search_turns_query_emits_file_search_envelope() -> Result<()> {
     );
 
     let colored_fragment = run_darc([
-        "query",
+        "search",
         "--color",
         "always",
-        "search",
-        "turns",
         "--root",
         root.to_string_lossy().as_ref(),
         "--project-id",
@@ -2625,8 +2588,7 @@ fn search_turns_query_emits_file_search_envelope() -> Result<()> {
 fn workspace_insights_query_emits_success_envelope() -> Result<()> {
     let root = create_query_fixture_root("cli-query-workspace-insights")?;
     let output = run_darc([
-        "query",
-        "insights",
+        "stats",
         "workspace",
         "--root",
         root.to_string_lossy().as_ref(),
@@ -2652,8 +2614,7 @@ fn workspace_insights_query_emits_success_envelope() -> Result<()> {
 fn project_insights_query_emits_success_envelope() -> Result<()> {
     let root = create_query_fixture_root("cli-query-project-insights")?;
     let output = run_darc([
-        "query",
-        "insights",
+        "stats",
         "project",
         "--root",
         root.to_string_lossy().as_ref(),
@@ -2687,8 +2648,7 @@ fn project_insights_query_normalizes_absolute_project_paths() -> Result<()> {
     let root = create_query_fixture_root("cli-query-project-insights-paths")?;
     insert_absolute_project_file_read_turn(&root, 1)?;
     let output = run_darc([
-        "query",
-        "insights",
+        "stats",
         "project",
         "--root",
         root.to_string_lossy().as_ref(),
@@ -2727,8 +2687,7 @@ fn project_insights_query_normalizes_absolute_project_paths() -> Result<()> {
 fn turn_insights_query_emits_success_envelope() -> Result<()> {
     let root = create_query_fixture_root("cli-query-turn-insights")?;
     let output = run_darc([
-        "query",
-        "insights",
+        "stats",
         "turn",
         "--root",
         root.to_string_lossy().as_ref(),
@@ -2786,8 +2745,7 @@ fn turn_insights_query_normalizes_absolute_project_paths() -> Result<()> {
     let root = create_query_fixture_root("cli-query-turn-insights-paths")?;
     insert_absolute_project_file_read_turn(&root, 1)?;
     let output = run_darc([
-        "query",
-        "insights",
+        "stats",
         "turn",
         "--root",
         root.to_string_lossy().as_ref(),
@@ -2844,8 +2802,7 @@ fn turn_insights_query_emits_shell_commands() -> Result<()> {
     drop(connection);
 
     let output = run_darc([
-        "query",
-        "insights",
+        "stats",
         "turn",
         "--root",
         root.to_string_lossy().as_ref(),
@@ -2881,8 +2838,7 @@ fn turn_insights_query_emits_shell_commands() -> Result<()> {
 fn turn_insights_query_missing_turn_emits_error_envelope() -> Result<()> {
     let root = create_query_fixture_root("cli-query-turn-insights-missing")?;
     let output = run_darc([
-        "query",
-        "insights",
+        "stats",
         "turn",
         "--root",
         root.to_string_lossy().as_ref(),
@@ -2917,7 +2873,7 @@ fn turn_insights_query_missing_turn_emits_error_envelope() -> Result<()> {
 fn turns_query_accepts_unambiguous_prefix_session_id() -> Result<()> {
     let root = create_query_fixture_root("cli-query-turns-prefix-id")?;
     let output = run_darc([
-        "query",
+        "list",
         "turns",
         "--root",
         root.to_string_lossy().as_ref(),
@@ -2942,9 +2898,7 @@ fn turns_query_accepts_unambiguous_prefix_session_id() -> Result<()> {
 fn search_turns_query_rejects_unknown_session_id_filter() -> Result<()> {
     let root = create_query_fixture_root("cli-query-search-unknown-session-id")?;
     let output = run_darc([
-        "query",
         "search",
-        "turns",
         "--root",
         root.to_string_lossy().as_ref(),
         "--project-id",
@@ -2971,9 +2925,7 @@ fn search_turns_query_rejects_unknown_session_id_filter() -> Result<()> {
 fn search_turns_query_rejects_tool_output_flag_for_keyword_mode() -> Result<()> {
     let root = create_query_fixture_root("cli-query-search-tool-output-keyword")?;
     let output = run_darc([
-        "query",
         "search",
-        "turns",
         "--root",
         root.to_string_lossy().as_ref(),
         "--project-id",
@@ -2992,9 +2944,7 @@ fn search_turns_query_rejects_tool_output_flag_for_keyword_mode() -> Result<()> 
     );
 
     let match_limit_output = run_darc([
-        "query",
         "search",
-        "turns",
         "--root",
         root.to_string_lossy().as_ref(),
         "--project-id",
@@ -3050,7 +3000,7 @@ fn canonical_search_errors_use_canonical_mode_language() -> Result<()> {
 fn turn_query_rejects_explicit_narrative_raw_conflict() -> Result<()> {
     let root = create_query_fixture_root("cli-query-turn-narrative-raw-conflict")?;
     let output = run_darc([
-        "query",
+        "show",
         "turn",
         "--root",
         root.to_string_lossy().as_ref(),
@@ -3085,7 +3035,7 @@ fn turn_query_rejects_explicit_narrative_raw_conflict() -> Result<()> {
 fn turn_query_rejects_invalid_session_id() -> Result<()> {
     let root = create_query_fixture_root("cli-query-turn-invalid-session-id")?;
     let output = run_darc([
-        "query",
+        "show",
         "turn",
         "--root",
         root.to_string_lossy().as_ref(),
@@ -3113,8 +3063,7 @@ fn turn_query_rejects_invalid_session_id() -> Result<()> {
 fn turn_insights_query_accepts_unambiguous_prefix_session_id() -> Result<()> {
     let root = create_query_fixture_root("cli-query-turn-insights-prefix-id")?;
     let output = run_darc([
-        "query",
-        "insights",
+        "stats",
         "turn",
         "--root",
         root.to_string_lossy().as_ref(),
@@ -3141,8 +3090,8 @@ fn turn_insights_query_accepts_unambiguous_prefix_session_id() -> Result<()> {
 fn resolve_session_query_emits_single_match_success() -> Result<()> {
     let root = create_query_fixture_root("cli-query-resolve-session-single")?;
     let output = run_darc([
-        "query",
-        "resolve-session",
+        "resolve",
+        "session",
         PRIMARY_SESSION_PREFIX,
         "--root",
         root.to_string_lossy().as_ref(),
@@ -3177,8 +3126,8 @@ fn resolve_session_query_lists_matches_and_reports_ambiguity() -> Result<()> {
     )?;
 
     let output = run_darc([
-        "query",
-        "resolve-session",
+        "resolve",
+        "session",
         PRIMARY_SESSION_PREFIX,
         "--root",
         root.to_string_lossy().as_ref(),
@@ -3206,8 +3155,8 @@ fn resolve_session_query_lists_matches_and_reports_ambiguity() -> Result<()> {
     );
 
     let provider_output = run_darc([
-        "query",
-        "resolve-session",
+        "resolve",
+        "session",
         PRIMARY_SESSION_PREFIX,
         "--root",
         root.to_string_lossy().as_ref(),
@@ -3235,8 +3184,8 @@ fn resolve_session_query_lists_matches_and_reports_ambiguity() -> Result<()> {
     );
 
     let ambiguous_output = run_darc([
-        "query",
-        "resolve-session",
+        "resolve",
+        "session",
         PRIMARY_SESSION_PREFIX,
         "--root",
         root.to_string_lossy().as_ref(),
@@ -3266,8 +3215,8 @@ fn resolve_session_query_lists_matches_and_reports_ambiguity() -> Result<()> {
 fn resolve_session_query_reports_unknown_full_uuid() -> Result<()> {
     let root = create_query_fixture_root("cli-query-resolve-session-unknown")?;
     let output = run_darc([
-        "query",
-        "resolve-session",
+        "resolve",
+        "session",
         UNKNOWN_SESSION_ID,
         "--root",
         root.to_string_lossy().as_ref(),
@@ -3293,8 +3242,8 @@ fn resolve_session_query_reports_truncation() -> Result<()> {
     }
 
     let output = run_darc([
-        "query",
-        "resolve-session",
+        "resolve",
+        "session",
         PRIMARY_SESSION_PREFIX,
         "--root",
         root.to_string_lossy().as_ref(),
@@ -3315,8 +3264,8 @@ fn resolve_session_query_reports_truncation() -> Result<()> {
 fn resolve_session_pick_one_feeds_session_bundle() -> Result<()> {
     let root = create_query_fixture_root("cli-query-resolve-session-e2e")?;
     let resolved = run_darc([
-        "query",
-        "resolve-session",
+        "resolve",
+        "session",
         PRIMARY_SESSION_PREFIX,
         "--root",
         root.to_string_lossy().as_ref(),
@@ -3331,8 +3280,8 @@ fn resolve_session_pick_one_feeds_session_bundle() -> Result<()> {
     assert_eq!(resolved_session_id, PRIMARY_SESSION_ID);
 
     let bundle = run_darc([
-        "query",
-        "session-bundle",
+        "show",
+        "session",
         "--root",
         root.to_string_lossy().as_ref(),
         "--project-id",
@@ -3345,8 +3294,8 @@ fn resolve_session_pick_one_feeds_session_bundle() -> Result<()> {
     assert!(bundle.status.success());
 
     let prefix_bundle = run_darc([
-        "query",
-        "session-bundle",
+        "show",
+        "session",
         "--root",
         root.to_string_lossy().as_ref(),
         "--project-id",
@@ -3369,7 +3318,7 @@ fn query_errors_emit_structured_stderr_envelope() -> Result<()> {
     let root = test_root("cli-query-error");
     let missing_root = root.join("missing-root");
     let output = run_darc([
-        "query",
+        "list",
         "sessions",
         "--root",
         missing_root.to_string_lossy().as_ref(),

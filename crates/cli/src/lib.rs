@@ -167,13 +167,6 @@ enum Commands {
     Service(ServiceArgs),
     #[command(
         hide = true,
-        about = "Query Darc state through the machine-readable read protocol",
-        long_about = "Query Darc state through the machine-readable read protocol.\n\nQuery commands emit JSON envelopes on stdout. The JSON contract is stable for scripts and agents; terminal color is presentation-only and controlled by `--color`.",
-        after_help = "Examples:\n  darc query sessions --limit 5\n  darc query turn <SESSION_ID> 0 --view narrative\n  darc query --color always search turns \"panic\" --limit 5 | less -R"
-    )]
-    Query(Box<QueryArgs>),
-    #[command(
-        hide = true,
         about = "Audit Codex rollout schema compatibility against stable release tags",
         long_about = "Audit Codex rollout schema compatibility against stable release tags.\n\nThe audit fetches release metadata from GitHub Releases and may hit GitHub API rate limits when run anonymously.\n\nGitHub API authentication:\n- Prefer GH_TOKEN when it is set.\n- Otherwise use GITHUB_TOKEN.\n- Personal access tokens are accepted."
     )]
@@ -744,60 +737,6 @@ enum ProjectCommands {
     /// Rebuild one old project's history into the current renamed project.
     #[command(name = "rename-from")]
     RenameFrom(RenameArgs),
-}
-
-/// Queries darc state through the machine-readable read protocol.
-#[derive(Debug, Args)]
-struct QueryArgs {
-    #[arg(
-        long,
-        value_enum,
-        default_value_t = ColorArg::Auto,
-        help_heading = "Output",
-        help = "Control ANSI color in query JSON output"
-    )]
-    color: ColorArg,
-
-    #[command(subcommand)]
-    command: QueryCommands,
-}
-
-/// Represents the supported machine-readable query commands.
-#[derive(Debug, Subcommand)]
-enum QueryCommands {
-    /// Queries the workspace/sidebar payload for one darc root.
-    Workspace(QueryWorkspaceArgs),
-    /// Resolves one full session id or UUID prefix into canonical matches.
-    ResolveSession(QueryResolveSessionArgs),
-    /// Queries the session list for one configured project.
-    Sessions(QuerySessionsArgs),
-    /// Lists most-touched files or pivots from one file selector.
-    #[command(
-        about = "List most-touched files or pivot from one file selector",
-        long_about = "List most-touched files or pivot from one file selector.\n\nWith no PATH, --path, or --co-touched-with, this ranks files by touches across the project.\nPass PATH or --path to return sessions that touched matching paths.\nPass --co-touched-with to return files touched in the same sessions as the seed path.",
-        after_help = "Examples:\n  darc query files --limit 20\n  darc query files src/lib.rs\n  darc query files --co-touched-with src/lib.rs --limit 10"
-    )]
-    Files(QueryFilesArgs),
-    /// Queries per-file access summaries for one session.
-    SessionFiles(QuerySessionFilesArgs),
-    #[command(
-        about = "Query one composite session bundle for one session",
-        long_about = "Query one composite session bundle for one session.\n\nThis combines the session summary, touched files, and paginated turn details into one JSON envelope. Compact session view keeps prompt/final-message previews bounded for agent context.",
-        after_help = "Examples:\n  darc query session-bundle <SESSION_ID>\n  darc query session-bundle <SESSION_ID> --view full --turn-limit 10\n  darc query session-bundle --session-id <SESSION_ID> --session-view full"
-    )]
-    SessionBundle(QuerySessionBundleArgs),
-    /// Queries the turn list for one session.
-    Turns(QueryTurnsArgs),
-    #[command(
-        about = "Query one turn detail payload",
-        long_about = "Query one turn detail payload.\n\nNarrative view keeps bulky tool arguments, outputs, and raw payload blobs out of the response. Use `--include-raw` when you need debug fields such as `raw_steps_json`.",
-        after_help = "Examples:\n  darc query turn <SESSION_ID> 0\n  darc query turn <SESSION_ID> 0 --include-insights\n  darc query turn --session-id <SESSION_ID> --turn-ordinal 0 --include-raw"
-    )]
-    Turn(QueryTurnArgs),
-    /// Queries one paginated search payload.
-    Search(QuerySearchArgs),
-    /// Queries one insights payload.
-    Insights(QueryInsightsArgs),
 }
 
 /// Queries the workspace/sidebar payload for one darc root.
@@ -1510,24 +1449,6 @@ struct QueryTurnArgs {
     step_offset: usize,
 }
 
-/// Queries one search payload.
-#[derive(Debug, Args)]
-struct QuerySearchArgs {
-    #[command(subcommand)]
-    command: QuerySearchCommands,
-}
-
-/// Represents the supported machine-readable search query commands.
-#[derive(Debug, Subcommand)]
-enum QuerySearchCommands {
-    #[command(
-        about = "Search indexed turns for one configured project",
-        long_about = "Search indexed turns for one configured project.\n\nKeyword mode uses the SQLite full-text index. Literal and regex modes scan indexed turn evidence, excluding bulky tool output unless `--include-tool-output` or field filters opt into it. File modes search touched paths rather than message text.",
-        after_help = "Examples:\n  darc query search turns \"panic\" --limit 5\n  darc query search turns --mode literal \"staged init\" --field user-message\n  darc query --color always search turns --mode regex \"Process exited with code [0-9]+\" | less -R"
-    )]
-    Turns(QuerySearchTurnsArgs),
-}
-
 /// Queries paginated turn search results for one configured project.
 #[derive(Debug, Args)]
 struct QuerySearchTurnsArgs {
@@ -1663,24 +1584,6 @@ struct QuerySearchTurnsArgs {
         help = "Return every matched path in file-search hits"
     )]
     include_all_matched_paths: bool,
-}
-
-/// Queries one workspace or project insights payload.
-#[derive(Debug, Args)]
-struct QueryInsightsArgs {
-    #[command(subcommand)]
-    command: QueryInsightsCommands,
-}
-
-/// Represents the supported machine-readable insights query commands.
-#[derive(Debug, Subcommand)]
-enum QueryInsightsCommands {
-    /// Queries the workspace insights payload for one rolling day window.
-    Workspace(QueryWorkspaceInsightsArgs),
-    /// Queries the project insights payload for one configured project.
-    Project(QueryProjectInsightsArgs),
-    /// Queries the turn insights payload for one session turn.
-    Turn(QueryTurnInsightsArgs),
 }
 
 /// Queries the workspace insights payload for one rolling day window.
@@ -1955,7 +1858,6 @@ fn run_cli(cli: Cli) -> i32 {
         Commands::Sync(args) => standard_exit(run_sync(args)),
         Commands::Index(args) => standard_exit(run_index(args)),
         Commands::Service(args) => standard_exit(run_service(args)),
-        Commands::Query(args) => query_exit(run_query(*args)),
         Commands::CodexSchemaAudit(args) => run_codex_schema_audit_command(args),
         Commands::ClaudeSchemaAudit(args) => run_claude_schema_audit_command(args),
     }
@@ -1979,7 +1881,7 @@ fn clap_error_exit(error: clap::Error, args: &[OsString]) -> i32 {
 fn is_json_read_invocation(args: &[OsString]) -> bool {
     matches!(
         args.get(1).and_then(|arg| arg.to_str()),
-        Some("query" | "list" | "show" | "search" | "stats" | "resolve")
+        Some("list" | "show" | "search" | "stats" | "resolve")
     )
 }
 
@@ -2160,23 +2062,6 @@ fn run_list_files(output: &QueryOutput, args: ListFilesArgs) -> Result<()> {
     )
 }
 
-/// Dispatches the supported machine-readable query commands.
-fn run_query(args: QueryArgs) -> Result<()> {
-    let output = QueryOutput::new(args.color);
-    match args.command {
-        QueryCommands::Workspace(args) => run_query_workspace(&output, args),
-        QueryCommands::ResolveSession(args) => run_query_resolve_session(&output, args),
-        QueryCommands::Sessions(args) => run_query_sessions(&output, args),
-        QueryCommands::Files(args) => run_query_files(&output, args),
-        QueryCommands::SessionFiles(args) => run_query_session_files(&output, args),
-        QueryCommands::SessionBundle(args) => run_query_session_bundle(&output, args),
-        QueryCommands::Turns(args) => run_query_turns(&output, args),
-        QueryCommands::Turn(args) => run_query_turn(&output, args),
-        QueryCommands::Search(args) => run_query_search(&output, args),
-        QueryCommands::Insights(args) => run_query_insights(&output, args),
-    }
-}
-
 /// Queries the workspace/sidebar payload for one darc root.
 fn run_query_workspace(output: &QueryOutput, args: QueryWorkspaceArgs) -> Result<()> {
     print_json_envelope(
@@ -2261,7 +2146,7 @@ fn run_query_files(output: &QueryOutput, args: QueryFilesArgs) -> Result<()> {
         args.path_arg.as_deref(),
     )?;
     if path.is_some() && args.co_touched_with.is_some() {
-        bail!("query files accepts either PATH/--path or --co-touched-with, not both");
+        bail!("list files accepts either PATH/--path or --co-touched-with, not both");
     }
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
     let since = args
@@ -2432,13 +2317,6 @@ fn run_query_turn(output: &QueryOutput, args: QueryTurnArgs) -> Result<()> {
     print_json_envelope(output, "darc.query.turn.v1", &data)
 }
 
-/// Dispatches the supported machine-readable search query commands.
-fn run_query_search(output: &QueryOutput, args: QuerySearchArgs) -> Result<()> {
-    match args.command {
-        QuerySearchCommands::Turns(args) => run_query_search_turns(output, args),
-    }
-}
-
 /// Queries one paginated turn-search payload.
 fn run_query_search_turns(output: &QueryOutput, args: QuerySearchTurnsArgs) -> Result<()> {
     let query = required_named_or_positional(
@@ -2495,15 +2373,6 @@ fn run_query_search_turns(output: &QueryOutput, args: QuerySearchTurnsArgs) -> R
         },
     )?;
     print_search_turns_json_envelope(output, &data)
-}
-
-/// Dispatches the supported machine-readable insights query commands.
-fn run_query_insights(output: &QueryOutput, args: QueryInsightsArgs) -> Result<()> {
-    match args.command {
-        QueryInsightsCommands::Workspace(args) => run_query_workspace_insights(output, args),
-        QueryInsightsCommands::Project(args) => run_query_project_insights(output, args),
-        QueryInsightsCommands::Turn(args) => run_query_turn_insights(output, args),
-    }
 }
 
 /// Queries the workspace insights payload for one rolling host-local day window.
@@ -3172,7 +3041,7 @@ fn required_named_or_positional<'a>(
         positional_value,
     )?
     .ok_or_else(|| {
-        anyhow!("query command requires {value_label} as {positional_name} or {flag_name}")
+        anyhow!("read command requires {value_label} as {positional_name} or {flag_name}")
     })
 }
 
@@ -3206,13 +3075,13 @@ fn resolve_turn_identity_args<'a>(
             "pass turn identity either as SESSION_ID TURN_ORDINAL or with --session-id/--turn-ordinal, not both"
         ),
         (Some(_), None, None, None) => {
-            bail!("query command requires turn ordinal as TURN_ORDINAL or --turn-ordinal")
+            bail!("read command requires turn ordinal as TURN_ORDINAL or --turn-ordinal")
         }
         (None, Some(_), None, None) => {
-            bail!("query command requires session id as SESSION_ID or --session-id")
+            bail!("read command requires session id as SESSION_ID or --session-id")
         }
         (None, None, None, None) => bail!(
-            "query command requires session id and turn ordinal as SESSION_ID TURN_ORDINAL or --session-id/--turn-ordinal"
+            "read command requires session id and turn ordinal as SESSION_ID TURN_ORDINAL or --session-id/--turn-ordinal"
         ),
         _ => bail!("unexpected extra positional turn identity arguments"),
     }
@@ -3407,7 +3276,7 @@ fn turn_list_view_arg_to_view(view: TurnListViewArg) -> TurnsView {
     }
 }
 
-/// Stores one compact row for session-scoped `darc query turns --view oneline`.
+/// Stores one compact row for session-scoped `darc list turns --view oneline`.
 #[derive(Debug, Clone, Serialize)]
 struct TurnsOnelineTurnRow {
     turn_ordinal: u64,
@@ -3470,7 +3339,7 @@ impl TurnsOnelineQueryData {
     }
 }
 
-/// Stores the `--pick-one` success payload for `darc query resolve-session`.
+/// Stores the `--pick-one` success payload for `darc resolve session`.
 #[derive(Debug, Clone, Serialize)]
 struct ResolveSessionPickOneQueryData {
     query: String,

@@ -455,7 +455,7 @@ fn build_files_query(
             })
         }
         (Some(_), Some(_)) => {
-            bail!("query files requires exactly one of --path or --co-touched-with")
+            bail!("file query requires exactly one of --path or --co-touched-with")
         }
     }
 }
