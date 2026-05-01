@@ -2207,6 +2207,26 @@ fn search_turns_query_emits_keyword_search_envelope() -> Result<()> {
         Value::Array(vec![])
     );
 
+    let colored = run_darc([
+        "query",
+        "--color",
+        "always",
+        "search",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "Inspect",
+    ])?;
+
+    assert!(colored.status.success());
+    assert!(contains_ansi(&colored.stdout));
+    assert!(contains_highlighted_text(&colored.stdout, "Inspect"));
+    let stripped = strip_ansi(&colored.stdout);
+    let colored_value = parse_json(&stripped, "stripped stdout")?;
+    assert_eq!(colored_value, value);
+
     remove_root(&root)?;
     Ok(())
 }
@@ -2317,6 +2337,29 @@ fn search_turns_query_emits_file_search_envelope() -> Result<()> {
     assert_eq!(value["data"]["hits"][0]["matched_paths"][0], "README.md");
     assert_eq!(value["data"]["hits"][0]["matched_paths_truncated"], false);
 
+    let colored = run_darc([
+        "query",
+        "--color",
+        "always",
+        "search",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--mode",
+        "file-name",
+        "--query",
+        "README.md",
+    ])?;
+
+    assert!(colored.status.success());
+    assert!(contains_ansi(&colored.stdout));
+    assert!(contains_highlighted_text(&colored.stdout, "README.md"));
+    let stripped = strip_ansi(&colored.stdout);
+    let colored_value = parse_json(&stripped, "stripped stdout")?;
+    assert_eq!(colored_value, value);
+
     let path_output = run_darc([
         "query",
         "search",
@@ -2340,6 +2383,29 @@ fn search_turns_query_emits_file_search_envelope() -> Result<()> {
         "README.md"
     );
 
+    let colored_path = run_darc([
+        "query",
+        "--color",
+        "always",
+        "search",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--mode",
+        "file-path",
+        "--query",
+        "README.md",
+    ])?;
+
+    assert!(colored_path.status.success());
+    assert!(contains_ansi(&colored_path.stdout));
+    assert!(contains_highlighted_text(&colored_path.stdout, "README.md"));
+    let path_stripped = strip_ansi(&colored_path.stdout);
+    let colored_path_value = parse_json(&path_stripped, "stripped stdout")?;
+    assert_eq!(colored_path_value, path_value);
+
     let fragment_output = run_darc([
         "query",
         "search",
@@ -2351,7 +2417,7 @@ fn search_turns_query_emits_file_search_envelope() -> Result<()> {
         "--mode",
         "path-fragment",
         "--query",
-        "README",
+        "readme",
     ])?;
 
     assert!(fragment_output.status.success());
@@ -2361,6 +2427,32 @@ fn search_turns_query_emits_file_search_envelope() -> Result<()> {
         fragment_value["data"]["hits"][0]["matched_paths"][0],
         "README.md"
     );
+
+    let colored_fragment = run_darc([
+        "query",
+        "--color",
+        "always",
+        "search",
+        "turns",
+        "--root",
+        root.to_string_lossy().as_ref(),
+        "--project-id",
+        "repo-abc123",
+        "--mode",
+        "path-fragment",
+        "--query",
+        "readme",
+    ])?;
+
+    assert!(colored_fragment.status.success());
+    assert!(contains_ansi(&colored_fragment.stdout));
+    assert!(contains_highlighted_text(
+        &colored_fragment.stdout,
+        "README"
+    ));
+    let fragment_stripped = strip_ansi(&colored_fragment.stdout);
+    let colored_fragment_value = parse_json(&fragment_stripped, "stripped stdout")?;
+    assert_eq!(colored_fragment_value, fragment_value);
 
     remove_root(&root)?;
     Ok(())

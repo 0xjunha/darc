@@ -2865,25 +2865,65 @@ fn color_json(json: &str) -> String {
     output
 }
 
-/// Adds ANSI match highlighting to nested search-match snippet strings.
+/// Adds ANSI match highlighting to mode-specific search result strings.
 fn color_search_turns_json(json: &str, data: &SearchTurnsQueryData) -> Result<String> {
     let mut colored = color_json(json);
-    if !matches!(data.mode, SearchMode::Literal | SearchMode::Regex) {
-        return Ok(colored);
-    }
-
-    let mut cursor = 0;
     let matcher = SearchSnippetMatcher::new(data.mode, &data.query)?;
+    match data.mode {
+        SearchMode::Keyword => {
+            color_search_snippets(&mut colored, data, &matcher);
+        }
+        SearchMode::Literal | SearchMode::Regex => {
+            color_search_match_snippets(&mut colored, data, &matcher);
+        }
+        SearchMode::FileName | SearchMode::PathFragment => {
+            color_search_matched_paths(&mut colored, data, &matcher);
+        }
+        SearchMode::FilePath => {
+            color_search_matched_path_items(&mut colored, data, |path| Some(0..path.len()));
+        }
+    }
+    Ok(colored)
+}
+
+/// Highlights top-level keyword search snippets where a visible query term appears.
+fn color_search_snippets(
+    colored: &mut String,
+    data: &SearchTurnsQueryData,
+    matcher: &SearchSnippetMatcher,
+) {
+    let mut cursor = 0;
+    for hit in &data.hits {
+        let Some(snippet) = &hit.snippet else {
+            continue;
+        };
+        let Some(range) = non_empty_match(matcher.find(snippet)) else {
+            continue;
+        };
+        let Some((value_start, token_len)) = find_colored_snippet_value(colored, snippet, cursor)
+        else {
+            continue;
+        };
+        let highlighted = color_json_string_with_match(snippet, range);
+        colored.replace_range(value_start..value_start + token_len, &highlighted);
+        cursor = value_start + highlighted.len();
+    }
+}
+
+/// Highlights nested exact-search match snippets where the exact matcher still finds the term.
+fn color_search_match_snippets(
+    colored: &mut String,
+    data: &SearchTurnsQueryData,
+    matcher: &SearchSnippetMatcher,
+) {
+    let mut cursor = 0;
     for hit in &data.hits {
         for matched in &hit.matches {
-            let Some(range) = matcher.find(&matched.snippet) else {
+            let Some(range) = non_empty_match(matcher.find(&matched.snippet)) else {
                 continue;
             };
-            if range.is_empty() {
-                continue;
-            }
             let Some((value_start, token_len)) =
-                find_colored_snippet_value(&colored, &matched.snippet, cursor)
+                find_colored_snippet_value(colored, &matched.snippet, cursor)
             else {
                 continue;
             };
@@ -2892,7 +2932,49 @@ fn color_search_turns_json(json: &str, data: &SearchTurnsQueryData) -> Result<St
             cursor = value_start + highlighted.len();
         }
     }
-    Ok(colored)
+}
+
+/// Highlights matched file path strings for file-search modes with literal display spans.
+fn color_search_matched_paths(
+    colored: &mut String,
+    data: &SearchTurnsQueryData,
+    matcher: &SearchSnippetMatcher,
+) {
+    color_search_matched_path_items(colored, data, |path| matcher.find(path));
+}
+
+/// Highlights matched path items with ranges selected by the caller.
+fn color_search_matched_path_items(
+    colored: &mut String,
+    data: &SearchTurnsQueryData,
+    path_range: impl Fn(&str) -> Option<std::ops::Range<usize>>,
+) {
+    let mut cursor = 0;
+    for hit in &data.hits {
+        let Some(mut path_cursor) = find_colored_array_start(colored, "matched_paths", cursor)
+        else {
+            continue;
+        };
+        for path in &hit.matched_paths {
+            let Some(range) = non_empty_match(path_range(path)) else {
+                continue;
+            };
+            let Some((value_start, token_len)) =
+                find_colored_string_value(colored, path, path_cursor)
+            else {
+                continue;
+            };
+            let highlighted = color_json_string_with_match(path, range);
+            colored.replace_range(value_start..value_start + token_len, &highlighted);
+            path_cursor = value_start + highlighted.len();
+        }
+        cursor = path_cursor;
+    }
+}
+
+/// Drops empty presentation matches before rendering highlight escape codes.
+fn non_empty_match(range: Option<std::ops::Range<usize>>) -> Option<std::ops::Range<usize>> {
+    range.filter(|range| !range.is_empty())
 }
 
 /// Appends one ANSI-colored JSON token to the rendered output.
@@ -2912,6 +2994,20 @@ fn find_colored_snippet_value(
     let token = color_json_string(snippet);
     let target = format!("{key_prefix}{token}");
     let value_start = cursor + colored.get(cursor..)?.find(&target)? + key_prefix.len();
+    Some((value_start, token.len()))
+}
+
+/// Returns the byte index after one colored array key prefix.
+fn find_colored_array_start(colored: &str, key: &str, cursor: usize) -> Option<usize> {
+    let key_prefix =
+        format!("{ANSI_KEY}\"{key}\"{ANSI_RESET}{ANSI_BOLD}:{ANSI_RESET} {ANSI_BOLD}[{ANSI_RESET}");
+    Some(cursor + colored.get(cursor..)?.find(&key_prefix)? + key_prefix.len())
+}
+
+/// Returns the next colored string value matching `value`.
+fn find_colored_string_value(colored: &str, value: &str, cursor: usize) -> Option<(usize, usize)> {
+    let token = color_json_string(value);
+    let value_start = cursor + colored.get(cursor..)?.find(&token)?;
     Some((value_start, token.len()))
 }
 
