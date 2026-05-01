@@ -36,10 +36,12 @@ Use `remove` when you want to delete a configured project entirely.
 Example:
 
 ```bash
+darc project remove --dry-run old-project
 darc project remove old-project
 ```
 
 `remove` matches the configured project by its `name` in `~/.darc/config.toml`. The name must match exactly one project.
+Use `--dry-run` first when you want the resolved project, archive path, and indexed row counts without deleting anything.
 
 It deletes:
 
@@ -57,6 +59,7 @@ Example:
 
 ```bash
 cd /path/to/new-project
+darc project rename-from --dry-run old-project
 darc project rename-from old-project
 ```
 
@@ -77,6 +80,8 @@ In that example:
 2. links the old project's paths into the target project
 3. runs `darc refresh`
 4. removes the old source project if the previous steps succeed
+
+Use `--dry-run` first when you want to confirm the target project, linked paths, refresh step, and source cleanup before writing.
 
 So it is the safe built-in version of:
 

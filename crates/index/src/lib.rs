@@ -13,4 +13,6 @@ pub use engine::{
     INDEX_DB_FILE_NAME, IndexReport, ProjectIndexRequest, SkippedCodexRollout, SkippedRollout,
     index_project_archived_codex_turns, index_project_archived_sessions,
 };
-pub use index_db::{ensure_index_database, open_index_database};
+pub use index_db::{
+    count_project_index_rows_read_only, ensure_index_database, open_index_database,
+};

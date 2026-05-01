@@ -7,14 +7,16 @@ use std::{
 
 use anyhow::{Context, Result};
 use darc_index::{INDEX_DB_FILE_NAME, open_index_database};
-use rusqlite::params;
+use rusqlite::{Connection, params};
 
 use super::{
-    RefreshOptions, RefreshProgress, refresh_all_projects, refresh_all_projects_best_effort,
-    refresh_all_projects_best_effort_with_progress,
+    RefreshOptions, RefreshProgress, preview_remove_project, refresh_all_projects,
+    refresh_all_projects_best_effort, refresh_all_projects_best_effort_with_progress,
     registry::load_normalized_shared_config,
     remove_project,
-    workflow::{link_project_from, refresh_project_from, rename_project_from},
+    workflow::{
+        link_project_from, preview_rename_project_from, refresh_project_from, rename_project_from,
+    },
 };
 use crate::{
     active_project::load_active_project,
@@ -47,6 +49,83 @@ fn write_config(root: &Path, config: &SharedConfig) -> Result<()> {
     fs::create_dir_all(root)?;
     fs::write(root.join(CONFIG_FILE_NAME), toml::to_string_pretty(config)?)?;
     Ok(())
+}
+
+/// Seeds one legacy Codex-only index for project preview tests.
+fn seed_legacy_project_index(index_db_path: &Path, project_id: &str) -> Result<()> {
+    let connection = Connection::open(index_db_path)?;
+    connection.execute_batch(
+        "
+        CREATE TABLE codex_sessions (
+            project_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            archive_path TEXT NOT NULL,
+            cwd TEXT NOT NULL,
+            PRIMARY KEY (project_id, session_id),
+            UNIQUE (project_id, archive_path)
+        );
+
+        CREATE TABLE codex_turns (
+            project_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            turn_ordinal INTEGER NOT NULL,
+            turn_id TEXT,
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            status TEXT NOT NULL,
+            user_message TEXT NOT NULL,
+            final_answer_at TEXT,
+            final_answer_text TEXT,
+            steps_json TEXT NOT NULL,
+            PRIMARY KEY (project_id, session_id, turn_ordinal)
+        );
+        ",
+    )?;
+    connection.execute(
+        "INSERT INTO codex_sessions (project_id, session_id, archive_path, cwd)
+         VALUES (?1, 'legacy-session', 'codex/rollout.jsonl', '/tmp/repo')",
+        params![project_id],
+    )?;
+    connection.execute(
+        "INSERT INTO codex_turns (
+            project_id,
+            session_id,
+            turn_ordinal,
+            turn_id,
+            started_at,
+            completed_at,
+            status,
+            user_message,
+            final_answer_at,
+            final_answer_text,
+            steps_json
+        )
+        VALUES (
+            ?1,
+            'legacy-session',
+            0,
+            'turn-1',
+            '2026-04-01T10:00:00Z',
+            '2026-04-01T10:00:01Z',
+            'completed',
+            'Inspect',
+            '2026-04-01T10:00:01Z',
+            'Done',
+            '[]'
+        )",
+        params![project_id],
+    )?;
+    Ok(())
+}
+
+/// Returns whether one SQLite table exists for preview mutation checks.
+fn sqlite_table_exists(connection: &Connection, table: &str) -> Result<bool> {
+    let table_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        [table],
+        |row| row.get(0),
+    )?;
+    Ok(table_count > 0)
 }
 
 /// Writes one minimal live Codex rollout fixture for refresh tests.
@@ -397,6 +476,108 @@ fn remove_project_deletes_archive_and_index_rows() -> Result<()> {
     )?;
     assert_eq!(remaining_source_sessions, 0);
     assert_eq!(remaining_target_sessions, 1);
+
+    Ok(())
+}
+
+#[test]
+fn preview_remove_project_reports_changes_without_writes() -> Result<()> {
+    let root = unique_test_dir(&format!("remove-preview-{}", timestamp_seed()));
+    let project_root = root.join("repo");
+    let sessions_root = root.join("projects/repo-123/sessions");
+    fs::create_dir_all(&project_root)?;
+    write_file(
+        &sessions_root.join("codex/rollout.jsonl"),
+        "{\"type\":\"session_meta\"}\n",
+    )?;
+
+    write_config(
+        &root,
+        &SharedConfig::new(
+            root.clone(),
+            vec![ProjectConfig {
+                id: "repo-123".into(),
+                name: "repo".into(),
+                local_path: project_root,
+                git_upstream: None,
+                sessions_root: sessions_root.clone(),
+                known_paths: Vec::new(),
+            }],
+            SourcesConfig::default(),
+        ),
+    )?;
+
+    let index_db_path = root.join(INDEX_DB_FILE_NAME);
+    let connection = open_index_database(&index_db_path)?;
+    connection.execute(
+        "INSERT INTO sessions (project_id, provider, session_id, parent_session_id, session_kind, archive_path, cwd) VALUES (?1, 'codex', 'repo-session', NULL, 'primary', 'codex/rollout.jsonl', '/tmp/repo')",
+        params!["repo-123"],
+    )?;
+    connection.execute(
+        "INSERT INTO turns (project_id, provider, session_id, turn_ordinal, started_at, status, user_message, steps_json) VALUES (?1, 'codex', 'repo-session', 0, '2026-04-01T10:00:00Z', 'completed', 'Inspect', '[]')",
+        params!["repo-123"],
+    )?;
+
+    let report = preview_remove_project(Some(root.clone()), "repo")?;
+
+    assert_eq!(report.project_name, "repo");
+    assert_eq!(report.project_id, "repo-123");
+    assert!(report.archive_would_delete);
+    assert_eq!(report.indexed_sessions_would_remove, 1);
+    assert_eq!(report.indexed_turns_would_remove, 1);
+    assert!(report.config_would_change);
+    assert!(sessions_root.exists());
+
+    let config = load_normalized_shared_config(&root.join(CONFIG_FILE_NAME))?;
+    assert_eq!(config.projects.len(), 1);
+    let remaining_sessions: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sessions WHERE project_id = 'repo-123'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(remaining_sessions, 1);
+
+    Ok(())
+}
+
+#[test]
+fn preview_remove_project_counts_legacy_index_without_migrating() -> Result<()> {
+    let root = unique_test_dir(&format!("remove-preview-legacy-{}", timestamp_seed()));
+    let project_root = root.join("repo");
+    let sessions_root = root.join("projects/repo-123/sessions");
+    fs::create_dir_all(&project_root)?;
+    write_file(
+        &sessions_root.join("codex/rollout.jsonl"),
+        "{\"type\":\"session_meta\"}\n",
+    )?;
+
+    write_config(
+        &root,
+        &SharedConfig::new(
+            root.clone(),
+            vec![ProjectConfig {
+                id: "repo-123".into(),
+                name: "repo".into(),
+                local_path: project_root,
+                git_upstream: None,
+                sessions_root,
+                known_paths: Vec::new(),
+            }],
+            SourcesConfig::default(),
+        ),
+    )?;
+    let index_db_path = root.join(INDEX_DB_FILE_NAME);
+    seed_legacy_project_index(&index_db_path, "repo-123")?;
+
+    let report = preview_remove_project(Some(root), "repo")?;
+
+    assert_eq!(report.indexed_sessions_would_remove, 1);
+    assert_eq!(report.indexed_turns_would_remove, 1);
+    let connection = Connection::open(&index_db_path)?;
+    assert!(sqlite_table_exists(&connection, "codex_sessions")?);
+    assert!(sqlite_table_exists(&connection, "codex_turns")?);
+    assert!(!sqlite_table_exists(&connection, "sessions")?);
+    assert!(!sqlite_table_exists(&connection, "turns")?);
 
     Ok(())
 }
@@ -856,6 +1037,122 @@ fn rename_project_links_syncs_indexes_and_removes_source() -> Result<()> {
     )?;
     assert_eq!(target_sessions, 1);
     assert_eq!(source_sessions, 0);
+
+    Ok(())
+}
+
+#[test]
+fn preview_rename_project_reports_workflow_without_writes() -> Result<()> {
+    let root = unique_test_dir(&format!("rename-preview-{}", timestamp_seed()));
+    let target_root = root.join("darc");
+    let source_root = root.join("memstack");
+    let source_sessions_root = root.join("projects/memstack-456/sessions");
+    let target_sessions_root = root.join("projects/darc-123/sessions");
+    fs::create_dir_all(&target_root)?;
+    fs::create_dir_all(&source_root)?;
+    write_file(
+        &source_sessions_root.join("codex/previous.jsonl"),
+        "{\"type\":\"session_meta\"}\n",
+    )?;
+
+    write_config(
+        &root,
+        &SharedConfig::new(
+            root.clone(),
+            vec![
+                ProjectConfig {
+                    id: "darc-123".into(),
+                    name: "darc".into(),
+                    local_path: target_root.clone(),
+                    git_upstream: None,
+                    sessions_root: target_sessions_root,
+                    known_paths: Vec::new(),
+                },
+                ProjectConfig {
+                    id: "memstack-456".into(),
+                    name: "memstack".into(),
+                    local_path: source_root.clone(),
+                    git_upstream: None,
+                    sessions_root: source_sessions_root.clone(),
+                    known_paths: Vec::new(),
+                },
+            ],
+            SourcesConfig::default(),
+        ),
+    )?;
+
+    let connection = open_index_database(&root.join(INDEX_DB_FILE_NAME))?;
+    connection.execute(
+        "INSERT INTO sessions (project_id, provider, session_id, parent_session_id, session_kind, archive_path, cwd) VALUES (?1, 'codex', 'stale-session', NULL, 'primary', 'codex/previous.jsonl', '/tmp/memstack')",
+        params!["memstack-456"],
+    )?;
+
+    let report = preview_rename_project_from(&target_root, root.clone(), "memstack")?;
+
+    assert_eq!(report.target_project_name, "darc");
+    assert_eq!(report.source_project_name, "memstack");
+    assert_eq!(report.source_sessions_root, source_sessions_root);
+    assert_eq!(report.new_known_paths, vec![fs::canonicalize(source_root)?]);
+    assert_eq!(report.total_known_paths, 1);
+    assert!(report.config_would_change);
+    assert!(report.source_archive_would_delete);
+    assert_eq!(report.indexed_sessions_would_remove, 1);
+    assert_eq!(report.indexed_turns_would_remove, 0);
+    assert!(source_sessions_root.exists());
+
+    let config = load_normalized_shared_config(&root.join(CONFIG_FILE_NAME))?;
+    assert_eq!(config.projects.len(), 2);
+    assert!(
+        config
+            .projects
+            .iter()
+            .any(|project| project.name == "memstack")
+    );
+
+    Ok(())
+}
+
+#[test]
+fn preview_rename_project_reports_config_change_when_link_is_unchanged() -> Result<()> {
+    let root = unique_test_dir(&format!("rename-preview-linked-{}", timestamp_seed()));
+    let target_root = root.join("darc");
+    let source_root = root.join("memstack");
+    let source_sessions_root = root.join("projects/memstack-456/sessions");
+    let target_sessions_root = root.join("projects/darc-123/sessions");
+    fs::create_dir_all(&target_root)?;
+    fs::create_dir_all(&source_root)?;
+
+    write_config(
+        &root,
+        &SharedConfig::new(
+            root.clone(),
+            vec![
+                ProjectConfig {
+                    id: "darc-123".into(),
+                    name: "darc".into(),
+                    local_path: target_root.clone(),
+                    git_upstream: None,
+                    sessions_root: target_sessions_root,
+                    known_paths: vec![source_root.clone()],
+                },
+                ProjectConfig {
+                    id: "memstack-456".into(),
+                    name: "memstack".into(),
+                    local_path: source_root,
+                    git_upstream: None,
+                    sessions_root: source_sessions_root,
+                    known_paths: Vec::new(),
+                },
+            ],
+            SourcesConfig::default(),
+        ),
+    )?;
+
+    let report = preview_rename_project_from(&target_root, root, "memstack")?;
+
+    assert!(report.new_known_paths.is_empty());
+    assert_eq!(report.total_known_paths, 1);
+    assert!(report.config_would_change);
 
     Ok(())
 }

@@ -4,6 +4,7 @@ use rusqlite::Connection;
 /// Stores one vetted SQLite table identifier used by index schema helpers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SchemaTable {
+    Sessions,
     Turns,
     ToolCalls,
     FileAccesses,
@@ -18,6 +19,7 @@ impl SchemaTable {
     /// Returns the stable SQLite table name for one vetted table identifier.
     pub(crate) fn sql_name(self) -> &'static str {
         match self {
+            Self::Sessions => "sessions",
             Self::Turns => "turns",
             Self::ToolCalls => "tool_calls",
             Self::FileAccesses => "file_accesses",
