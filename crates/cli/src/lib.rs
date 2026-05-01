@@ -239,6 +239,7 @@ struct RefreshArgs {
     #[arg(
         long,
         value_name = "DURATION",
+        requires = "watch",
         help = "Quiet period before a watched refresh, such as 30s or 2m"
     )]
     debounce: Option<String>,
@@ -246,6 +247,7 @@ struct RefreshArgs {
     #[arg(
         long = "min-interval",
         value_name = "DURATION",
+        requires = "watch",
         help = "Minimum time between watched refresh runs, such as 60s or 5m"
     )]
     min_interval: Option<String>,
@@ -253,12 +255,14 @@ struct RefreshArgs {
     #[arg(
         long = "reconcile-interval",
         value_name = "DURATION",
+        requires = "watch",
         help = "Periodic safety refresh interval for watch mode, such as 10m"
     )]
     reconcile_interval: Option<String>,
 
     #[arg(
         long,
+        requires = "watch",
         help = "Use periodic polling instead of native filesystem events"
     )]
     poll: bool,
@@ -416,10 +420,20 @@ struct ListArgs {
         long,
         value_enum,
         default_value_t = ColorArg::Auto,
+        global = true,
         help_heading = "Output",
         help = "Control ANSI color in JSON output"
     )]
     color: ColorArg,
+
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        global = true,
+        help_heading = "Workspace",
+        help = "Read from this darc root"
+    )]
+    root: PathBuf,
 
     #[command(subcommand)]
     command: ListCommands,
@@ -434,9 +448,9 @@ enum ListCommands {
     Sessions(ListSessionsArgs),
     /// List turns for one session.
     Turns(QueryTurnsArgs),
-    /// List most-touched files, session files, or co-touched files.
+    /// List most-touched files, sessions touching one path, session files, or co-touched files.
     #[command(
-        long_about = "List most-touched files, session files, or co-touched files.\n\nWith no mode flag, this ranks files by touches across the project. Use `--session` for the full per-session file summary. Use `--co-touched-with` for files touched in the same sessions as a seed path. Result pagination applies to top and co-touch modes; session mode currently returns the full per-session file summary."
+        long_about = "List most-touched files, sessions touching one path, session files, or co-touched files.\n\nWith no mode flag, this ranks files by touches across the project. Pass PATH or --path to return sessions that touched matching paths. Use `--session` for the full per-session file summary. Use `--co-touched-with` for files touched in the same sessions as a seed path. Result pagination applies to top, path, and co-touch modes; session mode currently returns the full per-session file summary."
     )]
     Files(ListFilesArgs),
 }
@@ -448,10 +462,20 @@ struct ShowArgs {
         long,
         value_enum,
         default_value_t = ColorArg::Auto,
+        global = true,
         help_heading = "Output",
         help = "Control ANSI color in JSON output"
     )]
     color: ColorArg,
+
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        global = true,
+        help_heading = "Workspace",
+        help = "Read from this darc root"
+    )]
+    root: PathBuf,
 
     #[command(subcommand)]
     command: ShowCommands,
@@ -651,10 +675,20 @@ struct StatsArgs {
         long,
         value_enum,
         default_value_t = ColorArg::Auto,
+        global = true,
         help_heading = "Output",
         help = "Control ANSI color in JSON output"
     )]
     color: ColorArg,
+
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        global = true,
+        help_heading = "Workspace",
+        help = "Read from this darc root"
+    )]
+    root: PathBuf,
 
     #[command(subcommand)]
     command: StatsCommands,
@@ -678,10 +712,20 @@ struct ResolveArgs {
         long,
         value_enum,
         default_value_t = ColorArg::Auto,
+        global = true,
         help_heading = "Output",
         help = "Control ANSI color in JSON output"
     )]
     color: ColorArg,
+
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        global = true,
+        help_heading = "Workspace",
+        help = "Read from this darc root"
+    )]
+    root: PathBuf,
 
     #[command(subcommand)]
     command: ResolveCommands,
@@ -1164,6 +1208,19 @@ struct ListFilesArgs {
 
     #[arg(
         long,
+        help_heading = "Selection",
+        help = "Return sessions that touched file paths matching this glob instead of most-touched files"
+    )]
+    path: Option<String>,
+
+    #[arg(
+        value_name = "PATH",
+        help = "Return sessions that touched this path or glob instead of most-touched files"
+    )]
+    path_arg: Option<String>,
+
+    #[arg(
+        long,
         value_name = "SESSION_ID",
         help_heading = "Selection",
         help = "Return the full per-session file summary for this session id or unambiguous UUID prefix"
@@ -1180,30 +1237,45 @@ struct ListFilesArgs {
     #[arg(
         long,
         help_heading = "Time Filters",
-        help = "Inclusive started_at lower bound for top/co-touch modes. Example: `5d` or `2026-04-07T00:00:00Z`"
+        help = "Inclusive started_at lower bound for top/path/co-touch modes. Example: `5d` or `2026-04-07T00:00:00Z`"
     )]
     since: Option<String>,
 
     #[arg(
         long,
         help_heading = "Time Filters",
-        help = "Exclusive started_at upper bound for top/co-touch modes. Example: `1d` or `2026-04-08T00:00:00Z`"
+        help = "Exclusive started_at upper bound for top/path/co-touch modes. Example: `1d` or `2026-04-08T00:00:00Z`"
     )]
     until: Option<String>,
 
     #[arg(
         long,
         help_heading = "Result Size",
-        help = "Maximum rows to return in top/co-touch modes [default: 50]"
+        help = "Maximum rows to return in top/path/co-touch modes [default: 50]"
     )]
     limit: Option<usize>,
 
     #[arg(
         long,
         help_heading = "Result Size",
-        help = "Number of rows to skip in top/co-touch modes [default: 0]"
+        help = "Number of rows to skip in top/path/co-touch modes [default: 0]"
     )]
     offset: Option<usize>,
+
+    #[arg(
+        long = "matched-path-limit",
+        conflicts_with = "include_all_matched_paths",
+        help_heading = "Result Size",
+        help = "Maximum matched_paths entries per path-mode row [default: 20]"
+    )]
+    matched_path_limit: Option<usize>,
+
+    #[arg(
+        long = "include-all-matched-paths",
+        help_heading = "Result Size",
+        help = "Return every matched path in path-mode rows"
+    )]
+    include_all_matched_paths: bool,
 }
 
 /// Queries one session-scoped per-file access summary payload.
@@ -1935,21 +2007,44 @@ fn query_exit(result: Result<()>) -> i32 {
 /// Dispatches the supported canonical list commands.
 fn run_list(args: ListArgs) -> Result<()> {
     let output = QueryOutput::new(args.color);
+    let root = args.root;
     match args.command {
-        ListCommands::Projects(args) => run_query_workspace(&output, args),
-        ListCommands::Sessions(args) => run_query_sessions(&output, args.into()),
-        ListCommands::Turns(args) => run_query_turns(&output, args),
-        ListCommands::Files(args) => run_list_files(&output, args),
+        ListCommands::Projects(mut args) => {
+            args.root = root;
+            run_query_workspace(&output, args)
+        }
+        ListCommands::Sessions(mut args) => {
+            args.root = root;
+            run_query_sessions(&output, args.into())
+        }
+        ListCommands::Turns(mut args) => {
+            args.root = root;
+            run_query_turns(&output, args)
+        }
+        ListCommands::Files(mut args) => {
+            args.root = root;
+            run_list_files(&output, args)
+        }
     }
 }
 
 /// Dispatches the supported canonical show commands.
 fn run_show(args: ShowArgs) -> Result<()> {
     let output = QueryOutput::new(args.color);
+    let root = args.root;
     match args.command {
-        ShowCommands::Workspace(args) => run_query_workspace(&output, args),
-        ShowCommands::Session(args) => run_query_session_bundle(&output, args),
-        ShowCommands::Turn(args) => run_query_turn(&output, args),
+        ShowCommands::Workspace(mut args) => {
+            args.root = root;
+            run_query_workspace(&output, args)
+        }
+        ShowCommands::Session(mut args) => {
+            args.root = root;
+            run_query_session_bundle(&output, args)
+        }
+        ShowCommands::Turn(mut args) => {
+            args.root = root;
+            run_query_turn(&output, args)
+        }
     }
 }
 
@@ -1962,18 +2057,32 @@ fn run_search(args: SearchArgs) -> Result<()> {
 /// Dispatches the supported canonical stats commands.
 fn run_stats(args: StatsArgs) -> Result<()> {
     let output = QueryOutput::new(args.color);
+    let root = args.root;
     match args.command {
-        StatsCommands::Workspace(args) => run_query_workspace_insights(&output, args),
-        StatsCommands::Project(args) => run_query_project_insights(&output, args),
-        StatsCommands::Turn(args) => run_query_turn_insights(&output, args),
+        StatsCommands::Workspace(mut args) => {
+            args.root = root;
+            run_query_workspace_insights(&output, args)
+        }
+        StatsCommands::Project(mut args) => {
+            args.root = root;
+            run_query_project_insights(&output, args)
+        }
+        StatsCommands::Turn(mut args) => {
+            args.root = root;
+            run_query_turn_insights(&output, args)
+        }
     }
 }
 
 /// Dispatches the supported canonical resolver commands.
 fn run_resolve(args: ResolveArgs) -> Result<()> {
     let output = QueryOutput::new(args.color);
+    let root = args.root;
     match args.command {
-        ResolveCommands::Session(args) => run_query_resolve_session(&output, args),
+        ResolveCommands::Session(mut args) => {
+            args.root = root;
+            run_query_resolve_session(&output, args)
+        }
     }
 }
 
@@ -1988,16 +2097,26 @@ fn run_project(args: ProjectArgs) -> Result<()> {
 
 /// Lists files through either project-wide or session-scoped query payloads.
 fn run_list_files(output: &QueryOutput, args: ListFilesArgs) -> Result<()> {
-    if args.session.is_some() && args.co_touched_with.is_some() {
-        bail!("list files accepts either --session or --co-touched-with, not both");
+    let path_selector_count =
+        usize::from(args.path.is_some()) + usize::from(args.path_arg.is_some());
+    let selector_count = path_selector_count
+        + usize::from(args.session.is_some())
+        + usize::from(args.co_touched_with.is_some());
+    if selector_count > 1 {
+        bail!("list files accepts at most one of PATH/--path, --session, or --co-touched-with");
     }
+    let path = args.path.or(args.path_arg);
     if let Some(session_id) = args.session {
         if args.since.is_some()
             || args.until.is_some()
             || args.limit.is_some()
             || args.offset.is_some()
+            || args.matched_path_limit.is_some()
+            || args.include_all_matched_paths
         {
-            bail!("list files --session does not accept --since, --until, --limit, or --offset");
+            bail!(
+                "list files --session does not accept --since, --until, --limit, --offset, --matched-path-limit, or --include-all-matched-paths"
+            );
         }
         return run_query_session_files(
             output,
@@ -2010,21 +2129,26 @@ fn run_list_files(output: &QueryOutput, args: ListFilesArgs) -> Result<()> {
             },
         );
     }
+    if path.is_none() && (args.matched_path_limit.is_some() || args.include_all_matched_paths) {
+        bail!("list files matched-path controls require PATH or --path");
+    }
     run_query_files(
         output,
         QueryFilesArgs {
             root: args.root,
             project_id: args.project_id,
             provider: args.provider,
-            path: None,
+            path,
             path_arg: None,
             co_touched_with: args.co_touched_with,
             since: args.since,
             until: args.until,
             limit: args.limit.unwrap_or(50),
             offset: args.offset.unwrap_or(0),
-            matched_path_limit: DEFAULT_MATCHED_PATH_LIMIT,
-            include_all_matched_paths: false,
+            matched_path_limit: args
+                .matched_path_limit
+                .unwrap_or(DEFAULT_MATCHED_PATH_LIMIT),
+            include_all_matched_paths: args.include_all_matched_paths,
         },
     )
 }

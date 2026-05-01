@@ -241,6 +241,24 @@ fn refresh_command_accepts_watch_options() {
 }
 
 #[test]
+fn refresh_watch_options_require_watch_mode() {
+    for flag in [
+        "--debounce",
+        "--min-interval",
+        "--reconcile-interval",
+        "--poll",
+    ] {
+        let mut args = vec!["darc", "refresh", flag];
+        if flag != "--poll" {
+            args.push("30s");
+        }
+        let error = Cli::try_parse_from(args).unwrap_err();
+
+        assert!(error.to_string().contains("--watch"));
+    }
+}
+
+#[test]
 fn parses_service_lifecycle_command() {
     let cli = Cli::try_parse_from(["darc", "service", "enable"]).unwrap();
     assert!(matches!(
@@ -939,6 +957,52 @@ fn parses_project_management_namespace() {
 }
 
 #[test]
+fn canonical_read_commands_accept_shared_options_around_subcommands() {
+    let cli = Cli::try_parse_from([
+        "darc",
+        "list",
+        "--root",
+        "/tmp/darc-root",
+        "sessions",
+        "--color",
+        "never",
+        "--limit",
+        "1",
+    ])
+    .unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::List(super::ListArgs {
+            root,
+            color: super::ColorArg::Never,
+            command: super::ListCommands::Sessions(super::ListSessionsArgs {
+                limit,
+                ..
+            }),
+        }) if root.as_path() == Path::new("/tmp/darc-root") && limit == 1
+    ));
+
+    let cli = Cli::try_parse_from([
+        "darc",
+        "stats",
+        "workspace",
+        "--root",
+        "/tmp/darc-root",
+        "--color",
+        "never",
+    ])
+    .unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Stats(super::StatsArgs {
+            root,
+            color: super::ColorArg::Never,
+            command: super::StatsCommands::Workspace(_),
+        }) if root.as_path() == Path::new("/tmp/darc-root")
+    ));
+}
+
+#[test]
 fn parses_canonical_list_show_search_stats_and_resolve_commands() {
     let sessions = Cli::try_parse_from([
         "darc",
@@ -988,6 +1052,41 @@ fn parses_canonical_list_show_search_stats_and_resolve_commands() {
             ..
         }) if session.as_deref() == Some("11111111")
             && matches!(provider, Some(super::ProviderArg::Codex))
+    ));
+
+    let path_files = Cli::try_parse_from([
+        "darc",
+        "list",
+        "files",
+        "crates/cli/src/lib.rs",
+        "--matched-path-limit",
+        "1",
+    ])
+    .unwrap();
+    assert!(matches!(
+        path_files.command,
+        Commands::List(super::ListArgs {
+            command: super::ListCommands::Files(super::ListFilesArgs {
+                path_arg,
+                matched_path_limit,
+                ..
+            }),
+            ..
+        }) if path_arg.as_deref() == Some("crates/cli/src/lib.rs")
+            && matched_path_limit == Some(1)
+    ));
+
+    let flagged_path_files =
+        Cli::try_parse_from(["darc", "list", "files", "--path", "docs/**"]).unwrap();
+    assert!(matches!(
+        flagged_path_files.command,
+        Commands::List(super::ListArgs {
+            command: super::ListCommands::Files(super::ListFilesArgs {
+                path,
+                ..
+            }),
+            ..
+        }) if path.as_deref() == Some("docs/**")
     ));
 
     let show =
@@ -1767,6 +1866,20 @@ fn query_files_help_mentions_path_and_co_touch_modes() {
     assert!(help.contains("--path"));
     assert!(help.contains("--co-touched-with"));
     assert!(help.contains("--limit"));
+    assert!(help.contains("most-touched files"));
+    assert!(help.contains("Selection:"));
+    assert!(help.contains("Time Filters:"));
+    assert!(help.contains("Result Size:"));
+}
+
+#[test]
+fn list_files_help_mentions_path_and_co_touch_modes() {
+    let help = help_for_command_path(&["list", "files"]);
+
+    assert!(help.contains("[PATH]"));
+    assert!(help.contains("--path"));
+    assert!(help.contains("--co-touched-with"));
+    assert!(help.contains("--matched-path-limit"));
     assert!(help.contains("most-touched files"));
     assert!(help.contains("Selection:"));
     assert!(help.contains("Time Filters:"));

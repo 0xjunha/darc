@@ -141,9 +141,10 @@ commands cover project-scoped search, compact turn skims, file/session pivots, a
   touched a path.
 - `darc list turns <session-id-or-prefix>` lists one known session, resolving an unambiguous UUID prefix and inferring
   the provider unless the id or prefix is ambiguous.
-- `darc list files` ranks most-touched files for initial discovery. `darc list files --session <session-id-or-prefix>`
-  returns the full per-session file summary. `darc list files --co-touched-with <path>` returns files touched in the
-  same sessions as a seed path.
+- `darc list files` ranks most-touched files for initial discovery. `darc list files <path-or-glob>` or
+  `darc list files --path <path-or-glob>` returns sessions that touched matching paths.
+  `darc list files --session <session-id-or-prefix>` returns the full per-session file summary.
+  `darc list files --co-touched-with <path>` returns files touched in the same sessions as a seed path.
 - `darc show session <session-id-or-prefix>` returns a bounded session bundle: compact session summary, paginated
   turn details, and a capped `session_files` preview. Use `--turn-limit` / `--turn-offset` to page turn details,
   `--step-limit` / `--step-offset` to page steps inside each returned turn, and `darc list files --session <id>` when
@@ -195,6 +196,13 @@ darc search \
 darc list files \
   --project-id repo-abc123 \
   --since 30d \
+  --limit 20
+```
+
+```bash
+darc list files \
+  --project-id repo-abc123 \
+  src/components/planner.rs \
   --limit 20
 ```
 
