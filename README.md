@@ -4,243 +4,266 @@
 [![CI](https://github.com/0xjunha/darc/actions/workflows/ci.yml/badge.svg)](https://github.com/0xjunha/darc/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/github/0xjunha/darc/graph/badge.svg?token=J5ZVVBJ3U9)](https://codecov.io/github/0xjunha/darc)
 
-Darc organizes your local Claude Code and Codex session history by project and keeps a durable archive of it.
-It builds a queryable SQLite index for insights, analytics, downstream tools, and direct session inspection.
+**Darc** is **queryable cross-session memory for coding agents**: a local CLI that archives agent session rollouts,
+indexes them into a SQLite database, and exposes them through structured query commands.
 
-The daily happy path is `darc refresh`, which runs `sync` and `index` together.
+## What is Darc?
 
-## What it does
+**Darc** turns coding agent session history into a queryable **D**ata **Arc**. Think of it as `rg` (ripgrep) for agent
+history, with stable evidence handles back to the original turns.
 
-- Registers local projects in a shared `~/.darc` workspace and resolves the active project from the current checkout.
-- Archives matching Claude and Codex session history into a per-project rollout archive.
-- Rebuilds a normalized SQLite index from archived rollouts for insights, reporting, and downstream tooling.
-- Exposes canonical JSON read commands for listing, showing, searching, resolving, stats, and status preflight, backed
-  by stable machine-readable `darc.query.*` and `darc.status.*` payload schemas for downstream clients.
-- Derives indexed insights at workspace, project, and turn scope without requiring clients to open `index.sqlite`
-  directly.
-- Surfaces best-effort per-turn and per-session stats such as model, token usage, effective agent runtime, and
-  observed patch-line counts through the query protocol.
-- Preserves project continuity across checkout moves, worktrees, merges, and renames with built-in linking and
-  rename workflows.
+**The core idea:** building a good agent memory system is hard. Agents are already intelligent. Instead of distilling
+their work into lossy summaries, Darc gives them a tool to recover the exact context on demand: what happened, which
+files were touched, and how turns link together.
 
-## Workspace Architecture
+Darc is the **retrieval/evidence half of agent memory**. It stores sessions as-is and indexes them for queryable
+lookup. It does not summarize, consolidate or rewrite agent state, so pair it with whatever memory layer your agent
+already uses
+(AGENTS.md, Codex/Claude Code built-in memory, MCP-backed memory tools) for the summarization side.
 
-Darc is organized as a small workspace of focused crates with `darc-core` kept as a thin facade and orchestration layer.
+Supported agents: **Claude Code**, **Codex**.
 
-- `darc-agent`: external agent runtime command preparation for future worker-backed derived context features.
-- `darc-cli`: CLI entrypoint and command surface.
-- `darc-core`: stable public API and top-level orchestration across Darc workflows.
-- `darc-index`: normalized session ingestion, SQLite schema/migrations, and indexing metrics.
-- `darc-paths`: shared path normalization, source-kind modeling, and project/worktree discovery helpers used across
-  lower-level crates.
-- `darc-query`: read-only query and reporting over the indexed SQLite data.
-- `darc-rollout`: rollout models, provider parsers, and schema/version logic.
-- `darc-rollout-audit`: release/schema compatibility audits and other heavy maintainer-only rollout tooling.
-- `darc-sync`: archive discovery, sync planning, and file copy execution.
-- `darc-test-utils`: shared test fixtures and helpers for Git repositories, temporary directories, and seeded index
-  data.
-#### Crate boundaries follow three rules:
+![Darc architecture: agent rollouts → sync → archive → SQLite index → query CLI](assets/darc-architecture.png)
 
-1. Keep each crate cohesive around one dominant capability.
-2. Keep dependency direction acyclic.
-3. Extract shared models/utilities downward instead of letting lower-level code depend on orchestration
-   crates.
+## Why Darc
+
+- **Bounded JSON, not log dumps.** Every read returns a small, schema-tagged envelope with sane `--limit` defaults —
+  designed to fit in a context window.
+- **Stable evidence handles.** `session_id`, `turn_ordinal`, file paths, and timestamps survive re-syncs and renames,
+  so an agent can quote them today and resolve them next week.
+- **Pivot through files.** Find sessions that touched a path, files commonly changed alongside it, and the turns
+  behind both.
+- **Project continuity.** History survives checkout moves, worktrees, and repository renames via stable Darc project
+  ids.
+- **Local-first.** No external services. Darc reads from local agent rollouts and writes only to one workspace under
+  `~/.darc`.
 
 ## Quickstart
 
-Install the CLI from this repository:
+Install from this repository:
 
-```bash
+```sh
 cargo install --path crates/cli
 ```
 
-Initialize Darc for a project, then use the daily refresh path:
+Run Darc from a project where you already use Claude Code or Codex:
 
-```bash
+```sh
 cd /path/to/project
-darc init
-darc refresh
+
+darc init                       # register the current project in the shared `~/.darc` workspace
+darc refresh                    # sync new session rollouts into `~/.darc` and index into the SQLite DB
+darc refresh --provider claude  # limit refresh to one provider
+darc refresh --all              # refresh every registered project
+darc refresh --watch --all      # for continuous foreground refresh
+
+# On macOS, the same refresh workflow can run automatically in the background:
+darc service enable  # turn on automatic background refresh after reboot
+darc service start   # start background refresh now (auto-refresh)
+darc service status  # check whether background refresh is enabled and running
 ```
 
-Use provider filters when you only want one source:
+Then run the read commands:
 
-```bash
-darc refresh --provider claude
+```sh
+# Check active project state and freshness
+darc status
+
+# Browse recent activity in this project
+darc list sessions --limit 5                             # recent indexed sessions
+darc list files --limit 10                               # rank most-touched files
+darc search "panic unwrap" --limit 5                     # keyword search across turn evidence
+
+# Narrow with time windows, file globs, and providers
+darc list sessions --since 7d --touching "src/**/*.rs"   # sessions touching Rust src this week
+darc search --mode regex --query "error\s+code" \
+  --include-tool-output --since 7d --limit 5             # regex into tool output, time-bounded
+darc search --mode file-path "docs/**/*.md" --limit 5    # find sessions that touched matching files
+
+# Pivot through related files
+darc list files --co-touched-with src/lib.rs --limit 10  # files commonly changed alongside lib.rs
+
+# Drill down to exact evidence using ids returned above
+darc list turns <SESSION_ID> --view oneline --limit 20   # compact one-line skim of a session's turns
+darc show session <SESSION_ID> --turn-limit 5 --step-limit 10
+darc show turn <SESSION_ID> <TURN_ORDINAL> --step-limit 10
+
+# Project metrics: tools, models, active time, top files
+darc stats project --turn-limit 200
 ```
 
-Refresh every registered project in the shared Darc workspace:
+## Concepts
 
-```bash
-darc refresh --all
-```
+Darc keeps one local **workspace** at `~/.darc`. A workspace contains many **projects** (one per registered checkout),
+each with its own archive of synced sessions; a single workspace-wide SQLite index normalizes all archives for query.
+The **active project** is whichever project Darc resolves from your current working directory — most read commands
+infer it automatically, so `cd` into a project and just run.
 
-Keep the shared workspace fresh in the foreground:
+A **session** is one run of Claude Code or Codex. A **turn** is one user-message-and-response pair within a session.
+Darc identifies sessions by `session_id` and turns by `turn_ordinal`. These handles are stable across re-syncs,
+worktrees, and project renames, so agents can quote them across conversations.
 
-```bash
-darc refresh --watch --all
-```
+Read commands always emit JSON envelopes tagged with a `schema` id (e.g. `darc.query.search.turns.v1`) and a `data`
+payload. Pass `--color never` when piping into another program that needs guaranteed plain JSON.
 
-On macOS, manage the same watcher as a beta user LaunchAgent service:
+## Everyday Commands
 
-```bash
-darc service enable
-darc service start
-darc service status
-```
+| Command                         | Use                                                                                                          |
+|---------------------------------|--------------------------------------------------------------------------------------------------------------|
+| `darc init`                     | Detect local coding-agent sources and register the current project.                                          |
+| `darc refresh`                  | Sync then index the active project. This is the daily command.                                               |
+| `darc status`                   | Check active-project or workspace health. Use `--json` for a machine-readable preflight.                     |
+| `darc list sessions`            | Browse recent indexed sessions with compact prompt/final-message previews.                                   |
+| `darc list turns <id>`          | List turns for one session. Use `--view oneline` for a compact skim.                                         |
+| `darc list files`               | Rank touched files, find sessions touching a path, list files for one session, or pivot to co-touched files. |
+| `darc list projects`            | List configured projects in the workspace.                                                                   |
+| `darc search <query>`           | Search indexed turns. Each hit includes `session_id` and `turn_ordinal` for follow-up reads.                 |
+| `darc show turn <id> <n>`       | Inspect one turn with bounded step output. Add `--include-insights` for derived metrics.                     |
+| `darc show session <id>`        | Inspect one bounded session bundle with summary, turn page, and file preview.                                |
+| `darc show workspace`           | Workspace/sidebar payload — projects and recent activity at a glance.                                        |
+| `darc stats project`            | Show indexed project metrics such as active time, tools, files, models, and token fields when available.     |
+| `darc stats workspace`          | Cross-project rolling-window stats for the whole workspace.                                                  |
+| `darc resolve session <prefix>` | Resolve a UUID prefix into canonical session ids.                                                            |
+| `darc project ...`              | Link, rename, remove, or rebuild projects after moves and renames.                                           |
+| `darc service ...`              | Manage the beta macOS background refresh service.                                                            |
 
-## Commands
+Run `darc --help` or `darc help <command>` for the current visible CLI surface.
 
-- `darc init` detects local sources and creates the shared Darc config.
-- `darc refresh` is the daily happy path. It runs `sync` then `index` for the active project, or every registered
-  project with `--all`. Add `--watch` to keep the same refresh workflow running in the foreground.
-- `darc status` shows health for the active project. Add `--json` for a machine-readable active-project preflight
-  with JSON error envelopes, `--workspace` to summarize every configured project, and `--check` to run sync planning
-  without writing manifests, config, archives, or SQLite.
-- `darc sync` archives matching Claude and Codex sessions for the active project.
-- `darc index` indexes archived sessions into SQLite.
-- `darc list`, `darc show`, `darc search`, `darc stats`, `darc resolve`, and `darc status --json` are the JSON read
-  surface for coding agents; see [Query protocol](docs/query-protocol.md).
-- `darc project link`, `darc project remove`, and `darc project rename-from` manage renamed or merged projects.
-  Use `--dry-run` to preview project config or cleanup changes before writing.
-- `darc service` manages the beta background refresh service. Service management is currently macOS-only; see
-  [Background refresh service](docs/service.md).
+## The Context-Building Loop
 
-## Session And Turn Stats
+Darc is strongest when an agent uses it as an evidence ladder:
 
-Darc now exposes best-effort session and turn stats through `darc list`, `darc show`, and `darc stats`.
+1. Preflight the active project with `darc status` or `darc status --json`.
+2. Discover candidates with small `list`, `search`, or `stats` reads.
+3. Skim a candidate session with `darc list turns <SESSION_ID> --view oneline`.
+4. Drill into one turn with `darc show turn <SESSION_ID> <TURN_ORDINAL>`.
+5. Pull a bounded broader view with `darc show session <SESSION_ID>` only after narrowing.
+6. Pivot through touched files (`--co-touched-with`, `--touching`) to find adjacent work, tests, docs, and follow-up
+   sessions.
 
-- turn rows and turn insights can include `primary_model`, `total_token_count`, `token_usage`,
-  `effective_agent_runtime_ms`, `changed_file_count`, `added_line_count`, and `removed_line_count`
-- session rows roll those values up across the indexed turns in that session
-- `total_token_count` is now the normalized cache-aware total when Darc could derive one from the archived rollout
-- `token_usage` exposes the cross-provider bucket breakdown Darc stores for `input_uncached`, `cache_read`,
-  `cache_write`, `output`, optional `reasoning`, and the provider-native total when available
-- `reasoning` is a subset of output, not an extra additive bucket, and unsupported buckets stay `null`
-- older archived provider versions may leave model or token fields as `null` when the transcript did not report
-  stable values, or until a project is re-indexed from archived rollouts after the token-bucket upgrade
-- observed diff counts come from transcript-visible patch payloads such as `apply_patch`, not from a live git diff
+That loop lets an agent answer "what happened here before?" without dumping an entire transcript archive into the
+prompt.
 
-See [Query protocol](docs/query-protocol.md) for the exact payload contract and semantics.
+## Recipes
 
-## Read Workflows
+Find exact text without regex escaping (and restrict to user prompts only):
 
-Darc's read-side CLI emits JSON envelopes by default because coding agents are the primary users. The canonical
-commands cover project-scoped search, compact turn skims, file/session pivots, and bounded single-call session detail.
-
-- `darc search <query>` searches indexed turns and returns turn hits. Every hit carries `session_id` and
-  `turn_ordinal` for follow-up reads. Search defaults to keyword mode; use
-  `--mode <literal|regex|file-name|file-path|path-fragment>` for other modes. Literal and regex search skip bulky
-  tool outputs by default; add `--include-tool-output` for forensic searches over command output, logs, or stack
-  traces, use `--field` / `--exclude-field` to narrow exact evidence fields, and use `--match-limit` to cap nested
-  evidence matches per returned turn hit.
-- project-scoped read commands accept optional `--project-id`; when omitted, Darc resolves the configured project from
-  the current directory. They also accept `--provider` when a corpus mixes Codex and Claude history.
-- `darc list sessions` defaults to compact first-prompt and final-message previews for browsing; pass `--view full`
-  when you need the full text pair. Preview rows include returned and total character counts, and edited file lists are
-  deduplicated and always complete for each returned session. List and search pages default to 10 rows so agents can
-  start compactly; pass `--limit` when you need a larger page. Use `--touching <path-or-glob>` to list sessions that
-  touched a path.
-- `darc list turns <session-id-or-prefix>` lists one known session, resolving an unambiguous UUID prefix and inferring
-  the provider unless the id or prefix is ambiguous.
-- `darc list files` ranks most-touched files for initial discovery. `darc list files <path-or-glob>` or
-  `darc list files --path <path-or-glob>` returns sessions that touched matching paths.
-  `darc list files --session <session-id-or-prefix>` returns a paginated per-session file summary.
-  `darc list files --co-touched-with <path>` returns files touched in the same sessions as a seed path.
-- `darc show session <session-id-or-prefix>` returns a bounded session bundle: compact session summary, paginated
-  turn details, and a capped `session_files` preview. It defaults to 5 embedded turns. Use `--turn-limit` /
-  `--turn-offset` to page turn details,
-  `--step-limit` / `--step-offset` to page steps inside each returned turn, and `darc list files --session <id>` when
-  you need the standalone paginated file list. Turn detail and session bundle reads default to narrative payloads; pass
-  `--view full`, `--step-limit`, or `--include-raw` only when more detail is needed.
-- Broad file/path queries cap each row's `matched_paths` preview by default; use `--matched-path-limit` or
-  `--include-all-matched-paths` when you need more path evidence per result. Search/file payloads expose count fields
-  such as `matched_paths_count`, `matches_count`, and `session_file_count` so agents can estimate returned context.
-- Session-scoped reads accept a full UUID or an unambiguous UUID prefix. Use `darc resolve session <prefix>` when a
-  prefix is ambiguous or when you want the candidate list with `project_id`, `provider`, and canonical `session_id`.
-
-For compact-first agent exploration, start with small list/search pages, then drill down:
-
-```bash
-darc list sessions --limit 5
-darc list files --limit 10
-darc search "panic unwrap" --limit 5
-darc list turns "$ID" --view oneline --limit 10
-darc show turn "$ID" 0 --step-limit 10
-darc show session "$ID" --turn-limit 5 --step-limit 10
-```
-
-Examples:
-
-```bash
+```sh
 darc search \
-  --project-id repo-abc123 \
-  "panic unwrap"
-```
-
-```bash
-darc search \
-  --project-id repo-abc123 \
   --mode literal \
   --query "--output-last-message" \
-  --exclude-field tool-arguments \
-  --since 14d
+  --field user-message \
+  --limit 5
 ```
 
-```bash
-darc search \
-  --project-id repo-abc123 \
-  --mode regex \
-  "panic: .*" \
-  --include-tool-output
+Resume from a partial UUID an agent quoted earlier:
+
+```sh
+SESSION_ID=$(darc resolve session <SESSION_PREFIX> --pick-one --color never \
+  | jq -r '.data.match.session_id')
+darc show session "$SESSION_ID" --turn-limit 10 --step-limit 10
 ```
 
-```bash
-darc list files \
-  --project-id repo-abc123 \
-  --since 30d \
-  --limit 20
+Inspect one session's full file footprint:
+
+```sh
+darc list files --session <SESSION_ID> --limit 50
 ```
 
-```bash
-darc list files \
-  --project-id repo-abc123 \
-  src/components/planner.rs \
-  --limit 20
+Enrich one turn with derived insights (tools used, files touched, token usage, duration):
+
+```sh
+darc show turn <SESSION_ID> <TURN_ORDINAL> --include-insights
 ```
 
-```bash
-darc list sessions \
-  --project-id repo-abc123 \
-  --touching "src/components/**/*.rs" \
-  --since 30d
+Workspace-wide activity and inventory:
+
+```sh
+darc stats workspace --window 14d  # rolling-window cross-project stats
+darc list projects                 # which projects are registered in this workspace
+darc show workspace                # active project plus recent-activity sidebar payload
 ```
 
-```bash
-darc list files \
-  --project-id repo-abc123 \
-  --co-touched-with src/components/planner.rs \
-  --since 30d
+Extract ids for downstream scripting:
+
+```sh
+darc list sessions --limit 5 --color never \
+  | jq -r '.data.sessions[] | [.provider, .session_id, .latest_turn_at] | @tsv'
 ```
 
-```bash
-ID=$(darc resolve session 11111111 --pick-one | jq -r '.data.match.session_id')
+## Agent-Friendly Design
 
-darc show session \
-  --project-id repo-abc123 \
-  "$ID" \
-  --turn-limit 20 \
-  --step-limit 20
+Darc is built to be useful from inside an agent's context window, not just from a developer's terminal. Three design
+choices follow from that:
+
+**Bounded by default.** Every read command has small `--limit`, `--turn-limit`, and `--step-limit` defaults. A session
+bundle returns a paginated turn page plus a capped file preview, not the whole session. `darc list turns --view oneline`
+collapses each turn to a single preview row for fast skimming, and `darc show turn`/`show session --view narrative`
+(the default) omits tool arguments, outputs, and raw payload blobs — pass `--include-raw` to opt back in. Agents should
+prefer the smallest read that answers the question and only widen pagination when the previous read clearly justified
+it.
+
+**Filter aggressively, then drill.** Combine `--since`, `--touching`, `--provider`, `--mode`, `--field`, and
+`--co-touched-with` to narrow before reading evidence. Each search hit returns the `session_id` and `turn_ordinal`
+needed for the next call — agents should chain narrow reads instead of asking for "everything" and post-filtering in
+the prompt.
+
+**Stable, machine-readable contracts.** Read commands always emit JSON envelopes with a `schema` id and a `data`
+payload. Project resolution from CWD means agents rarely need to pass `--project-id`; pass it (or
+`--provider claude` / `--provider codex`) only when running outside a registered checkout or against a mixed archive.
+Use `--color never` to guarantee plain JSON on stdout.
+
+See [Query protocol](docs/query-protocol.md) for the full command matrix, payload schemas, pagination rules, search
+modes, and error contracts.
+
+## Project Moves And Renames
+
+Darc stores stable project identity under configured project names, so history can survive checkout moves and
+repository renames.
+
+The safe bundled workflow for a renamed project is:
+
+```sh
+cd /path/to/new-project
+darc project rename-from <old-project-name> --dry-run
+darc project rename-from <old-project-name>          # rerun without --dry-run after reviewing
 ```
 
-See [Query protocol](docs/query-protocol.md) for the full command matrix, payload contracts, and filter semantics.
+`rename-from` is equivalent to `link <old> + refresh + remove <old>`, run as one step. Use the lower-level commands
+when you want manual control:
 
-Run `darc --help` for the visible CLI surface. Hidden maintainer commands are documented separately.
+```sh
+darc project link <old-project-name> --dry-run       # bring an old project's known paths into the current one (non-destructive)
+darc project remove <old-project-name> --dry-run     # delete a configured project, its archive, and its indexed rows (destructive)
+```
+
+Always run with `--dry-run` first and rerun without it once the reported changes look right.
+See [Project rename and linking](docs/project-rename.md).
 
 ## Documentation
 
 - [Documentation index](docs/README.md)
 - [Query protocol](docs/query-protocol.md)
+- [Background refresh service](docs/service.md)
 - [Project rename and linking](docs/project-rename.md)
-- [Schema audits](docs/schema-audits.md)
-- [Claude support](docs/claude-support.md)
-- [Backlog](docs/todo.md)
+
+## Development
+
+Darc is split into focused Rust crates:
+
+- `darc-cli`: command-line surface.
+- `darc-core`: thin facade and orchestration layer.
+- `darc-sync`: source discovery, sync planning, and archive copy execution.
+- `darc-index`: normalized ingestion, SQLite schema, migrations, and indexing metrics.
+- `darc-query`: read-only query, search, and stats over indexed data.
+- `darc-rollout`: provider transcript models and parsers.
+- `darc-paths`, `darc-agent`, `darc-rollout-audit`, and `darc-test-utils`: shared support, runtime preparation,
+  maintainer audits, and tests.
+
+Useful checks:
+
+```sh
+cargo test --workspace
+cargo +nightly fmt
+cargo clippy --workspace --all-targets --all-features -- -D warnings -W clippy::all
+```
