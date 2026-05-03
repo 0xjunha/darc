@@ -143,6 +143,8 @@ impl SyntheticReadFixture {
     fn scenarios(&self) -> Vec<BenchScenario> {
         let root = self.root.to_string_lossy().into_owned();
         let mut scenarios = vec![
+            scenario("list projects", ["list", "projects", "--root", &root]),
+            scenario("show workspace", ["show", "workspace", "--root", &root]),
             scenario(
                 "list sessions page",
                 [
@@ -154,6 +156,19 @@ impl SyntheticReadFixture {
                     PROJECT_ID,
                     "--limit",
                     "10",
+                ],
+            ),
+            scenario(
+                "list sessions existence probe",
+                [
+                    "list",
+                    "sessions",
+                    "--root",
+                    &root,
+                    "--project-id",
+                    PROJECT_ID,
+                    "--limit",
+                    "0",
                 ],
             ),
             scenario(
@@ -195,6 +210,21 @@ impl SyntheticReadFixture {
                     PROJECT_ID,
                     "--touching",
                     &self.broad_path,
+                    "--limit",
+                    "10",
+                ],
+            ),
+            scenario(
+                "list sessions file pivot no match",
+                [
+                    "list",
+                    "sessions",
+                    "--root",
+                    &root,
+                    "--project-id",
+                    PROJECT_ID,
+                    "--touching",
+                    "missing/no-match.rs",
                     "--limit",
                     "10",
                 ],
@@ -299,6 +329,24 @@ impl SyntheticReadFixture {
                     "25",
                     "--step-limit",
                     "50",
+                ],
+            ),
+            scenario(
+                "show session turn offset",
+                [
+                    "show",
+                    "session",
+                    "--root",
+                    &root,
+                    "--project-id",
+                    PROJECT_ID,
+                    &self.first_session_id,
+                    "--turn-limit",
+                    "5",
+                    "--turn-offset",
+                    "2",
+                    "--step-limit",
+                    "10",
                 ],
             ),
             scenario(

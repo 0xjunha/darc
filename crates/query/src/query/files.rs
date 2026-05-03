@@ -26,6 +26,26 @@ struct SessionKey {
     session_id: String,
 }
 
+/// Stores one session identity selected by an indexed touched-path lookup.
+#[derive(Debug, Clone)]
+pub(crate) struct TouchedSessionKey {
+    pub(crate) provider: SourceKind,
+    pub(crate) session_id: String,
+}
+
+/// Stores filters for one exact touched-path session-page lookup.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TouchedSessionPageRequest<'a> {
+    pub(crate) project_id: &'a str,
+    pub(crate) project_root: Option<&'a Path>,
+    pub(crate) provider: Option<SourceKind>,
+    pub(crate) since: Option<&'a str>,
+    pub(crate) until: Option<&'a str>,
+    pub(crate) touched_path: &'a str,
+    pub(crate) limit: usize,
+    pub(crate) offset: usize,
+}
+
 /// Stores one grouped raw file-touch row before canonicalization.
 #[derive(Debug, Clone)]
 struct RawSessionFileRow {
@@ -239,6 +259,121 @@ pub(crate) fn filter_session_summaries_by_touched_path(
             })
         })
         .collect())
+}
+
+/// Queries one exact touched-path session page directly from indexed file accesses.
+pub(crate) fn query_exact_touched_session_page(
+    connection: &Connection,
+    request: TouchedSessionPageRequest<'_>,
+) -> Result<Option<(Vec<TouchedSessionKey>, bool)>> {
+    let touched_path = normalize_query_path_pattern(request.project_root, request.touched_path);
+    let path_selector = build_path_query_selector(request.project_root, &touched_path);
+    if !matches!(path_selector, PathQuerySelector::Exact { .. }) {
+        return Ok(None);
+    }
+
+    let page_limit = request
+        .limit
+        .checked_add(1)
+        .context("query limit exceeds usize range")?;
+    let rows = query_exact_touched_session_keys(
+        connection,
+        TouchedSessionPageRequest {
+            limit: page_limit,
+            ..request
+        },
+        &path_selector,
+    )?;
+    let has_more = rows.len() > request.limit;
+    let sessions = rows.into_iter().take(request.limit).collect::<Vec<_>>();
+    Ok(Some((sessions, has_more)))
+}
+
+/// Queries exact touched-path session keys with SQL-side pagination.
+fn query_exact_touched_session_keys(
+    connection: &Connection,
+    request: TouchedSessionPageRequest<'_>,
+    path_selector: &PathQuerySelector,
+) -> Result<Vec<TouchedSessionKey>> {
+    let provider = request.provider.map(SourceKind::directory_name);
+    let mut params = vec![
+        Value::Text(request.project_id.to_owned()),
+        optional_text_value(provider),
+        optional_text_value(request.since),
+        optional_text_value(request.until),
+    ];
+    params.extend(path_selector.params());
+    params.push(Value::Integer(
+        i64::try_from(request.limit).context("query limit exceeds SQLite INTEGER range")?,
+    ));
+    params.push(Value::Integer(
+        i64::try_from(request.offset).context("query offset exceeds SQLite INTEGER range")?,
+    ));
+
+    let sql = build_exact_touched_session_page_sql(path_selector);
+    let mut statement = connection
+        .prepare(&sql)
+        .context("failed to prepare exact touched-path session query")?;
+    statement
+        .query_map(params_from_iter(params), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .context("failed to query exact touched-path sessions")?
+        .map(|row| {
+            let (provider, session_id) = row.context("failed to read touched-path session row")?;
+            Ok(TouchedSessionKey {
+                provider: parse_provider(&provider)?,
+                session_id,
+            })
+        })
+        .collect()
+}
+
+/// Builds the SQL for one exact touched-path session page.
+fn build_exact_touched_session_page_sql(path_selector: &PathQuerySelector) -> String {
+    let path_filter = path_selector.sql_predicate(5, 6);
+    format!(
+        "
+    WITH touched_sessions AS (
+        SELECT DISTINCT
+            file_accesses.provider,
+            file_accesses.session_id
+        FROM file_accesses
+        WHERE file_accesses.project_id = ?1
+            AND (?2 IS NULL OR file_accesses.provider = ?2)
+            AND file_accesses.access_type IN ('read', 'write', 'edit')
+            AND NULLIF(TRIM(file_accesses.path), '') IS NOT NULL
+            AND {path_filter}
+    ),
+    latest_session_turns AS (
+        SELECT
+            turns.provider,
+            turns.session_id,
+            MAX(turns.started_at) AS latest_turn_at
+        FROM turns
+        INNER JOIN touched_sessions
+            ON touched_sessions.provider = turns.provider
+            AND touched_sessions.session_id = turns.session_id
+        WHERE turns.project_id = ?1
+        GROUP BY turns.provider, turns.session_id
+    )
+    SELECT
+        touched_sessions.provider,
+        touched_sessions.session_id
+    FROM touched_sessions
+    LEFT JOIN latest_session_turns
+        ON latest_session_turns.provider = touched_sessions.provider
+        AND latest_session_turns.session_id = touched_sessions.session_id
+    WHERE (?3 IS NULL OR julianday(latest_session_turns.latest_turn_at) >= julianday(?3))
+        AND (?4 IS NULL OR julianday(latest_session_turns.latest_turn_at) < julianday(?4))
+    ORDER BY
+        latest_session_turns.latest_turn_at IS NULL ASC,
+        latest_session_turns.latest_turn_at DESC,
+        touched_sessions.provider ASC,
+        touched_sessions.session_id DESC
+    LIMIT ?7 OFFSET ?8
+"
+    )
 }
 
 /// Queries touched-path candidate file rows for one bounded session candidate set.
