@@ -29,19 +29,19 @@ const KEYWORD_SEARCH_SQL: &str = "
         turns.final_answer_text,
         NULLIF(snippet(turn_search_fts, -1, '', '', '…', 16), '')
     FROM turn_search_fts
-    INNER JOIN turn_search
-        ON turn_search.rowid = turn_search_fts.rowid
-    INNER JOIN turns
-        ON turns.project_id = turn_search.project_id
+    CROSS JOIN turn_search
+    CROSS JOIN turns
+    WHERE turn_search_fts MATCH ?6
+        AND turn_search.rowid = turn_search_fts.rowid
+        AND turns.project_id = turn_search.project_id
         AND turns.provider = turn_search.provider
         AND turns.session_id = turn_search.session_id
         AND turns.turn_ordinal = turn_search.turn_ordinal
-    WHERE turn_search.project_id = ?1
+        AND turn_search.project_id = ?1
         AND (?2 IS NULL OR turn_search.provider = ?2)
         AND (?3 IS NULL OR turn_search.session_id = ?3)
         AND (?4 IS NULL OR julianday(turns.started_at) >= julianday(?4))
         AND (?5 IS NULL OR julianday(turns.started_at) < julianday(?5))
-        AND turn_search_fts MATCH ?6
     ORDER BY
         bm25(turn_search_fts) ASC,
         turns.started_at DESC,
@@ -53,6 +53,8 @@ const KEYWORD_SEARCH_SQL: &str = "
 
 const EVIDENCE_SEARCH_TURN_BATCH_ROWS: usize = 1_000;
 const FILE_PATH_GLOB_TURN_BATCH_ROWS: usize = 1_000;
+const BOUNDED_FILE_PATH_GLOB_TURN_BATCH_ROWS: usize = 64;
+const MIN_REGEX_LITERAL_PREFILTER_CHARS: usize = 8;
 const MAX_REGEX_QUERY_CHARS: usize = 1_024;
 const REGEX_SIZE_LIMIT_BYTES: usize = 1_000_000;
 const REGEX_DFA_SIZE_LIMIT_BYTES: usize = 1_000_000;
@@ -565,6 +567,11 @@ impl EvidenceFieldSelection {
                 .map(|field| Value::Text(field.as_str().to_owned())),
         );
     }
+
+    /// Returns whether this exact-search field set includes bulky tool output text.
+    fn includes_tool_output(&self) -> bool {
+        self.allowed.contains(&SearchEvidenceField::ToolOutput)
+    }
 }
 
 /// Deduplicates evidence fields while preserving caller order.
@@ -820,8 +827,11 @@ fn query_regex_evidence_hits_by_turn(
     matcher: &EvidenceMatcher,
 ) -> Result<Vec<SearchTurnHit>> {
     let scope = request.scope;
-    let turn_sql = evidence_search_turns_sql(request.fields, false);
-    let evidence_sql = turn_evidence_rows_sql(request.fields, false);
+    let literal_prefilter = (!request.fields.includes_tool_output())
+        .then(|| regex_literal_prefilter(request.query))
+        .flatten();
+    let turn_sql = evidence_search_turns_sql(request.fields, literal_prefilter.is_some());
+    let evidence_sql = turn_evidence_rows_sql(request.fields, literal_prefilter.is_some());
     let mut turn_statement = connection
         .prepare(&turn_sql)
         .context("failed to prepare evidence turn search query")?;
@@ -837,6 +847,7 @@ fn query_regex_evidence_hits_by_turn(
                 scope,
                 cursor,
                 request.fields,
+                literal_prefilter,
                 turn_limit,
             )
         },
@@ -847,6 +858,7 @@ fn query_regex_evidence_hits_by_turn(
                 turn,
                 matcher,
                 request.fields,
+                literal_prefilter,
                 request.match_limit,
             )
         },
@@ -939,9 +951,11 @@ fn query_regex_evidence_turn_batch(
     scope: SearchScope<'_>,
     cursor: Option<&EvidenceTurnCursor>,
     fields: &EvidenceFieldSelection,
+    literal_prefilter: Option<&str>,
     turn_limit: i64,
 ) -> Result<Vec<EvidenceSearchTurn>> {
-    let params = build_evidence_turn_batch_params(scope, cursor, fields, None, turn_limit);
+    let params =
+        build_evidence_turn_batch_params(scope, cursor, fields, literal_prefilter, turn_limit);
     let mut rows = statement
         .query(params_from_iter(params))
         .context("failed to query evidence search turns")?;
@@ -1075,8 +1089,11 @@ fn query_regex_evidence_hit_for_turn(
     turn: EvidenceSearchTurn,
     matcher: &EvidenceMatcher,
     fields: &EvidenceFieldSelection,
+    literal_prefilter: Option<&str>,
     match_limit: usize,
 ) -> Result<Option<SearchTurnHit>> {
+    let sql_match_limit = i64::try_from(match_limit.saturating_add(1))
+        .context("evidence match preview limit exceeds SQLite INTEGER range")?;
     let mut params = vec![
         Value::Text(project_id.to_owned()),
         Value::Text(turn.provider_key.clone()),
@@ -1084,6 +1101,10 @@ fn query_regex_evidence_hit_for_turn(
         Value::Integer(turn.turn_ordinal_key),
     ];
     fields.push_params(&mut params);
+    if let Some(prefilter) = literal_prefilter {
+        params.push(Value::Text(prefilter.to_owned()));
+        params.push(Value::Integer(sql_match_limit));
+    }
     let mut rows = statement
         .query(params_from_iter(params))
         .context("failed to query turn evidence rows")?;
@@ -1166,6 +1187,20 @@ fn build_regex_matcher(query: &str) -> Result<EvidenceMatcher> {
         .build()
         .context("invalid regex search query")?;
     Ok(EvidenceMatcher::Regex(regex))
+}
+
+/// Returns a regex query as a SQLite literal prefilter when regex matching is equivalent.
+fn regex_literal_prefilter(query: &str) -> Option<&str> {
+    if query.chars().count() < MIN_REGEX_LITERAL_PREFILTER_CHARS {
+        return None;
+    }
+    let has_regex_syntax = query.chars().any(|ch| {
+        matches!(
+            ch,
+            '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$'
+        )
+    });
+    (!has_regex_syntax).then_some(query)
 }
 
 impl EvidenceMatcher {
@@ -1294,11 +1329,15 @@ fn query_file_path_glob_hits(
     let mut candidate_offset = 0usize;
 
     loop {
+        let candidate_batch_rows = file_path_glob_candidate_batch_rows(
+            &path_selector,
+            desired_hit_count.saturating_sub(hits.len()),
+        );
         let batch = query_file_path_glob_turn_batch(
             connection,
             scope,
             &path_selector,
-            FILE_PATH_GLOB_TURN_BATCH_ROWS,
+            candidate_batch_rows,
             candidate_offset,
         )?;
         if batch.candidate_turn_count == 0 {
@@ -1314,7 +1353,7 @@ fn query_file_path_glob_hits(
         if hits.len() >= desired_hit_count {
             break;
         }
-        if batch.candidate_turn_count < FILE_PATH_GLOB_TURN_BATCH_ROWS {
+        if batch.candidate_turn_count < candidate_batch_rows {
             break;
         }
         candidate_offset = candidate_offset
@@ -1323,6 +1362,21 @@ fn query_file_path_glob_hits(
     }
 
     Ok(hits)
+}
+
+/// Returns the candidate-turn page size for one glob path search request.
+fn file_path_glob_candidate_batch_rows(
+    path_selector: &PathQuerySelector,
+    remaining_hits: usize,
+) -> usize {
+    match path_selector {
+        PathQuerySelector::Exact { .. } | PathQuerySelector::Prefix { .. } => remaining_hits.clamp(
+            BOUNDED_FILE_PATH_GLOB_TURN_BATCH_ROWS,
+            FILE_PATH_GLOB_TURN_BATCH_ROWS,
+        ),
+        PathQuerySelector::Unbounded => FILE_PATH_GLOB_TURN_BATCH_ROWS,
+        PathQuerySelector::Impossible => unreachable!("impossible selector is handled by caller"),
+    }
 }
 
 /// Queries one page of candidate turns and their path rows for glob verification.
@@ -1562,16 +1616,12 @@ fn build_file_path_glob_turn_batch_sql(path_selector: &PathQuerySelector) -> Str
 
     format!(
         "
-        WITH candidate_turns AS (
+        WITH candidate_turn_keys AS (
             SELECT
-                turns.provider,
-                turns.session_id,
-                turns.turn_ordinal,
-                turns.started_at,
-                turns.completed_at,
-                turns.status,
-                turns.user_message,
-                turns.final_answer_text
+                file_accesses.provider,
+                file_accesses.session_id,
+                file_accesses.turn_ordinal,
+                MAX(turns.started_at) AS started_at
             FROM file_accesses
             INNER JOIN turns
                 ON turns.project_id = file_accesses.project_id
@@ -1585,20 +1635,32 @@ fn build_file_path_glob_turn_batch_sql(path_selector: &PathQuerySelector) -> Str
                 AND (?5 IS NULL OR julianday(turns.started_at) < julianday(?5))
                 AND NULLIF(TRIM(file_accesses.path), '') IS NOT NULL{path_filter}
             GROUP BY
-                turns.provider,
-                turns.session_id,
-                turns.turn_ordinal,
+                file_accesses.provider,
+                file_accesses.session_id,
+                file_accesses.turn_ordinal
+            ORDER BY
+                started_at DESC,
+                file_accesses.provider ASC,
+                file_accesses.session_id ASC,
+                file_accesses.turn_ordinal ASC
+            LIMIT ?6 OFFSET ?7
+        ),
+        candidate_turns AS (
+            SELECT
+                candidate_turn_keys.provider,
+                candidate_turn_keys.session_id,
+                candidate_turn_keys.turn_ordinal,
                 turns.started_at,
                 turns.completed_at,
                 turns.status,
                 turns.user_message,
                 turns.final_answer_text
-            ORDER BY
-                turns.started_at DESC,
-                turns.provider ASC,
-                turns.session_id ASC,
-                turns.turn_ordinal ASC
-            LIMIT ?6 OFFSET ?7
+            FROM candidate_turn_keys
+            INNER JOIN turns
+                ON turns.project_id = ?1
+                AND turns.provider = candidate_turn_keys.provider
+                AND turns.session_id = candidate_turn_keys.session_id
+                AND turns.turn_ordinal = candidate_turn_keys.turn_ordinal
         )
         SELECT
             candidate_turns.provider,
