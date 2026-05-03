@@ -37,6 +37,9 @@ Each canonical query command accepts `--color <auto|always|never>` and `--root <
 or arguments. Color is terminal-only presentation; the default is `--color auto`. `darc status --json` emits plain
 JSON and accepts `--root`.
 
+The old `darc query ...` CLI namespace is not callable on the current surface. The `darc.query.*` names below are
+schema ids retained for machine-readable payload compatibility.
+
 ## Command Matrix
 
 Query commands emit pretty-printed JSON envelopes on stdout. `--color <auto|always|never>` controls terminal-only ANSI
@@ -62,6 +65,47 @@ presentation; the default is `--color auto`. Status JSON emits the same envelope
 - `darc stats project [--root <path>] [--project-id <id>] [--provider <provider>] [--turn-limit <n>]`
 - `darc stats turn [--root <path>] [--project-id <id>] [--provider <provider>] <session-id-or-prefix> <turn-ordinal>`
 - `darc stats turn [--root <path>] [--project-id <id>] [--provider <provider>] --session-id <session-id-or-prefix> --turn-ordinal <n>`
+
+## Performance Expectations
+
+The read surface is designed for large indexed histories by making exploratory calls explicitly bounded and by keeping
+the expensive pivots inside SQLite where possible.
+
+Committed benchmark coverage is synthetic-only. Run the repeatable CLI benchmark suite with:
+
+```bash
+scripts/bench_cli_reads.sh
+```
+
+The benchmark creates a temporary Darc root with deterministic synthetic sessions, turns, search evidence, and file
+touches, then repeatedly times the canonical `list`, `show`, and `search` commands. Scale and repeat count can be
+changed without touching committed fixtures:
+
+```bash
+DARC_BENCH_SESSIONS=240 DARC_BENCH_TURNS=24 DARC_BENCH_REPEAT=7 scripts/bench_cli_reads.sh
+```
+
+Benchmark scenarios cover broad and narrow queries, pagination and offsets, file/path pivots, exact literal and regex
+search, no-match cases, large output cases, and repeated-run timing. Real local Darc data is appropriate for ad hoc
+live measurement only; do not copy local session ids, paths, or transcript content into committed fixtures.
+
+Expected scale shape:
+
+- default `list` and `search` pages return 10 rows and report `has_more`; `--limit 0` is a cheap existence probe
+- `darc show session` returns a bounded bundle by default: 5 turns, 10 steps per turn, and a 100-row session-file
+  preview
+- `darc show turn` and `darc show session` should stay proportional to requested turn and step bounds unless callers
+  explicitly request larger pages or raw payloads
+- `darc search --mode keyword` uses the indexed FTS table and paginates in SQL
+- `darc search --mode literal` uses SQLite substring prefiltering over selected exact evidence fields before building
+  capped per-hit match previews
+- `darc search --mode regex` may scan selected evidence rows in Rust; it skips bulky `tool-output` evidence unless
+  `--include-tool-output` is passed
+- file-name, file-path, path-fragment, touched-path, and co-touch pivots use indexed file-access rows with explicit
+  result pagination; broad co-touch ranking is computed from distinct session/path rows in SQLite instead of
+  materializing full per-file summaries first
+- response size grows with explicit caller-controlled bounds: `--limit`, `--turn-limit`, `--step-limit`,
+  `--matched-path-limit`, and `--match-limit`
 
 ## Argument rules
 
