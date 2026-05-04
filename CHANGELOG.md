@@ -4,6 +4,8 @@ All notable Darc release changes should be summarized here.
 
 ## Unreleased
 
+- Keep release-profile CI checks fail-open when the workspace version gate cannot read a push base.
+
 ## 0.1.1
 
 - Improve file analytics to drop shell syntax pseudo-paths while preserving concrete tool, patch, metadata-reference, and shell-test paths.
