@@ -3,6 +3,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error as StdError,
     fs,
+    io::{BufRead, BufReader},
     path::{Path, PathBuf},
 };
 
@@ -837,6 +838,7 @@ fn inspect_archived_claude_rollout(
     sessions_root: &Path,
 ) -> Result<ArchivedRolloutInspection> {
     let (size, mtime_ms) = file_snapshot(path)?;
+    let cli_version = read_claude_rollout_cli_version(path);
     let archive_path = path
         .strip_prefix(sessions_root)
         .with_context(|| {
@@ -893,7 +895,7 @@ fn inspect_archived_claude_rollout(
                         agent_id: None,
                         session_kind: IndexedSessionKind::Primary,
                     },
-                    None,
+                    cli_version.clone(),
                     size,
                     mtime_ms,
                 ),
@@ -929,7 +931,7 @@ fn inspect_archived_claude_rollout(
                         agent_id: Some(agent_id),
                         session_kind: IndexedSessionKind::Subagent,
                     },
-                    None,
+                    cli_version,
                     size,
                     mtime_ms,
                 ),
@@ -946,6 +948,25 @@ fn inspect_archived_claude_rollout(
             ),
         ))),
     }
+}
+
+/// Reads a Claude rollout version cheaply enough for unchanged-session skip checks.
+fn read_claude_rollout_cli_version(path: &Path) -> Option<String> {
+    let file = fs::File::open(path).ok()?;
+    for line in BufReader::new(file)
+        .lines()
+        .map_while(|line| line.ok())
+        .take(128)
+    {
+        let Ok(object) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&line)
+        else {
+            continue;
+        };
+        if let Some(version) = object.get("version").and_then(serde_json::Value::as_str) {
+            return Some(version.to_owned());
+        }
+    }
+    None
 }
 
 /// Groups archived rollout duplicates by provider/session id and orders each group by priority.
