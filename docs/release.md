@@ -22,7 +22,7 @@ curl -fsSL https://github.com/0xjunha/darc/releases/latest/download/darc-install
 
 By default, the installer places `darc` in `~/.local/bin` and installs the cargo-dist updater as `darc-update`.
 Users can check for newer Darc releases with `darc upgrade --check` and upgrade with `darc upgrade` when the updater is
-available. Older installs that do not have `darc-update` should rerun the release installer.
+available.
 
 ## Cut A Release
 
