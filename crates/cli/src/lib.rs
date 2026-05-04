@@ -2664,18 +2664,19 @@ impl UpgradeNudgeContext {
 fn upgrade_nudge_root(command: &Commands) -> Option<&Path> {
     match command {
         Commands::Refresh(args) if !args.watch => Some(&args.root),
-        Commands::Status(args) if !args.json => Some(&args.root),
-        Commands::Sync(args) => Some(&args.root),
+        Commands::Status(args) if !args.json && !args.check => Some(&args.root),
+        Commands::Sync(args) if !args.dry_run => Some(&args.root),
         Commands::Index(args) => Some(&args.root),
         Commands::Service(args) => Some(&args.root),
         Commands::Project(args) => match &args.command {
-            ProjectCommands::Link(args) => Some(&args.root),
-            ProjectCommands::Remove(args) => Some(&args.root),
-            ProjectCommands::RenameFrom(args) => Some(&args.root),
+            ProjectCommands::Link(args) if !args.dry_run => Some(&args.root),
+            ProjectCommands::Remove(args) if !args.dry_run => Some(&args.root),
+            ProjectCommands::RenameFrom(args) if !args.dry_run => Some(&args.root),
+            _ => None,
         },
-        Commands::Link(args) => Some(&args.root),
-        Commands::Remove(args) => Some(&args.root),
-        Commands::RenameFrom(args) => Some(&args.root),
+        Commands::Link(args) if !args.dry_run => Some(&args.root),
+        Commands::Remove(args) if !args.dry_run => Some(&args.root),
+        Commands::RenameFrom(args) if !args.dry_run => Some(&args.root),
         _ => None,
     }
 }

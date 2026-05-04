@@ -1007,7 +1007,7 @@ fn upgrade_nudge_cache_respects_check_and_notification_intervals() {
 }
 
 #[test]
-fn startup_upgrade_nudge_skips_json_and_watch_commands() {
+fn startup_upgrade_nudge_skips_json_watch_and_no_write_commands() {
     let refresh = Cli::try_parse_from(["darc", "refresh", "--root", "/tmp/darc-root"]).unwrap();
     assert_eq!(
         super::upgrade_nudge_root(&refresh.command),
@@ -1021,6 +1021,61 @@ fn startup_upgrade_nudge_skips_json_and_watch_commands() {
     let status_json =
         Cli::try_parse_from(["darc", "status", "--json", "--root", "/tmp/darc-root"]).unwrap();
     assert!(super::upgrade_nudge_root(&status_json.command).is_none());
+
+    let status_check =
+        Cli::try_parse_from(["darc", "status", "--check", "--root", "/tmp/darc-root"]).unwrap();
+    assert!(super::upgrade_nudge_root(&status_check.command).is_none());
+
+    let sync_dry_run =
+        Cli::try_parse_from(["darc", "sync", "--dry-run", "--root", "/tmp/darc-root"]).unwrap();
+    assert!(super::upgrade_nudge_root(&sync_dry_run.command).is_none());
+
+    let project_link_dry_run = Cli::try_parse_from([
+        "darc",
+        "project",
+        "link",
+        "old-project",
+        "--dry-run",
+        "--root",
+        "/tmp/darc-root",
+    ])
+    .unwrap();
+    assert!(super::upgrade_nudge_root(&project_link_dry_run.command).is_none());
+
+    let project_remove_dry_run = Cli::try_parse_from([
+        "darc",
+        "project",
+        "remove",
+        "old-project",
+        "--dry-run",
+        "--root",
+        "/tmp/darc-root",
+    ])
+    .unwrap();
+    assert!(super::upgrade_nudge_root(&project_remove_dry_run.command).is_none());
+
+    let project_rename_dry_run = Cli::try_parse_from([
+        "darc",
+        "project",
+        "rename-from",
+        "old-project",
+        "--dry-run",
+        "--root",
+        "/tmp/darc-root",
+    ])
+    .unwrap();
+    assert!(super::upgrade_nudge_root(&project_rename_dry_run.command).is_none());
+
+    let link_dry_run = Cli::try_parse_from([
+        "darc",
+        "link",
+        "old-project",
+        "--dry-run",
+        "--root",
+        "/tmp/darc-root",
+    ])
+    .unwrap();
+    assert!(super::upgrade_nudge_root(&link_dry_run.command).is_none());
 
     let search =
         Cli::try_parse_from(["darc", "search", "--root", "/tmp/darc-root", "panic"]).unwrap();
