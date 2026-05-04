@@ -40,8 +40,10 @@ available.
    scripts/prepare-release.sh 0.1.0
    ```
 
-   The script updates `Cargo.toml`, moves `CHANGELOG.md` `Unreleased` entries into `## 0.1.0`, then runs fmt, clippy,
-   tests, and `dist plan --tag v0.1.0`.
+   The script updates `Cargo.toml`, moves `CHANGELOG.md` `Unreleased` entries into `## 0.1.0`, then runs fmt, stable
+   clippy, stable tests, a dist-profile check, and `dist plan --tag v0.1.0`.
+
+   CI also runs release-profile Linux target checks when the workspace package version changes in a PR or on `main`.
 
 3. Commit and open a normal release PR into `main`:
 
@@ -90,5 +92,6 @@ When updating cargo-dist:
 
 1. Temporarily remove `allow-dirty = ["ci"]`.
 2. Run `dist generate --mode ci`.
-3. Reapply the Darc preflight job, `plan.needs`, pull-request path filters, and concurrency settings if the generator removed them.
+3. Reapply the Darc preflight job, stable Rust installs in release jobs, `plan.needs`, pull-request path filters, and
+   concurrency settings if the generator removed them.
 4. Restore `allow-dirty = ["ci"]`.

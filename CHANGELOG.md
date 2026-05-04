@@ -14,6 +14,8 @@ All notable Darc release changes should be summarized here.
 - Improve `darc upgrade` root handling and custom-install fallback guidance.
 - Keep `darc upgrade --check --json` installer guidance consistent with custom installs and bound remote HTTP errors.
 - Show commented common workflow examples in top-level help, including `darc upgrade --check`.
+- Build release artifacts with a pinned stable Rust toolchain and check release-profile Linux targets when the workspace
+  version changes.
 
 ## 0.1.0
 

@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - main
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -64,8 +67,95 @@ jobs:
       - name: Run tests
         run: cargo +stable nextest run --workspace
 
+  workspace-version-change:
+    name: Workspace Version Change
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.detect.outputs.changed }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: detect
+        name: Detect workspace version change
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          workspace_version() {
+            awk '
+              /^\[workspace\.package\]$/ { in_workspace = 1; next }
+              /^\[/ { in_workspace = 0 }
+              in_workspace && /^[[:space:]]*version[[:space:]]*=/ {
+                line = $0
+                sub(/^[^\"]*\"/, "", line)
+                sub(/\".*$/, "", line)
+                print line
+                exit
+              }
+            ' "$@"
+          }
+
+          head_version="$(workspace_version Cargo.toml)"
+          if [[ -z "$head_version" ]]; then
+            printf 'Cargo.toml missing [workspace.package] version\n' >&2
+            exit 1
+          fi
+
+          if [[ -z "${BASE_SHA:-}" || "$BASE_SHA" =~ ^0+$ ]]; then
+            printf 'changed=true\n' >> "$GITHUB_OUTPUT"
+            printf 'workspace version changed: <none> -> %s\n' "$head_version"
+            exit 0
+          fi
+
+          base_cargo="$(git show "$BASE_SHA:Cargo.toml")"
+          base_version="$(printf '%s\n' "$base_cargo" | workspace_version)"
+          if [[ -z "$base_version" ]]; then
+            printf 'base Cargo.toml missing [workspace.package] version\n' >&2
+            exit 1
+          fi
+
+          if [[ "$base_version" != "$head_version" ]]; then
+            printf 'changed=true\n' >> "$GITHUB_OUTPUT"
+          else
+            printf 'changed=false\n' >> "$GITHUB_OUTPUT"
+          fi
+          printf 'workspace version: %s -> %s\n' "$base_version" "$head_version"
+
+  dist-check:
+    name: Dist Check (${{ matrix.target }})
+    needs:
+      - workspace-version-change
+    if: needs.workspace-version-change.outputs.changed == 'true'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check dist target
+        run: cargo +stable check --locked --workspace --all-targets --all-features --profile dist --target ${{ matrix.target }}
+
   coverage:
     name: Coverage
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository

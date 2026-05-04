@@ -107,8 +107,9 @@ mv "$tmp_changelog" CHANGELOG.md
 tmp_changelog=""
 
 run cargo +nightly fmt
-run cargo clippy --workspace --all-targets --all-features -- -D warnings -W clippy::all
-run cargo test --workspace
+run cargo +stable clippy --locked --workspace --all-targets --all-features -- -D warnings -W clippy::all
+run cargo +stable test --locked --workspace
+run cargo +stable check --locked --workspace --all-targets --all-features --profile dist
 run dist plan --tag "$tag"
 
 printf 'Prepared release %s.\n' "$tag"
