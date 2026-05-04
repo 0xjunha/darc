@@ -96,6 +96,7 @@ Check for newer Darc CLI releases:
 
 ```sh
 darc upgrade --check
+darc upgrade --check --json
 darc upgrade
 ```
 
