@@ -68,8 +68,11 @@ jobs:
           submodules: recursive
       - name: Verify release tag is on main
         if: ${{ !github.event.pull_request }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
-          git fetch origin main:refs/remotes/origin/main --tags
+          auth_header="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w 0)"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth_header" fetch origin main:refs/remotes/origin/main --tags
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
       - name: Install nightly rustfmt
         uses: dtolnay/rust-toolchain@nightly
