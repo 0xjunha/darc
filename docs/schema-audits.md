@@ -49,10 +49,6 @@ the published release catalog no longer contains the exact-support boundary tag 
 
 ## Claude schema audit
 
-The hidden Claude rollout schema audit command exists, but the live end-to-end pipeline is currently tracked as
-untrusted in [Backlog](todo.md). Until that backlog item is closed, treat manual runs as investigative diagnostics,
-not release-gating compatibility proof.
-
 Run the command when reproducing or revalidating the Claude audit pipeline:
 
 ```bash

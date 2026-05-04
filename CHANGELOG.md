@@ -5,6 +5,8 @@ All notable Darc release changes should be summarized here.
 ## Unreleased
 
 - Keep release-profile CI checks fail-open when the workspace version gate cannot read a push base.
+- Mark Codex 0.128.0 and Claude Code 2.1.126 rollouts as exact-supported after schema review.
+- Fix the Claude schema audit for modern native-wrapper npm packages.
 
 ## 0.1.1
 
