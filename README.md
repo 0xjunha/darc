@@ -40,10 +40,10 @@ Supported agents: **Claude Code**, **Codex**.
 
 ## Quickstart
 
-Install from this repository:
+Install the latest release (macOS / Linux):
 
 ```sh
-cargo install --path crates/cli
+curl -fsSL https://github.com/0xjunha/darc/releases/latest/download/darc-installer.sh | sh
 ```
 
 Run Darc from a project where you already use Claude Code or Codex:
@@ -84,9 +84,9 @@ darc search --mode file-path "docs/**/*.md" --limit 5    # find sessions that to
 darc list files --co-touched-with src/lib.rs --limit 10  # files commonly changed alongside lib.rs
 
 # Drill down to exact evidence using ids returned above
-darc list turns <SESSION_ID> --view oneline --limit 20   # compact one-line skim of a session's turns
-darc show session <SESSION_ID> --turn-limit 5 --step-limit 10
-darc show turn <SESSION_ID> <TURN_ORDINAL> --step-limit 10
+darc list turns <SESSION_ID> --view oneline --limit 20         # compact one-line skim of a session's turns
+darc show session <SESSION_ID> --turn-limit 5 --step-limit 10  # bounded session bundle after narrowing
+darc show turn <SESSION_ID> <TURN_ORDINAL> --step-limit 10     # exact turn evidence with bounded steps
 
 # Project metrics: tools, models, active time, top files
 darc stats project --turn-limit 200
