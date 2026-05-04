@@ -236,13 +236,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "darc-agent"
-version = "0.1.1"
-dependencies = [
- "thiserror",
-]
-
-[[package]]
 name = "darc-core"
 version = "0.1.1"
 dependencies = [

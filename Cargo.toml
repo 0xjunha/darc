@@ -2,7 +2,6 @@
 resolver = "3"
 
 members = [
-    "crates/agent",
     "crates/cli",
     "crates/core",
     "crates/index",
@@ -26,7 +25,6 @@ description = "Archive, index, and query coding-agent session history"
 
 [workspace.dependencies]
 # Internal Dependencies
-darc-agent = { path = "crates/agent" }
 darc-core = { path = "crates/core" }
 darc-index = { path = "crates/index" }
 darc-paths = { path = "crates/paths" }
