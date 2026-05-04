@@ -92,6 +92,30 @@ darc show turn <SESSION_ID> <TURN_ORDINAL> --step-limit 10     # exact turn evid
 darc stats project --turn-limit 200
 ```
 
+## Uninstall
+
+If you enabled the macOS background refresh service, turn it off before removing the binary:
+
+```sh
+darc service disable
+```
+
+Then remove the CLI binary installed by the release installer:
+
+```sh
+rm -f ~/.local/bin/darc
+```
+
+If you installed Darc into a custom directory, remove that `darc` binary instead.
+
+Darc keeps local data under `~/.darc`. Uninstalling the binary does not delete that archive. To delete Darc data too:
+
+```sh
+rm -rf ~/.darc
+```
+
+If you used `--root <path>` with Darc, remove that custom root instead.
+
 ## Concepts
 
 Darc keeps one local **workspace** at `~/.darc`. A workspace contains many **projects** (one per registered checkout),
