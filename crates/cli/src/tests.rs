@@ -307,6 +307,44 @@ fn upgrade_dismiss_command_accepts_version_and_root() {
 }
 
 #[test]
+fn upgrade_dismiss_normalizes_v_prefixed_version() -> Result<()> {
+    let root = unique_test_dir("upgrade-dismiss");
+
+    super::run_upgrade_dismiss(
+        &root,
+        super::UpgradeDismissArgs {
+            version: Some("v0.2.0".to_owned()),
+        },
+    )?;
+
+    let cache: Value =
+        serde_json::from_str(&fs::read_to_string(root.join("run/upgrade-check.json"))?)?;
+    assert_eq!(cache["dismissed_version"], "0.2.0");
+
+    Ok(())
+}
+
+#[test]
+fn passive_upgrade_headers_do_not_attach_github_token() -> Result<()> {
+    let passive =
+        super::build_upgrade_headers(super::UpgradeCheckAuth::Anonymous, Some("secret-token"))?;
+    assert!(!passive.contains_key(super::AUTHORIZATION));
+
+    let explicit = super::build_upgrade_headers(
+        super::UpgradeCheckAuth::IncludeGitHubToken,
+        Some("secret-token"),
+    )?;
+    assert_eq!(
+        explicit
+            .get(super::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok()),
+        Some("Bearer secret-token")
+    );
+
+    Ok(())
+}
+
+#[test]
 fn refresh_watch_options_require_watch_mode() {
     for flag in [
         "--debounce",

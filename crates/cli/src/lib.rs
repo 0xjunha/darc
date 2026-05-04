@@ -2004,6 +2004,13 @@ struct UpgradeCheckJson<'a> {
     install_command: &'static str,
 }
 
+/// Selects whether one upgrade check can attach ambient GitHub credentials.
+#[derive(Clone, Copy)]
+enum UpgradeCheckAuth {
+    Anonymous,
+    IncludeGitHubToken,
+}
+
 impl<'a> From<&'a UpgradeStatus> for UpgradeCheckJson<'a> {
     /// Builds one JSON payload from a resolved upgrade status.
     fn from(status: &'a UpgradeStatus) -> Self {
@@ -2357,7 +2364,7 @@ fn run_upgrade(args: UpgradeArgs) -> Result<()> {
         };
     }
 
-    let status = check_darc_upgrade(UPGRADE_CHECK_TIMEOUT)?;
+    let status = check_darc_upgrade(UPGRADE_CHECK_TIMEOUT, UpgradeCheckAuth::IncludeGitHubToken)?;
     if args.json {
         return print_upgrade_check_json(&status);
     }
@@ -2373,10 +2380,13 @@ fn run_upgrade(args: UpgradeArgs) -> Result<()> {
 /// Dismisses one cached Darc upgrade nudge.
 fn run_upgrade_dismiss(root: &Path, args: UpgradeDismissArgs) -> Result<()> {
     let mut cache = read_upgrade_nudge_cache(root);
-    let version = args
-        .version
-        .or_else(|| cache.latest_version.clone())
-        .ok_or_else(|| anyhow!("no cached Darc upgrade version is available to dismiss"))?;
+    let version = match args.version {
+        Some(version) => display_release_version(&version),
+        None => cache
+            .latest_version
+            .clone()
+            .ok_or_else(|| anyhow!("no cached Darc upgrade version is available to dismiss"))?,
+    };
     cache.dismissed_version = Some(version.clone());
     write_upgrade_nudge_cache(root, &cache)?;
 
@@ -2477,9 +2487,9 @@ fn run_darc_upgrade(status: UpgradeStatus) -> Result<()> {
 }
 
 /// Checks GitHub Releases for the latest Darc CLI release.
-fn check_darc_upgrade(timeout: Duration) -> Result<UpgradeStatus> {
+fn check_darc_upgrade(timeout: Duration, auth: UpgradeCheckAuth) -> Result<UpgradeStatus> {
     let current_version = env!("CARGO_PKG_VERSION").to_owned();
-    let Some(release) = fetch_latest_darc_release(timeout)? else {
+    let Some(release) = fetch_latest_darc_release(timeout, auth)? else {
         return Ok(UpgradeStatus {
             current_version,
             latest_version: None,
@@ -2498,8 +2508,11 @@ fn check_darc_upgrade(timeout: Duration) -> Result<UpgradeStatus> {
 }
 
 /// Fetches metadata for the latest Darc GitHub Release.
-fn fetch_latest_darc_release(timeout: Duration) -> Result<Option<GitHubLatestRelease>> {
-    let client = build_upgrade_http_client(timeout)?;
+fn fetch_latest_darc_release(
+    timeout: Duration,
+    auth: UpgradeCheckAuth,
+) -> Result<Option<GitHubLatestRelease>> {
+    let client = build_upgrade_http_client(timeout, auth)?;
     let Some(response) = send_upgrade_request(
         client
             .get(DARC_LATEST_RELEASE_API_URL)
@@ -2518,24 +2531,33 @@ fn fetch_latest_darc_release(timeout: Duration) -> Result<Option<GitHubLatestRel
 }
 
 /// Builds one short-lived HTTP client for upgrade checks.
-fn build_upgrade_http_client(timeout: Duration) -> Result<Client> {
+fn build_upgrade_http_client(timeout: Duration, auth: UpgradeCheckAuth) -> Result<Client> {
+    let token = github_api_token();
+    let headers = build_upgrade_headers(auth, token.as_deref())?;
+    Client::builder()
+        .default_headers(headers)
+        .timeout(timeout)
+        .build()
+        .context("failed to build HTTP client for Darc upgrade check")
+}
+
+/// Builds the default HTTP headers for one upgrade check request.
+fn build_upgrade_headers(auth: UpgradeCheckAuth, token: Option<&str>) -> Result<HeaderMap> {
     let mut headers = HeaderMap::new();
     headers.insert(
         USER_AGENT,
         HeaderValue::from_str(&format!("darc/{}", env!("CARGO_PKG_VERSION")))
             .context("failed to build GitHub API user agent header")?,
     );
-    if let Some(token) = github_api_token() {
+    if matches!(auth, UpgradeCheckAuth::IncludeGitHubToken)
+        && let Some(token) = token
+    {
         let mut value = HeaderValue::from_str(&format!("Bearer {token}"))
             .context("failed to build GitHub API authorization header")?;
         value.set_sensitive(true);
         headers.insert(AUTHORIZATION, value);
     }
-    Client::builder()
-        .default_headers(headers)
-        .timeout(timeout)
-        .build()
-        .context("failed to build HTTP client for Darc upgrade check")
+    Ok(headers)
 }
 
 /// Returns the configured GitHub API token when one is available.
@@ -2651,7 +2673,7 @@ impl UpgradeNudgeContext {
         }
 
         self.cache.checked_at_unix = Some(now);
-        if let Ok(status) = check_darc_upgrade(UPGRADE_NUDGE_TIMEOUT) {
+        if let Ok(status) = check_darc_upgrade(UPGRADE_NUDGE_TIMEOUT, UpgradeCheckAuth::Anonymous) {
             self.cache.latest_version = status.latest_version;
             self.cache.latest_release_url = status.latest_release_url;
             self.cache.upgrade_available = status.upgrade_available;
