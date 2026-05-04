@@ -22,39 +22,42 @@ curl -fsSL https://github.com/0xjunha/darc/releases/latest/download/darc-install
 
 ## Cut A Release
 
-1. Prepare a normal release PR into `main`.
-
-2. Update the workspace version in `Cargo.toml`.
-
-3. Move the relevant `CHANGELOG.md` entries from `Unreleased` into a version section:
-
-   ```md
-   ## 0.1.0
-
-   - ...
-   ```
-
-4. Run the local release checks:
-
-   ```sh
-   cargo +nightly fmt
-   cargo clippy --workspace --all-targets --all-features -- -D warnings -W clippy::all
-   cargo test --workspace
-   dist plan --tag v0.1.0
-   ```
-
-5. Merge the release PR to `main`.
-
-6. Tag the exact merged `main` commit:
+1. Create a release branch from current `main`:
 
    ```sh
    git checkout main
    git pull --ff-only
-   git tag -a v0.1.0 -m "v0.1.0"
-   git push origin v0.1.0
+   git checkout -b release/v0.1.0
    ```
 
-The release workflow refuses to continue if the tagged commit is not reachable from `origin/main`.
+2. Prepare the release:
+
+   ```sh
+   scripts/prepare-release.sh 0.1.0
+   ```
+
+   The script updates `Cargo.toml`, moves `CHANGELOG.md` `Unreleased` entries into `## 0.1.0`, then runs fmt, clippy,
+   tests, and `dist plan --tag v0.1.0`.
+
+3. Commit and open a normal release PR into `main`:
+
+   ```sh
+   git add Cargo.toml Cargo.lock CHANGELOG.md
+   git commit -m "chore(release): prepare v0.1.0"
+   ```
+
+4. Merge the release PR.
+
+5. Tag the exact merged `main` commit:
+
+   ```sh
+   scripts/tag-release.sh 0.1.0
+   ```
+
+   The script syncs `main`, verifies `Cargo.toml` and `CHANGELOG.md` match the requested version, creates an annotated
+   tag, and pushes it to `origin`.
+
+The release workflow also refuses to continue if the tagged commit is not reachable from `origin/main`.
 
 ## Verify A Release
 
@@ -66,6 +69,12 @@ curl -fsSL \
   https://github.com/0xjunha/darc/releases/latest/download/darc-installer.sh | \
   DARC_INSTALL_DIR="$tmpdir/bin" sh
 "$tmpdir/bin/darc" --version
+```
+
+## Test Release Helpers
+
+```sh
+scripts/test_release_scripts.sh
 ```
 
 ## Updating cargo-dist
