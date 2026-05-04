@@ -1,0 +1,17 @@
+[workspace]
+members = ["cargo:."]
+
+# Config for 'dist'
+[dist]
+cargo-dist-version = "0.31.0"
+ci = "github"
+# Generated release.yml is intentionally customized with Darc preflight gates.
+allow-dirty = ["ci"]
+# The installers to generate for each app
+installers = ["shell"]
+targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"]
+# Path that installers should place binaries in
+install-path = "CARGO_HOME"
+hosting = "github"
+github-attestations = true
+install-updater = false
