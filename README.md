@@ -35,8 +35,8 @@ Supported agents: **Claude Code**, **Codex**.
   behind both.
 - **Project continuity.** History survives checkout moves, worktrees, and repository renames via stable Darc project
   ids.
-- **Local-first.** No external services. Darc reads from local agent rollouts and writes only to one workspace under
-  `~/.darc`.
+- **Local-first.** Darc reads from local agent rollouts and writes archive/query state under `~/.darc`. Optional upgrade
+  checks contact GitHub only for release metadata and can be disabled.
 
 ## Quickstart
 
@@ -97,6 +97,14 @@ Check for newer Darc CLI releases:
 ```sh
 darc upgrade --check
 darc upgrade
+```
+
+Darc can show a short startup nudge when a newer release is available. Interactive human commands read the cached release
+metadata under `~/.darc/run`; when the cache is stale, Darc refreshes it after the command completes. Disable the nudge in
+`~/.darc/config.toml` with `check_for_update_on_startup = false`, or set `DARC_NO_UPDATE_CHECK=1`. To hide one release:
+
+```sh
+darc upgrade dismiss <VERSION>
 ```
 
 ## Uninstall

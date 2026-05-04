@@ -257,6 +257,7 @@ fn config_deserializes_without_known_paths() -> Result<()> {
     let loaded: SharedConfig = toml::from_str(&toml_str)?;
 
     assert_eq!(loaded.projects.len(), 1);
+    assert!(loaded.check_for_update_on_startup);
     assert!(loaded.projects[0].known_paths.is_empty());
 
     Ok(())

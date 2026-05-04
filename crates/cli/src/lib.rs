@@ -401,6 +401,31 @@ struct UpgradeArgs {
         help = "Write the upgrade check result as a machine-readable JSON envelope"
     )]
     json: bool,
+
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Use this Darc root for cached upgrade nudges"
+    )]
+    root: PathBuf,
+
+    #[command(subcommand)]
+    command: Option<UpgradeCommands>,
+}
+
+/// Represents supported upgrade-state commands.
+#[derive(Debug, Subcommand)]
+enum UpgradeCommands {
+    /// Dismiss one cached upgrade nudge.
+    Dismiss(UpgradeDismissArgs),
+}
+
+/// Dismisses one cached Darc upgrade version.
+#[derive(Debug, Args)]
+struct UpgradeDismissArgs {
+    #[arg(value_name = "VERSION", help = "Darc version to dismiss")]
+    version: Option<String>,
 }
 
 /// Shows Darc status for the active project or workspace.
@@ -1965,6 +1990,7 @@ struct UpgradeNudgeCache {
     last_notified_at_unix: Option<u64>,
     latest_version: Option<String>,
     latest_release_url: Option<String>,
+    dismissed_version: Option<String>,
     upgrade_available: bool,
 }
 
@@ -2097,7 +2123,8 @@ where
 
 /// Dispatches one already parsed CLI command.
 fn run_cli(cli: Cli) -> i32 {
-    match cli.command {
+    let upgrade_nudge = UpgradeNudgeContext::start(&cli.command);
+    let exit_code = match cli.command {
         Commands::Init(args) => standard_exit(run_init(args)),
         Commands::Refresh(args) => standard_exit(run_refresh(args)),
         Commands::Status(args) if args.json => json_exit(run_status(args)),
@@ -2118,7 +2145,11 @@ fn run_cli(cli: Cli) -> i32 {
         Commands::Service(args) => standard_exit(run_service(args)),
         Commands::CodexSchemaAudit(args) => run_codex_schema_audit_command(args),
         Commands::ClaudeSchemaAudit(args) => run_claude_schema_audit_command(args),
+    };
+    if let Some(nudge) = upgrade_nudge {
+        nudge.refresh_after_command(exit_code);
     }
+    exit_code
 }
 
 /// Maps Clap parse errors to the correct command-family output format.
@@ -2270,6 +2301,15 @@ fn run_project(args: ProjectArgs) -> Result<()> {
 
 /// Runs the explicit Darc CLI upgrade command.
 fn run_upgrade(args: UpgradeArgs) -> Result<()> {
+    if let Some(command) = args.command {
+        if args.check {
+            bail!("`darc upgrade dismiss` cannot be combined with `--check`");
+        }
+        return match command {
+            UpgradeCommands::Dismiss(dismiss_args) => run_upgrade_dismiss(&args.root, dismiss_args),
+        };
+    }
+
     let status = check_darc_upgrade(UPGRADE_CHECK_TIMEOUT)?;
     if args.json {
         return print_upgrade_check_json(&status);
@@ -2281,6 +2321,22 @@ fn run_upgrade(args: UpgradeArgs) -> Result<()> {
     }
 
     run_darc_upgrade(status)
+}
+
+/// Dismisses one cached Darc upgrade nudge.
+fn run_upgrade_dismiss(root: &Path, args: UpgradeDismissArgs) -> Result<()> {
+    let mut cache = read_upgrade_nudge_cache(root);
+    let version = args
+        .version
+        .or_else(|| cache.latest_version.clone())
+        .ok_or_else(|| anyhow!("no cached Darc upgrade version is available to dismiss"))?;
+    cache.dismissed_version = Some(version.clone());
+    write_upgrade_nudge_cache(root, &cache)?;
+
+    let style = HumanStyle::stdout();
+    print_section(style, "Upgrade");
+    print_field(style, 2, "Dismissed", version);
+    Ok(())
 }
 
 /// Prints one machine-readable upgrade check envelope.
@@ -2504,38 +2560,77 @@ fn upgrade_executable_name() -> String {
     format!("darc-update{}", env::consts::EXE_SUFFIX)
 }
 
-/// Best-effort passive nudge for newer Darc CLI releases.
-fn maybe_print_upgrade_nudge(root: &Path) {
-    if !upgrade_nudge_enabled_from_env() {
-        return;
-    }
-    let Some(now) = current_unix_seconds() else {
-        return;
-    };
-    let mut cache = read_upgrade_nudge_cache(root);
-    if should_check_upgrade_nudge(now, &cache) {
-        cache.checked_at_unix = Some(now);
-        if let Ok(status) = check_darc_upgrade(UPGRADE_NUDGE_TIMEOUT) {
-            cache.latest_version = status.latest_version;
-            cache.latest_release_url = status.latest_release_url;
-            cache.upgrade_available = status.upgrade_available;
+/// Stores one passive startup upgrade nudge decision for the current command.
+struct UpgradeNudgeContext {
+    root: PathBuf,
+    cache: UpgradeNudgeCache,
+}
+
+impl UpgradeNudgeContext {
+    /// Starts one cache-first passive upgrade nudge for an eligible command.
+    fn start(command: &Commands) -> Option<Self> {
+        let root = upgrade_nudge_root(command)?.to_path_buf();
+        if !upgrade_nudge_enabled_from_env() || !upgrade_nudge_enabled_from_config(&root) {
+            return None;
         }
+        let mut cache = read_upgrade_nudge_cache(&root);
+        if let Some(now) = current_unix_seconds()
+            && should_notify_upgrade_nudge(now, &cache, env!("CARGO_PKG_VERSION"))
+            && let Some(latest_version) = cache.latest_version.as_deref()
+        {
+            let style = HumanStyle::stderr();
+            eprintln!(
+                "{}",
+                style.warn(format!(
+                    "Darc {latest_version} is available. Run `darc upgrade`."
+                ))
+            );
+            cache.last_notified_at_unix = Some(now);
+            let _ = write_upgrade_nudge_cache(&root, &cache);
+        }
+        Some(Self { root, cache })
     }
 
-    if should_notify_upgrade_nudge(now, &cache)
-        && let Some(latest_version) = cache.latest_version.as_deref()
-    {
-        let style = HumanStyle::stderr();
-        eprintln!(
-            "{}",
-            style.warn(format!(
-                "Darc {latest_version} is available. Run `darc upgrade`."
-            ))
-        );
-        cache.last_notified_at_unix = Some(now);
-    }
+    /// Refreshes the passive upgrade cache after the primary command succeeds.
+    fn refresh_after_command(mut self, exit_code: i32) {
+        if exit_code != 0 {
+            return;
+        }
+        let Some(now) = current_unix_seconds() else {
+            return;
+        };
+        if !should_check_upgrade_nudge(now, &self.cache) {
+            return;
+        }
 
-    let _ = write_upgrade_nudge_cache(root, &cache);
+        self.cache.checked_at_unix = Some(now);
+        if let Ok(status) = check_darc_upgrade(UPGRADE_NUDGE_TIMEOUT) {
+            self.cache.latest_version = status.latest_version;
+            self.cache.latest_release_url = status.latest_release_url;
+            self.cache.upgrade_available = status.upgrade_available;
+        }
+        let _ = write_upgrade_nudge_cache(&self.root, &self.cache);
+    }
+}
+
+/// Returns the Darc root that can be used for one startup upgrade nudge.
+fn upgrade_nudge_root(command: &Commands) -> Option<&Path> {
+    match command {
+        Commands::Refresh(args) if !args.watch => Some(&args.root),
+        Commands::Status(args) if !args.json => Some(&args.root),
+        Commands::Sync(args) => Some(&args.root),
+        Commands::Index(args) => Some(&args.root),
+        Commands::Service(args) => Some(&args.root),
+        Commands::Project(args) => match &args.command {
+            ProjectCommands::Link(args) => Some(&args.root),
+            ProjectCommands::Remove(args) => Some(&args.root),
+            ProjectCommands::RenameFrom(args) => Some(&args.root),
+        },
+        Commands::Link(args) => Some(&args.root),
+        Commands::Remove(args) => Some(&args.root),
+        Commands::RenameFrom(args) => Some(&args.root),
+        _ => None,
+    }
 }
 
 /// Returns whether the current process should try passive upgrade nudges.
@@ -2547,6 +2642,13 @@ fn upgrade_nudge_enabled_from_env() -> bool {
         env::var_os("CI").is_some(),
         env::var_os("DARC_NO_UPDATE_CHECK").is_some(),
     )
+}
+
+/// Returns whether the shared config allows passive startup upgrade checks.
+fn upgrade_nudge_enabled_from_config(root: &Path) -> bool {
+    load_config(&root.join("config.toml"))
+        .map(|config| config.check_for_update_on_startup)
+        .unwrap_or(false)
 }
 
 /// Returns whether passive upgrade nudges are enabled for resolved process facts.
@@ -2568,9 +2670,14 @@ fn should_check_upgrade_nudge(now: u64, cache: &UpgradeNudgeCache) -> bool {
 }
 
 /// Returns whether a cached available upgrade should be shown again.
-fn should_notify_upgrade_nudge(now: u64, cache: &UpgradeNudgeCache) -> bool {
-    cache.upgrade_available
-        && cache.latest_version.is_some()
+fn should_notify_upgrade_nudge(now: u64, cache: &UpgradeNudgeCache, current_version: &str) -> bool {
+    cache
+        .latest_version
+        .as_deref()
+        .is_some_and(|latest_version| {
+            cache.dismissed_version.as_deref() != Some(latest_version)
+                && release_version_is_newer(latest_version, current_version).unwrap_or(false)
+        })
         && cache.last_notified_at_unix.is_none_or(|notified_at| {
             now.saturating_sub(notified_at) >= UPGRADE_NUDGE_NOTIFY_INTERVAL.as_secs()
         })
@@ -4686,9 +4793,6 @@ fn run_refresh_once(request: &RefreshRunRequest) -> Result<()> {
         )?;
         print_refresh_all_report(&report);
         let result = refresh_all_exit_status(&report);
-        if result.is_ok() {
-            maybe_print_upgrade_nudge(&request.root);
-        }
         return result;
     }
 
@@ -4697,7 +4801,6 @@ fn run_refresh_once(request: &RefreshRunRequest) -> Result<()> {
     })
     .map_err(add_init_hint_for_unconfigured_project)?;
     print_refresh_report(&report);
-    maybe_print_upgrade_nudge(&request.root);
     Ok(())
 }
 

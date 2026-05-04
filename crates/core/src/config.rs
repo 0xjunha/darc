@@ -16,6 +16,8 @@ pub struct SharedConfig {
     pub version: u32,
     #[serde(default)]
     pub root: PathBuf,
+    #[serde(default = "default_check_for_update_on_startup")]
+    pub check_for_update_on_startup: bool,
     #[serde(default)]
     pub projects: Vec<ProjectConfig>,
     #[serde(default)]
@@ -34,11 +36,17 @@ impl SharedConfig {
         Self {
             version: CONFIG_VERSION,
             root,
+            check_for_update_on_startup: true,
             projects,
             sources,
             watch: WatchConfig::default(),
         }
     }
+}
+
+/// Returns the default setting for interactive startup update checks.
+fn default_check_for_update_on_startup() -> bool {
+    true
 }
 
 /// Stores one project entry inside the shared config.

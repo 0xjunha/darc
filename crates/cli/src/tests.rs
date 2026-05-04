@@ -255,6 +255,7 @@ fn upgrade_command_accepts_check_and_json() {
         Commands::Upgrade(super::UpgradeArgs {
             check: true,
             json: true,
+            ..
         })
     ));
 }
@@ -280,6 +281,29 @@ fn upgrade_json_parse_errors_use_json_surface() {
         OsString::from("upgrade"),
         OsString::from("--check"),
     ]));
+}
+
+#[test]
+fn upgrade_dismiss_command_accepts_version_and_root() {
+    let cli = Cli::try_parse_from([
+        "darc",
+        "upgrade",
+        "--root",
+        "/tmp/darc-root",
+        "dismiss",
+        "0.2.0",
+    ])
+    .unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Upgrade(super::UpgradeArgs {
+            root,
+            command: Some(super::UpgradeCommands::Dismiss(super::UpgradeDismissArgs {
+                version: Some(version),
+            })),
+            ..
+        }) if root == Path::new("/tmp/darc-root") && version == "0.2.0"
+    ));
 }
 
 #[test]
@@ -949,25 +973,55 @@ fn upgrade_nudge_cache_respects_check_and_notification_intervals() {
         last_notified_at_unix: Some(1_000),
         latest_version: Some("0.2.0".to_owned()),
         latest_release_url: Some("https://github.com/0xjunha/darc/releases/tag/v0.2.0".to_owned()),
+        dismissed_version: None,
         upgrade_available: true,
     };
 
     assert!(!should_check_upgrade_nudge(1_000 + 60, &cache));
-    assert!(!should_notify_upgrade_nudge(1_000 + 60, &cache));
+    assert!(!should_notify_upgrade_nudge(1_000 + 60, &cache, "0.1.0"));
     assert!(should_check_upgrade_nudge(
         1_000 + super::UPGRADE_NUDGE_CHECK_INTERVAL.as_secs(),
         &cache
     ));
     assert!(should_notify_upgrade_nudge(
         1_000 + super::UPGRADE_NUDGE_NOTIFY_INTERVAL.as_secs(),
-        &cache
+        &cache,
+        "0.1.0"
     ));
 
-    cache.upgrade_available = false;
+    cache.dismissed_version = Some("0.2.0".to_owned());
     assert!(!should_notify_upgrade_nudge(
         1_000 + super::UPGRADE_NUDGE_NOTIFY_INTERVAL.as_secs(),
-        &cache
+        &cache,
+        "0.1.0"
     ));
+    cache.dismissed_version = None;
+    assert!(!should_notify_upgrade_nudge(
+        1_000 + super::UPGRADE_NUDGE_NOTIFY_INTERVAL.as_secs(),
+        &cache,
+        "0.2.0"
+    ));
+}
+
+#[test]
+fn startup_upgrade_nudge_skips_json_and_watch_commands() {
+    let refresh = Cli::try_parse_from(["darc", "refresh", "--root", "/tmp/darc-root"]).unwrap();
+    assert_eq!(
+        super::upgrade_nudge_root(&refresh.command),
+        Some(Path::new("/tmp/darc-root"))
+    );
+
+    let watch =
+        Cli::try_parse_from(["darc", "refresh", "--watch", "--root", "/tmp/darc-root"]).unwrap();
+    assert!(super::upgrade_nudge_root(&watch.command).is_none());
+
+    let status_json =
+        Cli::try_parse_from(["darc", "status", "--json", "--root", "/tmp/darc-root"]).unwrap();
+    assert!(super::upgrade_nudge_root(&status_json.command).is_none());
+
+    let search =
+        Cli::try_parse_from(["darc", "search", "--root", "/tmp/darc-root", "panic"]).unwrap();
+    assert!(super::upgrade_nudge_root(&search.command).is_none());
 }
 
 #[test]
