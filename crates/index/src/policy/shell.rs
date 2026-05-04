@@ -291,7 +291,7 @@ fn apply_patch_heredoc_terminator(line: &str) -> Option<String> {
 
 /// Returns the generic heredoc terminator declared by one shell line.
 fn shell_heredoc_terminator(line: &str) -> Option<String> {
-    let (_, heredoc_tail) = line.split_once("<<")?;
+    let heredoc_tail = unquoted_heredoc_tail(line)?;
     let heredoc_tail = heredoc_tail.trim();
     if heredoc_tail.starts_with('<') {
         return None;
@@ -302,6 +302,35 @@ fn shell_heredoc_terminator(line: &str) -> Option<String> {
         .next()?
         .trim_matches(['"', '\'']);
     (!terminator.is_empty()).then(|| terminator.to_owned())
+}
+
+/// Returns the text after one unquoted shell heredoc operator.
+fn unquoted_heredoc_tail(line: &str) -> Option<&str> {
+    let mut chars = line.char_indices().peekable();
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut escaped = false;
+
+    while let Some((_, ch)) = chars.next() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' if !in_single_quote => escaped = true,
+            '\'' if !in_double_quote => in_single_quote = !in_single_quote,
+            '"' if !in_single_quote => in_double_quote = !in_double_quote,
+            '<' if !in_single_quote && !in_double_quote => {
+                if let Some((next_index, '<')) = chars.peek().copied() {
+                    let _ = chars.next();
+                    return Some(&line[next_index + '<'.len_utf8()..]);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
 }
 
 /// Splits one shell fragment into shell words while preserving quoted text.
@@ -688,13 +717,44 @@ fn extract_simple_path_accesses(
     accesses
 }
 
-/// Extracts touch targets while skipping timestamp and reference operands.
+/// Extracts touch targets while reading reference operands.
 fn extract_touch_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)> {
-    extract_simple_path_accesses(
-        tokens,
-        ToolAccessKind::Write,
-        &["-A", "-d", "-r", "-t", "--date", "--reference", "--time"],
-    )
+    let mut accesses = extract_redirection_file_accesses(tokens);
+    let mut index = 1;
+    let mut skip_next = false;
+
+    while index < tokens.len() {
+        if skip_next {
+            skip_next = false;
+            index += 1;
+            continue;
+        }
+        if let Some(next_index) = skip_redirection_token(tokens, index) {
+            index = next_index;
+            continue;
+        }
+        let token = tokens[index].as_str();
+        match token {
+            "-r" | "--reference" => {
+                if let Some(path) = tokens.get(index + 1) {
+                    push_access(&mut accesses, ToolAccessKind::Read, path);
+                }
+                skip_next = true;
+            }
+            _ if token.starts_with("--reference=") => {
+                if let Some(path) = token.split_once('=').map(|(_, path)| path) {
+                    push_access(&mut accesses, ToolAccessKind::Read, path);
+                }
+            }
+            "-A" | "-d" | "-t" | "--date" | "--time" => skip_next = true,
+            _ if token.starts_with("--date=") || token.starts_with("--time=") => {}
+            _ if token.starts_with('-') => {}
+            _ => push_access(&mut accesses, ToolAccessKind::Write, token),
+        }
+        index += 1;
+    }
+
+    accesses
 }
 
 /// Extracts chmod target edits while skipping mode operands such as `+x`.
@@ -717,10 +777,18 @@ fn extract_chmod_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String
         let token = tokens[index].as_str();
         match token {
             "--reference" => {
+                if let Some(path) = tokens.get(index + 1) {
+                    push_access(&mut accesses, ToolAccessKind::Read, path);
+                }
                 skip_next = true;
                 mode_consumed = true;
             }
-            _ if token.starts_with("--reference=") => mode_consumed = true,
+            _ if token.starts_with("--reference=") => {
+                if let Some(path) = token.split_once('=').map(|(_, path)| path) {
+                    push_access(&mut accesses, ToolAccessKind::Read, path);
+                }
+                mode_consumed = true;
+            }
             "--" => {}
             _ if token.starts_with('-') && !looks_like_symbolic_chmod_mode(token) => {}
             _ if !mode_consumed => mode_consumed = true,
@@ -752,10 +820,18 @@ fn extract_owner_change_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind,
         let token = tokens[index].as_str();
         match token {
             "--reference" => {
+                if let Some(path) = tokens.get(index + 1) {
+                    push_access(&mut accesses, ToolAccessKind::Read, path);
+                }
                 skip_next = true;
                 owner_consumed = true;
             }
-            _ if token.starts_with("--reference=") => owner_consumed = true,
+            _ if token.starts_with("--reference=") => {
+                if let Some(path) = token.split_once('=').map(|(_, path)| path) {
+                    push_access(&mut accesses, ToolAccessKind::Read, path);
+                }
+                owner_consumed = true;
+            }
             "--from" => skip_next = true,
             _ if token.starts_with("--from=") => {}
             "--" => {}
@@ -1075,6 +1151,15 @@ fn extract_test_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)
             index += 2;
             continue;
         }
+        if index > 1
+            && is_file_test_binary_operator(token)
+            && let Some(right) = tokens.get(index + 1)
+        {
+            push_access(&mut accesses, ToolAccessKind::Read, &tokens[index - 1]);
+            push_access(&mut accesses, ToolAccessKind::Read, right);
+            index += 2;
+            continue;
+        }
         index += 1;
     }
     accesses
@@ -1160,6 +1245,11 @@ fn is_file_test_unary_operator(token: &str) -> bool {
             | "-w"
             | "-x"
     )
+}
+
+/// Returns whether one `test` binary operator compares two file path operands.
+fn is_file_test_binary_operator(token: &str) -> bool {
+    matches!(token, "-ef" | "-nt" | "-ot")
 }
 
 /// Extracts edit accesses from one in-place perl command.

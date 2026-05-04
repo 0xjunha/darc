@@ -46,10 +46,17 @@ pub fn is_valid_project_id(project_id: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
 }
 
-/// Returns one concrete file-access path after dropping shell syntax artifacts.
+/// Returns one concrete file-access path after trimming structured path syntax.
 pub fn normalize_access_path_candidate(path: &str) -> Option<String> {
-    let path = path.trim().trim_matches(['"', '\'']).trim();
+    let path = trim_access_path_candidate(path);
     is_concrete_access_path_literal(path).then(|| path.to_owned())
+}
+
+/// Returns one concrete shell-derived path after dropping shell syntax artifacts.
+pub fn normalize_shell_access_path_candidate(path: &str) -> Option<String> {
+    let path = trim_access_path_candidate(path);
+    (is_concrete_access_path_literal(path) && is_shell_concrete_access_path_literal(path))
+        .then(|| path.to_owned())
 }
 
 /// Returns whether one extracted access path is concrete enough for analytics.
@@ -57,36 +64,23 @@ pub fn is_concrete_access_path(path: &str) -> bool {
     normalize_access_path_candidate(path).is_some()
 }
 
+/// Trims quoting and whitespace from one candidate path literal.
+fn trim_access_path_candidate(path: &str) -> &str {
+    path.trim().trim_matches(['"', '\'']).trim()
+}
+
 /// Returns whether one trimmed path candidate is a concrete file target.
 fn is_concrete_access_path_literal(path: &str) -> bool {
-    if path.is_empty()
-        || matches!(
-            path,
-            "." | ".."
-                | "-"
-                | "EOF"
-                | "PATCH"
-                | "["
-                | "]"
-                | "{"
-                | "}"
-                | "("
-                | ")"
-                | "!"
-                | "="
-                | "!="
-                | "=="
-                | "<"
-                | ">"
-        )
-        || path == "/dev/null"
-    {
-        return false;
-    }
-    if (path.starts_with('-') || path.starts_with('(')) && !path.contains('/') {
-        return false;
-    }
-    !path_looks_fd_duplication_fragment(path)
+    !path.is_empty() && !matches!(path, "." | ".." | "-" | "/dev/null")
+}
+
+/// Returns whether one trimmed shell path candidate is not command syntax.
+fn is_shell_concrete_access_path_literal(path: &str) -> bool {
+    !matches!(
+        path,
+        "EOF" | "PATCH" | "[" | "]" | "{" | "}" | "(" | ")" | "!" | "=" | "!=" | "==" | "<" | ">"
+    ) && !((path.starts_with('-') || path.starts_with('(')) && !path.contains('/'))
+        && !path_looks_fd_duplication_fragment(path)
         && !path.contains('$')
         && !path.contains('*')
         && !path.contains('?')
@@ -468,21 +462,42 @@ branch refs/heads/feature
     }
 
     #[test]
-    fn access_path_candidate_rejects_shell_syntax_artifacts() {
+    fn access_path_candidate_accepts_structured_filename_characters() {
         assert_eq!(
             normalize_access_path_candidate("  'src/main.rs'  ").as_deref(),
             Some("src/main.rs")
         );
-        assert!(normalize_access_path_candidate("+x").is_none());
-        assert!(normalize_access_path_candidate("a-w").is_none());
-        assert!(normalize_access_path_candidate("--check").is_none());
-        assert!(normalize_access_path_candidate("2>&1").is_none());
-        assert!(normalize_access_path_candidate("&1)").is_none());
-        assert!(normalize_access_path_candidate("(RUST_LOG=debug").is_none());
-        assert!(normalize_access_path_candidate("$tmp/Cargo.toml").is_none());
-        assert!(normalize_access_path_candidate("src/$file.rs").is_none());
-        assert!(normalize_access_path_candidate("!=").is_none());
+        assert_eq!(
+            normalize_access_path_candidate("src/$file.rs").as_deref(),
+            Some("src/$file.rs")
+        );
+        assert_eq!(
+            normalize_access_path_candidate("a-w").as_deref(),
+            Some("a-w")
+        );
+        assert_eq!(
+            normalize_access_path_candidate("--check").as_deref(),
+            Some("--check")
+        );
         assert!(normalize_access_path_candidate("/dev/null").is_none());
+    }
+
+    #[test]
+    fn shell_access_path_candidate_rejects_shell_syntax_artifacts() {
+        assert_eq!(
+            normalize_shell_access_path_candidate("src/main.rs").as_deref(),
+            Some("src/main.rs")
+        );
+        assert!(normalize_shell_access_path_candidate("+x").is_none());
+        assert!(normalize_shell_access_path_candidate("a-w").is_none());
+        assert!(normalize_shell_access_path_candidate("--check").is_none());
+        assert!(normalize_shell_access_path_candidate("2>&1").is_none());
+        assert!(normalize_shell_access_path_candidate("&1)").is_none());
+        assert!(normalize_shell_access_path_candidate("(RUST_LOG=debug").is_none());
+        assert!(normalize_shell_access_path_candidate("$tmp/Cargo.toml").is_none());
+        assert!(normalize_shell_access_path_candidate("src/$file.rs").is_none());
+        assert!(normalize_shell_access_path_candidate("!=").is_none());
+        assert!(normalize_shell_access_path_candidate("/dev/null").is_none());
     }
 
     #[test]

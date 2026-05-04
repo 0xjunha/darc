@@ -1,7 +1,7 @@
 use std::{collections::BTreeSet, ops::Range, path::Path};
 
 use anyhow::{Context, Result, bail};
-use darc_paths::{SourceKind, normalize_access_path_candidate};
+use darc_paths::SourceKind;
 use glob::{MatchOptions, Pattern};
 use regex::{Regex, RegexBuilder};
 use rusqlite::{Connection, params, params_from_iter, types::Value};
@@ -1504,9 +1504,9 @@ fn display_search_matched_path(
     project_root: Option<&Path>,
     repo_relative_path: Option<&str>,
     path: &str,
-) -> Option<String> {
+) -> String {
     display_path_for_access(project_root, repo_relative_path, path)
-        .or_else(|| normalize_access_path_candidate(path))
+        .unwrap_or_else(|| path.trim().to_owned())
 }
 
 /// Groups glob-verified path rows back into turn hits.
@@ -1572,10 +1572,14 @@ fn record_glob_path_match(
         project_root,
         row.repo_relative_path.as_deref(),
         &row.path,
-    ) && let Some(path) =
-        display_search_matched_path(project_root, row.repo_relative_path.as_deref(), &row.path)
-    {
-        accumulator.matched_paths.insert(path);
+    ) {
+        accumulator
+            .matched_paths
+            .insert(display_search_matched_path(
+                project_root,
+                row.repo_relative_path.as_deref(),
+                &row.path,
+            ));
     }
 }
 
@@ -1786,7 +1790,7 @@ fn query_file_hits_stage(
         .with_context(|| format!("failed to read {kind:?} {stage:?} search rows"))?;
     let rows = rows
         .into_iter()
-        .filter_map(
+        .map(
             |(
                 provider,
                 session_id,
@@ -1798,8 +1802,7 @@ fn query_file_hits_stage(
                 final_answer_text,
                 repo_relative_path,
                 path,
-            )|
-             -> Option<Result<FileSearchRow>> {
+            )| {
                 let user_prompt_preview = preview_text(&user_message);
                 let agent_answer_preview =
                     optional_agent_answer_preview(final_answer_text.as_deref());
@@ -1807,30 +1810,28 @@ fn query_file_hits_stage(
                     scope.project_root,
                     repo_relative_path.as_deref(),
                     &path,
-                )?;
-                Some((|| -> Result<FileSearchRow> {
-                    Ok(FileSearchRow {
-                        provider: parse_provider(&provider)?,
-                        session_id,
-                        turn_ordinal: sql_count_to_u64(turn_ordinal)?,
-                        started_at,
-                        completed_at,
-                        status: parse_turn_status(&status)?,
-                        user_prompt_preview: user_prompt_preview.text,
-                        user_prompt_preview_chars: user_prompt_preview.chars,
-                        user_prompt_total_chars: user_prompt_preview.total_chars,
-                        agent_answer_preview: agent_answer_preview
-                            .as_ref()
-                            .map(|preview| preview.text.clone()),
-                        agent_answer_preview_chars: agent_answer_preview
-                            .as_ref()
-                            .map(|preview| preview.chars),
-                        agent_answer_total_chars: agent_answer_preview
-                            .as_ref()
-                            .map(|preview| preview.total_chars),
-                        matched_path,
-                    })
-                })())
+                );
+                Ok(FileSearchRow {
+                    provider: parse_provider(&provider)?,
+                    session_id,
+                    turn_ordinal: sql_count_to_u64(turn_ordinal)?,
+                    started_at,
+                    completed_at,
+                    status: parse_turn_status(&status)?,
+                    user_prompt_preview: user_prompt_preview.text,
+                    user_prompt_preview_chars: user_prompt_preview.chars,
+                    user_prompt_total_chars: user_prompt_preview.total_chars,
+                    agent_answer_preview: agent_answer_preview
+                        .as_ref()
+                        .map(|preview| preview.text.clone()),
+                    agent_answer_preview_chars: agent_answer_preview
+                        .as_ref()
+                        .map(|preview| preview.chars),
+                    agent_answer_total_chars: agent_answer_preview
+                        .as_ref()
+                        .map(|preview| preview.total_chars),
+                    matched_path,
+                })
             },
         )
         .collect::<Result<Vec<_>>>()?;

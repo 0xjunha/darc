@@ -1,6 +1,8 @@
 use std::{collections::BTreeSet, path::Path};
 
-use darc_paths::{SourceKind, normalize_access_path_candidate};
+use darc_paths::{
+    SourceKind, normalize_access_path_candidate, normalize_shell_access_path_candidate,
+};
 use darc_rollout::model::NormalizedTurnStep;
 use serde_json::Value;
 
@@ -80,6 +82,13 @@ struct ApplyPatchChange {
     path: String,
     added_line_count: u32,
     removed_line_count: u32,
+}
+
+/// Stores the syntax context that produced one candidate access path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AccessPathSource {
+    Shell,
+    Structured,
 }
 
 impl ToolAccessKind {
@@ -188,15 +197,26 @@ pub fn derive_file_access_records(tool_calls: &[ToolCallRecord]) -> Vec<FileAcce
             continue;
         };
 
-        let accesses = if is_shell_tool_name(tool_name) {
-            derive_shell_file_accesses(arguments_text)
+        let (accesses, source) = if is_shell_tool_name(tool_name) {
+            (
+                derive_shell_file_accesses(arguments_text),
+                AccessPathSource::Shell,
+            )
         } else if tool_name == "apply_patch" {
-            derive_apply_patch_file_accesses(arguments_text)
+            (
+                derive_apply_patch_file_accesses(arguments_text),
+                AccessPathSource::Structured,
+            )
         } else {
-            derive_explicit_tool_file_accesses(tool_name, arguments_text)
+            (
+                derive_explicit_tool_file_accesses(tool_name, arguments_text),
+                AccessPathSource::Structured,
+            )
         };
 
-        records.extend(build_file_access_records(tool_call, tool_name, &accesses));
+        records.extend(build_file_access_records(
+            tool_call, tool_name, source, &accesses,
+        ));
     }
 
     records
@@ -363,12 +383,13 @@ pub(super) fn path_looks_directory_like(path: &str) -> bool {
 fn build_file_access_records(
     tool_call: &ToolCallRecord,
     tool_name: &str,
+    source: AccessPathSource,
     accesses: &[(ToolAccessKind, String)],
 ) -> Vec<FileAccessRecord> {
     let unique = accesses
         .iter()
         .filter_map(|(access_type, path)| {
-            sanitize_access_path(path).map(|path| (*access_type, path))
+            sanitize_access_path(path, source).map(|path| (*access_type, path))
         })
         .collect::<BTreeSet<_>>();
 
@@ -397,7 +418,7 @@ pub(super) fn push_access(
     access_type: ToolAccessKind,
     path: &str,
 ) {
-    if let Some(path) = sanitize_access_path(path) {
+    if let Some(path) = sanitize_access_path(path, AccessPathSource::Shell) {
         accesses.push((access_type, path));
     }
 }
@@ -423,7 +444,7 @@ fn parse_apply_patch_changes(text: &str) -> Vec<ApplyPatchChange> {
                 &mut current_removed_line_count,
                 current_access_type,
             );
-            if let Some(path) = sanitize_access_path(path) {
+            if let Some(path) = sanitize_access_path(path, AccessPathSource::Structured) {
                 current_access_type = ToolAccessKind::Write;
                 current_path = Some(path);
             }
@@ -437,7 +458,7 @@ fn parse_apply_patch_changes(text: &str) -> Vec<ApplyPatchChange> {
                 &mut current_removed_line_count,
                 current_access_type,
             );
-            if let Some(path) = sanitize_access_path(path) {
+            if let Some(path) = sanitize_access_path(path, AccessPathSource::Structured) {
                 current_access_type = ToolAccessKind::Edit;
                 current_path = Some(path);
             }
@@ -451,7 +472,7 @@ fn parse_apply_patch_changes(text: &str) -> Vec<ApplyPatchChange> {
                 &mut current_removed_line_count,
                 current_access_type,
             );
-            if let Some(path) = sanitize_access_path(path) {
+            if let Some(path) = sanitize_access_path(path, AccessPathSource::Structured) {
                 current_access_type = ToolAccessKind::Edit;
                 current_path = Some(path);
             }
@@ -465,7 +486,7 @@ fn parse_apply_patch_changes(text: &str) -> Vec<ApplyPatchChange> {
                 &mut current_removed_line_count,
                 current_access_type,
             );
-            if let Some(path) = sanitize_access_path(path) {
+            if let Some(path) = sanitize_access_path(path, AccessPathSource::Structured) {
                 current_access_type = ToolAccessKind::Write;
                 current_path = Some(path);
             }
@@ -524,9 +545,12 @@ fn push_apply_patch_change(
     *current_removed_line_count = 0;
 }
 
-/// Sanitizes one candidate access path extracted from shell syntax or JSON arguments.
-fn sanitize_access_path(path: &str) -> Option<String> {
-    normalize_access_path_candidate(path)
+/// Sanitizes one candidate access path according to its extraction source.
+fn sanitize_access_path(path: &str, source: AccessPathSource) -> Option<String> {
+    match source {
+        AccessPathSource::Shell => normalize_shell_access_path_candidate(path),
+        AccessPathSource::Structured => normalize_access_path_candidate(path),
+    }
 }
 
 /// Appends any string-like path values from one JSON value into the set.
