@@ -88,6 +88,7 @@ const UPGRADE_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 const UPGRADE_NUDGE_TIMEOUT: Duration = Duration::from_secs(2);
 const UPGRADE_NUDGE_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const UPGRADE_NUDGE_NOTIFY_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+const UPGRADE_ERROR_BODY_LIMIT: usize = 240;
 
 /// Returns one styled help trailer section.
 fn styled_help_section(title: &str, body: &str) -> String {
@@ -2002,7 +2003,7 @@ struct UpgradeCheckJson<'a> {
     latest_version: Option<&'a str>,
     upgrade_available: bool,
     latest_release_url: Option<&'a str>,
-    install_command: &'static str,
+    install_command: String,
 }
 
 /// Selects whether one upgrade check can attach ambient GitHub credentials.
@@ -2020,7 +2021,7 @@ impl<'a> From<&'a UpgradeStatus> for UpgradeCheckJson<'a> {
             latest_version: status.latest_version.as_deref(),
             upgrade_available: status.upgrade_available,
             latest_release_url: status.latest_release_url.as_deref(),
-            install_command: DARC_INSTALLER_COMMAND,
+            install_command: manual_upgrade_installer_command(),
         }
     }
 }
@@ -2584,11 +2585,36 @@ fn send_upgrade_request(
         return Ok(Some(response));
     }
     let body = response.text().unwrap_or_default();
-    let detail = body.trim();
-    if detail.is_empty() {
+    let Some(detail) = upgrade_http_error_detail(&body) else {
         bail!("failed to {context_message}: GitHub returned HTTP {status}");
-    }
+    };
     bail!("failed to {context_message}: GitHub returned HTTP {status}: {detail}")
+}
+
+/// Returns compact remote error detail for an upgrade-check HTTP failure.
+fn upgrade_http_error_detail(body: &str) -> Option<String> {
+    let detail = collapse_whitespace(body);
+    if detail.is_empty() {
+        return None;
+    }
+    Some(truncate_text(&detail, UPGRADE_ERROR_BODY_LIMIT))
+}
+
+/// Collapses arbitrary text into one whitespace-normalized line.
+fn collapse_whitespace(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Truncates one string by character count and appends an ellipsis marker.
+fn truncate_text(text: &str, max_len: usize) -> String {
+    if text.chars().count() <= max_len {
+        return text.to_owned();
+    }
+    let truncated = text
+        .chars()
+        .take(max_len.saturating_sub(3))
+        .collect::<String>();
+    format!("{truncated}...")
 }
 
 /// Returns the user-visible version label for one release tag.

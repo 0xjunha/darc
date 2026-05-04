@@ -360,6 +360,34 @@ fn manual_upgrade_installer_command_targets_current_install_dir() {
 }
 
 #[test]
+fn upgrade_check_json_uses_current_install_command() {
+    let status = super::UpgradeStatus {
+        current_version: "0.1.0".to_owned(),
+        latest_version: Some("0.2.0".to_owned()),
+        upgrade_available: true,
+        latest_release_url: Some("https://github.com/0xjunha/darc/releases/tag/v0.2.0".to_owned()),
+    };
+
+    let payload = super::UpgradeCheckJson::from(&status);
+
+    assert_eq!(
+        payload.install_command,
+        super::manual_upgrade_installer_command()
+    );
+}
+
+#[test]
+fn upgrade_http_error_detail_is_bounded_and_single_line() {
+    let detail = super::upgrade_http_error_detail("  first line\nsecond\tline  ").unwrap();
+    assert_eq!(detail, "first line second line");
+
+    let detail = super::upgrade_http_error_detail(&"a".repeat(300)).unwrap();
+    assert_eq!(detail.chars().count(), super::UPGRADE_ERROR_BODY_LIMIT);
+    assert!(detail.ends_with("..."));
+    assert!(super::upgrade_http_error_detail(" \n\t ").is_none());
+}
+
+#[test]
 fn passive_upgrade_headers_do_not_attach_github_token() -> Result<()> {
     let passive =
         super::build_upgrade_headers(super::UpgradeCheckAuth::Anonymous, Some("secret-token"))?;

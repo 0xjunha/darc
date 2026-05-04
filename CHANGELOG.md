@@ -11,6 +11,7 @@ All notable Darc release changes should be summarized here.
 - Add a documented, opt-in startup nudge for newer Darc CLI releases.
 - Keep passive upgrade checks out of no-write command modes and anonymous unless `darc upgrade` is run explicitly.
 - Improve `darc upgrade` root handling and custom-install fallback guidance.
+- Keep `darc upgrade --check --json` installer guidance consistent with custom installs and bound remote HTTP errors.
 
 ## 0.1.0
 
