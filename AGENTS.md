@@ -29,3 +29,7 @@
     - Do not end the summary with a period.
     - Keep the subject line concise, ideally under 72 characters.
     - One commit should represent one logical change. The message should describe that single change.
+14. When preparing a PR or commit with user-visible behavior, CLI output, install/release behavior, docs users rely on,
+    or compatibility impact, update `CHANGELOG.md` under `Unreleased`.
+    - Use one concise user-facing bullet.
+    - Do not add changelog entries for pure refactors, tests, formatting, or internal-only cleanup.
