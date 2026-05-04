@@ -31,7 +31,8 @@ pub(super) fn derive_shell_file_accesses(arguments_text: &str) -> Vec<(ToolAcces
     for patch_payload in extract_apply_patch_heredoc_payloads(&command.command_text) {
         accesses.extend(derive_apply_patch_file_accesses(&patch_payload));
     }
-    for fragment in split_shell_fragments(&command.command_text) {
+    let command_text = strip_shell_heredoc_bodies(&command.command_text);
+    for fragment in split_shell_fragments(&command_text) {
         accesses.extend(derive_shell_fragment_file_accesses(
             &fragment,
             command.workdir.as_deref(),
@@ -156,6 +157,7 @@ fn split_shell_fragments(command_text: &str) -> Vec<String> {
     let mut chars = command_text.chars().peekable();
     let mut in_single_quote = false;
     let mut in_double_quote = false;
+    let mut substitution_depth = 0_u32;
     let mut escaped = false;
 
     while let Some(ch) = chars.next() {
@@ -177,19 +179,43 @@ fn split_shell_fragments(command_text: &str) -> Vec<String> {
                 in_double_quote = !in_double_quote;
                 current.push(ch);
             }
-            '\n' | ';' if !in_single_quote && !in_double_quote => {
-                push_fragment(&mut fragments, &mut current);
+            '<' | '>' if !in_single_quote && !in_double_quote && chars.peek() == Some(&'(') => {
+                let _ = chars.next();
+                substitution_depth = substitution_depth.saturating_add(1);
+                current.push(ch);
+                current.push('(');
             }
-            '|' if !in_single_quote && !in_double_quote && current.ends_with('>') => {
+            '$' if !in_single_quote && !in_double_quote && chars.peek() == Some(&'(') => {
+                let _ = chars.next();
+                substitution_depth = substitution_depth.saturating_add(1);
+                current.push(ch);
+                current.push('(');
+            }
+            ')' if !in_single_quote && !in_double_quote && substitution_depth > 0 => {
+                substitution_depth = substitution_depth.saturating_sub(1);
                 current.push(ch);
             }
-            '|' if !in_single_quote && !in_double_quote => {
+            '\n' | ';' if !in_single_quote && !in_double_quote && substitution_depth == 0 => {
+                push_fragment(&mut fragments, &mut current);
+            }
+            '|' if !in_single_quote
+                && !in_double_quote
+                && substitution_depth == 0
+                && current.ends_with('>') =>
+            {
+                current.push(ch);
+            }
+            '|' if !in_single_quote && !in_double_quote && substitution_depth == 0 => {
                 if chars.peek() == Some(&'|') {
                     let _ = chars.next();
                 }
                 push_fragment(&mut fragments, &mut current);
             }
-            '&' if !in_single_quote && !in_double_quote && chars.peek() == Some(&'&') => {
+            '&' if !in_single_quote
+                && !in_double_quote
+                && substitution_depth == 0
+                && chars.peek() == Some(&'&') =>
+            {
                 let _ = chars.next();
                 push_fragment(&mut fragments, &mut current);
             }
@@ -199,6 +225,28 @@ fn split_shell_fragments(command_text: &str) -> Vec<String> {
 
     push_fragment(&mut fragments, &mut current);
     fragments
+}
+
+/// Removes heredoc body lines so embedded scripts are not parsed as shell commands.
+fn strip_shell_heredoc_bodies(command_text: &str) -> String {
+    let mut stripped = Vec::new();
+    let mut terminator = None::<String>;
+
+    for line in command_text.lines() {
+        if let Some(current_terminator) = terminator.as_deref() {
+            if line.trim() == current_terminator {
+                terminator = None;
+            }
+            continue;
+        }
+
+        stripped.push(line);
+        if let Some(next_terminator) = shell_heredoc_terminator(line) {
+            terminator = Some(next_terminator);
+        }
+    }
+
+    stripped.join("\n")
 }
 
 /// Extracts every heredoc-backed `apply_patch` payload embedded in one shell command string.
@@ -238,8 +286,16 @@ fn apply_patch_heredoc_terminator(line: &str) -> Option<String> {
         return None;
     }
 
+    shell_heredoc_terminator(line)
+}
+
+/// Returns the generic heredoc terminator declared by one shell line.
+fn shell_heredoc_terminator(line: &str) -> Option<String> {
     let (_, heredoc_tail) = line.split_once("<<")?;
     let heredoc_tail = heredoc_tail.trim();
+    if heredoc_tail.starts_with('<') {
+        return None;
+    }
     let heredoc_tail = heredoc_tail.strip_prefix('-').unwrap_or(heredoc_tail);
     let terminator = heredoc_tail
         .split_whitespace()
@@ -252,12 +308,13 @@ fn apply_patch_heredoc_terminator(line: &str) -> Option<String> {
 fn tokenize_shell_words(fragment: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
-    let chars = fragment.chars();
+    let mut chars = fragment.chars().peekable();
     let mut in_single_quote = false;
     let mut in_double_quote = false;
+    let mut substitution_depth = 0_u32;
     let mut escaped = false;
 
-    for ch in chars {
+    while let Some(ch) = chars.next() {
         if escaped {
             current.push(ch);
             escaped = false;
@@ -267,7 +324,27 @@ fn tokenize_shell_words(fragment: &str) -> Vec<String> {
             '\\' if !in_single_quote => escaped = true,
             '\'' if !in_double_quote => in_single_quote = !in_single_quote,
             '"' if !in_single_quote => in_double_quote = !in_double_quote,
-            ch if ch.is_whitespace() && !in_single_quote && !in_double_quote => {
+            '<' | '>' if !in_single_quote && !in_double_quote && chars.peek() == Some(&'(') => {
+                let _ = chars.next();
+                substitution_depth = substitution_depth.saturating_add(1);
+                current.push(ch);
+                current.push('(');
+            }
+            '$' if !in_single_quote && !in_double_quote && chars.peek() == Some(&'(') => {
+                let _ = chars.next();
+                substitution_depth = substitution_depth.saturating_add(1);
+                current.push(ch);
+                current.push('(');
+            }
+            ')' if !in_single_quote && !in_double_quote && substitution_depth > 0 => {
+                substitution_depth = substitution_depth.saturating_sub(1);
+                current.push(ch);
+            }
+            ch if ch.is_whitespace()
+                && !in_single_quote
+                && !in_double_quote
+                && substitution_depth == 0 =>
+            {
                 if !current.is_empty() {
                     tokens.push(std::mem::take(&mut current));
                 }
@@ -326,21 +403,27 @@ fn derive_shell_fragment_file_accesses(
             extract_simple_path_accesses(tokens, ToolAccessKind::Read, &["-n", "-c"])
         }
         "cargo" => extract_cargo_file_accesses(tokens),
-        "awk" | "jq" => extract_program_and_file_accesses(tokens, ToolAccessKind::Read),
+        "awk" => extract_awk_file_accesses(tokens),
+        "jq" => extract_jq_file_accesses(tokens),
         "node" | "python" | "python3" | "ruby" => extract_script_runner_file_accesses(tokens),
         "cp" => extract_copy_file_accesses(tokens),
         "mv" => extract_move_file_accesses(tokens),
         "rm" => extract_rm_file_accesses(tokens),
-        "chmod" | "chown" => extract_simple_path_accesses(tokens, ToolAccessKind::Edit, &[]),
+        "chmod" => extract_chmod_file_accesses(tokens),
+        "chown" | "chgrp" => extract_owner_change_file_accesses(tokens),
         "rmdir" => extract_directory_only_edit_accesses(tokens),
         "mkdir" => extract_directory_only_write_accesses(tokens),
-        "touch" => extract_simple_path_accesses(tokens, ToolAccessKind::Write, &[]),
+        "touch" => extract_touch_file_accesses(tokens),
         "curl" => extract_output_option_file_accesses(tokens),
         "echo" | "printf" | ":" => extract_redirection_file_accesses(tokens),
         "source" | "." => extract_source_file_accesses(tokens),
         "test" | "[" => extract_test_file_accesses(tokens),
         "fd" => extract_fd_file_accesses(tokens),
-        "wc" | "rustfmt" | "lsof" | "sort" | "stat" | "xxd" | "mdls" | "file" => {
+        "stat" => extract_stat_file_accesses(tokens),
+        "rustfmt" => extract_rustfmt_file_accesses(tokens),
+        "lsof" => extract_redirection_file_accesses(tokens),
+        "xxd" => extract_xxd_file_accesses(tokens),
+        "wc" | "sort" | "mdls" | "file" => {
             extract_simple_path_accesses(tokens, ToolAccessKind::Read, &[])
         }
         "diff" => extract_diff_file_accesses(tokens),
@@ -605,6 +688,87 @@ fn extract_simple_path_accesses(
     accesses
 }
 
+/// Extracts touch targets while skipping timestamp and reference operands.
+fn extract_touch_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)> {
+    extract_simple_path_accesses(
+        tokens,
+        ToolAccessKind::Write,
+        &["-A", "-d", "-r", "-t", "--date", "--reference", "--time"],
+    )
+}
+
+/// Extracts chmod target edits while skipping mode operands such as `+x`.
+fn extract_chmod_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)> {
+    let mut accesses = extract_redirection_file_accesses(tokens);
+    let mut mode_consumed = false;
+    let mut index = 1;
+    let mut skip_next = false;
+
+    while index < tokens.len() {
+        if skip_next {
+            skip_next = false;
+            index += 1;
+            continue;
+        }
+        if let Some(next_index) = skip_redirection_token(tokens, index) {
+            index = next_index;
+            continue;
+        }
+        let token = tokens[index].as_str();
+        match token {
+            "--reference" => {
+                skip_next = true;
+                mode_consumed = true;
+            }
+            _ if token.starts_with("--reference=") => mode_consumed = true,
+            "--" => {}
+            _ if token.starts_with('-') && !looks_like_symbolic_chmod_mode(token) => {}
+            _ if !mode_consumed => mode_consumed = true,
+            _ => push_access(&mut accesses, ToolAccessKind::Edit, token),
+        }
+        index += 1;
+    }
+
+    accesses
+}
+
+/// Extracts chown and chgrp target edits while skipping owner/group operands.
+fn extract_owner_change_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)> {
+    let mut accesses = extract_redirection_file_accesses(tokens);
+    let mut owner_consumed = false;
+    let mut index = 1;
+    let mut skip_next = false;
+
+    while index < tokens.len() {
+        if skip_next {
+            skip_next = false;
+            index += 1;
+            continue;
+        }
+        if let Some(next_index) = skip_redirection_token(tokens, index) {
+            index = next_index;
+            continue;
+        }
+        let token = tokens[index].as_str();
+        match token {
+            "--reference" => {
+                skip_next = true;
+                owner_consumed = true;
+            }
+            _ if token.starts_with("--reference=") => owner_consumed = true,
+            "--from" => skip_next = true,
+            _ if token.starts_with("--from=") => {}
+            "--" => {}
+            _ if token.starts_with('-') => {}
+            _ if !owner_consumed => owner_consumed = true,
+            _ => push_access(&mut accesses, ToolAccessKind::Edit, token),
+        }
+        index += 1;
+    }
+
+    accesses
+}
+
 /// Preserves redirection writes while dropping directory-only `mkdir` operands.
 fn extract_directory_only_write_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)> {
     extract_redirection_file_accesses(tokens)
@@ -687,7 +851,7 @@ fn extract_cargo_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String
             index += 1;
             continue;
         }
-        if after_double_dash && saw_fmt {
+        if after_double_dash && saw_fmt && !token.starts_with('-') {
             push_access(&mut accesses, ToolAccessKind::Edit, token);
         }
         index += 1;
@@ -696,11 +860,8 @@ fn extract_cargo_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String
     accesses
 }
 
-/// Extracts read accesses from commands that take a program plus path operands.
-fn extract_program_and_file_accesses(
-    tokens: &[String],
-    access_type: ToolAccessKind,
-) -> Vec<(ToolAccessKind, String)> {
+/// Extracts read accesses from one awk command.
+fn extract_awk_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)> {
     let mut accesses = extract_redirection_file_accesses(tokens);
     let mut index = 1;
     let mut skip_next = false;
@@ -718,19 +879,123 @@ fn extract_program_and_file_accesses(
         }
         let token = tokens[index].as_str();
         match token {
+            "-v" | "-F" => skip_next = true,
+            _ if token.starts_with("-F") => {}
             "-f" => {
+                if let Some(path) = tokens.get(index + 1) {
+                    push_access(&mut accesses, ToolAccessKind::Read, path);
+                }
+                program_consumed = true;
                 skip_next = true;
             }
             _ if token.starts_with('-') => {}
             _ if !program_consumed => {
                 program_consumed = true;
             }
-            _ => push_access(&mut accesses, access_type, token),
+            _ => push_access(&mut accesses, ToolAccessKind::Read, token),
         }
         index += 1;
     }
 
     accesses
+}
+
+/// Extracts read accesses from one jq command.
+fn extract_jq_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)> {
+    let mut accesses = extract_redirection_file_accesses(tokens);
+    let mut index = 1;
+    let mut program_consumed = false;
+
+    while index < tokens.len() {
+        if let Some(next_index) = skip_redirection_token(tokens, index) {
+            index = next_index;
+            continue;
+        }
+        let token = tokens[index].as_str();
+        match token {
+            "--arg" | "--argjson" => {
+                index += 3;
+                continue;
+            }
+            "--rawfile" | "--slurpfile" => {
+                if let Some(path) = tokens.get(index + 2) {
+                    push_access(&mut accesses, ToolAccessKind::Read, path);
+                }
+                index += 3;
+                continue;
+            }
+            "-f" | "--from-file" => {
+                if let Some(path) = tokens.get(index + 1) {
+                    push_access(&mut accesses, ToolAccessKind::Read, path);
+                }
+                program_consumed = true;
+                index += 2;
+                continue;
+            }
+            _ if token.starts_with("--arg=")
+                || token.starts_with("--argjson=")
+                || token.starts_with("--rawfile=")
+                || token.starts_with("--slurpfile=") => {}
+            _ if let Some(path) = token.strip_prefix("--from-file=") => {
+                push_access(&mut accesses, ToolAccessKind::Read, path);
+                program_consumed = true;
+            }
+            _ if token.starts_with('-') => {}
+            _ if !program_consumed => program_consumed = true,
+            _ => push_access(&mut accesses, ToolAccessKind::Read, token),
+        }
+        index += 1;
+    }
+
+    accesses
+}
+
+/// Extracts read accesses from one stat command while skipping format options.
+fn extract_stat_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)> {
+    extract_simple_path_accesses(
+        tokens,
+        ToolAccessKind::Read,
+        &["-f", "-t", "-c", "--format", "--printf"],
+    )
+}
+
+/// Extracts rustfmt file operands while skipping configuration option values.
+fn extract_rustfmt_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)> {
+    extract_simple_path_accesses(
+        tokens,
+        ToolAccessKind::Read,
+        &[
+            "--color",
+            "--config",
+            "--config-path",
+            "--edition",
+            "--emit",
+            "--error-on-line-overflow",
+            "--error-on-unformatted",
+            "--files-with-diff",
+            "--print-config",
+            "--style-edition",
+        ],
+    )
+}
+
+/// Extracts xxd input operands while skipping numeric formatting options.
+fn extract_xxd_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)> {
+    extract_simple_path_accesses(
+        tokens,
+        ToolAccessKind::Read,
+        &[
+            "-c",
+            "-cols",
+            "-g",
+            "-groupsize",
+            "-l",
+            "-len",
+            "-o",
+            "-s",
+            "-seek",
+        ],
+    )
 }
 
 /// Extracts write accesses from commands that use `-o` or `--output`.
@@ -791,7 +1056,6 @@ fn extract_move_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)
 
 /// Extracts read checks from one `test` or `[` command.
 fn extract_test_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)> {
-    let directory_check = tokens.iter().any(|token| token == "-d");
     let mut accesses = extract_redirection_file_accesses(tokens);
     let mut index = 1;
     while index < tokens.len() {
@@ -800,12 +1064,16 @@ fn extract_test_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)
             continue;
         }
         let token = tokens[index].as_str();
-        if !token.starts_with('-') {
-            if directory_check {
-                push_file_like_access(&mut accesses, ToolAccessKind::Read, token);
+        if is_file_test_unary_operator(token)
+            && let Some(path) = tokens.get(index + 1)
+        {
+            if token == "-d" {
+                push_file_like_access(&mut accesses, ToolAccessKind::Read, path);
             } else {
-                push_access(&mut accesses, ToolAccessKind::Read, token);
+                push_access(&mut accesses, ToolAccessKind::Read, path);
             }
+            index += 2;
+            continue;
         }
         index += 1;
     }
@@ -856,6 +1124,42 @@ fn push_file_like_access(
 /// Returns whether one combined short-option token contains the requested flag.
 fn short_flag_contains(token: &str, flag: char) -> bool {
     token.starts_with('-') && !token.starts_with("--") && token.chars().skip(1).any(|ch| ch == flag)
+}
+
+/// Returns whether one token is a chmod symbolic mode rather than an option.
+fn looks_like_symbolic_chmod_mode(token: &str) -> bool {
+    token.chars().all(|ch| {
+        matches!(
+            ch,
+            'u' | 'g' | 'o' | 'a' | 'r' | 'w' | 'x' | 'X' | 's' | 't' | '+' | '-' | '='
+        )
+    }) && token.chars().any(|ch| matches!(ch, '+' | '-' | '='))
+}
+
+/// Returns whether one `test` unary operator takes a file path operand.
+fn is_file_test_unary_operator(token: &str) -> bool {
+    matches!(
+        token,
+        "-a" | "-b"
+            | "-c"
+            | "-d"
+            | "-e"
+            | "-f"
+            | "-g"
+            | "-G"
+            | "-h"
+            | "-k"
+            | "-L"
+            | "-N"
+            | "-O"
+            | "-p"
+            | "-r"
+            | "-s"
+            | "-S"
+            | "-u"
+            | "-w"
+            | "-x"
+    )
 }
 
 /// Extracts edit accesses from one in-place perl command.

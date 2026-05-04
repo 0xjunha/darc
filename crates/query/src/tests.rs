@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
 };
@@ -379,6 +380,86 @@ fn derives_file_accesses_skip_fd_redirections() {
     assert!(file_accesses.iter().any(|record| {
         record.path == "output.txt" && matches!(record.access_type, ToolAccessKind::Write)
     }));
+}
+
+#[test]
+fn derives_file_accesses_skip_shell_metadata_and_dynamic_paths() {
+    let steps = vec![NormalizedTurnStep::ToolCall {
+        timestamp: "2026-04-06T10:00:01Z".to_owned(),
+        call_id: "call-1".to_owned(),
+        name: "exec_command".to_owned(),
+        arguments: r#"{"cmd":"chmod +x scripts/run.sh scripts/check.sh && chmod 755 scripts/install.sh && chmod --reference scripts/run.sh scripts/ref-mode-target.sh && chown junha:staff scripts/run.sh && chown --reference scripts/run.sh scripts/ref-owner-target.sh && test \"$actual\" = \"$expected\" && [ -x scripts/run.sh ] && cat > $tmp/Cargo.toml && touch -t 202604011200 docs/release.md && lsof -p 597 && awk -v iter=\"$i\" '/real/ { print iter, $2 }' benches/out.log && jq --arg key \"$key\" '.[$key]' data.json && jq --rawfile fixture fixtures/raw.txt --from-file filters/release.jq data.json","workdir":"/tmp/repo"}"#.to_owned(),
+    }];
+
+    let tool_calls = extract_tool_call_records("repo-a", SourceKind::Codex, "session-1", 0, &steps);
+    let file_accesses = derive_file_access_records(&tool_calls);
+    let paths = file_accesses
+        .iter()
+        .map(|record| record.path.as_str())
+        .collect::<BTreeSet<_>>();
+
+    for pseudo_path in [
+        "+x",
+        "755",
+        "junha:staff",
+        "=",
+        "$expected",
+        "$tmp/Cargo.toml",
+        "202604011200",
+        "597",
+        "/real/ { print iter, $2 }",
+    ] {
+        assert!(
+            !paths.contains(pseudo_path),
+            "unexpected path {pseudo_path}"
+        );
+    }
+    assert!(paths.contains("scripts/run.sh"));
+    assert!(paths.contains("scripts/check.sh"));
+    assert!(paths.contains("scripts/install.sh"));
+    assert!(paths.contains("scripts/ref-mode-target.sh"));
+    assert!(paths.contains("scripts/ref-owner-target.sh"));
+    assert!(paths.contains("docs/release.md"));
+    assert!(paths.contains("benches/out.log"));
+    assert!(paths.contains("fixtures/raw.txt"));
+    assert!(paths.contains("filters/release.jq"));
+    assert!(paths.contains("data.json"));
+}
+
+#[test]
+fn derives_file_accesses_skip_heredoc_bodies_and_process_substitutions() {
+    let steps = vec![NormalizedTurnStep::ToolCall {
+        timestamp: "2026-04-06T10:00:01Z".to_owned(),
+        call_id: "call-1".to_owned(),
+        name: "exec_command".to_owned(),
+        arguments: r#"{"cmd":"cat <<'EOF' > README.md\ncargo fmt -- --check\nRUST_LOG=debug cargo nextest run <test_name>\nEOF\ncmp -s <(target/debug/darc list --color never projects | jq 'del(.generated_at)') <(target/debug/darc show --color never workspace | jq 'del(.generated_at)')\ntarget/debug/darc list files --session $(target/debug/darc list --color never sessions --limit 1 | jq -r '.data.sessions[0].session_id') --color never 2>&1 | sed -n '1,80p'\ncargo +nightly fmt -- --check\nstat -f '%Sm %N' -t '%Y-%m-%d' Cargo.toml\nrustfmt --config imports_granularity=Crate --print-config current /dev/null 2>&1\nxxd -l 32 traces/input.bin","workdir":"/tmp/repo"}"#.to_owned(),
+    }];
+
+    let tool_calls = extract_tool_call_records("repo-a", SourceKind::Codex, "session-1", 0, &steps);
+    let file_accesses = derive_file_access_records(&tool_calls);
+    let paths = file_accesses
+        .iter()
+        .map(|record| record.path.as_str())
+        .collect::<BTreeSet<_>>();
+
+    for pseudo_path in [
+        "--check",
+        "never",
+        "workspace",
+        "%Sm %N",
+        "%Y-%m-%d",
+        "current",
+        "32",
+        "test_name>",
+    ] {
+        assert!(
+            !paths.contains(pseudo_path),
+            "unexpected path {pseudo_path}"
+        );
+    }
+    assert!(paths.contains("README.md"));
+    assert!(paths.contains("Cargo.toml"));
+    assert!(paths.contains("traces/input.bin"));
 }
 
 #[test]
@@ -3383,6 +3464,78 @@ fn turn_insights_display_project_root_relative_paths() -> Result<()> {
             .map(|stat| (stat.path.as_str(), stat.read_count, stat.write_count))
             .collect::<Vec<_>>(),
         vec![("README.md", 2, 0)]
+    );
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn turn_insights_omit_non_concrete_stale_file_rows() -> Result<()> {
+    let index_path = test_index_path("turn-insights-stale-pseudo-paths");
+    let connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture::new(
+            "repo-a",
+            SourceKind::Codex,
+            "session-1",
+            0,
+            "2026-04-06T11:10:00Z",
+            "completed",
+            r#"[{"type":"tool_call","timestamp":"2026-04-06T11:10:01Z","call_id":"call-1","name":"Read","arguments":"{\"file_path\":\"README.md\"}"}]"#,
+        ),
+    )?;
+    for (path, repo_relative_path) in [
+        ("+x", Some("+x")),
+        ("$tmp/Cargo.toml", Some("$tmp/Cargo.toml")),
+    ] {
+        connection.execute(
+            "
+            INSERT INTO file_accesses (
+                project_id,
+                provider,
+                session_id,
+                turn_ordinal,
+                call_ordinal,
+                call_id,
+                timestamp,
+                tool_name,
+                access_type,
+                path,
+                repo_relative_path,
+                file_name
+            )
+            VALUES ('repo-a', 'codex', 'session-1', 0, 0, 'call-1', '2026-04-06T11:10:01Z', 'exec_command', 'edit', ?1, ?2, ?3)
+            ",
+            rusqlite::params![path, repo_relative_path, path],
+        )?;
+    }
+
+    let insights = build_turn_insights(
+        &connection,
+        "repo-a",
+        Some(Path::new("/tmp/repo-a")),
+        SourceKind::Codex,
+        "session-1",
+        0,
+    )?;
+
+    assert_eq!(
+        insights
+            .files
+            .iter()
+            .map(|stat| stat.path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["README.md"]
     );
 
     fs::remove_dir_all(

@@ -46,6 +46,89 @@ pub fn is_valid_project_id(project_id: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
 }
 
+/// Returns one concrete file-access path after dropping shell syntax artifacts.
+pub fn normalize_access_path_candidate(path: &str) -> Option<String> {
+    let path = path.trim().trim_matches(['"', '\'']).trim();
+    is_concrete_access_path_literal(path).then(|| path.to_owned())
+}
+
+/// Returns whether one extracted access path is concrete enough for analytics.
+pub fn is_concrete_access_path(path: &str) -> bool {
+    normalize_access_path_candidate(path).is_some()
+}
+
+/// Returns whether one trimmed path candidate is a concrete file target.
+fn is_concrete_access_path_literal(path: &str) -> bool {
+    if path.is_empty()
+        || matches!(
+            path,
+            "." | ".."
+                | "-"
+                | "EOF"
+                | "PATCH"
+                | "["
+                | "]"
+                | "{"
+                | "}"
+                | "("
+                | ")"
+                | "!"
+                | "="
+                | "!="
+                | "=="
+                | "<"
+                | ">"
+        )
+        || path == "/dev/null"
+    {
+        return false;
+    }
+    if (path.starts_with('-') || path.starts_with('(')) && !path.contains('/') {
+        return false;
+    }
+    !path_looks_fd_duplication_fragment(path)
+        && !path.contains('$')
+        && !path.contains('*')
+        && !path.contains('?')
+        && !path_looks_shell_redirection(path)
+        && !path_looks_chmod_mode(path)
+}
+
+/// Returns whether one token is shell redirection syntax instead of a path.
+fn path_looks_shell_redirection(path: &str) -> bool {
+    let body = path.trim_start_matches(|ch: char| ch.is_ascii_digit());
+    if body.is_empty() {
+        return false;
+    }
+    matches!(body, "<<" | "<<-" | "<<<")
+        || body.starts_with("<<")
+        || body.starts_with("&>")
+        || body.starts_with('>')
+        || body.starts_with("<>")
+        || body.starts_with('<')
+}
+
+/// Returns whether one token is an fd duplication fragment with shell punctuation.
+fn path_looks_fd_duplication_fragment(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix('&') else {
+        return false;
+    };
+    let rest = rest.trim_end_matches(')');
+    !rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_digit())
+}
+
+/// Returns whether one single-token value looks like a chmod mode operand.
+fn path_looks_chmod_mode(path: &str) -> bool {
+    !path.contains('/')
+        && path.chars().any(|ch| matches!(ch, '+' | '-' | '='))
+        && path.chars().all(|ch| {
+            matches!(
+                ch,
+                'u' | 'g' | 'o' | 'a' | 'r' | 'w' | 'x' | 'X' | 's' | 't' | '+' | '-' | '='
+            )
+        })
+}
+
 /// Returns the current UTC timestamp formatted in Darc's stable ISO 8601 shape.
 pub fn current_utc_timestamp() -> String {
     current_utc_timestamp_at(SystemTime::now())
@@ -382,6 +465,24 @@ branch refs/heads/feature
         assert!(!is_valid_project_id("repo_abc123"));
         assert!(!is_valid_project_id("Repo-abc123"));
         assert!(!is_valid_project_id(""));
+    }
+
+    #[test]
+    fn access_path_candidate_rejects_shell_syntax_artifacts() {
+        assert_eq!(
+            normalize_access_path_candidate("  'src/main.rs'  ").as_deref(),
+            Some("src/main.rs")
+        );
+        assert!(normalize_access_path_candidate("+x").is_none());
+        assert!(normalize_access_path_candidate("a-w").is_none());
+        assert!(normalize_access_path_candidate("--check").is_none());
+        assert!(normalize_access_path_candidate("2>&1").is_none());
+        assert!(normalize_access_path_candidate("&1)").is_none());
+        assert!(normalize_access_path_candidate("(RUST_LOG=debug").is_none());
+        assert!(normalize_access_path_candidate("$tmp/Cargo.toml").is_none());
+        assert!(normalize_access_path_candidate("src/$file.rs").is_none());
+        assert!(normalize_access_path_candidate("!=").is_none());
+        assert!(normalize_access_path_candidate("/dev/null").is_none());
     }
 
     #[test]

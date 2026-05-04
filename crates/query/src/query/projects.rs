@@ -1,7 +1,7 @@
 use std::{collections::BTreeSet, fmt::Write, path::Path, sync::OnceLock};
 
 use anyhow::{Context, Result};
-use darc_paths::SourceKind;
+use darc_paths::{SourceKind, normalize_access_path_candidate};
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter, types::Value};
 
 use super::files::{
@@ -1249,28 +1249,30 @@ fn parse_edited_files_json(value: &str) -> Result<Vec<String>> {
 fn normalize_edited_files(paths: Vec<String>, project_root: Option<&Path>) -> Vec<String> {
     paths
         .into_iter()
-        .map(|path| normalize_edited_file_path(&path, project_root))
+        .filter_map(|path| normalize_edited_file_path(&path, project_root))
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
 }
 
 /// Converts one in-project absolute display path to a project-relative path.
-fn normalize_edited_file_path(path: &str, project_root: Option<&Path>) -> String {
-    let trimmed = path.trim();
+fn normalize_edited_file_path(path: &str, project_root: Option<&Path>) -> Option<String> {
+    let trimmed = normalize_access_path_candidate(path)?;
     let Some(project_root) = project_root else {
-        return trimmed.to_owned();
+        return Some(trimmed);
     };
-    let candidate = Path::new(trimmed);
+    let candidate = Path::new(&trimmed);
     if !candidate.is_absolute() {
-        return trimmed.to_owned();
+        return Some(trimmed);
     }
-    candidate
-        .strip_prefix(project_root)
-        .ok()
-        .filter(|relative| !relative.as_os_str().is_empty())
-        .map(|relative| relative.to_string_lossy().into_owned())
-        .unwrap_or_else(|| trimmed.to_owned())
+    Some(
+        candidate
+            .strip_prefix(project_root)
+            .ok()
+            .filter(|relative| !relative.as_os_str().is_empty())
+            .map(|relative| relative.to_string_lossy().into_owned())
+            .unwrap_or(trimmed),
+    )
 }
 
 /// Queries the indexed turns for one provider session.

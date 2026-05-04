@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, path::Path};
 
-use darc_paths::SourceKind;
+use darc_paths::{SourceKind, normalize_access_path_candidate};
 use darc_rollout::model::NormalizedTurnStep;
 use serde_json::Value;
 
@@ -526,39 +526,7 @@ fn push_apply_patch_change(
 
 /// Sanitizes one candidate access path extracted from shell syntax or JSON arguments.
 fn sanitize_access_path(path: &str) -> Option<String> {
-    let path = path.trim().trim_matches(['"', '\'']).trim();
-    if path.is_empty()
-        || matches!(
-            path,
-            "." | ".." | "-" | "EOF" | "PATCH" | "[" | "]" | "{" | "}" | "(" | ")"
-        )
-        || path == "/dev/null"
-        || path.contains("$(")
-        || path.contains("${")
-        || path.contains('*')
-        || path.contains('?')
-        || path_looks_shell_redirection(path)
-    {
-        return None;
-    }
-    if path.starts_with('$') && !path.contains('/') {
-        return None;
-    }
-    Some(path.to_owned())
-}
-
-/// Returns whether one token is shell redirection syntax instead of a path.
-fn path_looks_shell_redirection(path: &str) -> bool {
-    let body = path.trim_start_matches(|ch: char| ch.is_ascii_digit());
-    if body.is_empty() {
-        return false;
-    }
-    matches!(body, "<<" | "<<-" | "<<<")
-        || body.starts_with("<<")
-        || body.starts_with("&>")
-        || body.starts_with('>')
-        || body.starts_with("<>")
-        || body.starts_with('<')
+    normalize_access_path_candidate(path)
 }
 
 /// Appends any string-like path values from one JSON value into the set.
