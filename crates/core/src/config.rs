@@ -36,7 +36,7 @@ impl SharedConfig {
         Self {
             version: CONFIG_VERSION,
             root,
-            check_for_update_on_startup: true,
+            check_for_update_on_startup: false,
             projects,
             sources,
             watch: WatchConfig::default(),
@@ -46,7 +46,7 @@ impl SharedConfig {
 
 /// Returns the default setting for interactive startup update checks.
 fn default_check_for_update_on_startup() -> bool {
-    true
+    false
 }
 
 /// Stores one project entry inside the shared config.

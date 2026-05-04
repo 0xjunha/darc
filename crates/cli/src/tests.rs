@@ -1060,6 +1060,9 @@ fn startup_upgrade_nudge_skips_json_watch_and_no_write_commands() {
         Cli::try_parse_from(["darc", "status", "--json", "--root", "/tmp/darc-root"]).unwrap();
     assert!(super::upgrade_nudge_root(&status_json.command).is_none());
 
+    let status = Cli::try_parse_from(["darc", "status", "--root", "/tmp/darc-root"]).unwrap();
+    assert!(super::upgrade_nudge_root(&status.command).is_none());
+
     let status_check =
         Cli::try_parse_from(["darc", "status", "--check", "--root", "/tmp/darc-root"]).unwrap();
     assert!(super::upgrade_nudge_root(&status_check.command).is_none());
@@ -1114,6 +1117,17 @@ fn startup_upgrade_nudge_skips_json_watch_and_no_write_commands() {
     ])
     .unwrap();
     assert!(super::upgrade_nudge_root(&link_dry_run.command).is_none());
+
+    let service_status =
+        Cli::try_parse_from(["darc", "service", "--root", "/tmp/darc-root", "status"]).unwrap();
+    assert!(super::upgrade_nudge_root(&service_status.command).is_none());
+
+    let service_enable =
+        Cli::try_parse_from(["darc", "service", "--root", "/tmp/darc-root", "enable"]).unwrap();
+    assert_eq!(
+        super::upgrade_nudge_root(&service_enable.command),
+        Some(Path::new("/tmp/darc-root"))
+    );
 
     let search =
         Cli::try_parse_from(["darc", "search", "--root", "/tmp/darc-root", "panic"]).unwrap();

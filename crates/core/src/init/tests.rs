@@ -222,6 +222,34 @@ fn build_config_preserves_existing_update_check_opt_out() -> Result<()> {
 }
 
 #[test]
+fn build_config_preserves_existing_update_check_opt_in() -> Result<()> {
+    let workspace_root = unique_test_dir("preserve-update-check-opt-in");
+    let project_root = workspace_root.join("repo");
+    let project = ProjectConfig {
+        id: "repo-abc123".into(),
+        name: "repo".into(),
+        local_path: project_root,
+        git_upstream: None,
+        sessions_root: workspace_root.join("projects/repo-abc123/sessions"),
+        known_paths: Vec::new(),
+    };
+
+    let config = build_config(
+        ExistingConfig {
+            projects: Vec::new(),
+            check_for_update_on_startup: true,
+        },
+        project,
+        &[],
+        workspace_root,
+    );
+
+    assert!(config.check_for_update_on_startup);
+
+    Ok(())
+}
+
+#[test]
 fn merge_project_with_existing_keeps_existing_sessions_root() -> Result<()> {
     let projects_root = unique_test_dir("merge-projects");
     let project_root = unique_test_dir("merge-repo");
@@ -285,7 +313,7 @@ fn config_deserializes_without_known_paths() -> Result<()> {
     let loaded: SharedConfig = toml::from_str(&toml_str)?;
 
     assert_eq!(loaded.projects.len(), 1);
-    assert!(loaded.check_for_update_on_startup);
+    assert!(!loaded.check_for_update_on_startup);
     assert!(loaded.projects[0].known_paths.is_empty());
 
     Ok(())

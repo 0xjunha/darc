@@ -11,18 +11,10 @@ use crate::config::{
 };
 
 /// Stores existing shared config fields that init must preserve.
+#[derive(Default)]
 pub(super) struct ExistingConfig {
     pub(super) projects: Vec<ProjectConfig>,
     pub(super) check_for_update_on_startup: bool,
-}
-
-impl Default for ExistingConfig {
-    fn default() -> Self {
-        Self {
-            projects: Vec::new(),
-            check_for_update_on_startup: true,
-        }
-    }
 }
 
 /// Merges the current project into the shared config model before serialization.

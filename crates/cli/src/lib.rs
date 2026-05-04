@@ -2686,10 +2686,16 @@ impl UpgradeNudgeContext {
 fn upgrade_nudge_root(command: &Commands) -> Option<&Path> {
     match command {
         Commands::Refresh(args) if !args.watch => Some(&args.root),
-        Commands::Status(args) if !args.json && !args.check => Some(&args.root),
         Commands::Sync(args) if !args.dry_run => Some(&args.root),
         Commands::Index(args) => Some(&args.root),
-        Commands::Service(args) => Some(&args.root),
+        Commands::Service(args) => match args.command {
+            ServiceCommands::Start
+            | ServiceCommands::Stop
+            | ServiceCommands::Restart
+            | ServiceCommands::Enable
+            | ServiceCommands::Disable => Some(&args.root),
+            ServiceCommands::Status => None,
+        },
         Commands::Project(args) => match &args.command {
             ProjectCommands::Link(args) if !args.dry_run => Some(&args.root),
             ProjectCommands::Remove(args) if !args.dry_run => Some(&args.root),
