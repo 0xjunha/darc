@@ -1,4 +1,5 @@
 use std::{
+    ffi::OsString,
     fs,
     path::{Path, PathBuf},
     time::{Duration, Instant, UNIX_EPOCH},
@@ -265,6 +266,20 @@ fn upgrade_json_requires_check_mode() {
         error.kind(),
         clap::error::ErrorKind::MissingRequiredArgument
     );
+}
+
+#[test]
+fn upgrade_json_parse_errors_use_json_surface() {
+    assert!(super::is_json_read_invocation(&[
+        OsString::from("darc"),
+        OsString::from("upgrade"),
+        OsString::from("--json"),
+    ]));
+    assert!(!super::is_json_read_invocation(&[
+        OsString::from("darc"),
+        OsString::from("upgrade"),
+        OsString::from("--check"),
+    ]));
 }
 
 #[test]

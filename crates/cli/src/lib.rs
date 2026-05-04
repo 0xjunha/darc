@@ -2108,6 +2108,7 @@ fn run_cli(cli: Cli) -> i32 {
         Commands::Stats(args) => query_exit(run_stats(args)),
         Commands::Resolve(args) => query_exit(run_resolve(args)),
         Commands::Project(args) => standard_exit(run_project(args)),
+        Commands::Upgrade(args) if args.json => json_exit(run_upgrade(args)),
         Commands::Upgrade(args) => standard_exit(run_upgrade(args)),
         Commands::Link(args) => standard_exit(run_link(args)),
         Commands::Remove(args) => standard_exit(run_remove(args)),
@@ -2134,11 +2135,11 @@ fn clap_error_exit(error: clap::Error, args: &[OsString]) -> i32 {
     error.exit_code()
 }
 
-/// Returns whether the raw CLI arguments target one JSON read surface.
+/// Returns whether the raw CLI arguments target one JSON output surface.
 fn is_json_read_invocation(args: &[OsString]) -> bool {
     match args.get(1).and_then(|arg| arg.to_str()) {
         Some("list" | "show" | "search" | "stats" | "resolve") => true,
-        Some("status") => args.iter().any(|arg| arg == "--json"),
+        Some("status" | "upgrade") => args.iter().any(|arg| arg == "--json"),
         _ => false,
     }
 }
