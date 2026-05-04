@@ -9,7 +9,6 @@ Current crate ownership:
 - `crates/index`: archive ingestion, duplicate resolution, and SQLite indexing.
 - `crates/query`: read-side query, search, and insights.
 - `crates/sync`: Claude and Codex discovery plus archive copy planning.
-- `crates/agent`: external agent CLI command preparation for future worker-backed features.
 - `crates/core`: facade and orchestration glue.
 
 ## Active Backlog
