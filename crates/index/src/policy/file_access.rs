@@ -6,7 +6,9 @@ use darc_paths::{
 use darc_rollout::model::NormalizedTurnStep;
 use serde_json::Value;
 
-use super::shell::{derive_shell_file_accesses, is_shell_tool_name};
+use super::shell::{
+    derive_shell_apply_patch_file_accesses, derive_shell_file_accesses, is_shell_tool_name,
+};
 
 /// Stores one normalized tool-call record derived from one turn's steps.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -197,12 +199,25 @@ pub fn derive_file_access_records(tool_calls: &[ToolCallRecord]) -> Vec<FileAcce
             continue;
         };
 
-        let (accesses, source) = if is_shell_tool_name(tool_name) {
-            (
-                derive_shell_file_accesses(arguments_text),
+        if is_shell_tool_name(tool_name) {
+            let shell_accesses = derive_shell_file_accesses(arguments_text);
+            records.extend(build_file_access_records(
+                tool_call,
+                tool_name,
                 AccessPathSource::Shell,
-            )
-        } else if tool_name == "apply_patch" {
+                &shell_accesses,
+            ));
+            let patch_accesses = derive_shell_apply_patch_file_accesses(arguments_text);
+            records.extend(build_file_access_records(
+                tool_call,
+                tool_name,
+                AccessPathSource::Structured,
+                &patch_accesses,
+            ));
+            continue;
+        }
+
+        let (accesses, source) = if tool_name == "apply_patch" {
             (
                 derive_apply_patch_file_accesses(arguments_text),
                 AccessPathSource::Structured,

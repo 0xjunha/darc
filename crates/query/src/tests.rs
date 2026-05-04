@@ -408,7 +408,7 @@ fn derives_file_accesses_skip_shell_metadata_and_dynamic_paths() {
         timestamp: "2026-04-06T10:00:01Z".to_owned(),
         call_id: "call-1".to_owned(),
         name: "exec_command".to_owned(),
-        arguments: r#"{"cmd":"chmod +x scripts/run.sh scripts/check.sh && chmod 755 scripts/install.sh && chmod --reference scripts/mode-template.sh scripts/ref-mode-target.sh && chown user:group scripts/run.sh && chown --reference scripts/owner-template.sh scripts/ref-owner-target.sh && test \"$actual\" = \"$expected\" && [ -x scripts/run.sh ] && test src/new.rs -nt src/old.rs && [ src/same-a.rs -ef src/same-b.rs ] && cat > $tmp/Cargo.toml && touch -t 202604011200 docs/release.md && touch -r docs/template.md docs/generated.md && lsof -p 597 && awk -v iter=\"$i\" '/real/ { print iter, $2 }' benches/out.log && jq --arg key \"$key\" '.[$key]' data.json && jq --rawfile fixture fixtures/raw.txt --from-file filters/release.jq data.json","workdir":"/tmp/repo"}"#.to_owned(),
+        arguments: r#"{"cmd":"chmod +x scripts/run.sh scripts/check.sh && chmod 755 scripts/install.sh && chmod --reference scripts/mode-template.sh scripts/ref-mode-target.sh && chown user:group scripts/run.sh && chown --reference scripts/owner-template.sh scripts/ref-owner-target.sh && test \"$actual\" = \"$expected\" && [ -x scripts/run.sh ] && test src/new.rs -nt src/old.rs && [ src/same-a.rs -ef src/same-b.rs ] && cat > $tmp/Cargo.toml && cat a-w && touch u+x && touch -t 202604011200 docs/release.md && touch -r docs/template.md docs/generated.md && lsof -p 597 && awk -v iter=\"$i\" '/real/ { print iter, $2 }' benches/out.log && jq --arg key \"$key\" '.[$key]' data.json && jq --rawfile fixture fixtures/raw.txt --from-file filters/release.jq data.json","workdir":"/tmp/repo"}"#.to_owned(),
     }];
 
     let tool_calls = extract_tool_call_records("repo-a", SourceKind::Codex, "session-1", 0, &steps);
@@ -445,6 +445,8 @@ fn derives_file_accesses_skip_shell_metadata_and_dynamic_paths() {
     assert!(paths.contains("src/old.rs"));
     assert!(paths.contains("src/same-a.rs"));
     assert!(paths.contains("src/same-b.rs"));
+    assert!(paths.contains("a-w"));
+    assert!(paths.contains("u+x"));
     assert!(paths.contains("docs/release.md"));
     assert!(paths.contains("docs/template.md"));
     assert!(paths.contains("docs/generated.md"));
@@ -540,7 +542,7 @@ fn derives_file_accesses_from_shell_heredoc_apply_patch() {
         timestamp: "2026-04-06T10:00:01Z".to_owned(),
         call_id: "call-1".to_owned(),
         name: "exec_command".to_owned(),
-        arguments: r#"{"cmd":"apply_patch <<'PATCH'\n*** Begin Patch\n*** Update File: src/main.rs\n@@\n-old\n+new\n*** Add File: src/new.rs\n+fn main() {}\n*** End Patch\nPATCH","workdir":"/tmp/repo"}"#
+        arguments: r#"{"cmd":"apply_patch <<'PATCH'\n*** Begin Patch\n*** Update File: src/main.rs\n@@\n-old\n+new\n*** Update File: a-w\n@@\n-old\n+new\n*** Add File: src/new.rs\n+fn main() {}\n*** Add File: src/$literal?.rs\n+fn special() {}\n*** End Patch\nPATCH\napply_patch <<\\PATCH\n*** Begin Patch\n*** Add File: src/escaped.rs\n+fn escaped() {}\n*** End Patch\nPATCH\ncat CHANGELOG.md","workdir":"/tmp/repo"}"#
             .to_owned(),
     }];
 
@@ -552,6 +554,20 @@ fn derives_file_accesses_from_shell_heredoc_apply_patch() {
     }));
     assert!(file_accesses.iter().any(|record| {
         record.path == "src/new.rs" && matches!(record.access_type, ToolAccessKind::Write)
+    }));
+    assert!(
+        file_accesses.iter().any(
+            |record| record.path == "a-w" && matches!(record.access_type, ToolAccessKind::Edit)
+        )
+    );
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "src/$literal?.rs" && matches!(record.access_type, ToolAccessKind::Write)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "src/escaped.rs" && matches!(record.access_type, ToolAccessKind::Write)
+    }));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "CHANGELOG.md" && matches!(record.access_type, ToolAccessKind::Read)
     }));
 }
 

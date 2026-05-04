@@ -85,7 +85,6 @@ fn is_shell_concrete_access_path_literal(path: &str) -> bool {
         && !path.contains('*')
         && !path.contains('?')
         && !path_looks_shell_redirection(path)
-        && !path_looks_chmod_mode(path)
 }
 
 /// Returns whether one token is shell redirection syntax instead of a path.
@@ -109,18 +108,6 @@ fn path_looks_fd_duplication_fragment(path: &str) -> bool {
     };
     let rest = rest.trim_end_matches(')');
     !rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_digit())
-}
-
-/// Returns whether one single-token value looks like a chmod mode operand.
-fn path_looks_chmod_mode(path: &str) -> bool {
-    !path.contains('/')
-        && path.chars().any(|ch| matches!(ch, '+' | '-' | '='))
-        && path.chars().all(|ch| {
-            matches!(
-                ch,
-                'u' | 'g' | 'o' | 'a' | 'r' | 'w' | 'x' | 'X' | 's' | 't' | '+' | '-' | '='
-            )
-        })
 }
 
 /// Returns the current UTC timestamp formatted in Darc's stable ISO 8601 shape.
@@ -488,8 +475,18 @@ branch refs/heads/feature
             normalize_shell_access_path_candidate("src/main.rs").as_deref(),
             Some("src/main.rs")
         );
-        assert!(normalize_shell_access_path_candidate("+x").is_none());
-        assert!(normalize_shell_access_path_candidate("a-w").is_none());
+        assert_eq!(
+            normalize_shell_access_path_candidate("+x").as_deref(),
+            Some("+x")
+        );
+        assert_eq!(
+            normalize_shell_access_path_candidate("a-w").as_deref(),
+            Some("a-w")
+        );
+        assert_eq!(
+            normalize_shell_access_path_candidate("u+x").as_deref(),
+            Some("u+x")
+        );
         assert!(normalize_shell_access_path_candidate("--check").is_none());
         assert!(normalize_shell_access_path_candidate("2>&1").is_none());
         assert!(normalize_shell_access_path_candidate("&1)").is_none());

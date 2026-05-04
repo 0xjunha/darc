@@ -28,17 +28,37 @@ pub(super) fn derive_shell_file_accesses(arguments_text: &str) -> Vec<(ToolAcces
     };
 
     let mut accesses = Vec::new();
-    for patch_payload in extract_apply_patch_heredoc_payloads(&command.command_text) {
-        accesses.extend(derive_apply_patch_file_accesses(&patch_payload));
-    }
     let command_text = strip_shell_heredoc_bodies(&command.command_text);
     for fragment in split_shell_fragments(&command_text) {
+        if shell_fragment_invokes_apply_patch(&fragment) {
+            continue;
+        }
         accesses.extend(derive_shell_fragment_file_accesses(
             &fragment,
             command.workdir.as_deref(),
         ));
     }
     accesses
+}
+
+/// Derives structured apply-patch file accesses embedded in one shell-like tool invocation.
+pub(super) fn derive_shell_apply_patch_file_accesses(
+    arguments_text: &str,
+) -> Vec<(ToolAccessKind, String)> {
+    let Some(command) = parse_shell_command(arguments_text) else {
+        return Vec::new();
+    };
+
+    extract_apply_patch_heredoc_payloads(&command.command_text)
+        .into_iter()
+        .flat_map(|patch_payload| derive_apply_patch_file_accesses(&patch_payload))
+        .chain(
+            split_shell_fragments(&strip_shell_heredoc_bodies(&command.command_text))
+                .into_iter()
+                .filter(|fragment| shell_fragment_invokes_apply_patch(fragment))
+                .flat_map(|fragment| derive_apply_patch_file_accesses(&fragment)),
+        )
+        .collect()
 }
 
 /// Extracts one shell-like command from one tool name plus arguments payload.
@@ -297,11 +317,31 @@ fn shell_heredoc_terminator(line: &str) -> Option<String> {
         return None;
     }
     let heredoc_tail = heredoc_tail.strip_prefix('-').unwrap_or(heredoc_tail);
-    let terminator = heredoc_tail
-        .split_whitespace()
-        .next()?
-        .trim_matches(['"', '\'']);
-    (!terminator.is_empty()).then(|| terminator.to_owned())
+    let terminator = normalize_heredoc_marker(heredoc_tail.split_whitespace().next()?);
+    (!terminator.is_empty()).then_some(terminator)
+}
+
+/// Removes shell quoting from one heredoc delimiter marker.
+fn normalize_heredoc_marker(marker: &str) -> String {
+    let mut normalized = String::new();
+    let mut chars = marker.chars();
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' if !in_single_quote => {
+                if let Some(next) = chars.next() {
+                    normalized.push(next);
+                }
+            }
+            '\'' if !in_double_quote => in_single_quote = !in_single_quote,
+            '"' if !in_single_quote => in_double_quote = !in_double_quote,
+            _ => normalized.push(ch),
+        }
+    }
+
+    normalized
 }
 
 /// Returns the text after one unquoted shell heredoc operator.
@@ -396,10 +436,6 @@ fn derive_shell_fragment_file_accesses(
     if fragment.is_empty() || fragment.starts_with('#') {
         return Vec::new();
     }
-    if fragment.contains("apply_patch") && fragment.contains("*** Begin Patch") {
-        return derive_apply_patch_file_accesses(fragment);
-    }
-
     let tokens = tokenize_shell_words(fragment);
     let tokens = trim_shell_prefix_tokens(&tokens);
     if tokens.is_empty() {
@@ -415,7 +451,6 @@ fn derive_shell_fragment_file_accesses(
     }
 
     match tokens[0].as_str() {
-        "apply_patch" => derive_apply_patch_file_accesses(fragment),
         "bash" | "sh" | "zsh" => extract_script_runner_file_accesses(tokens),
         "sed" => extract_sed_file_accesses(tokens),
         "rg" => extract_ripgrep_file_accesses(tokens),
@@ -460,6 +495,16 @@ fn derive_shell_fragment_file_accesses(
         "ln" => extract_link_file_accesses(tokens),
         _ => Vec::new(),
     }
+}
+
+/// Returns whether one shell fragment is an apply_patch invocation or payload.
+fn shell_fragment_invokes_apply_patch(fragment: &str) -> bool {
+    if fragment.contains("apply_patch") && fragment.contains("*** Begin Patch") {
+        return true;
+    }
+    let tokens = tokenize_shell_words(fragment);
+    let tokens = trim_shell_prefix_tokens(&tokens);
+    tokens.first().is_some_and(|token| token == "apply_patch")
 }
 
 /// Trims wrapper tokens and shell keywords from the front of one shell fragment.
