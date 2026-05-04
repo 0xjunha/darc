@@ -330,6 +330,40 @@ impl AuditRuntime {
     }
 }
 
+/// Describes how to execute one released Claude CLI package.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ReleasedClaudeCli {
+    NodeScript(PathBuf),
+    NativeBinary(PathBuf),
+}
+
+impl ReleasedClaudeCli {
+    /// Builds a command for this released Claude CLI target.
+    fn command(&self, runtime: &AuditRuntime, working_dir: &Path) -> Command {
+        let mut command = match self {
+            Self::NodeScript(entrypoint) => {
+                let mut command = Command::new(&runtime.node_binary);
+                command.arg(entrypoint);
+                command
+            }
+            Self::NativeBinary(binary) => {
+                let mut command = Command::new(binary);
+                command.env("CLAUDE_CODE_INSTALLED_VIA_NPM_WRAPPER", "1");
+                command
+            }
+        };
+        command.current_dir(working_dir);
+        command
+    }
+
+    /// Returns the path used to identify this released CLI target in diagnostics.
+    fn display_path(&self) -> &Path {
+        match self {
+            Self::NodeScript(path) | Self::NativeBinary(path) => path,
+        }
+    }
+}
+
 /// Stores one fetched npm package catalog.
 #[derive(Debug, Clone, Deserialize)]
 struct NpmPackageCatalog {
@@ -635,7 +669,7 @@ impl NpmClaudeSchemaAuditProvider {
     where
         F: FnMut(&str),
     {
-        let cli_entrypoint = self.resolve_cli_entrypoint(version, cli_root, report_progress)?;
+        let cli_command = self.resolve_cli_command(version, cli_root, report_progress)?;
         let probe_root = self.fixture_run_dir.path().join(format!(
             "capability-probe-{}-{}",
             sanitize_for_path(version),
@@ -644,27 +678,27 @@ impl NpmClaudeSchemaAuditProvider {
         fs::create_dir_all(&probe_root)
             .with_context(|| format!("failed to create {}", probe_root.display()))?;
         let cli_capabilities =
-            self.inspect_cli_capabilities_with_environment(&cli_entrypoint, cli_root, &probe_root)?;
+            self.inspect_cli_capabilities_with_environment(&cli_command, cli_root, &probe_root)?;
         let mut builder = TranscriptManifestBuilder::default();
         for fixture in audit_fixtures() {
             report_progress(&format!(
                 "Running Claude transcript fixture `{}` against {}...",
                 fixture.name, version
             ));
-            let session = self.run_fixture(version, &cli_entrypoint, cli_capabilities, *fixture)?;
+            let session = self.run_fixture(version, &cli_command, cli_capabilities, *fixture)?;
             builder.record_fixture(&session, fixture.name)?;
             validate_fixture_coverage(&session, *fixture)?;
         }
         Ok(builder.finish())
     }
 
-    /// Resolves a runnable Claude CLI JavaScript entrypoint for one extracted package.
-    fn resolve_cli_entrypoint<F>(
+    /// Resolves a runnable Claude CLI command target for one extracted package.
+    fn resolve_cli_command<F>(
         &self,
         version: &str,
         cli_root: &Path,
         report_progress: &mut F,
-    ) -> Result<PathBuf>
+    ) -> Result<ReleasedClaudeCli>
     where
         F: FnMut(&str),
     {
@@ -683,11 +717,12 @@ impl NpmClaudeSchemaAuditProvider {
 
         let wrapper_path = cli_root.join("cli-wrapper.cjs");
         if entrypoint.ends_with(".exe") && wrapper_path.is_file() {
-            self.stage_native_cli_dependency(version, cli_root, &manifest, report_progress)?;
-            return Ok(wrapper_path);
+            let native_binary =
+                self.stage_native_cli_dependency(version, cli_root, &manifest, report_progress)?;
+            return Ok(ReleasedClaudeCli::NativeBinary(native_binary));
         }
 
-        Ok(path)
+        Ok(ReleasedClaudeCli::NodeScript(path))
     }
 
     /// Makes the platform-native optional package available to `cli-wrapper.cjs`.
@@ -697,7 +732,7 @@ impl NpmClaudeSchemaAuditProvider {
         cli_root: &Path,
         manifest: &NpmPackageManifest,
         report_progress: &mut F,
-    ) -> Result<()>
+    ) -> Result<PathBuf>
     where
         F: FnMut(&str),
     {
@@ -733,19 +768,19 @@ impl NpmClaudeSchemaAuditProvider {
             )
         })?;
 
+        let native_binary =
+            destination.join(native_cli_binary_name(&self.runtime.node_platform_suffix));
         #[cfg(unix)]
-        mark_executable(
-            &destination.join(native_cli_binary_name(&self.runtime.node_platform_suffix)),
-        )?;
+        mark_executable(&native_binary)?;
 
-        Ok(())
+        Ok(native_binary)
     }
 
     /// Runs one released Claude CLI fixture in an isolated temporary project.
     fn run_fixture(
         &self,
         version: &str,
-        cli_entrypoint: &Path,
+        cli_command: &ReleasedClaudeCli,
         cli_capabilities: ClaudeCliCapabilities,
         fixture: ClaudeAuditFixture,
     ) -> Result<ClaudeFixtureSession> {
@@ -788,9 +823,7 @@ impl NpmClaudeSchemaAuditProvider {
         )
         .with_context(|| format!("failed to write {}", settings_path.display()))?;
 
-        let mut command = Command::new(&self.runtime.node_binary);
-        command.current_dir(&project_root);
-        command.arg(cli_entrypoint);
+        let mut command = cli_command.command(&self.runtime, &project_root);
         command.arg("--print");
         command.arg(fixture.prompt);
         command.arg("--verbose");
@@ -915,17 +948,14 @@ impl NpmClaudeSchemaAuditProvider {
     /// Inspects one released Claude CLI using the same configured environment as fixtures.
     fn inspect_cli_capabilities_with_environment(
         &self,
-        cli_entrypoint: &Path,
+        cli_command: &ReleasedClaudeCli,
         working_dir: &Path,
         project_root: &Path,
     ) -> Result<ClaudeCliCapabilities> {
-        let mut command = build_cli_capability_probe_command(
-            &self.runtime.node_binary,
-            cli_entrypoint,
-            working_dir,
-        );
+        let mut command =
+            build_cli_capability_probe_command(&self.runtime, cli_command, working_dir);
         self.configure_command_environment(&mut command, project_root)?;
-        inspect_cli_capabilities(&mut command, cli_entrypoint)
+        inspect_cli_capabilities(&mut command, cli_command.display_path())
     }
 }
 
@@ -1939,13 +1969,11 @@ fn mark_executable(path: &Path) -> Result<()> {
 
 /// Builds the released Claude CLI command used for one capability probe.
 fn build_cli_capability_probe_command(
-    node_binary: &Path,
-    cli_entrypoint: &Path,
+    runtime: &AuditRuntime,
+    cli_command: &ReleasedClaudeCli,
     working_dir: &Path,
 ) -> Command {
-    let mut command = Command::new(node_binary);
-    command.current_dir(working_dir);
-    command.arg(cli_entrypoint);
+    let mut command = cli_command.command(runtime, working_dir);
     command.arg("--help");
     command
 }
@@ -1955,8 +1983,7 @@ fn inspect_cli_capabilities(
     command: &mut Command,
     cli_entrypoint: &Path,
 ) -> Result<ClaudeCliCapabilities> {
-    let output = command
-        .output()
+    let output = run_command_with_timeout(command, CLI_COMMAND_TIMEOUT)
         .with_context(|| format!("failed to inspect {}", cli_entrypoint.display()))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     Ok(ClaudeCliCapabilities {
@@ -2638,7 +2665,7 @@ mod tests {
     use std::{
         collections::BTreeMap,
         env,
-        ffi::OsString,
+        ffi::{OsStr, OsString},
         fs::{self, File},
         io::Write,
         path::{Path, PathBuf},
@@ -2705,6 +2732,31 @@ mod tests {
     fn resolves_native_binary_name_from_node_platform() {
         assert_eq!(super::native_cli_binary_name("darwin-arm64"), "claude");
         assert_eq!(super::native_cli_binary_name("win32-x64"), "claude.exe");
+    }
+
+    #[test]
+    fn released_cli_command_runs_native_binary_directly() {
+        let runtime = super::AuditRuntime {
+            node_binary: PathBuf::from("/usr/local/bin/node"),
+            node_platform_suffix: "darwin-arm64".to_owned(),
+            hook_python: PathBuf::from("/usr/bin/python3"),
+        };
+        let mut command = super::ReleasedClaudeCli::NativeBinary(PathBuf::from(
+            "/tmp/package/node_modules/@anthropic-ai/claude-code-darwin-arm64/claude",
+        ))
+        .command(&runtime, Path::new("/tmp/repo"));
+        command.arg("--help");
+        let envs = command_envs(&command);
+
+        assert_eq!(
+            command.get_program(),
+            OsStr::new("/tmp/package/node_modules/@anthropic-ai/claude-code-darwin-arm64/claude")
+        );
+        assert_eq!(
+            envs.get(&OsString::from("CLAUDE_CODE_INSTALLED_VIA_NPM_WRAPPER")),
+            Some(&Some(OsString::from("1")))
+        );
+        assert_eq!(command.get_args().collect::<Vec<_>>(), vec!["--help"]);
     }
 
     #[test]
