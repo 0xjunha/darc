@@ -109,19 +109,19 @@ darc upgrade dismiss <VERSION>
 
 ## Uninstall
 
-If you enabled the macOS background refresh service, turn it off before removing the binary:
+If you enabled the macOS background refresh service, turn it off before removing the binaries:
 
 ```sh
 darc service disable
 ```
 
-Then remove the CLI binary installed by the release installer:
+Then remove the binaries installed by the release installer:
 
 ```sh
-rm -f ~/.local/bin/darc
+rm -f ~/.local/bin/darc ~/.local/bin/darc-update
 ```
 
-If you installed Darc into a custom directory, remove that `darc` binary instead.
+If you installed Darc into a custom directory, remove both binaries from that directory instead.
 
 Darc keeps local data under `~/.darc`. Uninstalling the binary does not delete that archive. To delete Darc data too:
 
