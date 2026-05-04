@@ -251,7 +251,7 @@ See [Project rename and linking](docs/project-rename.md).
 
 Darc is split into focused Rust crates:
 
-- `darc-cli`: command-line surface.
+- `crates/cli`: command-line surface.
 - `darc-core`: thin facade and orchestration layer.
 - `darc-sync`: source discovery, sync planning, and archive copy execution.
 - `darc-index`: normalized ingestion, SQLite schema, migrations, and indexing metrics.

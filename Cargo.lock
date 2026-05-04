@@ -215,14 +215,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "darc-agent"
-version = "0.1.0"
-dependencies = [
- "thiserror",
-]
-
-[[package]]
-name = "darc-cli"
+name = "darc"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -239,6 +232,13 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
+]
+
+[[package]]
+name = "darc-agent"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
 ]
 
 [[package]]

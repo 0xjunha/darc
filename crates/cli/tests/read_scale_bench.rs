@@ -56,7 +56,7 @@ struct BenchResult {
 
 /// Runs the synthetic read/discovery CLI benchmark suite.
 #[test]
-#[ignore = "run explicitly: cargo test -p darc-cli --test read_scale_bench -- --ignored --nocapture"]
+#[ignore = "run explicitly: cargo test -p darc --test read_scale_bench -- --ignored --nocapture"]
 fn read_and_discovery_commands_scale_on_synthetic_history() -> Result<()> {
     let session_count = env_usize("DARC_BENCH_SESSIONS", DEFAULT_SESSION_COUNT)?;
     let turns_per_session = env_usize("DARC_BENCH_TURNS", DEFAULT_TURNS_PER_SESSION)?;
@@ -98,7 +98,7 @@ impl SyntheticReadFixture {
             bail!("DARC_BENCH_SESSIONS and DARC_BENCH_TURNS must be greater than zero");
         }
 
-        let root = unique_test_dir("darc-cli-read-scale-bench");
+        let root = unique_test_dir("darc-read-scale-bench");
         let project_root = root.join("repo");
         let sessions_root = root.join("projects").join(PROJECT_ID).join("sessions");
         fs::create_dir_all(&project_root)?;
