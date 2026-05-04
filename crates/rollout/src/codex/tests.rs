@@ -32,6 +32,11 @@ fn parses_turn_lifecycle_rollout_and_records_schema_metadata() -> Result<()> {
     assert_eq!(rollout.determinism, ParseDeterminism::Exact);
     assert_eq!(rollout.turns.len(), 1);
     assert_eq!(rollout.turns[0].status, CodexTurnStatus::Completed);
+    assert_eq!(rollout.turns[0].started_at, "2026-01-01T00:00:01Z");
+    assert_eq!(
+        rollout.turns[0].completed_at.as_deref(),
+        Some("2026-01-01T00:00:07Z")
+    );
     assert_eq!(rollout.turns[0].primary_model, None);
     assert_eq!(rollout.turns[0].total_token_count(), None);
     assert_eq!(
