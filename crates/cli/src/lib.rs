@@ -1,16 +1,15 @@
 #[cfg(test)]
 mod tests;
 
-#[cfg(target_os = "macos")]
-use std::process::Command;
 use std::{
     env,
     ffi::OsString,
     fs::{self, File, OpenOptions},
     io::{self, IsTerminal, Write},
     path::{Path, PathBuf},
+    process::Command,
     sync::mpsc,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -58,7 +57,12 @@ use darc_rollout_audit::codex::{
     run_codex_schema_audit_with_progress,
 };
 use fs2::FileExt;
-use serde::Serialize;
+use reqwest::{
+    StatusCode,
+    blocking::{Client, Response},
+    header::{AUTHORIZATION, HeaderMap, HeaderValue, USER_AGENT},
+};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
 
 /// Terminal styles for Clap-rendered help reference pages.
@@ -76,6 +80,15 @@ const REMOVE_LONG_ABOUT: &str = "Remove one configured project and its archived/
 const RENAME_FROM_LONG_ABOUT: &str = "Rebuild one old project's history into the current renamed project.\n\nUse this when you just renamed a project from one name to another.\nRun the command from the new project directory, and pass the old project name.\n\nExample:\n- Darc config still contains a project named `old-project`.\n- You renamed the checkout to `/path/to/new-project`.\n- Run `cd /path/to/new-project && darc project rename-from old-project`.\n\nThis command bootstraps or reuses the current project as the target, links the old project's paths into it, runs `darc refresh`, and removes the old source project after those steps succeed.\n\nIn other words, it is the safe built-in workflow for:\n`darc project link <old-project> && darc refresh && darc project remove <old-project>`\n\nUse `--dry-run` to preview the link target and cleanup counts without writing.\nIf ~/.darc/config.toml does not exist yet, run `darc init` first.";
 const HELP_TRAILER_HEADER_STYLE: &str = "\x1b[1;97m";
 const HELP_RESET_STYLE: &str = "\x1b[0m";
+const DARC_LATEST_RELEASE_API_URL: &str =
+    "https://api.github.com/repos/0xjunha/darc/releases/latest";
+const DARC_INSTALLER_COMMAND: &str =
+    "curl -fsSL https://github.com/0xjunha/darc/releases/latest/download/darc-installer.sh | sh";
+const UPGRADE_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
+const UPGRADE_NUDGE_TIMEOUT: Duration = Duration::from_secs(2);
+const UPGRADE_NUDGE_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+const UPGRADE_NUDGE_NOTIFY_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+const UPGRADE_ERROR_BODY_LIMIT: usize = 240;
 
 /// Returns one styled help trailer section.
 fn styled_help_section(title: &str, body: &str) -> String {
@@ -86,7 +99,14 @@ fn styled_help_section(title: &str, body: &str) -> String {
 fn root_after_help() -> String {
     styled_help_section(
         "Common workflows",
-        "  darc status\n  darc refresh\n  darc search \"panic\" --limit 5\n  darc show session <SESSION_ID> --turn-limit 5\n\nRun `darc help <command>` for details on a specific command.",
+        concat!(
+            "  darc status                                      # check active-project health\n",
+            "  darc refresh                                     # sync and index archived sessions\n",
+            "  darc search \"panic\" --limit 5                    # find matching turns\n",
+            "  darc show session <SESSION_ID> --turn-limit 5    # inspect a session\n",
+            "  darc upgrade --check                             # check for a newer CLI release\n\n",
+            "Run `darc help <command>` for details on a specific command.",
+        ),
     )
 }
 
@@ -196,6 +216,11 @@ enum Commands {
         long_about = "Manage configured Darc projects.\n\nProject commands inspect or update the shared Darc workspace configuration and project archive/index state."
     )]
     Project(ProjectArgs),
+    #[command(
+        about = "Check for or apply newer Darc releases",
+        long_about = "Check for or apply newer Darc releases.\n\n`darc upgrade --check` compares the current CLI version with the latest GitHub Release.\n`darc upgrade` uses the release-installer updater when this installation includes one, and otherwise prints the manual installer command."
+    )]
+    Upgrade(UpgradeArgs),
     #[command(
         hide = true,
         about = "Link one configured project's historical paths into the current project",
@@ -365,6 +390,51 @@ enum ServiceCommands {
     Enable,
     /// Disable macOS auto-start on login for the refresh service.
     Disable,
+}
+
+/// Checks for or applies newer Darc CLI releases.
+#[derive(Debug, Args)]
+struct UpgradeArgs {
+    #[arg(
+        long,
+        help_heading = "Mode",
+        help = "Only check whether a newer Darc release is available"
+    )]
+    check: bool,
+
+    #[arg(
+        long,
+        requires = "check",
+        help_heading = "Output",
+        help = "Write the upgrade check result as a machine-readable JSON envelope"
+    )]
+    json: bool,
+
+    #[arg(
+        long,
+        global = true,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Use this Darc root for cached upgrade nudges"
+    )]
+    root: PathBuf,
+
+    #[command(subcommand)]
+    command: Option<UpgradeCommands>,
+}
+
+/// Represents supported upgrade-state commands.
+#[derive(Debug, Subcommand)]
+enum UpgradeCommands {
+    /// Dismiss one cached upgrade nudge.
+    Dismiss(UpgradeDismissArgs),
+}
+
+/// Dismisses one cached Darc upgrade version.
+#[derive(Debug, Args)]
+struct UpgradeDismissArgs {
+    #[arg(value_name = "VERSION", help = "Darc version to dismiss")]
+    version: Option<String>,
 }
 
 /// Shows Darc status for the active project or workspace.
@@ -1906,6 +1976,164 @@ impl QueryOutput {
     }
 }
 
+/// Stores metadata returned by the GitHub latest-release endpoint.
+#[derive(Debug, Clone, Deserialize)]
+struct GitHubLatestRelease {
+    tag_name: String,
+    html_url: String,
+}
+
+/// Stores the resolved Darc upgrade state.
+#[derive(Debug, Clone)]
+struct UpgradeStatus {
+    current_version: String,
+    latest_version: Option<String>,
+    upgrade_available: bool,
+    latest_release_url: Option<String>,
+}
+
+/// Stores the best-effort cached state for passive upgrade nudges.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+struct UpgradeNudgeCache {
+    checked_at_unix: Option<u64>,
+    last_notified_at_unix: Option<u64>,
+    latest_version: Option<String>,
+    latest_release_url: Option<String>,
+    dismissed_version: Option<String>,
+    upgrade_available: bool,
+}
+
+/// Stores the machine-readable payload for `darc upgrade --check --json`.
+#[derive(Debug, Serialize)]
+struct UpgradeCheckJson<'a> {
+    current_version: &'a str,
+    latest_version: Option<&'a str>,
+    upgrade_available: bool,
+    latest_release_url: Option<&'a str>,
+    install_command: String,
+}
+
+/// Selects whether one upgrade check can attach ambient GitHub credentials.
+#[derive(Clone, Copy)]
+enum UpgradeCheckAuth {
+    Anonymous,
+    IncludeGitHubToken,
+}
+
+impl<'a> From<&'a UpgradeStatus> for UpgradeCheckJson<'a> {
+    /// Builds one JSON payload from a resolved upgrade status.
+    fn from(status: &'a UpgradeStatus) -> Self {
+        Self {
+            current_version: &status.current_version,
+            latest_version: status.latest_version.as_deref(),
+            upgrade_available: status.upgrade_available,
+            latest_release_url: status.latest_release_url.as_deref(),
+            install_command: manual_upgrade_installer_command(),
+        }
+    }
+}
+
+/// Stores one parsed semantic-ish release version.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedReleaseVersion {
+    major: u64,
+    minor: u64,
+    patch: u64,
+    pre: Option<String>,
+}
+
+impl ParsedReleaseVersion {
+    /// Parses one Darc release version or `v`-prefixed tag.
+    fn parse(value: &str) -> Result<Self> {
+        let value = value.trim();
+        let value = value.strip_prefix('v').unwrap_or(value);
+        let value = value.split_once('+').map_or(value, |(version, _)| version);
+        let (core, pre) = value
+            .split_once('-')
+            .map_or((value, None), |(core, pre)| (core, Some(pre.to_owned())));
+        let mut parts = core.split('.');
+        let major = parse_version_component(parts.next(), value, "major")?;
+        let minor = parse_version_component(parts.next(), value, "minor")?;
+        let patch = parse_version_component(parts.next(), value, "patch")?;
+        if parts.next().is_some() {
+            bail!("invalid Darc release version `{value}`");
+        }
+        Ok(Self {
+            major,
+            minor,
+            patch,
+            pre,
+        })
+    }
+
+    /// Compares two parsed release versions using the SemVer precedence shape Darc needs.
+    fn cmp_semver(&self, other: &Self) -> std::cmp::Ordering {
+        (self.major, self.minor, self.patch)
+            .cmp(&(other.major, other.minor, other.patch))
+            .then_with(|| match (&self.pre, &other.pre) {
+                (None, None) => std::cmp::Ordering::Equal,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (Some(left), Some(right)) => compare_prerelease(left, right),
+            })
+    }
+}
+
+/// Parses one numeric SemVer core component.
+fn parse_version_component(component: Option<&str>, full: &str, name: &str) -> Result<u64> {
+    let component = component.ok_or_else(|| anyhow!("invalid Darc release version `{full}`"))?;
+    component
+        .parse::<u64>()
+        .with_context(|| format!("invalid {name} component in Darc release version `{full}`"))
+}
+
+/// Compares two SemVer prerelease identifier lists.
+fn compare_prerelease(left: &str, right: &str) -> std::cmp::Ordering {
+    let mut left_parts = left.split('.');
+    let mut right_parts = right.split('.');
+    loop {
+        match (left_parts.next(), right_parts.next()) {
+            (None, None) => return std::cmp::Ordering::Equal,
+            (None, Some(_)) => return std::cmp::Ordering::Less,
+            (Some(_), None) => return std::cmp::Ordering::Greater,
+            (Some(left), Some(right)) => {
+                let ordering = compare_prerelease_identifier(left, right);
+                if !ordering.is_eq() {
+                    return ordering;
+                }
+            }
+        }
+    }
+}
+
+/// Compares two SemVer prerelease identifiers.
+fn compare_prerelease_identifier(left: &str, right: &str) -> std::cmp::Ordering {
+    match (is_numeric_identifier(left), is_numeric_identifier(right)) {
+        (true, true) => compare_numeric_identifier(left, right),
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        (false, false) => left.cmp(right),
+    }
+}
+
+/// Returns whether one prerelease identifier is numeric.
+fn is_numeric_identifier(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// Compares two numeric prerelease identifiers without risking integer overflow.
+fn compare_numeric_identifier(left: &str, right: &str) -> std::cmp::Ordering {
+    let left = trim_numeric_identifier(left);
+    let right = trim_numeric_identifier(right);
+    left.len().cmp(&right.len()).then_with(|| left.cmp(right))
+}
+
+/// Trims insignificant leading zeroes from one numeric identifier.
+fn trim_numeric_identifier(value: &str) -> &str {
+    let trimmed = value.trim_start_matches('0');
+    if trimmed.is_empty() { "0" } else { trimmed }
+}
+
 /// Represents the supported session-list projections.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum SessionListViewArg {
@@ -1958,7 +2186,8 @@ where
 
 /// Dispatches one already parsed CLI command.
 fn run_cli(cli: Cli) -> i32 {
-    match cli.command {
+    let upgrade_nudge = UpgradeNudgeContext::start(&cli.command);
+    let exit_code = match cli.command {
         Commands::Init(args) => standard_exit(run_init(args)),
         Commands::Refresh(args) => standard_exit(run_refresh(args)),
         Commands::Status(args) if args.json => json_exit(run_status(args)),
@@ -1969,6 +2198,8 @@ fn run_cli(cli: Cli) -> i32 {
         Commands::Stats(args) => query_exit(run_stats(args)),
         Commands::Resolve(args) => query_exit(run_resolve(args)),
         Commands::Project(args) => standard_exit(run_project(args)),
+        Commands::Upgrade(args) if args.json => json_exit(run_upgrade(args)),
+        Commands::Upgrade(args) => standard_exit(run_upgrade(args)),
         Commands::Link(args) => standard_exit(run_link(args)),
         Commands::Remove(args) => standard_exit(run_remove(args)),
         Commands::RenameFrom(args) => standard_exit(run_rename_from(args)),
@@ -1977,13 +2208,17 @@ fn run_cli(cli: Cli) -> i32 {
         Commands::Service(args) => standard_exit(run_service(args)),
         Commands::CodexSchemaAudit(args) => run_codex_schema_audit_command(args),
         Commands::ClaudeSchemaAudit(args) => run_claude_schema_audit_command(args),
+    };
+    if let Some(nudge) = upgrade_nudge {
+        nudge.refresh_after_command(exit_code);
     }
+    exit_code
 }
 
 /// Maps Clap parse errors to the correct command-family output format.
 fn clap_error_exit(error: clap::Error, args: &[OsString]) -> i32 {
     if is_json_read_invocation(args) && !is_clap_display_request(error.kind()) {
-        eprintln!("{}", format_query_clap_error(&error));
+        eprintln!("{}", format_json_clap_error(&error, args));
         return error.exit_code();
     }
 
@@ -1994,11 +2229,11 @@ fn clap_error_exit(error: clap::Error, args: &[OsString]) -> i32 {
     error.exit_code()
 }
 
-/// Returns whether the raw CLI arguments target one JSON read surface.
+/// Returns whether the raw CLI arguments target one JSON output surface.
 fn is_json_read_invocation(args: &[OsString]) -> bool {
     match args.get(1).and_then(|arg| arg.to_str()) {
         Some("list" | "show" | "search" | "stats" | "resolve") => true,
-        Some("status") => args.iter().any(|arg| arg == "--json"),
+        Some("status" | "upgrade") => args.iter().any(|arg| arg == "--json"),
         _ => false,
     }
 }
@@ -2125,6 +2360,494 @@ fn run_project(args: ProjectArgs) -> Result<()> {
         ProjectCommands::Remove(args) => run_remove(args),
         ProjectCommands::RenameFrom(args) => run_rename_from(args),
     }
+}
+
+/// Runs the explicit Darc CLI upgrade command.
+fn run_upgrade(args: UpgradeArgs) -> Result<()> {
+    if let Some(command) = args.command {
+        if args.check {
+            bail!("`darc upgrade dismiss` cannot be combined with `--check`");
+        }
+        return match command {
+            UpgradeCommands::Dismiss(dismiss_args) => run_upgrade_dismiss(&args.root, dismiss_args),
+        };
+    }
+
+    let status = check_darc_upgrade(UPGRADE_CHECK_TIMEOUT, UpgradeCheckAuth::IncludeGitHubToken)?;
+    if args.json {
+        return print_upgrade_check_json(&status);
+    }
+
+    if args.check {
+        print_upgrade_check_report(&status);
+        return Ok(());
+    }
+
+    run_darc_upgrade(status)
+}
+
+/// Dismisses one cached Darc upgrade nudge.
+fn run_upgrade_dismiss(root: &Path, args: UpgradeDismissArgs) -> Result<()> {
+    let mut cache = read_upgrade_nudge_cache(root);
+    let version = match args.version {
+        Some(version) => display_release_version(&version),
+        None => cache
+            .latest_version
+            .clone()
+            .ok_or_else(|| anyhow!("no cached Darc upgrade version is available to dismiss"))?,
+    };
+    cache.dismissed_version = Some(version.clone());
+    write_upgrade_nudge_cache(root, &cache)?;
+
+    let style = HumanStyle::stdout();
+    print_section(style, "Upgrade");
+    print_field(style, 2, "Dismissed", version);
+    Ok(())
+}
+
+/// Prints one machine-readable upgrade check envelope.
+fn print_upgrade_check_json(status: &UpgradeStatus) -> Result<()> {
+    println!(
+        "{}",
+        render_json_envelope("darc.upgrade.check.v1", &UpgradeCheckJson::from(status))?
+    );
+    Ok(())
+}
+
+/// Prints one human-readable upgrade check report.
+fn print_upgrade_check_report(status: &UpgradeStatus) {
+    let style = HumanStyle::stdout();
+    print_section(style, "Upgrade");
+    print_field(style, 2, "Current", &status.current_version);
+    print_field(
+        style,
+        2,
+        "Latest",
+        status
+            .latest_version
+            .as_deref()
+            .unwrap_or("not published or not accessible"),
+    );
+    print_field(
+        style,
+        2,
+        "Status",
+        if status.upgrade_available {
+            style.warn("upgrade available")
+        } else if status.latest_version.is_none() {
+            style.muted("not published or not accessible")
+        } else {
+            style.ok("current")
+        },
+    );
+    if status.upgrade_available {
+        print_line(2, "Run `darc upgrade` to upgrade this installation.");
+    }
+}
+
+/// Applies one Darc CLI upgrade when the installed updater is available.
+fn run_darc_upgrade(status: UpgradeStatus) -> Result<()> {
+    if !status.upgrade_available {
+        print_upgrade_check_report(&status);
+        return Ok(());
+    }
+
+    let Some(updater_path) = find_darc_updater() else {
+        let style = HumanStyle::stdout();
+        print_section(style, "Upgrade");
+        print_field(style, 2, "Current", &status.current_version);
+        print_field(
+            style,
+            2,
+            "Latest",
+            status
+                .latest_version
+                .as_deref()
+                .unwrap_or("not published or not accessible"),
+        );
+        print_field(style, 2, "Status", style.warn("manual upgrade required"));
+        print_line(2, "This installation does not include `darc-update`.");
+        print_line(2, format!("Run: {}", manual_upgrade_installer_command()));
+        bail!("`darc-update` was not found; rerun the release installer to upgrade");
+    };
+
+    let style = HumanStyle::stdout();
+    print_section(style, "Upgrade");
+    print_field(style, 2, "Current", &status.current_version);
+    print_field(
+        style,
+        2,
+        "Latest",
+        status
+            .latest_version
+            .as_deref()
+            .unwrap_or("not published or not accessible"),
+    );
+    print_field(style, 2, "Updater", style.path(updater_path.display()));
+    println!();
+
+    let result = Command::new(&updater_path)
+        .status()
+        .with_context(|| format!("failed to run updater {}", updater_path.display()))?;
+    if result.success() {
+        return Ok(());
+    }
+    bail!("updater exited with status {result}")
+}
+
+/// Checks GitHub Releases for the latest Darc CLI release.
+fn check_darc_upgrade(timeout: Duration, auth: UpgradeCheckAuth) -> Result<UpgradeStatus> {
+    let current_version = env!("CARGO_PKG_VERSION").to_owned();
+    let Some(release) = fetch_latest_darc_release(timeout, auth)? else {
+        return Ok(UpgradeStatus {
+            current_version,
+            latest_version: None,
+            upgrade_available: false,
+            latest_release_url: None,
+        });
+    };
+    let latest_version = display_release_version(&release.tag_name);
+    let upgrade_available = release_version_is_newer(&latest_version, &current_version)?;
+    Ok(UpgradeStatus {
+        current_version,
+        latest_version: Some(latest_version),
+        upgrade_available,
+        latest_release_url: Some(release.html_url),
+    })
+}
+
+/// Fetches metadata for the latest Darc GitHub Release.
+fn fetch_latest_darc_release(
+    timeout: Duration,
+    auth: UpgradeCheckAuth,
+) -> Result<Option<GitHubLatestRelease>> {
+    let client = build_upgrade_http_client(timeout, auth)?;
+    let Some(response) = send_upgrade_request(
+        client
+            .get(DARC_LATEST_RELEASE_API_URL)
+            .header("Accept", "application/vnd.github+json"),
+        "fetch latest Darc release metadata",
+    )?
+    else {
+        return Ok(None);
+    };
+    let bytes = response
+        .bytes()
+        .context("failed to read latest Darc release response body")?;
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .context("failed to parse latest Darc release response JSON")
+}
+
+/// Builds one short-lived HTTP client for upgrade checks.
+fn build_upgrade_http_client(timeout: Duration, auth: UpgradeCheckAuth) -> Result<Client> {
+    let token = github_api_token();
+    let headers = build_upgrade_headers(auth, token.as_deref())?;
+    Client::builder()
+        .default_headers(headers)
+        .timeout(timeout)
+        .build()
+        .context("failed to build HTTP client for Darc upgrade check")
+}
+
+/// Builds the default HTTP headers for one upgrade check request.
+fn build_upgrade_headers(auth: UpgradeCheckAuth, token: Option<&str>) -> Result<HeaderMap> {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        USER_AGENT,
+        HeaderValue::from_str(&format!("darc/{}", env!("CARGO_PKG_VERSION")))
+            .context("failed to build GitHub API user agent header")?,
+    );
+    if matches!(auth, UpgradeCheckAuth::IncludeGitHubToken)
+        && let Some(token) = token
+    {
+        let mut value = HeaderValue::from_str(&format!("Bearer {token}"))
+            .context("failed to build GitHub API authorization header")?;
+        value.set_sensitive(true);
+        headers.insert(AUTHORIZATION, value);
+    }
+    Ok(headers)
+}
+
+/// Returns the configured GitHub API token when one is available.
+fn github_api_token() -> Option<String> {
+    [env::var("GH_TOKEN"), env::var("GITHUB_TOKEN")]
+        .into_iter()
+        .find_map(|value| value.ok().filter(|value| !value.trim().is_empty()))
+}
+
+/// Sends one upgrade-check HTTP request and returns a successful response.
+fn send_upgrade_request(
+    request: reqwest::blocking::RequestBuilder,
+    context_message: &str,
+) -> Result<Option<Response>> {
+    let response = request
+        .send()
+        .with_context(|| format!("failed to {context_message}"))?;
+    let status = response.status();
+    if status == StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if status.is_success() {
+        return Ok(Some(response));
+    }
+    let body = response.text().unwrap_or_default();
+    let Some(detail) = upgrade_http_error_detail(&body) else {
+        bail!("failed to {context_message}: GitHub returned HTTP {status}");
+    };
+    bail!("failed to {context_message}: GitHub returned HTTP {status}: {detail}")
+}
+
+/// Returns compact remote error detail for an upgrade-check HTTP failure.
+fn upgrade_http_error_detail(body: &str) -> Option<String> {
+    let detail = collapse_whitespace(body);
+    if detail.is_empty() {
+        return None;
+    }
+    Some(truncate_text(&detail, UPGRADE_ERROR_BODY_LIMIT))
+}
+
+/// Collapses arbitrary text into one whitespace-normalized line.
+fn collapse_whitespace(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Truncates one string by character count and appends an ellipsis marker.
+fn truncate_text(text: &str, max_len: usize) -> String {
+    if text.chars().count() <= max_len {
+        return text.to_owned();
+    }
+    let truncated = text
+        .chars()
+        .take(max_len.saturating_sub(3))
+        .collect::<String>();
+    format!("{truncated}...")
+}
+
+/// Returns the user-visible version label for one release tag.
+fn display_release_version(tag_name: &str) -> String {
+    tag_name
+        .trim()
+        .strip_prefix('v')
+        .unwrap_or_else(|| tag_name.trim())
+        .to_owned()
+}
+
+/// Returns whether the latest release version is newer than the current version.
+fn release_version_is_newer(latest: &str, current: &str) -> Result<bool> {
+    let latest = ParsedReleaseVersion::parse(latest)?;
+    let current = ParsedReleaseVersion::parse(current)?;
+    Ok(latest.cmp_semver(&current).is_gt())
+}
+
+/// Finds the cargo-dist updater installed alongside the current Darc executable.
+fn find_darc_updater() -> Option<PathBuf> {
+    current_exe_sibling_updater()
+}
+
+/// Returns the updater next to the current executable when it exists.
+fn current_exe_sibling_updater() -> Option<PathBuf> {
+    current_exe_dir().and_then(|dir| upgrade_executable_at(&dir.join(upgrade_executable_name())))
+}
+
+/// Returns one updater path when the candidate exists as a file.
+fn upgrade_executable_at(path: &Path) -> Option<PathBuf> {
+    path.is_file().then(|| path.to_path_buf())
+}
+
+/// Returns the cargo-dist updater executable name for this platform.
+fn upgrade_executable_name() -> String {
+    format!("darc-update{}", env::consts::EXE_SUFFIX)
+}
+
+/// Returns the installer fallback command for the current Darc executable.
+fn manual_upgrade_installer_command() -> String {
+    current_exe_dir()
+        .map(|dir| manual_upgrade_installer_command_for_dir(&dir))
+        .unwrap_or_else(|| DARC_INSTALLER_COMMAND.to_owned())
+}
+
+/// Returns the installer fallback command for one target install directory.
+fn manual_upgrade_installer_command_for_dir(dir: &Path) -> String {
+    format!(
+        "curl -fsSL https://github.com/0xjunha/darc/releases/latest/download/darc-installer.sh | DARC_INSTALL_DIR={} sh",
+        shell_quote(&dir.display().to_string())
+    )
+}
+
+/// Returns the directory that contains the current executable.
+fn current_exe_dir() -> Option<PathBuf> {
+    env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+}
+
+/// Returns one POSIX-shell-safe single-quoted string.
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// Stores one passive startup upgrade nudge decision for the current command.
+struct UpgradeNudgeContext {
+    root: PathBuf,
+    cache: UpgradeNudgeCache,
+}
+
+impl UpgradeNudgeContext {
+    /// Starts one cache-first passive upgrade nudge for an eligible command.
+    fn start(command: &Commands) -> Option<Self> {
+        let root = upgrade_nudge_root(command)?.to_path_buf();
+        if !upgrade_nudge_enabled_from_env() || !upgrade_nudge_enabled_from_config(&root) {
+            return None;
+        }
+        let mut cache = read_upgrade_nudge_cache(&root);
+        if let Some(now) = current_unix_seconds()
+            && should_notify_upgrade_nudge(now, &cache, env!("CARGO_PKG_VERSION"))
+            && let Some(latest_version) = cache.latest_version.as_deref()
+        {
+            let style = HumanStyle::stderr();
+            eprintln!(
+                "{}",
+                style.warn(format!(
+                    "Darc {latest_version} is available. Run `darc upgrade`."
+                ))
+            );
+            cache.last_notified_at_unix = Some(now);
+            let _ = write_upgrade_nudge_cache(&root, &cache);
+        }
+        Some(Self { root, cache })
+    }
+
+    /// Refreshes the passive upgrade cache after the primary command succeeds.
+    fn refresh_after_command(mut self, exit_code: i32) {
+        if exit_code != 0 {
+            return;
+        }
+        let Some(now) = current_unix_seconds() else {
+            return;
+        };
+        if !should_check_upgrade_nudge(now, &self.cache) {
+            return;
+        }
+
+        self.cache.checked_at_unix = Some(now);
+        if let Ok(status) = check_darc_upgrade(UPGRADE_NUDGE_TIMEOUT, UpgradeCheckAuth::Anonymous) {
+            self.cache.latest_version = status.latest_version;
+            self.cache.latest_release_url = status.latest_release_url;
+            self.cache.upgrade_available = status.upgrade_available;
+        }
+        let _ = write_upgrade_nudge_cache(&self.root, &self.cache);
+    }
+}
+
+/// Returns the Darc root that can be used for one startup upgrade nudge.
+fn upgrade_nudge_root(command: &Commands) -> Option<&Path> {
+    match command {
+        Commands::Refresh(args) if !args.watch => Some(&args.root),
+        Commands::Sync(args) if !args.dry_run => Some(&args.root),
+        Commands::Index(args) => Some(&args.root),
+        Commands::Service(args) => match args.command {
+            ServiceCommands::Start
+            | ServiceCommands::Stop
+            | ServiceCommands::Restart
+            | ServiceCommands::Enable
+            | ServiceCommands::Disable => Some(&args.root),
+            ServiceCommands::Status => None,
+        },
+        Commands::Project(args) => match &args.command {
+            ProjectCommands::Link(args) if !args.dry_run => Some(&args.root),
+            ProjectCommands::Remove(args) if !args.dry_run => Some(&args.root),
+            ProjectCommands::RenameFrom(args) if !args.dry_run => Some(&args.root),
+            _ => None,
+        },
+        Commands::Link(args) if !args.dry_run => Some(&args.root),
+        Commands::Remove(args) if !args.dry_run => Some(&args.root),
+        Commands::RenameFrom(args) if !args.dry_run => Some(&args.root),
+        _ => None,
+    }
+}
+
+/// Returns whether the current process should try passive upgrade nudges.
+fn upgrade_nudge_enabled_from_env() -> bool {
+    upgrade_nudge_enabled(
+        io::stdout().is_terminal(),
+        io::stderr().is_terminal(),
+        env::var("TERM").ok().as_deref(),
+        env::var_os("CI").is_some(),
+        env::var_os("DARC_NO_UPDATE_CHECK").is_some(),
+    )
+}
+
+/// Returns whether the shared config allows passive startup upgrade checks.
+fn upgrade_nudge_enabled_from_config(root: &Path) -> bool {
+    load_config(&root.join("config.toml"))
+        .map(|config| config.check_for_update_on_startup)
+        .unwrap_or(false)
+}
+
+/// Returns whether passive upgrade nudges are enabled for resolved process facts.
+fn upgrade_nudge_enabled(
+    stdout_is_terminal: bool,
+    stderr_is_terminal: bool,
+    term: Option<&str>,
+    ci: bool,
+    disabled: bool,
+) -> bool {
+    stdout_is_terminal && stderr_is_terminal && term != Some("dumb") && !ci && !disabled
+}
+
+/// Returns whether the cache is old enough for another network upgrade check.
+fn should_check_upgrade_nudge(now: u64, cache: &UpgradeNudgeCache) -> bool {
+    cache.checked_at_unix.is_none_or(|checked_at| {
+        now.saturating_sub(checked_at) >= UPGRADE_NUDGE_CHECK_INTERVAL.as_secs()
+    })
+}
+
+/// Returns whether a cached available upgrade should be shown again.
+fn should_notify_upgrade_nudge(now: u64, cache: &UpgradeNudgeCache, current_version: &str) -> bool {
+    cache
+        .latest_version
+        .as_deref()
+        .is_some_and(|latest_version| {
+            cache.dismissed_version.as_deref() != Some(latest_version)
+                && release_version_is_newer(latest_version, current_version).unwrap_or(false)
+        })
+        && cache.last_notified_at_unix.is_none_or(|notified_at| {
+            now.saturating_sub(notified_at) >= UPGRADE_NUDGE_NOTIFY_INTERVAL.as_secs()
+        })
+}
+
+/// Reads one passive upgrade nudge cache, treating missing or invalid JSON as empty.
+fn read_upgrade_nudge_cache(root: &Path) -> UpgradeNudgeCache {
+    fs::read_to_string(upgrade_nudge_cache_path(root))
+        .ok()
+        .and_then(|content| serde_json::from_str(&content).ok())
+        .unwrap_or_default()
+}
+
+/// Writes one passive upgrade nudge cache under the Darc runtime directory.
+fn write_upgrade_nudge_cache(root: &Path, cache: &UpgradeNudgeCache) -> Result<()> {
+    let path = upgrade_nudge_cache_path(root);
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("upgrade nudge cache path has no parent"))?;
+    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+    let content =
+        serde_json::to_vec_pretty(cache).context("failed to serialize upgrade nudge cache")?;
+    fs::write(&path, content).with_context(|| format!("failed to write {}", path.display()))
+}
+
+/// Returns the passive upgrade nudge cache path under one Darc root.
+fn upgrade_nudge_cache_path(root: &Path) -> PathBuf {
+    root.join("run/upgrade-check.json")
+}
+
+/// Returns the current Unix timestamp in seconds.
+fn current_unix_seconds() -> Option<u64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_secs())
 }
 
 /// Lists files through either project-wide or session-scoped query payloads.
@@ -3111,14 +3834,26 @@ fn format_query_error(error: &anyhow::Error) -> String {
     })
 }
 
+/// Returns one machine-readable JSON error envelope string for JSON parse failures.
+fn format_json_clap_error(error: &clap::Error, args: &[OsString]) -> String {
+    let message = normalize_json_clap_error_message(error.to_string().trim_end().to_owned(), args);
+    render_clap_error_envelope(error, message)
+}
+
 /// Returns one machine-readable JSON error envelope string for query parse failures.
+#[cfg(test)]
 fn format_query_clap_error(error: &clap::Error) -> String {
+    render_clap_error_envelope(error, error.to_string().trim_end().to_owned())
+}
+
+/// Renders one Clap parse error as a Darc JSON error envelope.
+fn render_clap_error_envelope(error: &clap::Error, message: String) -> String {
     let payload = QueryErrorEnvelope {
         schema: "darc.error.v1",
         generated_at: current_utc_timestamp(),
         darc_version: env!("CARGO_PKG_VERSION"),
         error: QueryErrorData {
-            message: error.to_string().trim_end().to_owned(),
+            message,
             code: Some("invalid_arguments"),
             details: Some(json!({
                 "clap_kind": format!("{:?}", error.kind()),
@@ -3129,6 +3864,24 @@ fn format_query_clap_error(error: &clap::Error) -> String {
     serde_json::to_string_pretty(&payload).unwrap_or_else(|serialization_error| {
         format!(r#"{{"schema":"darc.error.v1","error":"{serialization_error}"}}"#)
     })
+}
+
+/// Normalizes parse-error text for JSON surfaces with implied required flags.
+fn normalize_json_clap_error_message(message: String, args: &[OsString]) -> String {
+    if !is_upgrade_json_invocation_without_check(args) {
+        return message;
+    }
+    message.replace(
+        "Usage: darc upgrade --json",
+        "Usage: darc upgrade --check --json",
+    )
+}
+
+/// Returns whether the raw args target upgrade JSON without its required check flag.
+fn is_upgrade_json_invocation_without_check(args: &[OsString]) -> bool {
+    args.get(1).and_then(|arg| arg.to_str()) == Some("upgrade")
+        && args.iter().any(|arg| arg == "--json")
+        && !args.iter().any(|arg| arg == "--check")
 }
 
 /// Resolves one project-scoped query target from an explicit id or the active project.
@@ -4203,7 +4956,8 @@ fn run_refresh_once(request: &RefreshRunRequest) -> Result<()> {
             |event| progress.record(event),
         )?;
         print_refresh_all_report(&report);
-        return refresh_all_exit_status(&report);
+        let result = refresh_all_exit_status(&report);
+        return result;
     }
 
     let report = refresh_project_with_progress(Some(request.root.clone()), options, |event| {

@@ -228,6 +228,7 @@ dependencies = [
  "darc-test-utils",
  "fs2",
  "notify",
+ "reqwest",
  "rusqlite",
  "serde",
  "serde_json",

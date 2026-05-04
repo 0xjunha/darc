@@ -10,13 +10,24 @@ use crate::config::{
     ClaudeSourceConfig, CodexSourceConfig, ProjectConfig, SharedConfig, SourcesConfig, load_config,
 };
 
+/// Stores existing shared config fields that init must preserve.
+#[derive(Default)]
+pub(super) struct ExistingConfig {
+    pub(super) projects: Vec<ProjectConfig>,
+    pub(super) check_for_update_on_startup: bool,
+}
+
 /// Merges the current project into the shared config model before serialization.
 pub(super) fn build_config(
-    existing_projects: Vec<ProjectConfig>,
+    existing: ExistingConfig,
     project: ProjectConfig,
     sources: &[DetectedRolloutSource],
     root: PathBuf,
 ) -> SharedConfig {
+    let ExistingConfig {
+        projects: existing_projects,
+        check_for_update_on_startup,
+    } = existing;
     let mut projects: Vec<_> = existing_projects
         .into_iter()
         .filter(|existing| existing.id != project.id)
@@ -28,7 +39,7 @@ pub(super) fn build_config(
             .then_with(|| left.local_path.cmp(&right.local_path))
     });
 
-    SharedConfig::new(
+    let mut config = SharedConfig::new(
         root,
         projects,
         SourcesConfig {
@@ -50,21 +61,28 @@ pub(super) fn build_config(
                     sessions_root: source.root.clone(),
                 }),
         },
-    )
+    );
+    config.check_for_update_on_startup = check_for_update_on_startup;
+    config
 }
 
-/// Loads any existing project entries from the shared config file.
-pub(super) fn load_existing_projects(config_path: &Path) -> Result<Vec<ProjectConfig>> {
+/// Loads existing shared config fields that should survive init.
+pub(super) fn load_existing_config(config_path: &Path) -> Result<ExistingConfig> {
     if !config_path.exists() {
-        return Ok(Vec::new());
+        return Ok(ExistingConfig::default());
     }
 
     let config = load_config(config_path)?;
-    config
+    let check_for_update_on_startup = config.check_for_update_on_startup;
+    let projects = config
         .projects
         .into_iter()
         .map(normalize_project_config)
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    Ok(ExistingConfig {
+        projects,
+        check_for_update_on_startup,
+    })
 }
 
 /// Creates the parent directory for a target file path when needed.

@@ -5,7 +5,7 @@ use darc_index::ensure_index_database;
 use directories::BaseDirs;
 
 use super::{
-    config_io::{build_config, create_parent, load_existing_projects},
+    config_io::{build_config, create_parent, load_existing_config},
     detect::{codex_home, detect_sources},
     project_config::{detect_project, merge_project_with_existing},
     types::InitDraft,
@@ -38,14 +38,15 @@ pub fn prepare_init(root: Option<PathBuf>) -> Result<InitDraft> {
         );
     }
 
-    let existing_projects = load_existing_projects(&config_path)?;
+    let existing_config = load_existing_config(&config_path)?;
     let detected_project = detect_project(&current_dir, &projects_root)?;
-    let project_exists = existing_projects
+    let project_exists = existing_config
+        .projects
         .iter()
         .any(|existing| existing.id == detected_project.id);
-    let project = merge_project_with_existing(&existing_projects, detected_project);
+    let project = merge_project_with_existing(&existing_config.projects, detected_project);
     let config = build_config(
-        existing_projects,
+        existing_config,
         project.clone(),
         &sources,
         root_path.clone(),

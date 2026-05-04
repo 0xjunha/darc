@@ -35,8 +35,8 @@ Supported agents: **Claude Code**, **Codex**.
   behind both.
 - **Project continuity.** History survives checkout moves, worktrees, and repository renames via stable Darc project
   ids.
-- **Local-first.** No external services. Darc reads from local agent rollouts and writes only to one workspace under
-  `~/.darc`.
+- **Local-first.** Darc reads from local agent rollouts and writes archive/query state under `~/.darc`. Optional upgrade
+  checks contact GitHub only for release metadata and require explicit opt-in.
 
 ## Quickstart
 
@@ -92,21 +92,41 @@ darc show turn <SESSION_ID> <TURN_ORDINAL> --step-limit 10     # exact turn evid
 darc stats project --turn-limit 200
 ```
 
+Check for newer Darc CLI releases:
+
+```sh
+darc upgrade --check
+darc upgrade --check --json
+darc upgrade
+```
+
+Darc can show a short startup nudge when a newer release is available. To enable it, set
+`check_for_update_on_startup = true` in `~/.darc/config.toml`. Write-oriented human commands such as `refresh`, `sync`,
+`index`, and mutating project/service commands read the cached release metadata under `~/.darc/run`; when the cache is
+stale, Darc refreshes it after the command completes. Read-only commands such as `status`, `search`, `list`, and
+`service status` do not perform passive checks. Set `DARC_NO_UPDATE_CHECK=1` to suppress passive checks for one process.
+To hide one release:
+
+```sh
+darc upgrade dismiss <VERSION>
+darc upgrade dismiss --root <ROOT> <VERSION>  # custom Darc root
+```
+
 ## Uninstall
 
-If you enabled the macOS background refresh service, turn it off before removing the binary:
+If you enabled the macOS background refresh service, turn it off before removing the binaries:
 
 ```sh
 darc service disable
 ```
 
-Then remove the CLI binary installed by the release installer:
+Then remove the binaries installed by the release installer:
 
 ```sh
-rm -f ~/.local/bin/darc
+rm -f ~/.local/bin/darc ~/.local/bin/darc-update
 ```
 
-If you installed Darc into a custom directory, remove that `darc` binary instead.
+If you installed Darc into a custom directory, remove both binaries from that directory instead.
 
 Darc keeps local data under `~/.darc`. Uninstalling the binary does not delete that archive. To delete Darc data too:
 
@@ -150,6 +170,7 @@ payload. Pass `--color never` when piping into another program that needs guaran
 | `darc resolve session <prefix>` | Resolve a UUID prefix into canonical session ids.                                                            |
 | `darc project ...`              | Link, rename, remove, or rebuild projects after moves and renames.                                           |
 | `darc service ...`              | Manage the beta macOS background refresh service.                                                            |
+| `darc upgrade`                  | Check for or apply newer Darc CLI releases.                                                                  |
 
 Run `darc --help` or `darc help <command>` for the current visible CLI surface.
 

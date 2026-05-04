@@ -9,7 +9,7 @@ use anyhow::Result;
 use darc_index::INDEX_DB_FILE_NAME;
 
 use super::{
-    config_io::load_existing_projects,
+    config_io::{ExistingConfig, build_config, load_existing_config},
     project_config::{
         canonicalize_if_exists, merge_project_with_existing, project_config_from_path,
         project_id_from_path,
@@ -149,7 +149,7 @@ fn load_existing_projects_assigns_ids_without_moving_sessions_root() -> Result<(
     );
     fs::write(&config_path, config_toml)?;
 
-    let projects = load_existing_projects(&config_path)?;
+    let projects = load_existing_config(&config_path)?.projects;
     let project = &projects[0];
 
     assert!(!project.id.is_empty());
@@ -182,13 +182,69 @@ fn load_existing_projects_drops_local_path_from_known_paths() -> Result<()> {
     let config_path = workspace_root.join(CONFIG_FILE_NAME);
     fs::write(&config_path, toml::to_string_pretty(&config)?)?;
 
-    let projects = load_existing_projects(&config_path)?;
+    let projects = load_existing_config(&config_path)?.projects;
 
     assert_eq!(projects.len(), 1);
     assert_eq!(
         projects[0].known_paths,
         vec![canonicalize_if_exists(worktree_root)]
     );
+
+    Ok(())
+}
+
+#[test]
+fn build_config_preserves_existing_update_check_opt_out() -> Result<()> {
+    let workspace_root = unique_test_dir("preserve-update-check");
+    let project_root = workspace_root.join("repo");
+    let project = ProjectConfig {
+        id: "repo-abc123".into(),
+        name: "repo".into(),
+        local_path: project_root,
+        git_upstream: None,
+        sessions_root: workspace_root.join("projects/repo-abc123/sessions"),
+        known_paths: Vec::new(),
+    };
+
+    let config = build_config(
+        ExistingConfig {
+            projects: Vec::new(),
+            check_for_update_on_startup: false,
+        },
+        project,
+        &[],
+        workspace_root,
+    );
+
+    assert!(!config.check_for_update_on_startup);
+
+    Ok(())
+}
+
+#[test]
+fn build_config_preserves_existing_update_check_opt_in() -> Result<()> {
+    let workspace_root = unique_test_dir("preserve-update-check-opt-in");
+    let project_root = workspace_root.join("repo");
+    let project = ProjectConfig {
+        id: "repo-abc123".into(),
+        name: "repo".into(),
+        local_path: project_root,
+        git_upstream: None,
+        sessions_root: workspace_root.join("projects/repo-abc123/sessions"),
+        known_paths: Vec::new(),
+    };
+
+    let config = build_config(
+        ExistingConfig {
+            projects: Vec::new(),
+            check_for_update_on_startup: true,
+        },
+        project,
+        &[],
+        workspace_root,
+    );
+
+    assert!(config.check_for_update_on_startup);
 
     Ok(())
 }
@@ -257,6 +313,7 @@ fn config_deserializes_without_known_paths() -> Result<()> {
     let loaded: SharedConfig = toml::from_str(&toml_str)?;
 
     assert_eq!(loaded.projects.len(), 1);
+    assert!(!loaded.check_for_update_on_startup);
     assert!(loaded.projects[0].known_paths.is_empty());
 
     Ok(())

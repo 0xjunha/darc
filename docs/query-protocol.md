@@ -1,9 +1,9 @@
 # Darc Query Protocol
 
-Darc's read-side CLI emits machine-readable JSON envelopes for coding agents, desktop, and other clients. The
-callable read surface is `darc list`, `darc show`, `darc search`, `darc stats`, `darc resolve`, and
-`darc status --json`. Most schema ids retain the `darc.query.*` prefix because they describe payload contracts, not
-the CLI namespace; status uses `darc.status.*` schemas.
+Darc's machine-readable CLI surfaces emit JSON envelopes for coding agents, desktop, and other clients. The callable
+read surface is `darc list`, `darc show`, `darc search`, `darc stats`, `darc resolve`, and `darc status --json`; the
+release-check surface is `darc upgrade --check --json`. Most read schema ids retain the `darc.query.*` prefix because
+they describe payload contracts, not the CLI namespace; status uses `darc.status.*` schemas.
 
 Use these JSON read commands instead of:
 
@@ -11,9 +11,9 @@ Use these JSON read commands instead of:
 - parsing human-oriented command output
 - deriving analytics from raw `steps_json` outside `darc`
 
-## Canonical Read Commands
+## Canonical JSON Commands
 
-The canonical read commands emit the same schema ids documented below:
+The canonical JSON commands emit the same schema ids documented below:
 
 - `darc list projects` and `darc show workspace` emit `darc.query.workspace.v1`
 - `darc status --json` emits `darc.status.project.v1` for the active cwd-resolved project
@@ -32,6 +32,7 @@ The canonical read commands emit the same schema ids documented below:
 - `darc stats workspace`, `darc stats project`, and `darc stats turn <session-id-or-prefix> <turn-ordinal>` emit the
   corresponding `darc.query.insights.*.v1` payloads
 - `darc resolve session <uuid-or-prefix>` emits `darc.query.resolve_session.v1`
+- `darc upgrade --check --json` emits `darc.upgrade.check.v1`
 
 Each canonical query command accepts `--color <auto|always|never>` and `--root <path>` before or after its subcommand
 or arguments. Color is terminal-only presentation; the default is `--color auto`. `darc status --json` emits plain
@@ -43,7 +44,8 @@ schema ids retained for machine-readable payload compatibility.
 ## Command Matrix
 
 Query commands emit pretty-printed JSON envelopes on stdout. `--color <auto|always|never>` controls terminal-only ANSI
-presentation; the default is `--color auto`. Status JSON emits the same envelope shape without ANSI color.
+presentation; the default is `--color auto`. Status and upgrade-check JSON emit the same envelope shape without ANSI
+color.
 
 - `darc list projects [--root <path>]`
 - `darc show workspace [--root <path>]`
@@ -65,6 +67,7 @@ presentation; the default is `--color auto`. Status JSON emits the same envelope
 - `darc stats project [--root <path>] [--project-id <id>] [--provider <provider>] [--turn-limit <n>]`
 - `darc stats turn [--root <path>] [--project-id <id>] [--provider <provider>] <session-id-or-prefix> <turn-ordinal>`
 - `darc stats turn [--root <path>] [--project-id <id>] [--provider <provider>] --session-id <session-id-or-prefix> --turn-ordinal <n>`
+- `darc upgrade --check --json`
 
 ## Performance Expectations
 
@@ -112,6 +115,8 @@ Expected scale shape:
 - project-scoped queries accept optional `--project-id`; when omitted, Darc resolves the configured project from the current directory
 - `darc show workspace` and `darc list projects` include nullable `active_project` with the cwd-resolved project id, name, and current root when the current directory matches a configured project; a neutral cwd returns `active_project: null` without adding a root issue
 - `darc status --json` reports the same active-project status as human `darc status`; add `--check` to include a non-mutating sync plan under `data.project.sync_check`; failed JSON status checks write the status report to stdout, return non-zero, and write a `darc.error.v1` envelope to stderr
+- `darc upgrade --check --json` contacts GitHub Releases, writes `darc.upgrade.check.v1` to stdout on success, and
+  writes a `darc.error.v1` envelope to stderr on argument, network, HTTP, or release-metadata parse failures
 - canonical read commands accept shared `--root` and `--color` options before or after nested subcommands, so both
   `darc list --root ~/.darc sessions` and `darc list sessions --root ~/.darc` are valid
 - `--color auto` adds ANSI syntax color only when stdout is a terminal, `NO_COLOR` is unset, and `TERM` is not `dumb`; piped, redirected, and captured output remains plain JSON by default
@@ -269,7 +274,7 @@ The read surface is intentionally composable. Use the canonical commands for day
 
 ## Success envelope
 
-Query success responses are written to `stdout` only.
+JSON command success responses are written to `stdout` only.
 
 ```json
 {
@@ -289,7 +294,7 @@ Fields:
 
 ## Error envelope
 
-JSON read runtime failures and argument parse failures return non-zero exit status and write a structured error envelope to `stderr`.
+JSON runtime failures and argument parse failures return non-zero exit status and write a structured error envelope to `stderr`.
 
 ```json
 {
@@ -315,9 +320,9 @@ Fields:
 - `error.details`: optional structured metadata for known error codes
 - `error.causes`: causal chain in outer-to-inner order, excluding the top-level message
 
-Current stable JSON read error codes:
+Current stable JSON error codes:
 
-- `invalid_arguments`: JSON read command arguments were rejected before dispatch, for example because an option was unknown, required input was missing, or two options conflicted
+- `invalid_arguments`: JSON command arguments were rejected before dispatch, for example because an option was unknown, required input was missing, or two options conflicted
 - `missing_required_identity`: a session id, turn ordinal, query, or similar read identity was not supplied in any accepted positional or flag form
 - `conflicting_identity_arguments`: the same read identity was supplied in incompatible positional and flag forms
 - `status_check_failed`: `darc status --json --check` or `darc status --workspace --json --check` completed its status report but at least one sync-check plan failed
@@ -343,6 +348,7 @@ Current schema ids:
 - `darc.query.insights.turn.v1`
 - `darc.status.project.v1`
 - `darc.status.workspace.v1`
+- `darc.upgrade.check.v1`
 - `darc.error.v1`
 
 Clients should branch on `schema`, not on `darc_version`.
@@ -381,7 +387,7 @@ Examples of breaking changes:
 
 ## Field rules
 
-Query payloads follow these rules:
+JSON payloads follow these rules:
 
 - snake_case field names
 - lowercase stable enum values
@@ -389,6 +395,18 @@ Query payloads follow these rules:
 - explicit `null` for nullable values
 - empty arrays instead of omitted list fields
 - deterministic ordering where practical
+
+## Upgrade Check
+
+`darc.upgrade.check.v1` reports the explicit release check from `darc upgrade --check --json`.
+
+Fields:
+
+- `current_version`: non-null Darc CLI version string for the running binary
+- `latest_version`: latest GitHub Release version without a leading `v`, or `null` when no latest release is published or accessible
+- `upgrade_available`: `true` when `latest_version` is newer than `current_version` according to Darc's release-version comparison
+- `latest_release_url`: GitHub Release URL for `latest_version`, or `null` when `latest_version` is `null`
+- `install_command`: shell installer command for agents or scripts that need a manual fallback; when Darc can resolve the current executable directory, the command includes `DARC_INSTALL_DIR=<dir>` so custom installs update the invoked installation
 
 ## Analytics semantics
 
