@@ -20,6 +20,8 @@ The supported install path is the shell installer hosted on the GitHub Release:
 curl -fsSL https://github.com/0xjunha/darc/releases/latest/download/darc-installer.sh | sh
 ```
 
+By default, the installer places `darc` in `~/.local/bin`.
+
 ## Cut A Release
 
 1. Create a release branch from current `main`:
