@@ -9,6 +9,7 @@ All notable Darc release changes should be summarized here.
 - Document how to uninstall Darc and optionally remove local data.
 - Add `darc upgrade` for checking and applying newer Darc CLI releases.
 - Add a documented, configurable startup nudge for newer Darc CLI releases.
+- Keep passive upgrade checks out of no-write command modes and anonymous unless `darc upgrade` is run explicitly.
 
 ## 0.1.0
 
