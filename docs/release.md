@@ -47,7 +47,7 @@ available.
 
    ```sh
    git add Cargo.toml Cargo.lock CHANGELOG.md
-   git commit -m "chore(release): prepare v0.1.0"
+   git commit -m "release: v0.1.0"
    ```
 
 4. Merge the release PR.
