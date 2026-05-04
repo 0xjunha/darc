@@ -1094,7 +1094,8 @@ fn extract_jq_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)> 
                 || token.starts_with("--argjson=")
                 || token.starts_with("--rawfile=")
                 || token.starts_with("--slurpfile=") => {}
-            _ if let Some(path) = token.strip_prefix("--from-file=") => {
+            _ if token.starts_with("--from-file=") => {
+                let path = &token["--from-file=".len()..];
                 push_access(&mut accesses, ToolAccessKind::Read, path);
                 program_consumed = true;
             }

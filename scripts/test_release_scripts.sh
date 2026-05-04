@@ -181,8 +181,9 @@ prepare_success_updates_version_changelog_and_runs_checks() {
 
   actual="$(cat "$log")"
   expected="cargo +nightly fmt
-cargo clippy --workspace --all-targets --all-features -- -D warnings -W clippy::all
-cargo test --workspace
+cargo +stable clippy --locked --workspace --all-targets --all-features -- -D warnings -W clippy::all
+cargo +stable test --locked --workspace
+cargo +stable check --locked --workspace --all-targets --all-features --profile dist
 dist plan --tag v0.2.0"
   assert_eq "$expected" "$actual" "release check command sequence"
 }

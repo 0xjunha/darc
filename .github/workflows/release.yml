@@ -110,6 +110,8 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
       - name: Install dist
         # we specify bash to get pipefail; it guards against the `curl` command
         # failing. otherwise `sh` won't catch that `curl` returned non-0
@@ -172,6 +174,8 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
       - name: Install Rust non-interactively if not already installed
         if: ${{ matrix.container }}
         run: |

@@ -408,7 +408,7 @@ fn derives_file_accesses_skip_shell_metadata_and_dynamic_paths() {
         timestamp: "2026-04-06T10:00:01Z".to_owned(),
         call_id: "call-1".to_owned(),
         name: "exec_command".to_owned(),
-        arguments: r#"{"cmd":"chmod +x scripts/run.sh scripts/check.sh && chmod 755 scripts/install.sh && chmod --reference scripts/mode-template.sh scripts/ref-mode-target.sh && chown user:group scripts/run.sh && chown --reference scripts/owner-template.sh scripts/ref-owner-target.sh && test \"$actual\" = \"$expected\" && [ -x scripts/run.sh ] && [ -f Cargo.toml -a -f Cargo.lock ] && [ -f Cargo.toml -a docs/string-only.md ] && test src/new.rs -nt src/old.rs && [ src/same-a.rs -ef src/same-b.rs ] && cat > $tmp/Cargo.toml && cat a-w && touch u+x && touch -t 202604011200 docs/release.md && touch -r docs/template.md docs/generated.md && lsof -p 597 && awk -v iter=\"$i\" '/real/ { print iter, $2 }' benches/out.log && jq --arg key \"$key\" '.[$key]' data.json && jq --rawfile fixture fixtures/raw.txt --from-file filters/release.jq data.json","workdir":"/tmp/repo"}"#.to_owned(),
+        arguments: r#"{"cmd":"chmod +x scripts/run.sh scripts/check.sh && chmod 755 scripts/install.sh && chmod --reference scripts/mode-template.sh scripts/ref-mode-target.sh && chown user:group scripts/run.sh && chown --reference scripts/owner-template.sh scripts/ref-owner-target.sh && test \"$actual\" = \"$expected\" && [ -x scripts/run.sh ] && [ -f Cargo.toml -a -f Cargo.lock ] && [ -f Cargo.toml -a docs/string-only.md ] && test src/new.rs -nt src/old.rs && [ src/same-a.rs -ef src/same-b.rs ] && cat > $tmp/Cargo.toml && cat a-w && touch u+x && touch -t 202604011200 docs/release.md && touch -r docs/template.md docs/generated.md && lsof -p 597 && awk -v iter=\"$i\" '/real/ { print iter, $2 }' benches/out.log && jq --arg key \"$key\" '.[$key]' data.json && jq --rawfile fixture fixtures/raw.txt --from-file filters/release.jq data.json && jq --from-file=filters/equals.jq data.json","workdir":"/tmp/repo"}"#.to_owned(),
     }];
 
     let tool_calls = extract_tool_call_records("repo-a", SourceKind::Codex, "session-1", 0, &steps);
@@ -456,6 +456,7 @@ fn derives_file_accesses_skip_shell_metadata_and_dynamic_paths() {
     assert!(paths.contains("benches/out.log"));
     assert!(paths.contains("fixtures/raw.txt"));
     assert!(paths.contains("filters/release.jq"));
+    assert!(paths.contains("filters/equals.jq"));
     assert!(paths.contains("data.json"));
 }
 

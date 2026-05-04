@@ -308,7 +308,8 @@ Darc is split into focused Rust crates:
 Useful checks:
 
 ```sh
-cargo test --workspace
 cargo +nightly fmt
-cargo clippy --workspace --all-targets --all-features -- -D warnings -W clippy::all
+cargo +stable clippy --locked --workspace --all-targets --all-features -- -D warnings -W clippy::all
+cargo +stable test --locked --workspace
+cargo +stable check --locked --workspace --all-targets --all-features --profile dist
 ```
