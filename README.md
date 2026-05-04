@@ -303,8 +303,7 @@ Darc is split into focused Rust crates:
 - `darc-index`: normalized ingestion, SQLite schema, migrations, and indexing metrics.
 - `darc-query`: read-only query, search, and stats over indexed data.
 - `darc-rollout`: provider transcript models and parsers.
-- `darc-paths`, `darc-agent`, `darc-rollout-audit`, and `darc-test-utils`: shared support, runtime preparation,
-  maintainer audits, and tests.
+- `darc-paths`, `darc-rollout-audit`, and `darc-test-utils`: shared support, maintainer audits, and tests.
 
 Useful checks:
 
