@@ -13,5 +13,5 @@ targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-da
 # Path that installers should place binaries in
 install-path = "CARGO_HOME"
 hosting = "github"
-github-attestations = true
+github-attestations = false
 install-updater = false
