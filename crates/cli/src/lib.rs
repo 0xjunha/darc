@@ -2480,14 +2480,9 @@ fn release_version_is_newer(latest: &str, current: &str) -> Result<bool> {
     Ok(latest.cmp_semver(&current).is_gt())
 }
 
-/// Finds the cargo-dist updater installed alongside Darc or on PATH.
+/// Finds the cargo-dist updater installed alongside the current Darc executable.
 fn find_darc_updater() -> Option<PathBuf> {
-    current_exe_sibling_updater().or_else(|| {
-        env::var_os("PATH").and_then(|paths| {
-            env::split_paths(&paths)
-                .find_map(|path| upgrade_executable_at(&path.join(upgrade_executable_name())))
-        })
-    })
+    current_exe_sibling_updater()
 }
 
 /// Returns the updater next to the current executable when it exists.
