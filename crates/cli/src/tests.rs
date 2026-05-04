@@ -915,7 +915,10 @@ fn refresh_all_exit_status_errors_when_any_project_failed() {
 fn release_version_comparison_handles_v_prefix_and_prerelease() -> Result<()> {
     assert!(release_version_is_newer("v0.2.0", "0.1.9")?);
     assert!(release_version_is_newer("0.2.0", "0.2.0-beta.1")?);
+    assert!(release_version_is_newer("0.2.0-beta.10", "0.2.0-beta.2")?);
+    assert!(release_version_is_newer("0.2.0-beta.2.1", "0.2.0-beta.2")?);
     assert!(!release_version_is_newer("0.2.0-beta.1", "0.2.0")?);
+    assert!(!release_version_is_newer("0.2.0-beta.2", "0.2.0-beta.10")?);
     assert!(!release_version_is_newer("0.2.0", "0.2.0")?);
     Ok(())
 }

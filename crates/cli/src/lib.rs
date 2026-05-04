@@ -2058,7 +2058,7 @@ impl ParsedReleaseVersion {
                 (None, None) => std::cmp::Ordering::Equal,
                 (None, Some(_)) => std::cmp::Ordering::Greater,
                 (Some(_), None) => std::cmp::Ordering::Less,
-                (Some(left), Some(right)) => left.cmp(right),
+                (Some(left), Some(right)) => compare_prerelease(left, right),
             })
     }
 }
@@ -2069,6 +2069,53 @@ fn parse_version_component(component: Option<&str>, full: &str, name: &str) -> R
     component
         .parse::<u64>()
         .with_context(|| format!("invalid {name} component in Darc release version `{full}`"))
+}
+
+/// Compares two SemVer prerelease identifier lists.
+fn compare_prerelease(left: &str, right: &str) -> std::cmp::Ordering {
+    let mut left_parts = left.split('.');
+    let mut right_parts = right.split('.');
+    loop {
+        match (left_parts.next(), right_parts.next()) {
+            (None, None) => return std::cmp::Ordering::Equal,
+            (None, Some(_)) => return std::cmp::Ordering::Less,
+            (Some(_), None) => return std::cmp::Ordering::Greater,
+            (Some(left), Some(right)) => {
+                let ordering = compare_prerelease_identifier(left, right);
+                if !ordering.is_eq() {
+                    return ordering;
+                }
+            }
+        }
+    }
+}
+
+/// Compares two SemVer prerelease identifiers.
+fn compare_prerelease_identifier(left: &str, right: &str) -> std::cmp::Ordering {
+    match (is_numeric_identifier(left), is_numeric_identifier(right)) {
+        (true, true) => compare_numeric_identifier(left, right),
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        (false, false) => left.cmp(right),
+    }
+}
+
+/// Returns whether one prerelease identifier is numeric.
+fn is_numeric_identifier(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// Compares two numeric prerelease identifiers without risking integer overflow.
+fn compare_numeric_identifier(left: &str, right: &str) -> std::cmp::Ordering {
+    let left = trim_numeric_identifier(left);
+    let right = trim_numeric_identifier(right);
+    left.len().cmp(&right.len()).then_with(|| left.cmp(right))
+}
+
+/// Trims insignificant leading zeroes from one numeric identifier.
+fn trim_numeric_identifier(value: &str) -> &str {
+    let trimmed = value.trim_start_matches('0');
+    if trimmed.is_empty() { "0" } else { trimmed }
 }
 
 /// Represents the supported session-list projections.
