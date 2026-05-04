@@ -304,6 +304,26 @@ fn upgrade_dismiss_command_accepts_version_and_root() {
             ..
         }) if root == Path::new("/tmp/darc-root") && version == "0.2.0"
     ));
+
+    let cli = Cli::try_parse_from([
+        "darc",
+        "upgrade",
+        "dismiss",
+        "--root",
+        "/tmp/darc-root",
+        "0.2.0",
+    ])
+    .unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Upgrade(super::UpgradeArgs {
+            root,
+            command: Some(super::UpgradeCommands::Dismiss(super::UpgradeDismissArgs {
+                version: Some(version),
+            })),
+            ..
+        }) if root == Path::new("/tmp/darc-root") && version == "0.2.0"
+    ));
 }
 
 #[test]
@@ -322,6 +342,21 @@ fn upgrade_dismiss_normalizes_v_prefixed_version() -> Result<()> {
     assert_eq!(cache["dismissed_version"], "0.2.0");
 
     Ok(())
+}
+
+#[test]
+fn manual_upgrade_installer_command_targets_current_install_dir() {
+    let command = super::manual_upgrade_installer_command_for_dir(Path::new("/tmp/darc bin"));
+    assert_eq!(
+        command,
+        "curl -fsSL https://github.com/0xjunha/darc/releases/latest/download/darc-installer.sh | DARC_INSTALL_DIR='/tmp/darc bin' sh"
+    );
+
+    let quoted = super::manual_upgrade_installer_command_for_dir(Path::new("/tmp/darc'bin"));
+    assert_eq!(
+        quoted,
+        "curl -fsSL https://github.com/0xjunha/darc/releases/latest/download/darc-installer.sh | DARC_INSTALL_DIR='/tmp/darc'\\''bin' sh"
+    );
 }
 
 #[test]

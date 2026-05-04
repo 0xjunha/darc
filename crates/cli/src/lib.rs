@@ -404,6 +404,7 @@ struct UpgradeArgs {
 
     #[arg(
         long,
+        global = true,
         default_value_os_t = default_root_path(),
         help_heading = "Workspace",
         help = "Use this Darc root for cached upgrade nudges"
@@ -2458,7 +2459,7 @@ fn run_darc_upgrade(status: UpgradeStatus) -> Result<()> {
         );
         print_field(style, 2, "Status", style.warn("manual upgrade required"));
         print_line(2, "This installation does not include `darc-update`.");
-        print_line(2, format!("Run: {DARC_INSTALLER_COMMAND}"));
+        print_line(2, format!("Run: {}", manual_upgrade_installer_command()));
         bail!("`darc-update` was not found; rerun the release installer to upgrade");
     };
 
@@ -2613,10 +2614,7 @@ fn find_darc_updater() -> Option<PathBuf> {
 
 /// Returns the updater next to the current executable when it exists.
 fn current_exe_sibling_updater() -> Option<PathBuf> {
-    env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(Path::to_path_buf))
-        .and_then(|dir| upgrade_executable_at(&dir.join(upgrade_executable_name())))
+    current_exe_dir().and_then(|dir| upgrade_executable_at(&dir.join(upgrade_executable_name())))
 }
 
 /// Returns one updater path when the candidate exists as a file.
@@ -2627,6 +2625,33 @@ fn upgrade_executable_at(path: &Path) -> Option<PathBuf> {
 /// Returns the cargo-dist updater executable name for this platform.
 fn upgrade_executable_name() -> String {
     format!("darc-update{}", env::consts::EXE_SUFFIX)
+}
+
+/// Returns the installer fallback command for the current Darc executable.
+fn manual_upgrade_installer_command() -> String {
+    current_exe_dir()
+        .map(|dir| manual_upgrade_installer_command_for_dir(&dir))
+        .unwrap_or_else(|| DARC_INSTALLER_COMMAND.to_owned())
+}
+
+/// Returns the installer fallback command for one target install directory.
+fn manual_upgrade_installer_command_for_dir(dir: &Path) -> String {
+    format!(
+        "curl -fsSL https://github.com/0xjunha/darc/releases/latest/download/darc-installer.sh | DARC_INSTALL_DIR={} sh",
+        shell_quote(&dir.display().to_string())
+    )
+}
+
+/// Returns the directory that contains the current executable.
+fn current_exe_dir() -> Option<PathBuf> {
+    env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+}
+
+/// Returns one POSIX-shell-safe single-quoted string.
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 /// Stores one passive startup upgrade nudge decision for the current command.

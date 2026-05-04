@@ -100,12 +100,15 @@ darc upgrade
 ```
 
 Darc can show a short startup nudge when a newer release is available. To enable it, set
-`check_for_update_on_startup = true` in `~/.darc/config.toml`. Interactive human commands read the cached release metadata
-under `~/.darc/run`; when the cache is stale, Darc refreshes it after the command completes. Set
-`DARC_NO_UPDATE_CHECK=1` to suppress passive checks for one process. To hide one release:
+`check_for_update_on_startup = true` in `~/.darc/config.toml`. Write-oriented human commands such as `refresh`, `sync`,
+`index`, and mutating project/service commands read the cached release metadata under `~/.darc/run`; when the cache is
+stale, Darc refreshes it after the command completes. Read-only commands such as `status`, `search`, `list`, and
+`service status` do not perform passive checks. Set `DARC_NO_UPDATE_CHECK=1` to suppress passive checks for one process.
+To hide one release:
 
 ```sh
 darc upgrade dismiss <VERSION>
+darc upgrade dismiss --root <ROOT> <VERSION>  # custom Darc root
 ```
 
 ## Uninstall
