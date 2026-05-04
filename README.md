@@ -4,19 +4,20 @@
 [![CI](https://github.com/0xjunha/darc/actions/workflows/ci.yml/badge.svg)](https://github.com/0xjunha/darc/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/github/0xjunha/darc/graph/badge.svg?token=J5ZVVBJ3U9)](https://codecov.io/github/0xjunha/darc)
 
-**Darc** is **queryable cross-session memory for coding agents**: a local CLI that archives agent session rollouts,
-indexes them into a SQLite database, and exposes them through structured query commands.
+**Darc** is a local archive and query layer for coding-agent sessions: it preserves original session data, indexes it
+into SQLite, and exposes bounded read commands for finding the exact evidence behind prior work.
 
 ## What is Darc?
 
-**Darc** turns coding agent session history into a queryable **D**ata **Arc**. Think of it as `rg` (ripgrep) for agent
-history, with stable evidence handles back to the original turns.
+**Darc** turns coding-agent session history into a queryable **D**ata **Arc**. Think of it as `rg` for agent history,
+but with the context `rg` cannot infer: every hit is a structured handle into the original turn, surrounding session,
+touched files, and related work.
 
 **The core idea:** building a good agent memory system is hard. Agents are already intelligent. Instead of distilling
 their work into lossy summaries, Darc gives them a tool to recover the exact context on demand: what happened, which
 files were touched, and how turns link together.
 
-Darc is the **retrieval/evidence half of agent memory**. It stores sessions as-is and indexes them for queryable
+Darc is the **retrieval and evidence layer for agent memory**. It stores sessions as-is and indexes them for queryable
 lookup. It does not summarize, consolidate or rewrite agent state, so pair it with whatever memory layer your agent
 already uses
 (AGENTS.md, Codex/Claude Code built-in memory, MCP-backed memory tools) for the summarization side.

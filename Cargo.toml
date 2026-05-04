@@ -22,7 +22,7 @@ authors = ["Junha Park <0xjunha@gmail.com>"]
 repository = "https://github.com/0xjunha/darc"
 homepage = "https://github.com/0xjunha/darc"
 readme = "README.md"
-description = "queryable cross-session memory for coding agents"
+description = "Archive, index, and query coding-agent session history"
 
 [workspace.dependencies]
 # Internal Dependencies
