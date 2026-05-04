@@ -24,7 +24,9 @@ use super::{
     Cli, ColorArg, Commands, HELP_STYLES, claude_schema_audit_exit_code, cli_command,
     codex_schema_audit_exit_code, format_claude_schema_audit_report,
     format_codex_schema_audit_report, format_query_clap_error, format_query_error,
-    parse_window_days, resolve_query_time_bound_at, should_auto_color_output, should_color_output,
+    parse_window_days, release_version_is_newer, resolve_query_time_bound_at,
+    should_auto_color_output, should_check_upgrade_nudge, should_color_output,
+    should_notify_upgrade_nudge, upgrade_nudge_enabled,
 };
 
 fn compatible_report() -> CodexSchemaAuditReport {
@@ -242,6 +244,27 @@ fn refresh_command_accepts_watch_options() {
             && min_interval.as_deref() == Some("60s")
             && reconcile_interval.as_deref() == Some("10m")
     ));
+}
+
+#[test]
+fn upgrade_command_accepts_check_and_json() {
+    let cli = Cli::try_parse_from(["darc", "upgrade", "--check", "--json"]).unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Upgrade(super::UpgradeArgs {
+            check: true,
+            json: true,
+        })
+    ));
+}
+
+#[test]
+fn upgrade_json_requires_check_mode() {
+    let error = Cli::try_parse_from(["darc", "upgrade", "--json"]).unwrap_err();
+    assert_eq!(
+        error.kind(),
+        clap::error::ErrorKind::MissingRequiredArgument
+    );
 }
 
 #[test]
@@ -808,6 +831,13 @@ fn human_command_help_groups_options() {
     let status_help = help_for_command_path(&["status"]);
     assert_contains_in_order(&status_help, &["Scope:", "Mode:", "Output:", "Workspace:"]);
 
+    let upgrade_help = help_for_command_path(&["upgrade"]);
+    assert_contains_in_order(&upgrade_help, &["Mode:", "Output:"]);
+    assert!(upgrade_help.contains("Only check whether a newer Darc release is available"));
+    assert!(
+        upgrade_help.contains("Write the upgrade check result as a machine-readable JSON envelope")
+    );
+
     let sync_help = help_for_command_path(&["sync"]);
     assert_contains_in_order(&sync_help, &["Mode:", "Selection:", "Workspace:"]);
     assert!(sync_help.contains("Preview pending copies without writing files"));
@@ -840,6 +870,89 @@ fn refresh_all_exit_status_errors_when_any_project_failed() {
         format!("{error:#}"),
         "1 project(s) failed during workspace refresh"
     );
+}
+
+#[test]
+fn release_version_comparison_handles_v_prefix_and_prerelease() -> Result<()> {
+    assert!(release_version_is_newer("v0.2.0", "0.1.9")?);
+    assert!(release_version_is_newer("0.2.0", "0.2.0-beta.1")?);
+    assert!(!release_version_is_newer("0.2.0-beta.1", "0.2.0")?);
+    assert!(!release_version_is_newer("0.2.0", "0.2.0")?);
+    Ok(())
+}
+
+#[test]
+fn upgrade_nudge_requires_interactive_non_ci_context() {
+    assert!(upgrade_nudge_enabled(
+        true,
+        true,
+        Some("xterm-256color"),
+        false,
+        false
+    ));
+    assert!(!upgrade_nudge_enabled(
+        false,
+        true,
+        Some("xterm-256color"),
+        false,
+        false
+    ));
+    assert!(!upgrade_nudge_enabled(
+        true,
+        false,
+        Some("xterm-256color"),
+        false,
+        false
+    ));
+    assert!(!upgrade_nudge_enabled(
+        true,
+        true,
+        Some("dumb"),
+        false,
+        false
+    ));
+    assert!(!upgrade_nudge_enabled(
+        true,
+        true,
+        Some("xterm-256color"),
+        true,
+        false
+    ));
+    assert!(!upgrade_nudge_enabled(
+        true,
+        true,
+        Some("xterm-256color"),
+        false,
+        true
+    ));
+}
+
+#[test]
+fn upgrade_nudge_cache_respects_check_and_notification_intervals() {
+    let mut cache = super::UpgradeNudgeCache {
+        checked_at_unix: Some(1_000),
+        last_notified_at_unix: Some(1_000),
+        latest_version: Some("0.2.0".to_owned()),
+        latest_release_url: Some("https://github.com/0xjunha/darc/releases/tag/v0.2.0".to_owned()),
+        upgrade_available: true,
+    };
+
+    assert!(!should_check_upgrade_nudge(1_000 + 60, &cache));
+    assert!(!should_notify_upgrade_nudge(1_000 + 60, &cache));
+    assert!(should_check_upgrade_nudge(
+        1_000 + super::UPGRADE_NUDGE_CHECK_INTERVAL.as_secs(),
+        &cache
+    ));
+    assert!(should_notify_upgrade_nudge(
+        1_000 + super::UPGRADE_NUDGE_NOTIFY_INTERVAL.as_secs(),
+        &cache
+    ));
+
+    cache.upgrade_available = false;
+    assert!(!should_notify_upgrade_nudge(
+        1_000 + super::UPGRADE_NUDGE_NOTIFY_INTERVAL.as_secs(),
+        &cache
+    ));
 }
 
 #[test]

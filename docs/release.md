@@ -20,7 +20,9 @@ The supported install path is the shell installer hosted on the GitHub Release:
 curl -fsSL https://github.com/0xjunha/darc/releases/latest/download/darc-installer.sh | sh
 ```
 
-By default, the installer places `darc` in `~/.local/bin`.
+By default, the installer places `darc` in `~/.local/bin` and installs the cargo-dist updater as `darc-update`.
+Users can check for newer Darc releases with `darc upgrade --check` and upgrade with `darc upgrade` when the updater is
+available. Older installs that do not have `darc-update` should rerun the release installer.
 
 ## Cut A Release
 
@@ -71,6 +73,7 @@ curl -fsSL \
   https://github.com/0xjunha/darc/releases/latest/download/darc-installer.sh | \
   DARC_INSTALL_DIR="$tmpdir/bin" sh
 "$tmpdir/bin/darc" --version
+"$tmpdir/bin/darc" upgrade --check
 ```
 
 ## Test Release Helpers

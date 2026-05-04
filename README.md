@@ -92,6 +92,13 @@ darc show turn <SESSION_ID> <TURN_ORDINAL> --step-limit 10     # exact turn evid
 darc stats project --turn-limit 200
 ```
 
+Check for newer Darc CLI releases:
+
+```sh
+darc upgrade --check
+darc upgrade
+```
+
 ## Uninstall
 
 If you enabled the macOS background refresh service, turn it off before removing the binary:
@@ -150,6 +157,7 @@ payload. Pass `--color never` when piping into another program that needs guaran
 | `darc resolve session <prefix>` | Resolve a UUID prefix into canonical session ids.                                                            |
 | `darc project ...`              | Link, rename, remove, or rebuild projects after moves and renames.                                           |
 | `darc service ...`              | Manage the beta macOS background refresh service.                                                            |
+| `darc upgrade`                  | Check for or apply newer Darc CLI releases.                                                                  |
 
 Run `darc --help` or `darc help <command>` for the current visible CLI surface.
 
