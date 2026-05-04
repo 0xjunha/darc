@@ -312,13 +312,50 @@ fn apply_patch_heredoc_terminator(line: &str) -> Option<String> {
 /// Returns the generic heredoc terminator declared by one shell line.
 fn shell_heredoc_terminator(line: &str) -> Option<String> {
     let heredoc_tail = unquoted_heredoc_tail(line)?;
-    let heredoc_tail = heredoc_tail.trim();
-    if heredoc_tail.starts_with('<') {
+    parse_heredoc_tail(heredoc_tail).map(|(terminator, _)| terminator)
+}
+
+/// Parses one heredoc tail into the delimiter marker and remaining shell text.
+fn parse_heredoc_tail(tail: &str) -> Option<(String, &str)> {
+    let mut tail = tail.trim_start();
+    if tail.starts_with('<') {
         return None;
     }
-    let heredoc_tail = heredoc_tail.strip_prefix('-').unwrap_or(heredoc_tail);
-    let terminator = normalize_heredoc_marker(heredoc_tail.split_whitespace().next()?);
-    (!terminator.is_empty()).then_some(terminator)
+    if let Some(stripped) = tail.strip_prefix('-') {
+        tail = stripped.trim_start();
+    }
+
+    let marker_end = heredoc_marker_end(tail);
+    let marker = normalize_heredoc_marker(&tail[..marker_end]);
+    (!marker.is_empty()).then_some((marker, &tail[marker_end..]))
+}
+
+/// Returns the byte index where one heredoc delimiter word ends.
+fn heredoc_marker_end(marker: &str) -> usize {
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut escaped = false;
+
+    for (index, ch) in marker.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' if !in_single_quote => escaped = true,
+            '\'' if !in_double_quote => in_single_quote = !in_single_quote,
+            '"' if !in_single_quote => in_double_quote = !in_double_quote,
+            ch if !in_single_quote
+                && !in_double_quote
+                && (ch.is_whitespace() || matches!(ch, ';' | '&' | '|' | '<' | '>')) =>
+            {
+                return index;
+            }
+            _ => {}
+        }
+    }
+
+    marker.len()
 }
 
 /// Removes shell quoting from one heredoc delimiter marker.
@@ -1488,9 +1525,9 @@ fn parse_redirection_token<'a>(
             consume_next: true,
         });
     }
-    if body.starts_with("<<") || body.starts_with("<<<") {
+    if body.starts_with("<<") {
         return Some(ShellRedirection {
-            access: None,
+            access: heredoc_attached_redirection_access(body),
             consume_next: false,
         });
     }
@@ -1506,6 +1543,24 @@ fn parse_redirection_token<'a>(
             consume_next: true,
         });
     }
+    if let Some(access) = joined_redirection_access(body) {
+        return Some(ShellRedirection {
+            access: Some(access),
+            consume_next: false,
+        });
+    }
+    None
+}
+
+/// Returns one file redirection attached after a heredoc delimiter.
+fn heredoc_attached_redirection_access(token: &str) -> Option<(ToolAccessKind, &str)> {
+    let tail = token.strip_prefix("<<")?;
+    let (_, suffix) = parse_heredoc_tail(tail)?;
+    joined_redirection_access(suffix.trim_start())
+}
+
+/// Returns one file access from redirection syntax joined to its target.
+fn joined_redirection_access(token: &str) -> Option<(ToolAccessKind, &str)> {
     for (operator, access_type) in [
         ("&>>", ToolAccessKind::Write),
         ("&>", ToolAccessKind::Write),
@@ -1515,13 +1570,10 @@ fn parse_redirection_token<'a>(
         ("<>", ToolAccessKind::Edit),
         ("<", ToolAccessKind::Read),
     ] {
-        if let Some(target) = body.strip_prefix(operator)
+        if let Some(target) = token.strip_prefix(operator)
             && !target.is_empty()
         {
-            return Some(ShellRedirection {
-                access: redirection_target_access(access_type, target),
-                consume_next: false,
-            });
+            return redirection_target_access(access_type, target);
         }
     }
     None

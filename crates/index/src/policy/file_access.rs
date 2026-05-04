@@ -201,19 +201,20 @@ pub fn derive_file_access_records(tool_calls: &[ToolCallRecord]) -> Vec<FileAcce
 
         if is_shell_tool_name(tool_name) {
             let shell_accesses = derive_shell_file_accesses(arguments_text);
-            records.extend(build_file_access_records(
+            let mut shell_records = build_file_access_records(
                 tool_call,
                 tool_name,
                 AccessPathSource::Shell,
                 &shell_accesses,
-            ));
+            );
             let patch_accesses = derive_shell_apply_patch_file_accesses(arguments_text);
-            records.extend(build_file_access_records(
+            shell_records.extend(build_file_access_records(
                 tool_call,
                 tool_name,
                 AccessPathSource::Structured,
                 &patch_accesses,
             ));
+            records.extend(deduplicate_file_access_records(shell_records));
             continue;
         }
 
@@ -423,6 +424,25 @@ fn build_file_access_records(
             file_name: path_file_name(&path),
             access_type,
             path,
+        })
+        .collect()
+}
+
+/// Drops duplicate file-access rows that would collide on the SQLite primary key.
+fn deduplicate_file_access_records(records: Vec<FileAccessRecord>) -> Vec<FileAccessRecord> {
+    let mut seen = BTreeSet::new();
+    records
+        .into_iter()
+        .filter(|record| {
+            seen.insert((
+                record.project_id.clone(),
+                record.provider,
+                record.session_id.clone(),
+                record.turn_ordinal,
+                record.call_ordinal,
+                record.access_type,
+                record.path.clone(),
+            ))
         })
         .collect()
 }

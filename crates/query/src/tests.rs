@@ -465,7 +465,7 @@ fn derives_file_accesses_skip_heredoc_bodies_and_process_substitutions() {
         timestamp: "2026-04-06T10:00:01Z".to_owned(),
         call_id: "call-1".to_owned(),
         name: "exec_command".to_owned(),
-        arguments: r#"{"cmd":"cat <<'EOF' > README.md\ncargo fmt -- --check\nRUST_LOG=debug cargo nextest run <test_name>\nEOF\ncat <(target/debug/darc list files) process-input.txt\ncmp -s <(target/debug/darc list --color never projects | jq 'del(.generated_at)') <(target/debug/darc show --color never workspace | jq 'del(.generated_at)')\ntarget/debug/darc list files --session $(target/debug/darc list --color never sessions --limit 1 | jq -r '.data.sessions[0].session_id') --color never 2>&1 | sed -n '1,80p'\ncargo +nightly fmt -- --check\nstat -f '%Sm %N' -t '%Y-%m-%d' Cargo.toml\nrustfmt --config imports_granularity=Crate --print-config current /dev/null 2>&1\nxxd -l 32 traces/input.bin","workdir":"/tmp/repo"}"#.to_owned(),
+        arguments: r#"{"cmd":"cat <<'EOF' > README.md\ncargo fmt -- --check\nRUST_LOG=debug cargo nextest run <test_name>\nEOF\ncat <<EOF>docs/heredoc-output.md\ncargo fmt -- docs/body.md\nEOF\ncat docs/after-attached.md\ncat <<EOF; cat docs/same-line.md\ncargo fmt -- docs/body-two.md\nEOF\ncat docs/after-semicolon.md\ncat <(target/debug/darc list files) process-input.txt\ncmp -s <(target/debug/darc list --color never projects | jq 'del(.generated_at)') <(target/debug/darc show --color never workspace | jq 'del(.generated_at)')\ntarget/debug/darc list files --session $(target/debug/darc list --color never sessions --limit 1 | jq -r '.data.sessions[0].session_id') --color never 2>&1 | sed -n '1,80p'\ncargo +nightly fmt -- --check\nstat -f '%Sm %N' -t '%Y-%m-%d' Cargo.toml\nrustfmt --config imports_granularity=Crate --print-config current /dev/null 2>&1\nxxd -l 32 traces/input.bin","workdir":"/tmp/repo"}"#.to_owned(),
     }];
 
     let tool_calls = extract_tool_call_records("repo-a", SourceKind::Codex, "session-1", 0, &steps);
@@ -485,6 +485,8 @@ fn derives_file_accesses_skip_heredoc_bodies_and_process_substitutions() {
         "32",
         "test_name>",
         "(target/debug/darc list files)",
+        "docs/body.md",
+        "docs/body-two.md",
     ] {
         assert!(
             !paths.contains(pseudo_path),
@@ -492,6 +494,13 @@ fn derives_file_accesses_skip_heredoc_bodies_and_process_substitutions() {
         );
     }
     assert!(paths.contains("README.md"));
+    assert!(file_accesses.iter().any(|record| {
+        record.path == "docs/heredoc-output.md"
+            && matches!(record.access_type, ToolAccessKind::Write)
+    }));
+    assert!(paths.contains("docs/after-attached.md"));
+    assert!(paths.contains("docs/same-line.md"));
+    assert!(paths.contains("docs/after-semicolon.md"));
     assert!(paths.contains("process-input.txt"));
     assert!(paths.contains("Cargo.toml"));
     assert!(paths.contains("traces/input.bin"));
@@ -547,16 +556,22 @@ fn derives_file_accesses_from_shell_heredoc_apply_patch() {
         timestamp: "2026-04-06T10:00:01Z".to_owned(),
         call_id: "call-1".to_owned(),
         name: "exec_command".to_owned(),
-        arguments: r#"{"cmd":"apply_patch <<'PATCH'\n*** Begin Patch\n*** Update File: src/main.rs\n@@\n-old\n+new\n*** Update File: a-w\n@@\n-old\n+new\n*** Add File: src/new.rs\n+fn main() {}\n*** Add File: src/$literal?.rs\n+fn special() {}\n*** End Patch\nPATCH\napply_patch <<\\PATCH\n*** Begin Patch\n*** Add File: src/escaped.rs\n+fn escaped() {}\n*** End Patch\nPATCH\ncat CHANGELOG.md","workdir":"/tmp/repo"}"#
+        arguments: r#"{"cmd":"apply_patch <<'PATCH'\n*** Begin Patch\n*** Update File: src/main.rs\n@@\n-old\n+new\n*** Update File: a-w\n@@\n-old\n+new\n*** Add File: src/new.rs\n+fn main() {}\n*** Add File: src/$literal?.rs\n+fn special() {}\n*** End Patch\nPATCH\ncargo fmt -- src/main.rs\napply_patch <<\\PATCH\n*** Begin Patch\n*** Add File: src/escaped.rs\n+fn escaped() {}\n*** End Patch\nPATCH\ncat CHANGELOG.md","workdir":"/tmp/repo"}"#
             .to_owned(),
     }];
 
     let tool_calls = extract_tool_call_records("repo-a", SourceKind::Codex, "session-1", 0, &steps);
     let file_accesses = derive_file_access_records(&tool_calls);
 
-    assert!(file_accesses.iter().any(|record| {
-        record.path == "src/main.rs" && matches!(record.access_type, ToolAccessKind::Edit)
-    }));
+    assert_eq!(
+        file_accesses
+            .iter()
+            .filter(|record| {
+                record.path == "src/main.rs" && matches!(record.access_type, ToolAccessKind::Edit)
+            })
+            .count(),
+        1
+    );
     assert!(file_accesses.iter().any(|record| {
         record.path == "src/new.rs" && matches!(record.access_type, ToolAccessKind::Write)
     }));
