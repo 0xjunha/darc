@@ -5,7 +5,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use darc_index::policy::{extract_shell_command, should_include_turn_in_active_time};
-use darc_paths::SourceKind;
+use darc_paths::{SourceKind, normalize_access_path_candidate};
 use rusqlite::Connection;
 
 use super::{
@@ -691,10 +691,8 @@ fn display_file_usage_path(
     repo_relative_path: Option<&str>,
     path: &str,
 ) -> Option<String> {
-    display_path_for_access(project_root, repo_relative_path, path).or_else(|| {
-        let path = path.trim();
-        (!path.is_empty()).then(|| path.to_owned())
-    })
+    display_path_for_access(project_root, repo_relative_path, path)
+        .or_else(|| normalize_access_path_candidate(path))
 }
 
 /// Queries shell-like command invocations for one indexed turn.

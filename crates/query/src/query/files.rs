@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use darc_paths::SourceKind;
+use darc_paths::{SourceKind, normalize_access_path_candidate};
 use glob::{MatchOptions, Pattern};
 use rusqlite::{Connection, params_from_iter, types::Value};
 
@@ -1298,7 +1298,8 @@ fn normalize_project_scoped_query_path(project_root: Option<&Path>, path: &str) 
 
 /// Normalizes one stored relative path while rejecting values that escape the project root.
 fn normalize_project_scoped_relative_path(path: &str) -> Option<String> {
-    let normalized = normalize_path_literal(path);
+    let normalized =
+        normalize_access_path_candidate(path).map(|path| normalize_path_literal(&path))?;
     (!normalized.is_empty()
         && !is_absolute_path_literal(&normalized)
         && normalized
