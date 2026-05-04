@@ -67,8 +67,8 @@ jobs:
       - name: Run tests
         run: cargo +stable nextest run --workspace
 
-  workspace-version-change:
-    name: Workspace Version Change
+  workspace-version-gate:
+    name: Workspace Version Gate
     runs-on: ubuntu-latest
     outputs:
       changed: ${{ steps.detect.outputs.changed }}
@@ -79,10 +79,11 @@ jobs:
           fetch-depth: 0
 
       - id: detect
-        name: Detect workspace version change
+        name: Detect workspace package version
         shell: bash
         env:
           BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           workspace_version() {
             awk '
@@ -90,8 +91,8 @@ jobs:
               /^\[/ { in_workspace = 0 }
               in_workspace && /^[[:space:]]*version[[:space:]]*=/ {
                 line = $0
-                sub(/^[^\"]*\"/, "", line)
-                sub(/\".*$/, "", line)
+                sub(/^[^"]*"/, "", line)
+                sub(/".*$/, "", line)
                 print line
                 exit
               }
@@ -110,7 +111,29 @@ jobs:
             exit 0
           fi
 
-          base_cargo="$(git show "$BASE_SHA:Cargo.toml")"
+          base_ref="$BASE_SHA"
+          if ! git cat-file -e "$base_ref:Cargo.toml" 2>/dev/null; then
+            if [[ "$EVENT_NAME" == "push" ]]; then
+              printf 'changed=true\n' >> "$GITHUB_OUTPUT"
+              printf 'base Cargo.toml unavailable at %s on push; running dist checks\n' "$base_ref"
+              exit 0
+            fi
+
+            merge_base="$(git merge-base "$base_ref" HEAD 2>/dev/null || true)"
+            if [[ -n "$merge_base" ]] && git cat-file -e "$merge_base:Cargo.toml" 2>/dev/null; then
+              printf 'base Cargo.toml unavailable at %s; using merge-base %s\n' "$base_ref" "$merge_base"
+              base_ref="$merge_base"
+            elif [[ "$EVENT_NAME" == "pull_request" ]] && git cat-file -e "HEAD^:Cargo.toml" 2>/dev/null; then
+              printf 'base Cargo.toml unavailable at %s; using HEAD^\n' "$base_ref"
+              base_ref="HEAD^"
+            else
+              printf 'changed=true\n' >> "$GITHUB_OUTPUT"
+              printf 'base Cargo.toml unavailable at %s; running dist checks\n' "$base_ref"
+              exit 0
+            fi
+          fi
+
+          base_cargo="$(git show "$base_ref:Cargo.toml")"
           base_version="$(printf '%s\n' "$base_cargo" | workspace_version)"
           if [[ -z "$base_version" ]]; then
             printf 'base Cargo.toml missing [workspace.package] version\n' >&2
@@ -127,8 +150,8 @@ jobs:
   dist-check:
     name: Dist Check (${{ matrix.target }})
     needs:
-      - workspace-version-change
-    if: needs.workspace-version-change.outputs.changed == 'true'
+      - workspace-version-gate
+    if: needs.workspace-version-gate.outputs.changed == 'true'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
