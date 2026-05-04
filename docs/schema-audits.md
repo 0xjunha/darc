@@ -42,7 +42,7 @@ On Linux and Windows, the default cache root follows the platform cache director
 If you see an error like:
 
 ```text
-GitHub Releases are missing the stable release tag `rust-v0.118.0`
+GitHub Releases are missing the stable release tag `rust-v0.128.0`
 ```
 
 the published release catalog no longer contains the exact-support boundary tag that Darc needs as the audit baseline. Darc cannot advance the audit until that release remains available or the exact-support boundary is updated.
