@@ -136,10 +136,31 @@ fn top_level_help_points_to_common_workflows() {
 
     assert!(help.contains("Archive, index, and query coding-agent sessions"));
     assert!(help.contains("Common workflows:"));
-    assert!(help.contains("darc status"));
-    assert!(help.contains("darc search \"panic\" --limit 5"));
+    assert!(help.contains(
+        "darc status                                      # check active-project health"
+    ));
+    assert!(help.contains(
+        "darc refresh                                     # sync and index archived sessions"
+    ));
+    assert!(
+        help.contains("darc search \"panic\" --limit 5                    # find matching turns")
+    );
     assert!(help.contains("darc show session <SESSION_ID> --turn-limit 5"));
+    assert!(help.contains(
+        "darc upgrade --check                             # check for a newer CLI release"
+    ));
     assert!(help.contains("darc help <command>"));
+    let workflow_comment_columns: Vec<usize> = help
+        .lines()
+        .filter(|line| line.trim_start().starts_with("darc "))
+        .filter_map(|line| line.find('#'))
+        .collect();
+    assert!(!workflow_comment_columns.is_empty());
+    assert!(
+        workflow_comment_columns
+            .iter()
+            .all(|column| *column == workflow_comment_columns[0])
+    );
     assert!(help.contains("  search "));
     assert!(help.contains("  project "));
     assert!(!help.contains("  query "));
@@ -281,6 +302,24 @@ fn upgrade_json_parse_errors_use_json_surface() {
         OsString::from("upgrade"),
         OsString::from("--check"),
     ]));
+}
+
+#[test]
+fn upgrade_json_parse_error_usage_mentions_required_check_mode() {
+    let args = [
+        OsString::from("darc"),
+        OsString::from("upgrade"),
+        OsString::from("--json"),
+        OsString::from("--bad"),
+    ];
+    let error = Cli::try_parse_from(&args).unwrap_err();
+
+    let payload = super::format_json_clap_error(&error, &args);
+    let value: Value = serde_json::from_str(&payload).unwrap();
+    let message = value["error"]["message"].as_str().unwrap();
+
+    assert!(message.contains("Usage: darc upgrade --check --json"));
+    assert!(!message.contains("Usage: darc upgrade --json"));
 }
 
 #[test]

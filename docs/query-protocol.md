@@ -322,7 +322,7 @@ Fields:
 
 Current stable JSON error codes:
 
-- `invalid_arguments`: JSON read command arguments were rejected before dispatch, for example because an option was unknown, required input was missing, or two options conflicted
+- `invalid_arguments`: JSON command arguments were rejected before dispatch, for example because an option was unknown, required input was missing, or two options conflicted
 - `missing_required_identity`: a session id, turn ordinal, query, or similar read identity was not supplied in any accepted positional or flag form
 - `conflicting_identity_arguments`: the same read identity was supplied in incompatible positional and flag forms
 - `status_check_failed`: `darc status --json --check` or `darc status --workspace --json --check` completed its status report but at least one sync-check plan failed

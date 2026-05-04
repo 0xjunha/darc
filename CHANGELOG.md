@@ -13,6 +13,7 @@ All notable Darc release changes should be summarized here.
 - Improve `darc upgrade` root handling and custom-install fallback guidance.
 - Keep `darc upgrade --check --json` installer guidance consistent with custom installs and bound remote HTTP errors.
 - Document the `darc.upgrade.check.v1` JSON contract.
+- Show commented common workflow examples in top-level help, including `darc upgrade --check`.
 
 ## 0.1.0
 

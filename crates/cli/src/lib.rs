@@ -99,7 +99,14 @@ fn styled_help_section(title: &str, body: &str) -> String {
 fn root_after_help() -> String {
     styled_help_section(
         "Common workflows",
-        "  darc status\n  darc refresh\n  darc search \"panic\" --limit 5\n  darc show session <SESSION_ID> --turn-limit 5\n\nRun `darc help <command>` for details on a specific command.",
+        concat!(
+            "  darc status                                      # check active-project health\n",
+            "  darc refresh                                     # sync and index archived sessions\n",
+            "  darc search \"panic\" --limit 5                    # find matching turns\n",
+            "  darc show session <SESSION_ID> --turn-limit 5    # inspect a session\n",
+            "  darc upgrade --check                             # check for a newer CLI release\n\n",
+            "Run `darc help <command>` for details on a specific command.",
+        ),
     )
 }
 
@@ -2211,7 +2218,7 @@ fn run_cli(cli: Cli) -> i32 {
 /// Maps Clap parse errors to the correct command-family output format.
 fn clap_error_exit(error: clap::Error, args: &[OsString]) -> i32 {
     if is_json_read_invocation(args) && !is_clap_display_request(error.kind()) {
-        eprintln!("{}", format_query_clap_error(&error));
+        eprintln!("{}", format_json_clap_error(&error, args));
         return error.exit_code();
     }
 
@@ -3827,14 +3834,26 @@ fn format_query_error(error: &anyhow::Error) -> String {
     })
 }
 
+/// Returns one machine-readable JSON error envelope string for JSON parse failures.
+fn format_json_clap_error(error: &clap::Error, args: &[OsString]) -> String {
+    let message = normalize_json_clap_error_message(error.to_string().trim_end().to_owned(), args);
+    render_clap_error_envelope(error, message)
+}
+
 /// Returns one machine-readable JSON error envelope string for query parse failures.
+#[cfg(test)]
 fn format_query_clap_error(error: &clap::Error) -> String {
+    render_clap_error_envelope(error, error.to_string().trim_end().to_owned())
+}
+
+/// Renders one Clap parse error as a Darc JSON error envelope.
+fn render_clap_error_envelope(error: &clap::Error, message: String) -> String {
     let payload = QueryErrorEnvelope {
         schema: "darc.error.v1",
         generated_at: current_utc_timestamp(),
         darc_version: env!("CARGO_PKG_VERSION"),
         error: QueryErrorData {
-            message: error.to_string().trim_end().to_owned(),
+            message,
             code: Some("invalid_arguments"),
             details: Some(json!({
                 "clap_kind": format!("{:?}", error.kind()),
@@ -3845,6 +3864,24 @@ fn format_query_clap_error(error: &clap::Error) -> String {
     serde_json::to_string_pretty(&payload).unwrap_or_else(|serialization_error| {
         format!(r#"{{"schema":"darc.error.v1","error":"{serialization_error}"}}"#)
     })
+}
+
+/// Normalizes parse-error text for JSON surfaces with implied required flags.
+fn normalize_json_clap_error_message(message: String, args: &[OsString]) -> String {
+    if !is_upgrade_json_invocation_without_check(args) {
+        return message;
+    }
+    message.replace(
+        "Usage: darc upgrade --json",
+        "Usage: darc upgrade --check --json",
+    )
+}
+
+/// Returns whether the raw args target upgrade JSON without its required check flag.
+fn is_upgrade_json_invocation_without_check(args: &[OsString]) -> bool {
+    args.get(1).and_then(|arg| arg.to_str()) == Some("upgrade")
+        && args.iter().any(|arg| arg == "--json")
+        && !args.iter().any(|arg| arg == "--check")
 }
 
 /// Resolves one project-scoped query target from an explicit id or the active project.
