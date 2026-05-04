@@ -152,6 +152,12 @@ fn extracts_final_answers_for_representative_schema_epochs() -> Result<()> {
             ParseDeterminism::BestEffortForward,
             Some("end_turn"),
         ),
+        (
+            "2.1.126",
+            "claude.primary_transcript.2_1_90_to_latest",
+            ParseDeterminism::Exact,
+            Some("end_turn"),
+        ),
     ];
 
     for (version, expected_schema_id, expected_determinism, stop_reason) in cases {

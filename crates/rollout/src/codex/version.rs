@@ -104,9 +104,14 @@ pub(crate) fn supports_feature(version: &CodexCliVersion, feature: CodexSchemaFe
     version >= &feature.introduced_in()
 }
 
+/// Resolves the parse determinism expected for one Codex CLI version.
+pub fn resolve_codex_parse_determinism(cli_version: &str) -> SchemaResult<ParseDeterminism> {
+    resolve_codex_schema(cli_version).map(|resolution| resolution.determinism)
+}
+
 /// Returns the latest Codex CLI version covered exactly by darc.
 pub const fn latest_exact_supported_codex_cli_version() -> CodexCliVersion {
-    CodexCliVersion::stable(0, 118, 0)
+    CodexCliVersion::stable(0, 128, 0)
 }
 
 /// Returns whether one `response_item.type` variant is expected for the given Codex CLI version.
@@ -242,9 +247,9 @@ pub enum CodexSchemaId {
     StructuredToolOutput,
     /// Current rollout family used for modern Codex sessions.
     ///
-    /// Supported Codex CLI versions: `>=0.104.0-alpha.1, <=0.118.0`.
+    /// Supported Codex CLI versions: `>=0.104.0-alpha.1, <=0.128.0`.
     ///
-    /// Versions newer than `0.118.0` currently map here in `BestEffortForward` mode until a newer
+    /// Versions newer than `0.128.0` currently map here in `BestEffortForward` mode until a newer
     /// exact family is added.
     TurnLifecycle,
 }
@@ -328,8 +333,8 @@ fn parse_numeric_part(
 mod tests {
     use super::{
         CodexCliVersion, CodexSchemaFeature, CodexSchemaId,
-        latest_exact_supported_codex_cli_version, resolve_codex_schema, supports_feature,
-        supports_response_item,
+        latest_exact_supported_codex_cli_version, resolve_codex_parse_determinism,
+        resolve_codex_schema, supports_feature, supports_response_item,
     };
     use crate::ParseDeterminism;
 
@@ -371,7 +376,7 @@ mod tests {
             }
         );
         assert_eq!(
-            resolve_codex_schema("0.118.0").unwrap(),
+            resolve_codex_schema("0.128.0").unwrap(),
             super::CodexSchemaResolution {
                 schema_id: CodexSchemaId::TurnLifecycle,
                 determinism: ParseDeterminism::Exact,
@@ -382,7 +387,7 @@ mod tests {
     #[test]
     fn resolves_newer_versions_as_best_effort_forward() {
         assert_eq!(
-            resolve_codex_schema("0.119.0").unwrap(),
+            resolve_codex_schema("0.129.0").unwrap(),
             super::CodexSchemaResolution {
                 schema_id: CodexSchemaId::TurnLifecycle,
                 determinism: ParseDeterminism::BestEffortForward,
@@ -394,7 +399,19 @@ mod tests {
     fn exposes_latest_exact_supported_codex_cli_version() {
         assert_eq!(
             latest_exact_supported_codex_cli_version().to_string(),
-            "0.118.0"
+            "0.128.0"
+        );
+    }
+
+    #[test]
+    fn exposes_expected_parse_determinism() {
+        assert_eq!(
+            resolve_codex_parse_determinism("0.128.0").unwrap(),
+            ParseDeterminism::Exact
+        );
+        assert_eq!(
+            resolve_codex_parse_determinism("0.129.0").unwrap(),
+            ParseDeterminism::BestEffortForward
         );
     }
 

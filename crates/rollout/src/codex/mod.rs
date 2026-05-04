@@ -17,4 +17,6 @@ pub use parser::{
     CodexRollout, CodexRolloutSink, compare_rollout_priority, parse_rollout_file,
     parse_rollout_file_into,
 };
-pub use version::{CodexCliVersion, latest_exact_supported_codex_cli_version};
+pub use version::{
+    CodexCliVersion, latest_exact_supported_codex_cli_version, resolve_codex_parse_determinism,
+};

@@ -1151,39 +1151,39 @@ mod tests {
     #[test]
     fn parses_and_filters_stable_codex_release_tags() {
         let tags = collect_stable_release_tags(vec![
-            "rust-v0.118.0".to_owned(),
-            "rust-v0.119.0-alpha.1".to_owned(),
-            "rust-v0.117.0".to_owned(),
+            "rust-v0.128.0".to_owned(),
+            "rust-v0.129.0-alpha.1".to_owned(),
+            "rust-v0.127.0".to_owned(),
             "rust-vrust-v0.99.0-alpha.16".to_owned(),
             "not-a-codex-tag".to_owned(),
         ]);
 
         assert_eq!(
             raw_tags(&tags),
-            vec!["rust-v0.118.0".to_owned(), "rust-v0.117.0".to_owned()]
+            vec!["rust-v0.128.0".to_owned(), "rust-v0.127.0".to_owned()]
         );
         assert_eq!(
-            parse_stable_release_tag("rust-v0.118.0")
+            parse_stable_release_tag("rust-v0.128.0")
                 .unwrap()
                 .version
                 .to_string(),
-            "0.118.0"
+            "0.128.0"
         );
-        assert!(parse_stable_release_tag("rust-v0.118.0-alpha.1").is_none());
+        assert!(parse_stable_release_tag("rust-v0.128.0-alpha.1").is_none());
     }
 
     #[test]
     fn selects_audited_range_from_latest_stable_down_to_exact_cutoff() {
         assert_eq!(
             latest_exact_supported_codex_cli_version().to_string(),
-            "0.118.0"
+            "0.128.0"
         );
 
         let tags = collect_stable_release_tags(vec![
-            "rust-v0.120.0".to_owned(),
-            "rust-v0.119.0".to_owned(),
-            "rust-v0.118.0".to_owned(),
-            "rust-v0.117.0".to_owned(),
+            "rust-v0.130.0".to_owned(),
+            "rust-v0.129.0".to_owned(),
+            "rust-v0.128.0".to_owned(),
+            "rust-v0.127.0".to_owned(),
         ]);
 
         let selected = select_audited_release_tags(&tags).unwrap();
@@ -1191,9 +1191,9 @@ mod tests {
         assert_eq!(
             raw_tags(&selected),
             vec![
-                "rust-v0.120.0".to_owned(),
-                "rust-v0.119.0".to_owned(),
-                "rust-v0.118.0".to_owned(),
+                "rust-v0.130.0".to_owned(),
+                "rust-v0.129.0".to_owned(),
+                "rust-v0.128.0".to_owned(),
             ]
         );
     }
@@ -1201,10 +1201,10 @@ mod tests {
     #[test]
     fn reports_compatibility_when_normalized_schemas_match() {
         let provider = FakeSchemaAuditProvider::new(
-            &["rust-v0.120.0", "rust-v0.119.0", "rust-v0.118.0"],
+            &["rust-v0.130.0", "rust-v0.129.0", "rust-v0.128.0"],
             &[
                 (
-                    "rust-v0.120.0",
+                    "rust-v0.130.0",
                     json!({
                         "type": ["null", "object"],
                         "definitions": {
@@ -1216,7 +1216,7 @@ mod tests {
                     }),
                 ),
                 (
-                    "rust-v0.119.0",
+                    "rust-v0.129.0",
                     json!({
                         "definitions": {
                             "RolloutItem": {
@@ -1228,7 +1228,7 @@ mod tests {
                     }),
                 ),
                 (
-                    "rust-v0.118.0",
+                    "rust-v0.128.0",
                     json!({
                         "type": ["object", "null"],
                         "definitions": {
@@ -1253,13 +1253,13 @@ mod tests {
             report.outcome,
             CodexSchemaAuditOutcome::Compatible
         ));
-        assert_eq!(report.latest_stable_release_tag, "rust-v0.120.0");
+        assert_eq!(report.latest_stable_release_tag, "rust-v0.130.0");
         assert_eq!(
             report.audited_tags,
             vec![
-                "rust-v0.120.0".to_owned(),
-                "rust-v0.119.0".to_owned(),
-                "rust-v0.118.0".to_owned(),
+                "rust-v0.130.0".to_owned(),
+                "rust-v0.129.0".to_owned(),
+                "rust-v0.128.0".to_owned(),
             ]
         );
     }
@@ -1267,24 +1267,24 @@ mod tests {
     #[test]
     fn detects_drift_at_the_first_newer_stable_tag() {
         let provider = FakeSchemaAuditProvider::new(
-            &["rust-v0.120.0", "rust-v0.119.0", "rust-v0.118.0"],
+            &["rust-v0.130.0", "rust-v0.129.0", "rust-v0.128.0"],
             &[
                 (
-                    "rust-v0.120.0",
+                    "rust-v0.130.0",
                     json!({
                         "type": "object",
                         "required": ["timestamp", "item", "trace_id"],
                     }),
                 ),
                 (
-                    "rust-v0.119.0",
+                    "rust-v0.129.0",
                     json!({
                         "type": "object",
                         "required": ["timestamp", "item", "trace_id"],
                     }),
                 ),
                 (
-                    "rust-v0.118.0",
+                    "rust-v0.128.0",
                     json!({
                         "type": "object",
                         "required": ["timestamp", "item"],
@@ -1303,7 +1303,7 @@ mod tests {
         let CodexSchemaAuditOutcome::Drift(drift) = report.outcome else {
             panic!("expected schema drift");
         };
-        assert_eq!(drift.first_drift_tag, "rust-v0.119.0");
+        assert_eq!(drift.first_drift_tag, "rust-v0.129.0");
         assert!(
             drift
                 .difference_summary
@@ -1315,24 +1315,24 @@ mod tests {
     #[test]
     fn reports_progress_for_compatible_audits() {
         let provider = FakeSchemaAuditProvider::new(
-            &["rust-v0.120.0", "rust-v0.119.0", "rust-v0.118.0"],
+            &["rust-v0.130.0", "rust-v0.129.0", "rust-v0.128.0"],
             &[
                 (
-                    "rust-v0.120.0",
+                    "rust-v0.130.0",
                     json!({
                         "type": "object",
                         "required": ["timestamp", "item"],
                     }),
                 ),
                 (
-                    "rust-v0.119.0",
+                    "rust-v0.129.0",
                     json!({
                         "type": "object",
                         "required": ["item", "timestamp"],
                     }),
                 ),
                 (
-                    "rust-v0.118.0",
+                    "rust-v0.128.0",
                     json!({
                         "required": ["timestamp", "item"],
                         "type": "object",
@@ -1362,12 +1362,12 @@ mod tests {
             progress
                 .iter()
                 .any(|line| line
-                    .contains("Exporting baseline RolloutLine schema from rust-v0.118.0"))
+                    .contains("Exporting baseline RolloutLine schema from rust-v0.128.0"))
         );
         assert!(
             progress
                 .iter()
-                .any(|line| line.contains("Comparing rust-v0.119.0 against baseline (1/2)"))
+                .any(|line| line.contains("Comparing rust-v0.129.0 against baseline (1/2)"))
         );
         assert!(progress.last().is_some_and(|line| {
             line.contains("No schema drift detected across 3 audited stable tag(s).")
@@ -1377,10 +1377,10 @@ mod tests {
     #[test]
     fn detects_order_sensitive_prefix_items_drift() {
         let provider = FakeSchemaAuditProvider::new(
-            &["rust-v0.120.0", "rust-v0.119.0", "rust-v0.118.0"],
+            &["rust-v0.130.0", "rust-v0.129.0", "rust-v0.128.0"],
             &[
                 (
-                    "rust-v0.120.0",
+                    "rust-v0.130.0",
                     json!({
                         "type": "array",
                         "prefixItems": [
@@ -1390,7 +1390,7 @@ mod tests {
                     }),
                 ),
                 (
-                    "rust-v0.119.0",
+                    "rust-v0.129.0",
                     json!({
                         "type": "array",
                         "prefixItems": [
@@ -1400,7 +1400,7 @@ mod tests {
                     }),
                 ),
                 (
-                    "rust-v0.118.0",
+                    "rust-v0.128.0",
                     json!({
                         "type": "array",
                         "prefixItems": [
@@ -1422,7 +1422,7 @@ mod tests {
         let CodexSchemaAuditOutcome::Drift(drift) = report.outcome else {
             panic!("expected schema drift");
         };
-        assert_eq!(drift.first_drift_tag, "rust-v0.119.0");
+        assert_eq!(drift.first_drift_tag, "rust-v0.129.0");
         assert!(
             drift
                 .difference_summary
@@ -1434,10 +1434,10 @@ mod tests {
     #[test]
     fn ignores_order_only_one_of_reorders() {
         let provider = FakeSchemaAuditProvider::new(
-            &["rust-v0.120.0", "rust-v0.119.0", "rust-v0.118.0"],
+            &["rust-v0.130.0", "rust-v0.129.0", "rust-v0.128.0"],
             &[
                 (
-                    "rust-v0.120.0",
+                    "rust-v0.130.0",
                     json!({
                         "oneOf": [
                             {
@@ -1460,7 +1460,7 @@ mod tests {
                     }),
                 ),
                 (
-                    "rust-v0.119.0",
+                    "rust-v0.129.0",
                     json!({
                         "oneOf": [
                             {
@@ -1483,7 +1483,7 @@ mod tests {
                     }),
                 ),
                 (
-                    "rust-v0.118.0",
+                    "rust-v0.128.0",
                     json!({
                         "oneOf": [
                             {
@@ -1524,10 +1524,10 @@ mod tests {
     #[test]
     fn ignores_order_only_all_of_reorders() {
         let provider = FakeSchemaAuditProvider::new(
-            &["rust-v0.120.0", "rust-v0.119.0", "rust-v0.118.0"],
+            &["rust-v0.130.0", "rust-v0.129.0", "rust-v0.128.0"],
             &[
                 (
-                    "rust-v0.120.0",
+                    "rust-v0.130.0",
                     json!({
                         "allOf": [
                             { "properties": { "kind": { "const": "x" } }, "type": "object" },
@@ -1536,7 +1536,7 @@ mod tests {
                     }),
                 ),
                 (
-                    "rust-v0.119.0",
+                    "rust-v0.129.0",
                     json!({
                         "allOf": [
                             { "properties": { "kind": { "const": "x" } }, "type": "object" },
@@ -1545,7 +1545,7 @@ mod tests {
                     }),
                 ),
                 (
-                    "rust-v0.118.0",
+                    "rust-v0.128.0",
                     json!({
                         "allOf": [
                             { "properties": { "value": { "type": "string" } }, "type": "object" },
@@ -1573,8 +1573,8 @@ mod tests {
     fn resolves_expected_release_asset_names_for_supported_platforms() {
         let mac = host_platform_from_parts("macos", "aarch64").unwrap();
         assert_eq!(
-            mac.release_asset_name("0.118.0"),
-            "codex-npm-darwin-arm64-0.118.0.tgz"
+            mac.release_asset_name("0.128.0"),
+            "codex-npm-darwin-arm64-0.128.0.tgz"
         );
         assert_eq!(
             mac.package_binary_path(),
@@ -1583,8 +1583,8 @@ mod tests {
 
         let linux = host_platform_from_parts("linux", "x86_64").unwrap();
         assert_eq!(
-            linux.release_asset_name("0.118.0"),
-            "codex-npm-linux-x64-0.118.0.tgz"
+            linux.release_asset_name("0.128.0"),
+            "codex-npm-linux-x64-0.128.0.tgz"
         );
         assert_eq!(
             linux.package_binary_path(),

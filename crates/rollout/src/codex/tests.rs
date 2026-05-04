@@ -13,19 +13,21 @@ use crate::model::{
 fn parses_turn_lifecycle_rollout_and_records_schema_metadata() -> Result<()> {
     let rollout = parse_rollout_reader(
         Cursor::new(
-            r#"{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"fixture","cwd":"/tmp/repo","cli_version":"0.118.0"}}
-{"timestamp":"2026-01-01T00:00:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}
+            r#"{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"fixture","cwd":"/tmp/repo","cli_version":"0.128.0"}}
+{"timestamp":"2026-01-01T00:00:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1","started_at":1767225601}}
+{"timestamp":"2026-01-01T00:00:01Z","type":"event_msg","payload":{"type":"model_verification","verifications":[]}}
 {"timestamp":"2026-01-01T00:00:02Z","type":"event_msg","payload":{"type":"user_message","message":"Inspect repo"}}
 {"timestamp":"2026-01-01T00:00:03Z","type":"response_item","payload":{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"Reading"}]}}
 {"timestamp":"2026-01-01T00:00:04Z","type":"response_item","payload":{"type":"function_call","call_id":"call-1","name":"exec_command","arguments":"{\"cmd\":\"ls\"}"}}
 {"timestamp":"2026-01-01T00:00:05Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-1","output":[{"type":"input_image","image_url":"data:image/png;base64,abc"}]}}
 {"timestamp":"2026-01-01T00:00:06Z","type":"response_item","payload":{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"Done"}]}}
+{"timestamp":"2026-01-01T00:00:07Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1","completed_at":1767225607,"duration_ms":6000,"time_to_first_token_ms":2000}}
 "#,
         ),
         Path::new("fixture.jsonl"),
     )?;
 
-    assert_eq!(rollout.cli_version, "0.118.0");
+    assert_eq!(rollout.cli_version, "0.128.0");
     assert_eq!(rollout.schema_id, "codex.turn_lifecycle");
     assert_eq!(rollout.determinism, ParseDeterminism::Exact);
     assert_eq!(rollout.turns.len(), 1);
