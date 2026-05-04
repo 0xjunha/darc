@@ -1185,7 +1185,11 @@ fn extract_test_file_accesses(tokens: &[String]) -> Vec<(ToolAccessKind, String)
             continue;
         }
         let token = tokens[index].as_str();
-        if is_file_test_unary_operator(token)
+        if is_file_test_logical_operator(tokens, index) {
+            index += 1;
+            continue;
+        }
+        if is_file_test_unary_operator_at(tokens, index)
             && let Some(path) = tokens.get(index + 1)
         {
             if token == "-d" {
@@ -1290,6 +1294,33 @@ fn is_file_test_unary_operator(token: &str) -> bool {
             | "-w"
             | "-x"
     )
+}
+
+/// Returns whether one token is a file-test unary operator in expression context.
+fn is_file_test_unary_operator_at(tokens: &[String], index: usize) -> bool {
+    let Some(token) = tokens.get(index).map(String::as_str) else {
+        return false;
+    };
+    if token == "-a" && !is_file_test_expression_start(tokens, index) {
+        return false;
+    }
+    is_file_test_unary_operator(token)
+}
+
+/// Returns whether one `test` operator combines two subexpressions.
+fn is_file_test_logical_operator(tokens: &[String], index: usize) -> bool {
+    let Some(token) = tokens.get(index).map(String::as_str) else {
+        return false;
+    };
+    token == "-o" || (token == "-a" && !is_file_test_expression_start(tokens, index))
+}
+
+/// Returns whether the token position starts a new `test` expression.
+fn is_file_test_expression_start(tokens: &[String], index: usize) -> bool {
+    if index <= 1 {
+        return true;
+    }
+    matches!(tokens[index - 1].as_str(), "!" | "(" | "-a" | "-o")
 }
 
 /// Returns whether one `test` binary operator compares two file path operands.
@@ -1458,6 +1489,12 @@ fn parse_redirection_token<'a>(
         });
     }
     if body.starts_with("<<") || body.starts_with("<<<") {
+        return Some(ShellRedirection {
+            access: None,
+            consume_next: false,
+        });
+    }
+    if body.starts_with("<(") || body.starts_with(">(") {
         return Some(ShellRedirection {
             access: None,
             consume_next: false,
