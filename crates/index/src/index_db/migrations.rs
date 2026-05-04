@@ -131,6 +131,11 @@ const NORMALIZED_CODEX_INDEX_EMPTY_SQL: &str = "
 ";
 const READ_USER_VERSION_SQL: &str = "PRAGMA user_version";
 const HAS_TABLE_SQL: &str = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1";
+const INVALIDATE_BEST_EFFORT_SESSION_SNAPSHOTS_SQL: &str = "
+    UPDATE sessions
+    SET source_size = NULL, source_mtime_ms = NULL
+    WHERE determinism IS NULL OR determinism = 'best_effort_forward'
+";
 
 /// Ensures compatibility columns exist on any legacy or pre-derived tables.
 pub(super) fn ensure_legacy_compat_columns(connection: &Connection) -> Result<()> {
@@ -158,10 +163,21 @@ pub(super) fn migrate_index_db_schema_version(
         .context("failed to begin schema-version migration transaction")?;
     backfill_turn_metrics(&transaction)?;
     rebuild_derived_analytics_tables(&transaction)?;
+    if current_version < 13 {
+        invalidate_best_effort_session_snapshots(&transaction)?;
+    }
     set_index_db_schema_version(&transaction, schema_version)?;
     transaction
         .commit()
         .context("failed to commit schema-version migration transaction")?;
+    Ok(())
+}
+
+/// Invalidates stale skip snapshots for rows whose support status may need recomputing.
+fn invalidate_best_effort_session_snapshots(connection: &Connection) -> Result<()> {
+    connection
+        .execute(INVALIDATE_BEST_EFFORT_SESSION_SNAPSHOTS_SQL, [])
+        .context("failed to invalidate best-effort session snapshots")?;
     Ok(())
 }
 
@@ -409,6 +425,10 @@ pub(super) fn smoke_test_sql(connection: &Connection, schema_version: i32) -> Re
         ),
         ("read user version", READ_USER_VERSION_SQL),
         ("has table query", HAS_TABLE_SQL),
+        (
+            "invalidate best-effort session snapshots",
+            INVALIDATE_BEST_EFFORT_SESSION_SNAPSHOTS_SQL,
+        ),
     ] {
         connection
             .prepare(sql)

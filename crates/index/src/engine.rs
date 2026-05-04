@@ -183,7 +183,7 @@ impl ArchivedRolloutGroup {
 #[derive(Debug, Clone)]
 struct IndexedSessionSnapshot {
     archive_path: String,
-    determinism: String,
+    determinism: Option<String>,
     source_size: Option<u64>,
     source_mtime_ms: Option<u64>,
 }
@@ -199,8 +199,18 @@ impl IndexedSessionSnapshot {
 
     /// Returns whether the indexed row still matches the current parser's determinism.
     fn matches_current_determinism(&self, candidate: &ArchivedRolloutCandidate) -> bool {
-        expected_parse_determinism(candidate)
-            .is_none_or(|determinism| self.determinism == determinism.as_sql_text())
+        let Some(stored_determinism) = self.determinism.as_deref() else {
+            return false;
+        };
+        let Some(expected_determinism) = expected_parse_determinism(candidate) else {
+            return true;
+        };
+        if stored_determinism == expected_determinism.as_sql_text() {
+            return true;
+        }
+        candidate.provider == SourceKind::Claude
+            && expected_determinism == ParseDeterminism::Exact
+            && stored_determinism == ParseDeterminism::BestEffortForward.as_sql_text()
     }
 }
 
@@ -1331,7 +1341,8 @@ fn load_indexed_session_snapshots(
 
         let session_id: String = row.get(1).context("failed to read indexed session id")?;
         let archive_path: String = row.get(2).context("failed to read indexed archive path")?;
-        let determinism: String = row.get(3).context("failed to read indexed determinism")?;
+        let determinism: Option<String> =
+            row.get(3).context("failed to read indexed determinism")?;
         let source_size = optional_sql_i64_to_u64(
             row.get(4).context("failed to read indexed source_size")?,
             "source_size",
@@ -1478,7 +1489,7 @@ mod classification_tests {
     fn indexed_snapshot(determinism: ParseDeterminism) -> IndexedSessionSnapshot {
         IndexedSessionSnapshot {
             archive_path: "codex/archive.jsonl".to_owned(),
-            determinism: determinism.as_sql_text().to_owned(),
+            determinism: Some(determinism.as_sql_text().to_owned()),
             source_size: Some(100),
             source_mtime_ms: Some(200),
         }
@@ -1502,6 +1513,29 @@ mod classification_tests {
             indexed_snapshot(ParseDeterminism::BestEffortForward).matches_candidate(&candidate)
         );
         assert!(!indexed_snapshot(ParseDeterminism::Exact).matches_candidate(&candidate));
+    }
+
+    #[test]
+    fn snapshot_matching_keeps_claude_content_best_effort_current() {
+        let candidate = archived_candidate(SourceKind::Claude, Some("2.1.126"));
+
+        assert!(
+            indexed_snapshot(ParseDeterminism::BestEffortForward).matches_candidate(&candidate)
+        );
+        assert!(indexed_snapshot(ParseDeterminism::Exact).matches_candidate(&candidate));
+    }
+
+    #[test]
+    fn snapshot_matching_reindexes_missing_determinism() {
+        let candidate = archived_candidate(SourceKind::Codex, Some("0.128.0"));
+        let snapshot = IndexedSessionSnapshot {
+            archive_path: "codex/archive.jsonl".to_owned(),
+            determinism: None,
+            source_size: Some(100),
+            source_mtime_ms: Some(200),
+        };
+
+        assert!(!snapshot.matches_candidate(&candidate));
     }
 
     #[test]
