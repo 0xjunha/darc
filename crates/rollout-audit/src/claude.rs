@@ -309,14 +309,18 @@ struct ClaudeAuditSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AuditRuntime {
     node_binary: PathBuf,
+    node_platform_suffix: String,
     hook_python: PathBuf,
 }
 
 impl AuditRuntime {
     /// Detects the local binaries required for Claude audit fixture execution.
     fn detect() -> Result<Self> {
+        let node_binary = resolve_runtime_binary(&["node"])?;
+        let node_platform_suffix = detect_node_native_cli_platform_suffix(&node_binary)?;
         Ok(Self {
-            node_binary: resolve_runtime_binary(&["node"])?,
+            node_binary,
+            node_platform_suffix,
             hook_python: resolve_runtime_binary(if cfg!(windows) {
                 &["python", "python3"]
             } else {
@@ -697,7 +701,8 @@ impl NpmClaudeSchemaAuditProvider {
     where
         F: FnMut(&str),
     {
-        let (package_name, package_version) = native_cli_dependency(manifest)?;
+        let (package_name, package_version) =
+            native_cli_dependency(manifest, &self.runtime.node_platform_suffix)?;
         report_progress(&format!(
             "Preparing native Claude package {package_name}@{package_version} for {version}..."
         ));
@@ -729,7 +734,9 @@ impl NpmClaudeSchemaAuditProvider {
         })?;
 
         #[cfg(unix)]
-        mark_executable(&destination.join(native_cli_binary_name()))?;
+        mark_executable(
+            &destination.join(native_cli_binary_name(&self.runtime.node_platform_suffix)),
+        )?;
 
         Ok(())
     }
@@ -1808,12 +1815,12 @@ fn read_package_manifest(cli_root: &Path) -> Result<NpmPackageManifest> {
         .with_context(|| format!("failed to parse {}", package_json_path.display()))
 }
 
-/// Returns the native optional dependency for the current host platform.
-fn native_cli_dependency(manifest: &NpmPackageManifest) -> Result<(String, String)> {
-    let package_name = format!(
-        "{NPM_CLAUDE_CODE_PACKAGE}-{}",
-        native_cli_platform_suffix()?
-    );
+/// Returns the native optional dependency selected by the Node wrapper runtime.
+fn native_cli_dependency(
+    manifest: &NpmPackageManifest,
+    platform_suffix: &str,
+) -> Result<(String, String)> {
+    let package_name = format!("{NPM_CLAUDE_CODE_PACKAGE}-{platform_suffix}");
     let package_version = manifest
         .optional_dependencies
         .get(&package_name)
@@ -1823,24 +1830,72 @@ fn native_cli_dependency(manifest: &NpmPackageManifest) -> Result<(String, Strin
     Ok((package_name, package_version.clone()))
 }
 
-/// Returns the platform suffix used by Claude Code native packages.
-fn native_cli_platform_suffix() -> Result<&'static str> {
-    match (env::consts::OS, env::consts::ARCH) {
-        ("macos", "aarch64") => Ok("darwin-arm64"),
-        ("macos", "x86_64") => Ok("darwin-x64"),
-        ("linux", "aarch64") if cfg!(target_env = "musl") => Ok("linux-arm64-musl"),
-        ("linux", "aarch64") => Ok("linux-arm64"),
-        ("linux", "x86_64") if cfg!(target_env = "musl") => Ok("linux-x64-musl"),
-        ("linux", "x86_64") => Ok("linux-x64"),
-        ("windows", "aarch64") => Ok("win32-arm64"),
-        ("windows", "x86_64") => Ok("win32-x64"),
-        _ => bail!(
-            "unsupported host platform `{}` / `{}` for Claude native packages",
-            env::consts::OS,
-            env::consts::ARCH
+/// Returns the platform suffix that `cli-wrapper.cjs` will use under one Node binary.
+fn detect_node_native_cli_platform_suffix(node_binary: &Path) -> Result<String> {
+    let output = Command::new(node_binary)
+        .arg("-e")
+        .arg(NODE_PLATFORM_SUFFIX_SCRIPT)
+        .output()
+        .with_context(|| {
+            format!(
+                "failed to run {} for platform detection",
+                node_binary.display()
+            )
+        })?;
+    ensure!(
+        output.status.success(),
+        "{} failed platform detection: {}",
+        node_binary.display(),
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    let suffix = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    ensure!(
+        matches!(
+            suffix.as_str(),
+            "darwin-arm64"
+                | "darwin-x64"
+                | "linux-arm64"
+                | "linux-arm64-musl"
+                | "linux-x64"
+                | "linux-x64-musl"
+                | "win32-arm64"
+                | "win32-x64"
         ),
-    }
+        "unsupported Node platform suffix `{suffix}` for Claude native packages"
+    );
+    Ok(suffix)
 }
+
+const NODE_PLATFORM_SUFFIX_SCRIPT: &str = r#"
+const { spawnSync } = require('child_process');
+const { arch } = require('os');
+
+function detectMusl() {
+  if (process.platform !== 'linux') {
+    return false;
+  }
+  const report =
+    typeof process.report?.getReport === 'function'
+      ? process.report.getReport()
+      : null;
+  return report != null && report.header?.glibcVersionRuntime === undefined;
+}
+
+let cpu = arch();
+if (process.platform === 'linux') {
+  console.log('linux-' + cpu + (detectMusl() ? '-musl' : ''));
+} else {
+  if (process.platform === 'darwin' && cpu === 'x64') {
+    const r = spawnSync('sysctl', ['-n', 'sysctl.proc_translated'], {
+      encoding: 'utf8',
+    });
+    if (r.stdout?.trim() === '1') {
+      cpu = 'arm64';
+    }
+  }
+  console.log(process.platform + '-' + cpu);
+}
+"#;
 
 /// Returns the package installation path under an extracted package-local `node_modules`.
 fn node_modules_package_path(cli_root: &Path, package_name: &str) -> Result<PathBuf> {
@@ -1860,9 +1915,9 @@ fn node_modules_package_path(cli_root: &Path, package_name: &str) -> Result<Path
     Ok(cli_root.join("node_modules").join(scope).join(name))
 }
 
-/// Returns the native Claude binary name for this host platform.
-fn native_cli_binary_name() -> &'static str {
-    if cfg!(windows) {
+/// Returns the native Claude binary name for one Node wrapper platform suffix.
+fn native_cli_binary_name(platform_suffix: &str) -> &'static str {
+    if platform_suffix.starts_with("win32-") {
         "claude.exe"
     } else {
         "claude"
@@ -2631,9 +2686,8 @@ mod tests {
     }
 
     #[test]
-    fn resolves_native_claude_dependency_for_host_platform() {
-        let suffix = super::native_cli_platform_suffix().unwrap();
-        let package_name = format!("{}-{suffix}", super::NPM_CLAUDE_CODE_PACKAGE);
+    fn resolves_native_claude_dependency_for_node_platform() {
+        let package_name = format!("{}-darwin-arm64", super::NPM_CLAUDE_CODE_PACKAGE);
         let mut optional_dependencies = BTreeMap::new();
         optional_dependencies.insert(package_name.clone(), "2.1.126".to_owned());
         let manifest = NpmPackageManifest {
@@ -2642,9 +2696,15 @@ mod tests {
         };
 
         assert_eq!(
-            native_cli_dependency(&manifest).unwrap(),
+            native_cli_dependency(&manifest, "darwin-arm64").unwrap(),
             (package_name, "2.1.126".to_owned())
         );
+    }
+
+    #[test]
+    fn resolves_native_binary_name_from_node_platform() {
+        assert_eq!(super::native_cli_binary_name("darwin-arm64"), "claude");
+        assert_eq!(super::native_cli_binary_name("win32-x64"), "claude.exe");
     }
 
     #[test]
