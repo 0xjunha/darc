@@ -66,7 +66,7 @@ fn parses_two_turns_with_event_boundaries() -> Result<()> {
                         timestamp: "2026-01-01T00:00:09Z".to_owned(),
                         text: "First reply".to_owned(),
                     }),
-                    started_at: "2026-01-01T00:00:03Z".to_owned(),
+                    started_at: "2026-01-01T00:00:01Z".to_owned(),
                     completed_at: Some("2026-01-01T00:00:09Z".to_owned()),
                     status: CodexTurnStatus::Completed,
                     primary_model: None,
@@ -101,7 +101,7 @@ fn parses_two_turns_with_event_boundaries() -> Result<()> {
                         timestamp: "2026-01-01T00:00:12Z".to_owned(),
                         text: "Second reply".to_owned(),
                     }),
-                    started_at: "2026-01-01T00:00:11Z".to_owned(),
+                    started_at: "2026-01-01T00:00:10Z".to_owned(),
                     completed_at: Some("2026-01-01T00:00:12Z".to_owned()),
                     status: CodexTurnStatus::Completed,
                     primary_model: None,
@@ -951,6 +951,66 @@ fn index_project_skips_unchanged_sessions_when_snapshot_matches() -> Result<()> 
     assert_eq!(report.turns_currently_indexed, 1);
     assert_eq!(indexed_turn.0, "Original task");
     assert_eq!(indexed_turn.1, "Original reply");
+    assert!(report.skipped_rollouts.is_empty());
+
+    Ok(())
+}
+
+#[test]
+fn index_project_skips_unchanged_exact_claude_sessions_when_snapshot_matches() -> Result<()> {
+    let darc_root = unique_test_dir("parse-skip-unchanged-claude-exact");
+    let project_root = darc_root.join("repo");
+    let sessions_root = darc_root.join("projects/repo-abc123/sessions");
+    let claude_session_id = "33333333-3333-4333-8333-333333333333";
+    let rollout_path = sessions_root
+        .join("claude")
+        .join(claude_session_id)
+        .join(format!("{claude_session_id}.jsonl"));
+    fs::create_dir_all(&project_root)?;
+    write_parse_config(&darc_root, &project_root, &sessions_root)?;
+
+    let original = format!(
+        concat!(
+            "{{\"parentUuid\":null,\"isSidechain\":false,\"promptId\":\"prompt-1\",\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"Inspect parse.rs\"}},\"uuid\":\"user-1\",\"timestamp\":\"2026-04-01T11:00:01Z\",\"userType\":\"external\",\"entrypoint\":\"claude-desktop\",\"cwd\":\"{}\",\"sessionId\":\"{}\",\"version\":\"2.1.126\",\"gitBranch\":\"main\"}}\n",
+            "{{\"parentUuid\":\"user-1\",\"isSidechain\":false,\"message\":{{\"model\":\"claude-sonnet-4-6\",\"id\":\"assistant-1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"Claude reply\"}}],\"stop_reason\":\"end_turn\",\"stop_sequence\":null}},\"requestId\":\"req-1\",\"type\":\"assistant\",\"uuid\":\"assistant-1\",\"timestamp\":\"2026-04-01T11:00:02Z\",\"userType\":\"external\",\"entrypoint\":\"claude-desktop\",\"cwd\":\"{}\",\"sessionId\":\"{}\",\"version\":\"2.1.126\",\"gitBranch\":\"main\"}}\n"
+        ),
+        project_root.display(),
+        claude_session_id,
+        project_root.display(),
+        claude_session_id
+    );
+    write_file(&rollout_path, &original)?;
+    touch_file_timestamp(&rollout_path, "202604011100.00")?;
+
+    index_project_sessions_from(&project_root, darc_root.clone(), &[SourceKind::Claude])?;
+    write_file(
+        &rollout_path,
+        &original.replace("Claude reply", "Altered text"),
+    )?;
+    touch_file_timestamp(&rollout_path, "202604011100.00")?;
+
+    let report =
+        index_project_sessions_from(&project_root, darc_root.clone(), &[SourceKind::Claude])?;
+    let connection = Connection::open(darc_root.join(INDEX_DB_FILE_NAME))?;
+    let indexed_row: (String, String) = connection.query_row(
+        "
+        SELECT s.determinism, t.final_answer_text
+        FROM sessions s
+        JOIN turns t
+          ON t.project_id = s.project_id
+         AND t.provider = s.provider
+         AND t.session_id = s.session_id
+         AND t.turn_ordinal = 0
+        WHERE s.project_id = ?1 AND s.provider = 'claude' AND s.session_id = ?2
+        ",
+        ["repo-abc123", claude_session_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+
+    assert_eq!(report.sessions_discovered, 1);
+    assert_eq!(report.sessions_currently_indexed, 1);
+    assert_eq!(indexed_row.0, "exact");
+    assert_eq!(indexed_row.1, "Claude reply");
     assert!(report.skipped_rollouts.is_empty());
 
     Ok(())

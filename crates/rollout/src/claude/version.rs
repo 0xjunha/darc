@@ -166,7 +166,12 @@ pub(crate) const fn earliest_observed_claude_cli_version() -> ClaudeCliVersion {
 
 /// Returns the latest Claude CLI version covered exactly by darc.
 pub const fn latest_exact_supported_claude_cli_version() -> ClaudeCliVersion {
-    ClaudeCliVersion::stable(2, 1, 87)
+    ClaudeCliVersion::stable(2, 1, 126)
+}
+
+/// Resolves the parse determinism expected for one Claude CLI version.
+pub fn resolve_claude_parse_determinism(cli_version: Option<&str>) -> ParseDeterminism {
+    resolve_claude_schema(cli_version).determinism
 }
 
 /// Resolves the parser epoch for one Claude CLI version string.
@@ -231,7 +236,7 @@ fn is_exact_supported_claude_version(version: &ClaudeCliVersion) -> bool {
             version.patch,
             version.prerelease.as_deref(),
         ),
-        (2, 1, 81, None) | (2, 1, 84, None) | (2, 1, 87, None)
+        (2, 1, 81, None) | (2, 1, 84, None) | (2, 1, 87, None) | (2, 1, 126, None)
     )
 }
 
@@ -284,7 +289,8 @@ fn parse_numeric_part(part: Option<&str>, raw_version: &str, label: &'static str
 mod tests {
     use super::{
         ClaudeCliVersion, ClaudeSchemaEpoch, earliest_observed_claude_cli_version,
-        latest_exact_supported_claude_cli_version, resolve_claude_schema,
+        latest_exact_supported_claude_cli_version, resolve_claude_parse_determinism,
+        resolve_claude_schema,
     };
     use crate::ParseDeterminism;
 
@@ -292,10 +298,10 @@ mod tests {
     fn parses_and_orders_claude_versions() {
         let v1088 = ClaudeCliVersion::parse("1.0.88").unwrap();
         let v287 = ClaudeCliVersion::parse("2.1.87").unwrap();
-        let v292 = ClaudeCliVersion::parse("2.1.92").unwrap();
+        let v2126 = ClaudeCliVersion::parse("2.1.126").unwrap();
 
         assert!(v1088 < v287);
-        assert!(v287 < v292);
+        assert!(v287 < v2126);
         assert!(ClaudeCliVersion::parse("2.1.87-beta.1").unwrap() < v287);
     }
 
@@ -365,6 +371,13 @@ mod tests {
             }
         );
         assert_eq!(
+            resolve_claude_schema(Some("2.1.126")),
+            super::ClaudeSchemaResolution {
+                epoch: ClaudeSchemaEpoch::V2_1_90ToLatest,
+                determinism: ParseDeterminism::Exact,
+            }
+        );
+        assert_eq!(
             resolve_claude_schema(Some("bad-version")),
             super::ClaudeSchemaResolution {
                 epoch: ClaudeSchemaEpoch::V2_1_90ToLatest,
@@ -388,7 +401,19 @@ mod tests {
         assert_eq!(earliest_observed_claude_cli_version().to_string(), "1.0.88");
         assert_eq!(
             latest_exact_supported_claude_cli_version().to_string(),
-            "2.1.87"
+            "2.1.126"
+        );
+    }
+
+    #[test]
+    fn exposes_expected_parse_determinism() {
+        assert_eq!(
+            resolve_claude_parse_determinism(Some("2.1.126")),
+            ParseDeterminism::Exact
+        );
+        assert_eq!(
+            resolve_claude_parse_determinism(Some("2.1.125")),
+            ParseDeterminism::BestEffortForward
         );
     }
 }

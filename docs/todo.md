@@ -101,24 +101,22 @@ Needed:
 
 ### Claude parser and audit follow-ups
 
-#### Deeply review and fix the Claude Code audit pipeline
+#### Keep revalidating the Claude Code audit pipeline
 
 Current state:
 
-- The hidden `darc claude-schema-audit` workflow exists, but local manual runs are currently not
-  trustworthy and should be treated as broken until revalidated end to end.
+- The hidden `darc claude-schema-audit` workflow has been revalidated against the modern
+  `@anthropic-ai/claude-code` native-wrapper package layout.
 - Unit tests are not enough here because the real pipeline depends on live package fetch, local
   runtime setup, auth/environment handling, fixture execution, transcript capture, and final drift
   reporting.
 
 Needed:
 
-- Reproduce the local failure manually and record the exact failing stage, versions, and
-  environment assumptions.
-- Audit the full pipeline end to end: package discovery/download, extraction, released CLI
+- Periodically audit the full pipeline end to end: package discovery/download, extraction, released CLI
   execution, host-auth setup, fixture workspace setup, transcript and hook capture, manifest
   derivation, schema diffing, and final report generation.
-- Fix the broken stage or stages instead of patching symptoms in isolation.
+- Fix any broken stage or stages instead of patching symptoms in isolation.
 - Add regression coverage for the real failure mode so the command is trustworthy outside the unit
   test harness.
 - Re-run the full workflow locally after the fix and document any remaining prerequisites or

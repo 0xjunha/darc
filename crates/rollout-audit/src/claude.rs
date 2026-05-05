@@ -26,6 +26,8 @@ use crate::schema_diff::{normalize_json, summarize_schema_differences, truncate_
 
 /// Stores the npm package name for released Claude CLI audits.
 const NPM_CLAUDE_CODE_PACKAGE: &str = "@anthropic-ai/claude-code";
+/// Stores the native-wrapper marker expected by Claude's npm launcher.
+const CLAUDE_NPM_WRAPPER_ENV_NAME: &str = "CLAUDE_CODE_INSTALLED_VIA_NPM_WRAPPER";
 /// Stores the npm package name for released Claude SDK audits.
 const NPM_AGENT_SDK_PACKAGE: &str = "@anthropic-ai/claude-agent-sdk";
 /// Stores the human-readable source label for Claude npm releases.
@@ -309,20 +311,61 @@ struct ClaudeAuditSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AuditRuntime {
     node_binary: PathBuf,
+    node_platform_suffix: String,
     hook_python: PathBuf,
 }
 
 impl AuditRuntime {
     /// Detects the local binaries required for Claude audit fixture execution.
     fn detect() -> Result<Self> {
+        let node_binary = resolve_runtime_binary(&["node"])?;
+        let node_platform_suffix = detect_node_native_cli_platform_suffix(&node_binary)?;
         Ok(Self {
-            node_binary: resolve_runtime_binary(&["node"])?,
+            node_binary,
+            node_platform_suffix,
             hook_python: resolve_runtime_binary(if cfg!(windows) {
                 &["python", "python3"]
             } else {
                 &["python3", "python"]
             })?,
         })
+    }
+}
+
+/// Describes how to execute one released Claude CLI package.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ReleasedClaudeCli {
+    NodeScript(PathBuf),
+    NativeBinary(PathBuf),
+}
+
+impl ReleasedClaudeCli {
+    /// Builds a command for this released Claude CLI target.
+    fn command(&self, runtime: &AuditRuntime, working_dir: &Path) -> Command {
+        let mut command = match self {
+            Self::NodeScript(entrypoint) => {
+                let mut command = Command::new(&runtime.node_binary);
+                command.arg(entrypoint);
+                command
+            }
+            Self::NativeBinary(binary) => Command::new(binary),
+        };
+        command.current_dir(working_dir);
+        command
+    }
+
+    /// Applies environment entries required by this released Claude CLI target.
+    fn apply_target_environment(&self, command: &mut Command) {
+        if matches!(self, Self::NativeBinary(_)) {
+            command.env(CLAUDE_NPM_WRAPPER_ENV_NAME, "1");
+        }
+    }
+
+    /// Returns the path used to identify this released CLI target in diagnostics.
+    fn display_path(&self) -> &Path {
+        match self {
+            Self::NodeScript(path) | Self::NativeBinary(path) => path,
+        }
     }
 }
 
@@ -372,6 +415,8 @@ struct NpmPackageVersion {
 struct NpmPackageManifest {
     #[serde(default)]
     bin: BTreeMap<String, String>,
+    #[serde(default, rename = "optionalDependencies")]
+    optional_dependencies: BTreeMap<String, String>,
 }
 
 /// Stores the npm distribution metadata needed to download one package tarball.
@@ -629,7 +674,7 @@ impl NpmClaudeSchemaAuditProvider {
     where
         F: FnMut(&str),
     {
-        let cli_entrypoint = resolve_cli_entrypoint(cli_root)?;
+        let cli_command = self.resolve_cli_command(version, cli_root, report_progress)?;
         let probe_root = self.fixture_run_dir.path().join(format!(
             "capability-probe-{}-{}",
             sanitize_for_path(version),
@@ -638,25 +683,109 @@ impl NpmClaudeSchemaAuditProvider {
         fs::create_dir_all(&probe_root)
             .with_context(|| format!("failed to create {}", probe_root.display()))?;
         let cli_capabilities =
-            self.inspect_cli_capabilities_with_environment(&cli_entrypoint, cli_root, &probe_root)?;
+            self.inspect_cli_capabilities_with_environment(&cli_command, cli_root, &probe_root)?;
         let mut builder = TranscriptManifestBuilder::default();
         for fixture in audit_fixtures() {
             report_progress(&format!(
                 "Running Claude transcript fixture `{}` against {}...",
                 fixture.name, version
             ));
-            let session = self.run_fixture(version, &cli_entrypoint, cli_capabilities, *fixture)?;
+            let session = self.run_fixture(version, &cli_command, cli_capabilities, *fixture)?;
             builder.record_fixture(&session, fixture.name)?;
             validate_fixture_coverage(&session, *fixture)?;
         }
         Ok(builder.finish())
     }
 
+    /// Resolves a runnable Claude CLI command target for one extracted package.
+    fn resolve_cli_command<F>(
+        &self,
+        version: &str,
+        cli_root: &Path,
+        report_progress: &mut F,
+    ) -> Result<ReleasedClaudeCli>
+    where
+        F: FnMut(&str),
+    {
+        let manifest = read_package_manifest(cli_root)?;
+        let entrypoint = manifest
+            .bin
+            .get("claude")
+            .cloned()
+            .unwrap_or_else(|| "cli.js".to_owned());
+        let path = cli_root.join(&entrypoint);
+        ensure!(
+            path.is_file(),
+            "extracted Claude package did not contain CLI entrypoint {}",
+            path.display()
+        );
+
+        let wrapper_path = cli_root.join("cli-wrapper.cjs");
+        if entrypoint.ends_with(".exe") && wrapper_path.is_file() {
+            let native_binary =
+                self.stage_native_cli_dependency(version, cli_root, &manifest, report_progress)?;
+            return Ok(ReleasedClaudeCli::NativeBinary(native_binary));
+        }
+
+        Ok(ReleasedClaudeCli::NodeScript(path))
+    }
+
+    /// Makes the platform-native optional package available to `cli-wrapper.cjs`.
+    fn stage_native_cli_dependency<F>(
+        &self,
+        version: &str,
+        cli_root: &Path,
+        manifest: &NpmPackageManifest,
+        report_progress: &mut F,
+    ) -> Result<PathBuf>
+    where
+        F: FnMut(&str),
+    {
+        let (package_name, package_version) =
+            native_cli_dependency(manifest, &self.runtime.node_platform_suffix)?;
+        report_progress(&format!(
+            "Preparing native Claude package {package_name}@{package_version} for {version}..."
+        ));
+        let native_catalog = NpmPackageCatalog::fetch(&package_name, report_progress)?;
+        let native_package = native_catalog.version(&package_version).with_context(|| {
+            format!("missing npm metadata for `{package_name}@{package_version}`")
+        })?;
+        let native_root = self.extract_cached_package(
+            &package_name,
+            &package_version,
+            native_package,
+            report_progress,
+        )?;
+        let destination = node_modules_package_path(cli_root, &package_name)?;
+        if destination.exists() {
+            fs::remove_dir_all(&destination)
+                .with_context(|| format!("failed to remove {}", destination.display()))?;
+        }
+        let parent = destination
+            .parent()
+            .context("native Claude package destination had no parent")?;
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+        fs::rename(&native_root, &destination).with_context(|| {
+            format!(
+                "failed to stage native Claude package at {}",
+                destination.display()
+            )
+        })?;
+
+        let native_binary =
+            destination.join(native_cli_binary_name(&self.runtime.node_platform_suffix));
+        #[cfg(unix)]
+        mark_executable(&native_binary)?;
+
+        Ok(native_binary)
+    }
+
     /// Runs one released Claude CLI fixture in an isolated temporary project.
     fn run_fixture(
         &self,
         version: &str,
-        cli_entrypoint: &Path,
+        cli_command: &ReleasedClaudeCli,
         cli_capabilities: ClaudeCliCapabilities,
         fixture: ClaudeAuditFixture,
     ) -> Result<ClaudeFixtureSession> {
@@ -699,9 +828,7 @@ impl NpmClaudeSchemaAuditProvider {
         )
         .with_context(|| format!("failed to write {}", settings_path.display()))?;
 
-        let mut command = Command::new(&self.runtime.node_binary);
-        command.current_dir(&project_root);
-        command.arg(cli_entrypoint);
+        let mut command = cli_command.command(&self.runtime, &project_root);
         command.arg("--print");
         command.arg(fixture.prompt);
         command.arg("--verbose");
@@ -731,6 +858,7 @@ impl NpmClaudeSchemaAuditProvider {
             command.arg(fixture.allowed_tools.join(","));
         }
         self.configure_command_environment(&mut command, &project_root)?;
+        cli_command.apply_target_environment(&mut command);
 
         let output =
             run_command_with_timeout(&mut command, CLI_COMMAND_TIMEOUT).with_context(|| {
@@ -826,17 +954,15 @@ impl NpmClaudeSchemaAuditProvider {
     /// Inspects one released Claude CLI using the same configured environment as fixtures.
     fn inspect_cli_capabilities_with_environment(
         &self,
-        cli_entrypoint: &Path,
+        cli_command: &ReleasedClaudeCli,
         working_dir: &Path,
         project_root: &Path,
     ) -> Result<ClaudeCliCapabilities> {
-        let mut command = build_cli_capability_probe_command(
-            &self.runtime.node_binary,
-            cli_entrypoint,
-            working_dir,
-        );
+        let mut command =
+            build_cli_capability_probe_command(&self.runtime, cli_command, working_dir);
         self.configure_command_environment(&mut command, project_root)?;
-        inspect_cli_capabilities(&mut command, cli_entrypoint)
+        cli_command.apply_target_environment(&mut command);
+        inspect_cli_capabilities(&mut command, cli_command.display_path())
     }
 }
 
@@ -1717,36 +1843,144 @@ where
     }
 }
 
-/// Resolves the Claude CLI entrypoint inside one extracted npm package.
-fn resolve_cli_entrypoint(cli_root: &Path) -> Result<PathBuf> {
+/// Reads the npm package manifest inside one extracted package.
+fn read_package_manifest(cli_root: &Path) -> Result<NpmPackageManifest> {
     let package_json_path = cli_root.join("package.json");
     let manifest_text = fs::read_to_string(&package_json_path)
         .with_context(|| format!("failed to read {}", package_json_path.display()))?;
-    let manifest: NpmPackageManifest = serde_json::from_str(&manifest_text)
-        .with_context(|| format!("failed to parse {}", package_json_path.display()))?;
-    let entrypoint = manifest
-        .bin
-        .get("claude")
-        .cloned()
-        .unwrap_or_else(|| "cli.js".to_owned());
-    let path = cli_root.join(entrypoint);
+    serde_json::from_str(&manifest_text)
+        .with_context(|| format!("failed to parse {}", package_json_path.display()))
+}
+
+/// Returns the native optional dependency selected by the Node wrapper runtime.
+fn native_cli_dependency(
+    manifest: &NpmPackageManifest,
+    platform_suffix: &str,
+) -> Result<(String, String)> {
+    let package_name = format!("{NPM_CLAUDE_CODE_PACKAGE}-{platform_suffix}");
+    let package_version = manifest
+        .optional_dependencies
+        .get(&package_name)
+        .with_context(|| {
+            format!("Claude package wrapper did not declare optional dependency `{package_name}`")
+        })?;
+    Ok((package_name, package_version.clone()))
+}
+
+/// Returns the platform suffix that `cli-wrapper.cjs` will use under one Node binary.
+fn detect_node_native_cli_platform_suffix(node_binary: &Path) -> Result<String> {
+    let output = Command::new(node_binary)
+        .arg("-e")
+        .arg(NODE_PLATFORM_SUFFIX_SCRIPT)
+        .output()
+        .with_context(|| {
+            format!(
+                "failed to run {} for platform detection",
+                node_binary.display()
+            )
+        })?;
     ensure!(
-        path.is_file(),
-        "extracted Claude package did not contain CLI entrypoint {}",
-        path.display()
+        output.status.success(),
+        "{} failed platform detection: {}",
+        node_binary.display(),
+        String::from_utf8_lossy(&output.stderr).trim()
     );
-    Ok(path)
+    let suffix = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    ensure!(
+        matches!(
+            suffix.as_str(),
+            "darwin-arm64"
+                | "darwin-x64"
+                | "linux-arm64"
+                | "linux-arm64-musl"
+                | "linux-x64"
+                | "linux-x64-musl"
+                | "win32-arm64"
+                | "win32-x64"
+        ),
+        "unsupported Node platform suffix `{suffix}` for Claude native packages"
+    );
+    Ok(suffix)
+}
+
+const NODE_PLATFORM_SUFFIX_SCRIPT: &str = r#"
+const { spawnSync } = require('child_process');
+const { arch } = require('os');
+
+function detectMusl() {
+  if (process.platform !== 'linux') {
+    return false;
+  }
+  const report =
+    typeof process.report?.getReport === 'function'
+      ? process.report.getReport()
+      : null;
+  return report != null && report.header?.glibcVersionRuntime === undefined;
+}
+
+let cpu = arch();
+if (process.platform === 'linux') {
+  console.log('linux-' + cpu + (detectMusl() ? '-musl' : ''));
+} else {
+  if (process.platform === 'darwin' && cpu === 'x64') {
+    const r = spawnSync('sysctl', ['-n', 'sysctl.proc_translated'], {
+      encoding: 'utf8',
+    });
+    if (r.stdout?.trim() === '1') {
+      cpu = 'arm64';
+    }
+  }
+  console.log(process.platform + '-' + cpu);
+}
+"#;
+
+/// Returns the package installation path under an extracted package-local `node_modules`.
+fn node_modules_package_path(cli_root: &Path, package_name: &str) -> Result<PathBuf> {
+    let mut parts = package_name.split('/');
+    let scope = parts
+        .next()
+        .filter(|part| part.starts_with('@'))
+        .with_context(|| format!("unsupported scoped npm package name `{package_name}`"))?;
+    let name = parts
+        .next()
+        .filter(|part| !part.is_empty())
+        .with_context(|| format!("unsupported scoped npm package name `{package_name}`"))?;
+    ensure!(
+        parts.next().is_none(),
+        "unsupported scoped npm package name `{package_name}`"
+    );
+    Ok(cli_root.join("node_modules").join(scope).join(name))
+}
+
+/// Returns the native Claude binary name for one Node wrapper platform suffix.
+fn native_cli_binary_name(platform_suffix: &str) -> &'static str {
+    if platform_suffix.starts_with("win32-") {
+        "claude.exe"
+    } else {
+        "claude"
+    }
+}
+
+/// Marks one extracted package file executable on Unix hosts.
+#[cfg(unix)]
+fn mark_executable(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = fs::metadata(path)
+        .with_context(|| format!("failed to stat {}", path.display()))?
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions)
+        .with_context(|| format!("failed to mark {} executable", path.display()))
 }
 
 /// Builds the released Claude CLI command used for one capability probe.
 fn build_cli_capability_probe_command(
-    node_binary: &Path,
-    cli_entrypoint: &Path,
+    runtime: &AuditRuntime,
+    cli_command: &ReleasedClaudeCli,
     working_dir: &Path,
 ) -> Command {
-    let mut command = Command::new(node_binary);
-    command.current_dir(working_dir);
-    command.arg(cli_entrypoint);
+    let mut command = cli_command.command(runtime, working_dir);
     command.arg("--help");
     command
 }
@@ -1756,8 +1990,7 @@ fn inspect_cli_capabilities(
     command: &mut Command,
     cli_entrypoint: &Path,
 ) -> Result<ClaudeCliCapabilities> {
-    let output = command
-        .output()
+    let output = run_command_with_timeout(command, CLI_COMMAND_TIMEOUT)
         .with_context(|| format!("failed to inspect {}", cli_entrypoint.display()))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     Ok(ClaudeCliCapabilities {
@@ -2439,7 +2672,7 @@ mod tests {
     use std::{
         collections::BTreeMap,
         env,
-        ffi::OsString,
+        ffi::{OsStr, OsString},
         fs::{self, File},
         io::Write,
         path::{Path, PathBuf},
@@ -2455,12 +2688,13 @@ mod tests {
     use super::{
         ClaudeAuditSnapshot, ClaudeSchemaAuditOutcome, ClaudeSchemaAuditProvider,
         ClaudeSchemaSurveyMode, ClaudeSdkSchemaManifest, ClaudeTranscriptSchemaManifest,
-        TranscriptManifestBuilder, audit_fixtures, build_hook_settings, build_sampling_plan,
-        collect_cli_sdk_manifest, collect_field_string_literals, collect_fixture_transcript_lines,
-        collect_stable_release_versions, collect_type_union_members,
-        configure_host_auth_environment_from_iter, detect_allowed_tools_flag, parse_hook_events,
-        parse_jsonl_text, run_claude_schema_audit_with_provider, run_command_with_timeout,
-        select_audited_release_versions, validate_fixture_coverage,
+        NpmPackageManifest, TranscriptManifestBuilder, audit_fixtures, build_hook_settings,
+        build_sampling_plan, collect_cli_sdk_manifest, collect_field_string_literals,
+        collect_fixture_transcript_lines, collect_stable_release_versions,
+        collect_type_union_members, configure_host_auth_environment_from_iter,
+        detect_allowed_tools_flag, native_cli_dependency, node_modules_package_path,
+        parse_hook_events, parse_jsonl_text, run_claude_schema_audit_with_provider,
+        run_command_with_timeout, select_audited_release_versions, validate_fixture_coverage,
     };
     use crate::schema_diff::{normalize_json, summarize_schema_differences};
 
@@ -2483,6 +2717,74 @@ mod tests {
                     .collect(),
             }
         }
+    }
+
+    #[test]
+    fn resolves_native_claude_dependency_for_node_platform() {
+        let package_name = format!("{}-darwin-arm64", super::NPM_CLAUDE_CODE_PACKAGE);
+        let mut optional_dependencies = BTreeMap::new();
+        optional_dependencies.insert(package_name.clone(), "2.1.126".to_owned());
+        let manifest = NpmPackageManifest {
+            bin: BTreeMap::new(),
+            optional_dependencies,
+        };
+
+        assert_eq!(
+            native_cli_dependency(&manifest, "darwin-arm64").unwrap(),
+            (package_name, "2.1.126".to_owned())
+        );
+    }
+
+    #[test]
+    fn resolves_native_binary_name_from_node_platform() {
+        assert_eq!(super::native_cli_binary_name("darwin-arm64"), "claude");
+        assert_eq!(super::native_cli_binary_name("win32-x64"), "claude.exe");
+    }
+
+    #[test]
+    fn released_cli_command_preserves_native_wrapper_marker_after_environment_config() {
+        let runtime = super::AuditRuntime {
+            node_binary: PathBuf::from("/usr/local/bin/node"),
+            node_platform_suffix: "darwin-arm64".to_owned(),
+            hook_python: PathBuf::from("/usr/bin/python3"),
+        };
+        let cli = super::ReleasedClaudeCli::NativeBinary(PathBuf::from(
+            "/tmp/package/node_modules/@anthropic-ai/claude-code-darwin-arm64/claude",
+        ));
+        let mut command = cli.command(&runtime, Path::new("/tmp/repo"));
+        command.arg("--help");
+        configure_host_auth_environment_from_iter(
+            &mut command,
+            Path::new("/tmp/repo"),
+            [(OsString::from("PATH"), OsString::from("/usr/bin"))],
+        );
+        cli.apply_target_environment(&mut command);
+        let envs = command_envs(&command);
+
+        assert_eq!(
+            command.get_program(),
+            OsStr::new("/tmp/package/node_modules/@anthropic-ai/claude-code-darwin-arm64/claude")
+        );
+        assert_eq!(
+            envs.get(&OsString::from(super::CLAUDE_NPM_WRAPPER_ENV_NAME)),
+            Some(&Some(OsString::from("1")))
+        );
+        assert_eq!(command.get_args().collect::<Vec<_>>(), vec!["--help"]);
+    }
+
+    #[test]
+    fn builds_scoped_node_modules_package_path() {
+        assert_eq!(
+            node_modules_package_path(
+                Path::new("/tmp/package"),
+                "@anthropic-ai/claude-code-darwin-arm64"
+            )
+            .unwrap(),
+            Path::new("/tmp/package")
+                .join("node_modules")
+                .join("@anthropic-ai")
+                .join("claude-code-darwin-arm64")
+        );
     }
 
     impl ClaudeSchemaAuditProvider for FakeClaudeSchemaAuditProvider {
@@ -2589,10 +2891,10 @@ mod tests {
     #[test]
     fn selects_audited_range_from_latest_published_down_to_exact_cutoff() {
         let versions = collect_stable_release_versions(vec![
-            "2.1.92".to_owned(),
-            "2.1.90".to_owned(),
-            "2.1.87".to_owned(),
-            "2.1.84".to_owned(),
+            "2.1.130".to_owned(),
+            "2.1.128".to_owned(),
+            "2.1.126".to_owned(),
+            "2.1.124".to_owned(),
         ]);
         let selected = select_audited_release_versions(&versions, None).unwrap();
 
@@ -2602,9 +2904,9 @@ mod tests {
                 .map(|version| version.raw.clone())
                 .collect::<Vec<_>>(),
             vec![
-                "2.1.92".to_owned(),
-                "2.1.90".to_owned(),
-                "2.1.87".to_owned(),
+                "2.1.130".to_owned(),
+                "2.1.128".to_owned(),
+                "2.1.126".to_owned(),
             ]
         );
     }
@@ -2612,12 +2914,12 @@ mod tests {
     #[test]
     fn selects_audited_range_from_latest_published_down_to_custom_floor() {
         let versions = collect_stable_release_versions(vec![
-            "2.1.92".to_owned(),
-            "2.1.90".to_owned(),
-            "2.1.87".to_owned(),
-            "2.1.84".to_owned(),
+            "2.1.130".to_owned(),
+            "2.1.128".to_owned(),
+            "2.1.126".to_owned(),
+            "2.1.124".to_owned(),
         ]);
-        let selected = select_audited_release_versions(&versions, Some("2.1.84")).unwrap();
+        let selected = select_audited_release_versions(&versions, Some("2.1.124")).unwrap();
 
         assert_eq!(
             selected
@@ -2625,10 +2927,10 @@ mod tests {
                 .map(|version| version.raw.clone())
                 .collect::<Vec<_>>(),
             vec![
-                "2.1.92".to_owned(),
-                "2.1.90".to_owned(),
-                "2.1.87".to_owned(),
-                "2.1.84".to_owned(),
+                "2.1.130".to_owned(),
+                "2.1.128".to_owned(),
+                "2.1.126".to_owned(),
+                "2.1.124".to_owned(),
             ]
         );
     }
@@ -2636,12 +2938,12 @@ mod tests {
     #[test]
     fn sampling_plan_picks_stride_anchors_and_assumed_gaps() {
         let versions = collect_stable_release_versions(vec![
-            "2.1.92".to_owned(),
-            "2.1.91".to_owned(),
-            "2.1.90".to_owned(),
-            "2.1.89".to_owned(),
-            "2.1.88".to_owned(),
-            "2.1.87".to_owned(),
+            "2.1.131".to_owned(),
+            "2.1.130".to_owned(),
+            "2.1.129".to_owned(),
+            "2.1.128".to_owned(),
+            "2.1.127".to_owned(),
+            "2.1.126".to_owned(),
         ]);
         let audited = select_audited_release_versions(&versions, None).unwrap();
         let plan = build_sampling_plan(&audited, 2);
@@ -2652,51 +2954,51 @@ mod tests {
                 .map(|version| version.raw.clone())
                 .collect::<Vec<_>>(),
             vec![
-                "2.1.92".to_owned(),
-                "2.1.91".to_owned(),
-                "2.1.89".to_owned(),
-                "2.1.87".to_owned(),
+                "2.1.131".to_owned(),
+                "2.1.130".to_owned(),
+                "2.1.128".to_owned(),
+                "2.1.126".to_owned(),
             ]
         );
         assert_eq!(
             plan.assumed_compatible_intervals,
-            vec!["2.1.88".to_owned(), "2.1.90".to_owned()]
+            vec!["2.1.127".to_owned(), "2.1.129".to_owned()]
         );
     }
 
     #[test]
     fn reports_compatibility_when_transcript_manifests_match() {
         let provider = FakeClaudeSchemaAuditProvider::new(
-            &["2.1.92", "2.1.90", "2.1.87"],
+            &["2.1.130", "2.1.128", "2.1.126"],
             &[
                 (
-                    "2.1.92",
+                    "2.1.130",
                     ClaudeAuditSnapshot {
                         transcript_manifest: manifest(
                             &["assistant", "progress", "system", "user"],
                             &["Bash", "Read", "Task"],
                         ),
-                        sdk_manifest: sdk_manifest(Some("0.2.92")),
+                        sdk_manifest: sdk_manifest(Some("0.2.130")),
                     },
                 ),
                 (
-                    "2.1.90",
+                    "2.1.128",
                     ClaudeAuditSnapshot {
                         transcript_manifest: manifest(
                             &["assistant", "progress", "system", "user"],
                             &["Bash", "Read", "Task"],
                         ),
-                        sdk_manifest: sdk_manifest(Some("0.2.90")),
+                        sdk_manifest: sdk_manifest(Some("0.2.128")),
                     },
                 ),
                 (
-                    "2.1.87",
+                    "2.1.126",
                     ClaudeAuditSnapshot {
                         transcript_manifest: manifest(
                             &["assistant", "progress", "system", "user"],
                             &["Bash", "Read", "Task"],
                         ),
-                        sdk_manifest: sdk_manifest(Some("0.2.87")),
+                        sdk_manifest: sdk_manifest(Some("0.2.126")),
                     },
                 ),
             ],
@@ -2716,7 +3018,7 @@ mod tests {
             report.outcome,
             ClaudeSchemaAuditOutcome::Compatible
         ));
-        assert_eq!(report.latest_published_version, "2.1.92");
+        assert_eq!(report.latest_published_version, "2.1.130");
         assert_eq!(report.audited_versions.len(), 3);
         assert!(report.supplementary_sdk_drift.is_some());
     }
@@ -2724,36 +3026,36 @@ mod tests {
     #[test]
     fn detects_first_transcript_drift_and_preserves_sdk_signal_separately() {
         let provider = FakeClaudeSchemaAuditProvider::new(
-            &["2.1.92", "2.1.90", "2.1.87"],
+            &["2.1.130", "2.1.128", "2.1.126"],
             &[
                 (
-                    "2.1.92",
+                    "2.1.130",
                     ClaudeAuditSnapshot {
                         transcript_manifest: manifest(
                             &["assistant", "mystery-event", "progress", "system", "user"],
                             &["Bash", "Read", "Task"],
                         ),
-                        sdk_manifest: sdk_manifest(Some("0.2.92")),
+                        sdk_manifest: sdk_manifest(Some("0.2.130")),
                     },
                 ),
                 (
-                    "2.1.90",
+                    "2.1.128",
                     ClaudeAuditSnapshot {
                         transcript_manifest: manifest(
                             &["assistant", "mystery-event", "progress", "system", "user"],
                             &["Bash", "Read", "Task"],
                         ),
-                        sdk_manifest: sdk_manifest(Some("0.2.90")),
+                        sdk_manifest: sdk_manifest(Some("0.2.128")),
                     },
                 ),
                 (
-                    "2.1.87",
+                    "2.1.126",
                     ClaudeAuditSnapshot {
                         transcript_manifest: manifest(
                             &["assistant", "progress", "system", "user"],
                             &["Bash", "Read", "Task"],
                         ),
-                        sdk_manifest: sdk_manifest(Some("0.2.87")),
+                        sdk_manifest: sdk_manifest(Some("0.2.126")),
                     },
                 ),
             ],
@@ -2772,7 +3074,7 @@ mod tests {
         let ClaudeSchemaAuditOutcome::Drift(drift) = report.outcome else {
             panic!("expected transcript drift");
         };
-        assert_eq!(drift.first_drift_version, "2.1.90");
+        assert_eq!(drift.first_drift_version, "2.1.128");
         assert!(
             drift
                 .difference_summary
@@ -2780,77 +3082,79 @@ mod tests {
                 .any(|line| line.contains("mystery-event"))
         );
         assert!(report.supplementary_sdk_drift.is_some());
-        assert!(report.inspected_versions.contains(&"2.1.90".to_owned()));
+        assert!(report.inspected_versions.contains(&"2.1.128".to_owned()));
         assert!(
             !report
                 .assumed_compatible_intervals
-                .contains(&"2.1.90".to_owned())
+                .contains(&"2.1.128".to_owned())
         );
     }
 
     #[test]
     fn refine_mode_reports_only_versions_it_actually_walked() {
         let provider = FakeClaudeSchemaAuditProvider::new(
-            &["2.1.92", "2.1.91", "2.1.90", "2.1.89", "2.1.88", "2.1.87"],
+            &[
+                "2.1.131", "2.1.130", "2.1.129", "2.1.128", "2.1.127", "2.1.126",
+            ],
             &[
                 (
-                    "2.1.92",
+                    "2.1.131",
                     ClaudeAuditSnapshot {
                         transcript_manifest: manifest(
                             &["assistant", "mystery-event", "progress", "system", "user"],
                             &["Bash", "Read", "Task"],
                         ),
-                        sdk_manifest: sdk_manifest(Some("0.2.92")),
+                        sdk_manifest: sdk_manifest(Some("0.2.131")),
                     },
                 ),
                 (
-                    "2.1.91",
+                    "2.1.130",
                     ClaudeAuditSnapshot {
                         transcript_manifest: manifest(
                             &["assistant", "mystery-event", "progress", "system", "user"],
                             &["Bash", "Read", "Task"],
                         ),
-                        sdk_manifest: sdk_manifest(Some("0.2.91")),
+                        sdk_manifest: sdk_manifest(Some("0.2.130")),
                     },
                 ),
                 (
-                    "2.1.90",
+                    "2.1.129",
                     ClaudeAuditSnapshot {
                         transcript_manifest: manifest(
                             &["assistant", "mystery-event", "progress", "system", "user"],
                             &["Bash", "Read", "Task"],
                         ),
-                        sdk_manifest: sdk_manifest(Some("0.2.90")),
+                        sdk_manifest: sdk_manifest(Some("0.2.129")),
                     },
                 ),
                 (
-                    "2.1.89",
+                    "2.1.128",
                     ClaudeAuditSnapshot {
                         transcript_manifest: manifest(
                             &["assistant", "progress", "system", "user"],
                             &["Bash", "Read", "Task"],
                         ),
-                        sdk_manifest: sdk_manifest(Some("0.2.89")),
+                        sdk_manifest: sdk_manifest(Some("0.2.128")),
                     },
                 ),
                 (
-                    "2.1.88",
+                    "2.1.127",
                     ClaudeAuditSnapshot {
                         transcript_manifest: manifest(
                             &["assistant", "progress", "system", "user"],
                             &["Bash", "Read", "Task"],
                         ),
-                        sdk_manifest: sdk_manifest(Some("0.2.88")),
+                        sdk_manifest: sdk_manifest(Some("0.2.127")),
                     },
                 ),
                 (
-                    "2.1.87",
+                    "2.1.126",
                     ClaudeAuditSnapshot {
                         transcript_manifest: manifest(
                             &["assistant", "progress", "system", "user"],
                             &["Bash", "Read", "Task"],
                         ),
-                        sdk_manifest: sdk_manifest(Some("0.2.87")),
+                        sdk_manifest: sdk_manifest(Some("0.2.126")),
                     },
                 ),
             ],
@@ -2869,10 +3173,10 @@ mod tests {
         let ClaudeSchemaAuditOutcome::Drift(drift) = report.outcome else {
             panic!("expected transcript drift");
         };
-        assert_eq!(drift.first_drift_version, "2.1.90");
-        assert!(report.inspected_versions.contains(&"2.1.92".to_owned()));
-        assert!(report.inspected_versions.contains(&"2.1.90".to_owned()));
-        assert!(!report.inspected_versions.contains(&"2.1.91".to_owned()));
+        assert_eq!(drift.first_drift_version, "2.1.129");
+        assert!(report.inspected_versions.contains(&"2.1.131".to_owned()));
+        assert!(report.inspected_versions.contains(&"2.1.129".to_owned()));
+        assert!(!report.inspected_versions.contains(&"2.1.130".to_owned()));
         assert!(report.assumed_compatible_intervals.is_empty());
     }
 

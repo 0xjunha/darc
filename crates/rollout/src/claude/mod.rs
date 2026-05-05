@@ -6,4 +6,6 @@ mod version;
 
 pub use error::{ClaudeCliVersionParseError, ClaudeError};
 pub use parser::{ClaudeArchivedContext, ClaudeRollout, ClaudeSessionKind, parse_rollout_file};
-pub use version::{ClaudeCliVersion, latest_exact_supported_claude_cli_version};
+pub use version::{
+    ClaudeCliVersion, latest_exact_supported_claude_cli_version, resolve_claude_parse_determinism,
+};

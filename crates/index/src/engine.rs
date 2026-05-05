@@ -3,6 +3,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error as StdError,
     fs,
+    io::{BufRead, BufReader},
     path::{Path, PathBuf},
 };
 
@@ -14,13 +15,13 @@ use darc_rollout::{
     ParseDeterminism,
     claude::{
         ClaudeArchivedContext, ClaudeError, ClaudeSessionKind,
-        parse_rollout_file as parse_claude_rollout_file,
+        parse_rollout_file as parse_claude_rollout_file, resolve_claude_parse_determinism,
     },
     codex::{
         CodexError, CodexRolloutHeader, CodexRolloutSink, ParseIntoError, compare_rollout_priority,
         parse_rollout_file_into as parse_codex_rollout_file_into, parse_rollout_file_session_id,
         parse_rollout_session_meta_line, read_first_rollout_line_bytes,
-        reconcile_rollout_session_id,
+        reconcile_rollout_session_id, resolve_codex_parse_determinism,
     },
     model::NormalizedTurn as CodexTurn,
 };
@@ -183,6 +184,7 @@ impl ArchivedRolloutGroup {
 #[derive(Debug, Clone)]
 struct IndexedSessionSnapshot {
     archive_path: String,
+    determinism: Option<String>,
     source_size: Option<u64>,
     source_mtime_ms: Option<u64>,
 }
@@ -191,8 +193,38 @@ impl IndexedSessionSnapshot {
     /// Returns whether one archived rollout still matches the indexed session snapshot.
     fn matches_candidate(&self, candidate: &ArchivedRolloutCandidate) -> bool {
         self.archive_path == candidate.archive_path
+            && self.matches_current_determinism(candidate)
             && self.source_size == Some(candidate.size)
             && self.source_mtime_ms == Some(candidate.mtime_ms)
+    }
+
+    /// Returns whether the indexed row still matches the current parser's determinism.
+    fn matches_current_determinism(&self, candidate: &ArchivedRolloutCandidate) -> bool {
+        let Some(stored_determinism) = self.determinism.as_deref() else {
+            return false;
+        };
+        let Some(expected_determinism) = expected_parse_determinism(candidate) else {
+            return true;
+        };
+        if stored_determinism == expected_determinism.as_sql_text() {
+            return true;
+        }
+        candidate.provider == SourceKind::Claude
+            && expected_determinism == ParseDeterminism::Exact
+            && stored_determinism == ParseDeterminism::BestEffortForward.as_sql_text()
+    }
+}
+
+/// Resolves the parser determinism currently expected for one archived candidate.
+fn expected_parse_determinism(candidate: &ArchivedRolloutCandidate) -> Option<ParseDeterminism> {
+    match candidate.provider {
+        SourceKind::Codex => candidate
+            .cli_version
+            .as_deref()
+            .and_then(|version| resolve_codex_parse_determinism(version).ok()),
+        SourceKind::Claude => Some(resolve_claude_parse_determinism(
+            candidate.cli_version.as_deref(),
+        )),
     }
 }
 
@@ -806,6 +838,7 @@ fn inspect_archived_claude_rollout(
     sessions_root: &Path,
 ) -> Result<ArchivedRolloutInspection> {
     let (size, mtime_ms) = file_snapshot(path)?;
+    let cli_version = read_claude_rollout_cli_version(path);
     let archive_path = path
         .strip_prefix(sessions_root)
         .with_context(|| {
@@ -862,7 +895,7 @@ fn inspect_archived_claude_rollout(
                         agent_id: None,
                         session_kind: IndexedSessionKind::Primary,
                     },
-                    None,
+                    cli_version.clone(),
                     size,
                     mtime_ms,
                 ),
@@ -898,7 +931,7 @@ fn inspect_archived_claude_rollout(
                         agent_id: Some(agent_id),
                         session_kind: IndexedSessionKind::Subagent,
                     },
-                    None,
+                    cli_version,
                     size,
                     mtime_ms,
                 ),
@@ -915,6 +948,25 @@ fn inspect_archived_claude_rollout(
             ),
         ))),
     }
+}
+
+/// Reads a Claude rollout version cheaply enough for unchanged-session skip checks.
+fn read_claude_rollout_cli_version(path: &Path) -> Option<String> {
+    let file = fs::File::open(path).ok()?;
+    for line in BufReader::new(file)
+        .lines()
+        .map_while(|line| line.ok())
+        .take(128)
+    {
+        let Ok(object) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&line)
+        else {
+            continue;
+        };
+        if let Some(version) = object.get("version").and_then(serde_json::Value::as_str) {
+            return Some(version.to_owned());
+        }
+    }
+    None
 }
 
 /// Groups archived rollout duplicates by provider/session id and orders each group by priority.
@@ -1285,7 +1337,7 @@ fn load_indexed_session_snapshots(
     let mut statement = connection
         .prepare(
             "
-            SELECT provider, session_id, archive_path, source_size, source_mtime_ms
+            SELECT provider, session_id, archive_path, determinism, source_size, source_mtime_ms
             FROM sessions
             WHERE project_id = ?1
             ",
@@ -1310,12 +1362,14 @@ fn load_indexed_session_snapshots(
 
         let session_id: String = row.get(1).context("failed to read indexed session id")?;
         let archive_path: String = row.get(2).context("failed to read indexed archive path")?;
+        let determinism: Option<String> =
+            row.get(3).context("failed to read indexed determinism")?;
         let source_size = optional_sql_i64_to_u64(
-            row.get(3).context("failed to read indexed source_size")?,
+            row.get(4).context("failed to read indexed source_size")?,
             "source_size",
         )?;
         let source_mtime_ms = optional_sql_i64_to_u64(
-            row.get(4)
+            row.get(5)
                 .context("failed to read indexed source_mtime_ms")?,
             "source_mtime_ms",
         )?;
@@ -1324,6 +1378,7 @@ fn load_indexed_session_snapshots(
             (provider, session_id),
             IndexedSessionSnapshot {
                 archive_path,
+                determinism,
                 source_size,
                 source_mtime_ms,
             },
@@ -1429,6 +1484,79 @@ mod classification_tests {
     /// Builds one reusable JSON error for classification tests.
     fn json_error() -> serde_json::Error {
         serde_json::from_str::<Value>("{").expect_err("invalid JSON fixture")
+    }
+
+    /// Builds one archived candidate for snapshot matching tests.
+    fn archived_candidate(
+        provider: SourceKind,
+        cli_version: Option<&str>,
+    ) -> ArchivedRolloutCandidate {
+        ArchivedRolloutCandidate {
+            provider,
+            source_path: PathBuf::from("/tmp/repo/archive.jsonl"),
+            archive_path: "codex/archive.jsonl".to_owned(),
+            session_id: "session-1".to_owned(),
+            parent_session_id: None,
+            rollout_session_id: "session-1".to_owned(),
+            agent_id: None,
+            session_kind: IndexedSessionKind::Primary,
+            cli_version: cli_version.map(str::to_owned),
+            size: 100,
+            mtime_ms: 200,
+        }
+    }
+
+    /// Builds one indexed snapshot for snapshot matching tests.
+    fn indexed_snapshot(determinism: ParseDeterminism) -> IndexedSessionSnapshot {
+        IndexedSessionSnapshot {
+            archive_path: "codex/archive.jsonl".to_owned(),
+            determinism: Some(determinism.as_sql_text().to_owned()),
+            source_size: Some(100),
+            source_mtime_ms: Some(200),
+        }
+    }
+
+    #[test]
+    fn snapshot_matching_reindexes_codex_when_determinism_becomes_exact() {
+        let candidate = archived_candidate(SourceKind::Codex, Some("0.128.0"));
+
+        assert!(
+            !indexed_snapshot(ParseDeterminism::BestEffortForward).matches_candidate(&candidate)
+        );
+        assert!(indexed_snapshot(ParseDeterminism::Exact).matches_candidate(&candidate));
+    }
+
+    #[test]
+    fn snapshot_matching_keeps_claude_best_effort_versions_current() {
+        let candidate = archived_candidate(SourceKind::Claude, Some("2.1.125"));
+
+        assert!(
+            indexed_snapshot(ParseDeterminism::BestEffortForward).matches_candidate(&candidate)
+        );
+        assert!(!indexed_snapshot(ParseDeterminism::Exact).matches_candidate(&candidate));
+    }
+
+    #[test]
+    fn snapshot_matching_keeps_claude_content_best_effort_current() {
+        let candidate = archived_candidate(SourceKind::Claude, Some("2.1.126"));
+
+        assert!(
+            indexed_snapshot(ParseDeterminism::BestEffortForward).matches_candidate(&candidate)
+        );
+        assert!(indexed_snapshot(ParseDeterminism::Exact).matches_candidate(&candidate));
+    }
+
+    #[test]
+    fn snapshot_matching_reindexes_missing_determinism() {
+        let candidate = archived_candidate(SourceKind::Codex, Some("0.128.0"));
+        let snapshot = IndexedSessionSnapshot {
+            archive_path: "codex/archive.jsonl".to_owned(),
+            determinism: None,
+            source_size: Some(100),
+            source_mtime_ms: Some(200),
+        };
+
+        assert!(!snapshot.matches_candidate(&candidate));
     }
 
     #[test]

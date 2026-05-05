@@ -17,8 +17,8 @@ use self::{
     },
 };
 
-/// Tracks one-shot SQLite migrations for derived analytics tables.
-const INDEX_DB_SCHEMA_VERSION: i32 = 12;
+/// Tracks one-shot SQLite migrations for normalized index tables.
+const INDEX_DB_SCHEMA_VERSION: i32 = 13;
 
 /// Opens the index database and creates the current schema when missing.
 pub fn open_index_database(path: &Path) -> Result<Connection> {
@@ -603,6 +603,47 @@ mod tests {
         }));
         assert_eq!(user_version, INDEX_DB_SCHEMA_VERSION);
 
+        Ok(())
+    }
+
+    #[test]
+    fn open_index_database_invalidates_best_effort_session_snapshots_once() -> Result<()> {
+        let path = unique_db_path("index-db-invalidate-best-effort");
+        let connection = open_index_database(&path)?;
+        insert_indexed_session(
+            &connection,
+            IndexedSessionFixture::new("project", SourceKind::Claude, "session", "/tmp/repo"),
+        )?;
+        connection.execute(
+            "
+            UPDATE sessions
+            SET determinism = 'best_effort_forward',
+                source_size = 100,
+                source_mtime_ms = 200
+            WHERE project_id = 'project' AND provider = 'claude' AND session_id = 'session'
+            ",
+            [],
+        )?;
+        connection.execute_batch(&format!(
+            "PRAGMA user_version = {}",
+            INDEX_DB_SCHEMA_VERSION - 1
+        ))?;
+        drop(connection);
+
+        let reopened = open_index_database(&path)?;
+        let snapshot: (Option<i64>, Option<i64>) = reopened.query_row(
+            "
+            SELECT source_size, source_mtime_ms
+            FROM sessions
+            WHERE project_id = 'project' AND provider = 'claude' AND session_id = 'session'
+            ",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let user_version: i32 = reopened.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+
+        assert_eq!(snapshot, (None, None));
+        assert_eq!(user_version, INDEX_DB_SCHEMA_VERSION);
         Ok(())
     }
 

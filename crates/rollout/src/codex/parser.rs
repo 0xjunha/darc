@@ -133,6 +133,10 @@ struct RawEventPayload {
     #[serde(default)]
     turn_id: Option<String>,
     #[serde(default)]
+    started_at: Option<Value>,
+    #[serde(default)]
+    completed_at: Option<Value>,
+    #[serde(default)]
     last_agent_message: Option<String>,
     #[serde(default)]
     info: Option<RawTokenCountInfo>,
@@ -296,6 +300,7 @@ struct RolloutLineParser<'a, S> {
     cli_version: CodexCliVersion,
     has_event_user_boundaries: bool,
     pending_turn_id: Option<String>,
+    pending_turn_started_at: Option<String>,
     pending_turn_model: Option<String>,
     pending_turn_token_usage: NormalizedTokenUsage,
     pending_turn_has_token_usage: bool,
@@ -323,6 +328,7 @@ impl<'a, S: CodexRolloutSink> RolloutLineParser<'a, S> {
             cli_version,
             has_event_user_boundaries,
             pending_turn_id: None,
+            pending_turn_started_at: None,
             pending_turn_model: None,
             pending_turn_token_usage: NormalizedTokenUsage::default(),
             pending_turn_has_token_usage: false,
@@ -363,6 +369,8 @@ impl<'a, S: CodexRolloutSink> RolloutLineParser<'a, S> {
                             "task lifecycle events",
                         )?;
                         self.pending_turn_id = event.turn_id;
+                        self.pending_turn_started_at =
+                            Some(event_timestamp(event.started_at.as_ref(), &timestamp));
                         self.pending_turn_model = None;
                         self.pending_turn_token_usage = NormalizedTokenUsage::default();
                         self.pending_turn_has_token_usage = false;
@@ -391,15 +399,17 @@ impl<'a, S: CodexRolloutSink> RolloutLineParser<'a, S> {
                             "task lifecycle events",
                         )?;
                         if let Some(mut turn) = self.current_turn.take() {
+                            let completed_at =
+                                event_timestamp(event.completed_at.as_ref(), &timestamp);
                             if !turn_has_final_answer(&turn)
                                 && let Some(message) = non_empty_text(event.last_agent_message)
                             {
                                 turn.final_answer = Some(CodexTurnMessage {
-                                    timestamp: timestamp.clone(),
+                                    timestamp: completed_at.clone(),
                                     text: message,
                                 });
                             }
-                            turn.completed_at = Some(timestamp);
+                            turn.completed_at = Some(completed_at);
                             turn.status = CodexTurnStatus::Completed;
                             self.sink.push_turn(turn).map_err(ParseIntoError::Sink)?;
                         }
@@ -620,7 +630,8 @@ impl<'a, S: CodexRolloutSink> RolloutLineParser<'a, S> {
 
     /// Starts one new turn and applies any already observed pending metadata.
     fn start_turn(&mut self, timestamp: String, user_message: String) -> CodexTurn {
-        let mut turn = start_turn(timestamp, self.pending_turn_id.take(), user_message);
+        let started_at = self.pending_turn_started_at.take().unwrap_or(timestamp);
+        let mut turn = start_turn(started_at, self.pending_turn_id.take(), user_message);
         if let Some(model) = self.pending_turn_model.take() {
             set_turn_primary_model(&mut turn, model);
         }
@@ -740,6 +751,50 @@ fn start_turn(timestamp: String, turn_id: Option<String>, user_message: String) 
         token_usage: None,
         steps: Vec::new(),
     }
+}
+
+/// Returns a lifecycle timestamp from a payload field or its JSONL line fallback.
+fn event_timestamp(value: Option<&Value>, fallback: &str) -> String {
+    match value {
+        Some(Value::String(text)) if !text.is_empty() => text.clone(),
+        Some(Value::Number(number)) => number
+            .as_i64()
+            .and_then(format_unix_timestamp_seconds)
+            .unwrap_or_else(|| fallback.to_owned()),
+        _ => fallback.to_owned(),
+    }
+}
+
+/// Formats one Unix timestamp in seconds as a UTC RFC 3339 timestamp.
+fn format_unix_timestamp_seconds(seconds: i64) -> Option<String> {
+    if seconds < 0 {
+        return None;
+    }
+    let days = seconds / 86_400;
+    let second_of_day = seconds % 86_400;
+    let hour = second_of_day / 3_600;
+    let minute = second_of_day % 3_600 / 60;
+    let second = second_of_day % 60;
+    let (year, month, day) = civil_date_from_unix_days(days);
+    Some(format!(
+        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z"
+    ))
+}
+
+/// Converts days since the Unix epoch into a Gregorian calendar date.
+fn civil_date_from_unix_days(days: i64) -> (i64, i64, i64) {
+    let shifted_days = days + 719_468;
+    let era = shifted_days.div_euclid(146_097);
+    let day_of_era = shifted_days - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_phase = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_phase + 2) / 5 + 1;
+    let month = month_phase + if month_phase < 10 { 3 } else { -9 };
+    let year = year + if month <= 2 { 1 } else { 0 };
+    (year, month, day)
 }
 
 fn normalize_turn(mut turn: CodexTurn) -> CodexTurn {
