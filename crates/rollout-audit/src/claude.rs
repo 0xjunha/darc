@@ -26,6 +26,8 @@ use crate::schema_diff::{normalize_json, summarize_schema_differences, truncate_
 
 /// Stores the npm package name for released Claude CLI audits.
 const NPM_CLAUDE_CODE_PACKAGE: &str = "@anthropic-ai/claude-code";
+/// Stores the native-wrapper marker expected by Claude's npm launcher.
+const CLAUDE_NPM_WRAPPER_ENV_NAME: &str = "CLAUDE_CODE_INSTALLED_VIA_NPM_WRAPPER";
 /// Stores the npm package name for released Claude SDK audits.
 const NPM_AGENT_SDK_PACKAGE: &str = "@anthropic-ai/claude-agent-sdk";
 /// Stores the human-readable source label for Claude npm releases.
@@ -346,14 +348,17 @@ impl ReleasedClaudeCli {
                 command.arg(entrypoint);
                 command
             }
-            Self::NativeBinary(binary) => {
-                let mut command = Command::new(binary);
-                command.env("CLAUDE_CODE_INSTALLED_VIA_NPM_WRAPPER", "1");
-                command
-            }
+            Self::NativeBinary(binary) => Command::new(binary),
         };
         command.current_dir(working_dir);
         command
+    }
+
+    /// Applies environment entries required by this released Claude CLI target.
+    fn apply_target_environment(&self, command: &mut Command) {
+        if matches!(self, Self::NativeBinary(_)) {
+            command.env(CLAUDE_NPM_WRAPPER_ENV_NAME, "1");
+        }
     }
 
     /// Returns the path used to identify this released CLI target in diagnostics.
@@ -853,6 +858,7 @@ impl NpmClaudeSchemaAuditProvider {
             command.arg(fixture.allowed_tools.join(","));
         }
         self.configure_command_environment(&mut command, &project_root)?;
+        cli_command.apply_target_environment(&mut command);
 
         let output =
             run_command_with_timeout(&mut command, CLI_COMMAND_TIMEOUT).with_context(|| {
@@ -955,6 +961,7 @@ impl NpmClaudeSchemaAuditProvider {
         let mut command =
             build_cli_capability_probe_command(&self.runtime, cli_command, working_dir);
         self.configure_command_environment(&mut command, project_root)?;
+        cli_command.apply_target_environment(&mut command);
         inspect_cli_capabilities(&mut command, cli_command.display_path())
     }
 }
@@ -2735,17 +2742,23 @@ mod tests {
     }
 
     #[test]
-    fn released_cli_command_runs_native_binary_directly() {
+    fn released_cli_command_preserves_native_wrapper_marker_after_environment_config() {
         let runtime = super::AuditRuntime {
             node_binary: PathBuf::from("/usr/local/bin/node"),
             node_platform_suffix: "darwin-arm64".to_owned(),
             hook_python: PathBuf::from("/usr/bin/python3"),
         };
-        let mut command = super::ReleasedClaudeCli::NativeBinary(PathBuf::from(
+        let cli = super::ReleasedClaudeCli::NativeBinary(PathBuf::from(
             "/tmp/package/node_modules/@anthropic-ai/claude-code-darwin-arm64/claude",
-        ))
-        .command(&runtime, Path::new("/tmp/repo"));
+        ));
+        let mut command = cli.command(&runtime, Path::new("/tmp/repo"));
         command.arg("--help");
+        configure_host_auth_environment_from_iter(
+            &mut command,
+            Path::new("/tmp/repo"),
+            [(OsString::from("PATH"), OsString::from("/usr/bin"))],
+        );
+        cli.apply_target_environment(&mut command);
         let envs = command_envs(&command);
 
         assert_eq!(
@@ -2753,7 +2766,7 @@ mod tests {
             OsStr::new("/tmp/package/node_modules/@anthropic-ai/claude-code-darwin-arm64/claude")
         );
         assert_eq!(
-            envs.get(&OsString::from("CLAUDE_CODE_INSTALLED_VIA_NPM_WRAPPER")),
+            envs.get(&OsString::from(super::CLAUDE_NPM_WRAPPER_ENV_NAME)),
             Some(&Some(OsString::from("1")))
         );
         assert_eq!(command.get_args().collect::<Vec<_>>(), vec!["--help"]);
