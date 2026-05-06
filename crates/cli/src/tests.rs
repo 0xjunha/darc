@@ -26,9 +26,9 @@ use super::{
     Cli, ColorArg, Commands, HELP_STYLES, claude_schema_audit_exit_code, cli_command,
     codex_schema_audit_exit_code, format_claude_schema_audit_report,
     format_codex_schema_audit_report, format_query_clap_error, format_query_error,
-    parse_window_days, release_version_is_newer, resolve_query_time_bound_at,
-    should_auto_color_output, should_check_upgrade_nudge, should_color_output,
-    should_notify_upgrade_nudge, upgrade_nudge_enabled,
+    parse_window_days, release_version_is_newer, render_agent_help_guide, render_agents_md_line,
+    resolve_query_time_bound_at, should_auto_color_output, should_check_upgrade_nudge,
+    should_color_output, should_notify_upgrade_nudge, upgrade_nudge_enabled,
 };
 
 fn compatible_report() -> CodexSchemaAuditReport {
@@ -138,10 +138,16 @@ fn top_level_help_points_to_common_workflows() {
     let help = cli_command().render_long_help().to_string();
 
     assert!(help.contains("Archive, index, and query coding-agent sessions"));
+    assert!(help.contains("Agents can run `darc agent-help` for usage guidance."));
     assert!(help.contains("Common workflows:"));
     assert!(help.contains(
         "darc status                                      # check active-project health"
     ));
+    assert!(
+        help.contains(
+            "darc agent-help                                  # show agent usage guidance"
+        )
+    );
     assert!(help.contains(
         "darc refresh --auto                              # keep Darc fresh automatically on macOS"
     ));
@@ -168,11 +174,68 @@ fn top_level_help_points_to_common_workflows() {
             .all(|column| *column == workflow_comment_columns[0])
     );
     assert!(help.contains("  search "));
+    assert!(help.contains("  agent-help "));
     assert!(help.contains("  project "));
     assert!(!help.contains("  query "));
     assert!(!help.contains("  link "));
     assert!(!help.contains("  remove "));
     assert!(!help.contains("  rename-from "));
+}
+
+#[test]
+fn parses_agent_help_command() {
+    let guide = Cli::try_parse_from(["darc", "agent-help"]).unwrap();
+    assert!(matches!(
+        guide.command,
+        Commands::AgentHelp(super::AgentHelpArgs {
+            agents_md_line: false
+        })
+    ));
+
+    let line = Cli::try_parse_from(["darc", "agent-help", "--agents-md-line"]).unwrap();
+    assert!(matches!(
+        line.command,
+        Commands::AgentHelp(super::AgentHelpArgs {
+            agents_md_line: true
+        })
+    ));
+}
+
+#[test]
+fn agent_help_renders_operating_guide() {
+    let guide = render_agent_help_guide();
+
+    assert_contains_in_order(
+        guide,
+        &[
+            "# Darc Agent Help",
+            "## When to use Darc",
+            "## Safe first commands",
+            "## Evidence ladder",
+            "## File pivots",
+            "## Output discipline",
+            "## Mutating boundaries",
+        ],
+    );
+    assert!(guide.contains("`darc status --json`"));
+    assert!(guide.contains("`darc search --mode file-path <glob> --limit 5`"));
+    assert!(guide.contains("`darc list files --co-touched-with <path> --limit 10`"));
+    assert!(guide.contains("`darc refresh`, `darc sync`, `darc index`"));
+    assert!(!guide.contains("AGENTS.md trigger"));
+    assert!(!guide.contains("darc agent-help --agents-md-line >> AGENTS.md"));
+}
+
+#[test]
+fn agents_md_line_is_single_marker_wrapped_line() {
+    let line = render_agents_md_line();
+
+    assert_eq!(
+        line,
+        "<!-- darc:agent-help:start --> When prior coding-agent context could affect the task, run `darc agent-help` and use Darc to find exact prior-session evidence. <!-- darc:agent-help:end -->"
+    );
+    assert_eq!(line.lines().count(), 1);
+    assert!(line.starts_with("<!-- darc:agent-help:start --> "));
+    assert!(line.ends_with(" <!-- darc:agent-help:end -->"));
 }
 
 #[test]

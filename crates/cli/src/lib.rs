@@ -89,6 +89,9 @@ const UPGRADE_NUDGE_TIMEOUT: Duration = Duration::from_secs(2);
 const UPGRADE_NUDGE_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const UPGRADE_NUDGE_NOTIFY_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const UPGRADE_ERROR_BODY_LIMIT: usize = 240;
+const AGENTS_MD_GUIDANCE_START_MARKER: &str = "<!-- darc:agent-help:start -->";
+const AGENTS_MD_GUIDANCE_END_MARKER: &str = "<!-- darc:agent-help:end -->";
+const AGENTS_MD_GUIDANCE_TEXT: &str = "When prior coding-agent context could affect the task, run `darc agent-help` and use Darc to find exact prior-session evidence.";
 
 /// Returns one styled help trailer section.
 fn styled_help_section(title: &str, body: &str) -> String {
@@ -101,6 +104,7 @@ fn root_after_help() -> String {
         "Common workflows",
         concat!(
             "  darc status                                      # check active-project health\n",
+            "  darc agent-help                                  # show agent usage guidance\n",
             "  darc refresh --auto                              # keep Darc fresh automatically on macOS\n",
             "  darc refresh                                     # refresh once without background jobs\n",
             "  darc search \"panic\" --limit 5                    # find matching turns\n",
@@ -161,7 +165,7 @@ fn with_explicit_help_arg(command: ClapCommand) -> ClapCommand {
 #[command(
     name = "darc",
     version,
-    about = "Archive, index, and query coding-agent sessions",
+    about = "Archive, index, and query coding-agent sessions. Agents can run `darc agent-help` for usage guidance.",
     color = ColorChoice::Auto,
     styles = HELP_STYLES,
     after_help = root_after_help()
@@ -186,6 +190,12 @@ enum Commands {
         long_about = "Show Darc status for the active project or workspace.\n\nBy default this resolves the project from the current directory and prints root, config, source, archive, index, and sync-manifest status.\nUse `--workspace` to summarize every configured project in the shared Darc workspace.\nUse `--check` to run sync planning without writing manifests, config, archives, or SQLite."
     )]
     Status(StatusArgs),
+    #[command(
+        name = "agent-help",
+        about = "Show agent-friendly Darc usage guidance",
+        long_about = "Show agent-friendly Darc usage guidance.\n\nUse this from AGENTS.md, CLAUDE.md, or an agent session when prior coding-agent history might affect the current task. The guide explains safe read commands, evidence handles, file pivots, output limits, and mutating boundaries.\n\nPass --agents-md-line to print the one-line AGENTS.md trigger that points agents back to this command."
+    )]
+    AgentHelp(AgentHelpArgs),
     #[command(
         about = "List projects, sessions, turns, or files from indexed history",
         long_about = "List projects, sessions, turns, or files from indexed history.\n\nList commands emit JSON envelopes on stdout and are the canonical browse surface for coding agents."
@@ -485,6 +495,17 @@ struct StatusArgs {
         help = "Use this Darc root instead of the default"
     )]
     root: PathBuf,
+}
+
+/// Shows agent-facing usage guidance without reading or writing Darc state.
+#[derive(Debug, Args)]
+struct AgentHelpArgs {
+    #[arg(
+        long = "agents-md-line",
+        help_heading = "Output",
+        help = "Print only the marker-wrapped one-line AGENTS.md guidance"
+    )]
+    agents_md_line: bool,
 }
 
 /// Sync matching Claude and Codex sessions into the project archive.
@@ -2209,6 +2230,7 @@ fn run_cli(cli: Cli) -> i32 {
         Commands::Refresh(args) => standard_exit(run_refresh(args)),
         Commands::Status(args) if args.json => json_exit(run_status(args)),
         Commands::Status(args) => standard_exit(run_status(args)),
+        Commands::AgentHelp(args) => standard_exit(run_agent_help(args)),
         Commands::List(args) => query_exit(run_list(args)),
         Commands::Show(args) => query_exit(run_show(args)),
         Commands::Search(args) => query_exit(run_search(args)),
@@ -2286,6 +2308,73 @@ fn json_exit(result: Result<()>) -> i32 {
 /// Maps canonical query command results to JSON-only machine-readable output.
 fn query_exit(result: Result<()>) -> i32 {
     json_exit(result)
+}
+
+/// Prints the selected agent-facing Darc usage surface.
+fn run_agent_help(args: AgentHelpArgs) -> Result<()> {
+    if args.agents_md_line {
+        println!("{}", render_agents_md_line());
+    } else {
+        print!("{}", render_agent_help_guide());
+    }
+    Ok(())
+}
+
+/// Renders the marker-wrapped one-line AGENTS.md guidance.
+fn render_agents_md_line() -> String {
+    format!(
+        "{AGENTS_MD_GUIDANCE_START_MARKER} {AGENTS_MD_GUIDANCE_TEXT} {AGENTS_MD_GUIDANCE_END_MARKER}"
+    )
+}
+
+/// Renders concise operating guidance for agents using Darc.
+fn render_agent_help_guide() -> &'static str {
+    concat!(
+        "# Darc Agent Help\n",
+        "\n",
+        "Darc is a local archive and query layer for coding-agent sessions. Use it as a complementary evidence source for prior work, not as a replacement for reading the current repository or for your existing agent memory system.\n",
+        "\n",
+        "## When to use Darc\n",
+        "\n",
+        "- Use Darc when prior coding-agent context could affect the task: old decisions, regressions, unfinished work, file/module history, repeated errors, PR handoffs, or user references to earlier sessions.\n",
+        "- Skip Darc for fresh tasks where current files, tests, docs, or the user prompt are enough.\n",
+        "\n",
+        "## Safe first commands\n",
+        "\n",
+        "- `darc status --json`: preflight active-project resolution and index freshness.\n",
+        "- `darc search <query> --limit 5`: find matching turns by keyword.\n",
+        "- `darc search --mode literal --query <text> --limit 5`: find exact text without regex escaping.\n",
+        "- `darc list sessions --limit 5`: browse recent indexed sessions.\n",
+        "- `darc list files --limit 10`: rank files touched in prior sessions.\n",
+        "- `darc list sessions --touching <glob> --limit 5`: find sessions that touched a file or path pattern.\n",
+        "- `darc search --mode file-path <glob> --limit 5`: find turns associated with touched file paths.\n",
+        "\n",
+        "## Evidence ladder\n",
+        "\n",
+        "1. Start with bounded `search`, `list`, or `stats` reads.\n",
+        "2. Keep the returned `session_id` and `turn_ordinal` handles.\n",
+        "3. Skim one candidate session with `darc list turns <SESSION_ID> --view oneline --limit 20`.\n",
+        "4. Inspect exact evidence with `darc show turn <SESSION_ID> <TURN_ORDINAL> --step-limit 10`.\n",
+        "5. Use `darc show session <SESSION_ID> --turn-limit 5 --step-limit 10` only after narrowing.\n",
+        "\n",
+        "## File pivots\n",
+        "\n",
+        "- Use `darc list files --session <SESSION_ID> --limit 50` to inspect one session's file footprint.\n",
+        "- Use `darc list files --co-touched-with <path> --limit 10` to find files commonly changed with a seed file.\n",
+        "- Use file pivots to discover adjacent tests, docs, modules, and follow-up sessions before editing.\n",
+        "\n",
+        "## Output discipline\n",
+        "\n",
+        "- Prefer small `--limit`, `--turn-limit`, and `--step-limit` values first; paginate only after the previous read proves useful.\n",
+        "- Prefer `darc show turn` for exact evidence and `darc show session` for bounded broader context.\n",
+        "- Use `--color never` when piping JSON to `jq` or another parser.\n",
+        "- Quote `session_id` and `turn_ordinal` when reporting evidence so later agents can resolve the same context.\n",
+        "\n",
+        "## Mutating boundaries\n",
+        "\n",
+        "- Read surfaces such as `status --json`, `list`, `show`, `search`, `stats`, and `resolve` are safe for investigation.\n",
+        "- `darc refresh`, `darc sync`, `darc index`, `darc init`, `darc project ...`, and service/upgrade commands can write local Darc state or config; run them only when freshness or setup is part of the task.\n",
+    )
 }
 
 /// Dispatches the supported canonical list commands.

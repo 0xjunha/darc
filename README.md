@@ -68,6 +68,15 @@ darc service status  # check whether background refresh is enabled and running
 darc service disable # turn off automatic background refresh
 ```
 
+Teach agents in this project how to ask Darc for current guidance:
+
+```sh
+darc agent-help --agents-md-line >> AGENTS.md  # and/or CLAUDE.md
+```
+
+That appends one managed AGENTS.md line pointing agents to `darc agent-help`, where the installed CLI explains when to
+use Darc, which read commands are safe, and how to retrieve exact prior-session evidence without dumping full logs.
+
 Then run the read commands:
 
 ```sh
@@ -163,6 +172,7 @@ payload. Pass `--color never` when piping into another program that needs guaran
 | `darc refresh --auto`           | Enable automatic background refresh on macOS and start it now.                                               |
 | `darc refresh`                  | Sync then index the active project once without background jobs.                                             |
 | `darc status`                   | Check active-project or workspace health. Use `--json` for a machine-readable preflight.                     |
+| `darc agent-help`               | Show agent-friendly guidance for finding exact prior-session evidence with Darc.                             |
 | `darc list sessions`            | Browse recent indexed sessions with compact prompt/final-message previews.                                   |
 | `darc list turns <id>`          | List turns for one session. Use `--view oneline` for a compact skim.                                         |
 | `darc list files`               | Rank touched files, find sessions touching a path, list files for one session, or pivot to co-touched files. |
