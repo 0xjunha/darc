@@ -34,3 +34,4 @@
     or compatibility impact, update `CHANGELOG.md` under `Unreleased`.
     - Use one concise user-facing bullet.
     - Do not add changelog entries for pure refactors, tests, formatting, or internal-only cleanup.
+<!-- darc:agent-help:start --> When prior coding-agent context could affect the task, run `darc agent-help` and use Darc to find exact prior-session evidence. <!-- darc:agent-help:end -->

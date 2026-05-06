@@ -5,6 +5,7 @@ All notable Darc release changes should be summarized here.
 ## Unreleased
 
 - Add `darc refresh --auto` to enable automatic background refresh on macOS, start it immediately, and show setup progress.
+- Add `darc agent-help` and a marker-wrapped AGENTS.md guidance line for coding agents.
 
 ## 0.1.2
 
