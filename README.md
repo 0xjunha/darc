@@ -4,10 +4,62 @@
 [![CI](https://github.com/0xjunha/darc/actions/workflows/ci.yml/badge.svg)](https://github.com/0xjunha/darc/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/github/0xjunha/darc/graph/badge.svg?token=J5ZVVBJ3U9)](https://codecov.io/github/0xjunha/darc)
 
-**Darc** is a local archive and query layer for coding-agent sessions: it preserves original session data, indexes it
-into SQLite, and exposes bounded read commands for finding the exact evidence behind prior work.
+> _The **evidence layer** for coding-agent memory_
 
-## What is Darc?
+**Darc** turns agent sessions into a local, queryable evidence archive so agents can find the exact turns, files,
+and decisions behind past work.
+
+**Platforms:** macOS, Linux | **Agents:** Codex, Claude Code
+
+## Quickstart
+
+```sh
+# 1. Install (macOS / Linux)
+curl -fsSL https://github.com/0xjunha/darc/releases/latest/download/darc-installer.sh | sh
+
+# 2. Go to your project
+cd /path/to/project
+
+# 3. Register the current project in the `~/.darc` workspace
+darc init
+
+# 4. Auto-sync and index new agent sessions in the background (macOS only)
+darc refresh --auto  # omit `--auto` to refresh once
+
+# 5. Tell your agents to use Darc
+darc agent-help --agents-md-line >> AGENTS.md  # and/or CLAUDE.md
+```
+
+Agents can then run read commands like these:
+
+```sh
+# Check active project state and freshness
+darc status
+
+# Browse recent activity in this project
+darc list sessions --limit 5                                   # recent indexed sessions
+darc list files --limit 10                                     # rank most-touched files
+darc search "panic unwrap" --limit 5                           # keyword search across turn evidence
+
+# Narrow with time windows, file globs, and providers
+darc list sessions --since 7d --touching "src/**/*.rs"         # sessions touching Rust src this week
+darc search --mode regex --query "error\s+code" \
+  --include-tool-output --since 7d --limit 5                   # regex into tool output, time-bounded
+darc search --mode file-path "docs/**/*.md" --limit 5          # find sessions that touched matching files
+
+# Pivot through related files
+darc list files --co-touched-with src/lib.rs --limit 10        # files commonly changed alongside lib.rs
+
+# Drill down to exact evidence using ids returned above
+darc list turns <SESSION_ID> --view oneline --limit 20         # compact one-line skim of a session's turns
+darc show session <SESSION_ID> --turn-limit 5 --step-limit 10  # bounded session bundle after narrowing
+darc show turn <SESSION_ID> <TURN_ORDINAL> --step-limit 10     # exact turn evidence with bounded steps
+
+# Project metrics: tools, models, active time, top files
+darc stats project --turn-limit 200
+```
+
+## What Is Darc?
 
 **Darc** turns coding-agent session history into a queryable **D**ata **Arc**. Think of it as `rg` for agent history,
 but with the context `rg` cannot infer: every hit is a structured handle into the original turn, surrounding session,
@@ -17,12 +69,9 @@ touched files, and related work.
 their work into lossy summaries, Darc gives them a tool to recover the exact context on demand: what happened, which
 files were touched, and how turns link together.
 
-Darc is the **retrieval and evidence layer for agent memory**. It stores sessions as-is and indexes them for queryable
-lookup. It does not summarize, consolidate or rewrite agent state, so pair it with whatever memory layer your agent
-already uses
-(AGENTS.md, Codex/Claude Code built-in memory, MCP-backed memory tools) for the summarization side.
-
-Supported agents: **Claude Code**, **Codex**.
+Darc stores sessions as-is and indexes them for queryable lookup. It does not summarize, consolidate, or rewrite agent
+state, so pair it with whatever memory layer your agent already uses (AGENTS.md, Codex/Claude Code built-in memory,
+MCP-backed memory tools) for the summarization side.
 
 ![Darc architecture: agent rollouts → sync → archive → SQLite index → query CLI](assets/darc-architecture.png)
 
@@ -39,117 +88,6 @@ Supported agents: **Claude Code**, **Codex**.
 - **Local-first.** Darc reads from local agent rollouts and writes archive/query state under `~/.darc`. Optional upgrade
   checks contact GitHub only for release metadata and require explicit opt-in.
 
-## Quickstart
-
-Install the latest release (macOS / Linux):
-
-```sh
-curl -fsSL https://github.com/0xjunha/darc/releases/latest/download/darc-installer.sh | sh
-```
-
-Run Darc from a project where you already use Claude Code or Codex:
-
-```sh
-cd /path/to/project
-
-darc init                       # register the current project in the shared `~/.darc` workspace
-
-# On macOS, keep Darc fresh automatically in the background:
-darc refresh --auto             # enable automatic background refresh and start it now
-
-# Without background jobs, refresh manually:
-darc refresh                    # sync new session rollouts into `~/.darc` and index into the SQLite DB
-darc refresh --provider claude  # limit refresh to one provider
-darc refresh --all              # refresh every registered project
-darc refresh --watch --all      # for continuous foreground refresh
-
-# Use service commands when you want explicit lifecycle control:
-darc service status  # check whether background refresh is enabled and running
-darc service disable # turn off automatic background refresh
-```
-
-Teach agents in this project how to ask Darc for current guidance:
-
-```sh
-darc agent-help --agents-md-line >> AGENTS.md  # and/or CLAUDE.md
-```
-
-That appends one managed AGENTS.md line pointing agents to `darc agent-help`, where the installed CLI explains when to
-use Darc, which read commands are safe, and how to retrieve exact prior-session evidence without dumping full logs.
-
-Then run the read commands:
-
-```sh
-# Check active project state and freshness
-darc status
-
-# Browse recent activity in this project
-darc list sessions --limit 5                             # recent indexed sessions
-darc list files --limit 10                               # rank most-touched files
-darc search "panic unwrap" --limit 5                     # keyword search across turn evidence
-
-# Narrow with time windows, file globs, and providers
-darc list sessions --since 7d --touching "src/**/*.rs"   # sessions touching Rust src this week
-darc search --mode regex --query "error\s+code" \
-  --include-tool-output --since 7d --limit 5             # regex into tool output, time-bounded
-darc search --mode file-path "docs/**/*.md" --limit 5    # find sessions that touched matching files
-
-# Pivot through related files
-darc list files --co-touched-with src/lib.rs --limit 10  # files commonly changed alongside lib.rs
-
-# Drill down to exact evidence using ids returned above
-darc list turns <SESSION_ID> --view oneline --limit 20         # compact one-line skim of a session's turns
-darc show session <SESSION_ID> --turn-limit 5 --step-limit 10  # bounded session bundle after narrowing
-darc show turn <SESSION_ID> <TURN_ORDINAL> --step-limit 10     # exact turn evidence with bounded steps
-
-# Project metrics: tools, models, active time, top files
-darc stats project --turn-limit 200
-```
-
-Check for newer Darc CLI releases:
-
-```sh
-darc upgrade --check
-darc upgrade --check --json
-darc upgrade
-```
-
-Darc can show a short startup nudge when a newer release is available. To enable it, set
-`check_for_update_on_startup = true` in `~/.darc/config.toml`. Write-oriented human commands such as `refresh`, `sync`,
-`index`, and mutating project/service commands read the cached release metadata under `~/.darc/run`; when the cache is
-stale, Darc refreshes it after the command completes. Read-only commands such as `status`, `search`, `list`, and
-`service status` do not perform passive checks. Set `DARC_NO_UPDATE_CHECK=1` to suppress passive checks for one process.
-To hide one release:
-
-```sh
-darc upgrade dismiss <VERSION>
-darc upgrade dismiss --root <ROOT> <VERSION>  # custom Darc root
-```
-
-## Uninstall
-
-If you enabled the macOS background refresh service, turn it off before removing the binaries:
-
-```sh
-darc service disable
-```
-
-Then remove the binaries installed by the release installer:
-
-```sh
-rm -f ~/.local/bin/darc ~/.local/bin/darc-update
-```
-
-If you installed Darc into a custom directory, remove both binaries from that directory instead.
-
-Darc keeps local data under `~/.darc`. Uninstalling the binary does not delete that archive. To delete Darc data too:
-
-```sh
-rm -rf ~/.darc
-```
-
-If you used `--root <path>` with Darc, remove that custom root instead.
-
 ## Concepts
 
 Darc keeps one local **workspace** at `~/.darc`. A workspace contains many **projects** (one per registered checkout),
@@ -163,6 +101,21 @@ worktrees, and project renames, so agents can quote them across conversations.
 
 Read commands always emit JSON envelopes tagged with a `schema` id (e.g. `darc.query.search.turns.v1`) and a `data`
 payload. Pass `--color never` when piping into another program that needs guaranteed plain JSON.
+
+## The Context-Building Loop
+
+Darc is strongest when an agent uses it as an evidence ladder:
+
+1. Preflight the active project with `darc status` or `darc status --json`.
+2. Discover candidates with small `list`, `search`, or `stats` reads.
+3. Skim a candidate session with `darc list turns <SESSION_ID> --view oneline`.
+4. Drill into one turn with `darc show turn <SESSION_ID> <TURN_ORDINAL>`.
+5. Pull a bounded broader view with `darc show session <SESSION_ID>` only after narrowing.
+6. Pivot through touched files (`--co-touched-with`, `--touching`) to find adjacent work, tests, docs, and follow-up
+   sessions.
+
+That loop lets an agent answer "what changed here before?" without dumping an entire transcript archive into the
+prompt.
 
 ## Everyday Commands
 
@@ -189,21 +142,6 @@ payload. Pass `--color never` when piping into another program that needs guaran
 | `darc upgrade`                  | Check for or apply newer Darc CLI releases.                                                                  |
 
 Run `darc --help` or `darc help <command>` for the current visible CLI surface.
-
-## The Context-Building Loop
-
-Darc is strongest when an agent uses it as an evidence ladder:
-
-1. Preflight the active project with `darc status` or `darc status --json`.
-2. Discover candidates with small `list`, `search`, or `stats` reads.
-3. Skim a candidate session with `darc list turns <SESSION_ID> --view oneline`.
-4. Drill into one turn with `darc show turn <SESSION_ID> <TURN_ORDINAL>`.
-5. Pull a bounded broader view with `darc show session <SESSION_ID>` only after narrowing.
-6. Pivot through touched files (`--co-touched-with`, `--touching`) to find adjacent work, tests, docs, and follow-up
-   sessions.
-
-That loop lets an agent answer "what happened here before?" without dumping an entire transcript archive into the
-prompt.
 
 ## Recipes
 
@@ -254,15 +192,15 @@ darc list sessions --limit 5 --color never \
 
 ## Agent-Friendly Design
 
-Darc is built to be useful from inside an agent's context window, not just from a developer's terminal. Three design
+Darc is built to be useful from inside an agent's context window, not only from an interactive terminal. Three design
 choices follow from that:
 
 **Bounded by default.** Every read command has small `--limit`, `--turn-limit`, and `--step-limit` defaults. A session
 bundle returns a paginated turn page plus a capped file preview, not the whole session. `darc list turns --view oneline`
 collapses each turn to a single preview row for fast skimming, and `darc show turn`/`show session --view narrative`
 (the default) omits tool arguments, outputs, and raw payload blobs — pass `--include-raw` to opt back in. Agents should
-prefer the smallest read that answers the question and only widen pagination when the previous read clearly justified
-it.
+prefer the smallest read that answers the question and only widen pagination when the previous read has clearly
+justified it.
 
 **Filter aggressively, then drill.** Combine `--since`, `--touching`, `--provider`, `--mode`, `--field`, and
 `--co-touched-with` to narrow before reading evidence. Each search hit returns the `session_id` and `turn_ordinal`
@@ -277,7 +215,7 @@ Use `--color never` to guarantee plain JSON on stdout.
 See [Query protocol](docs/query-protocol.md) for the full command matrix, payload schemas, pagination rules, search
 modes, and error contracts.
 
-## Project Moves And Renames
+## Project Moves and Renames
 
 Darc stores stable project identity under configured project names, so history can survive checkout moves and
 repository renames.
@@ -286,20 +224,25 @@ The safe bundled workflow for a renamed project is:
 
 ```sh
 cd /path/to/new-project
+# review with `--dry-run` first
 darc project rename-from <old-project-name> --dry-run
-darc project rename-from <old-project-name>          # rerun without --dry-run after reviewing
+darc project rename-from <old-project-name>
 ```
 
 `rename-from` is equivalent to `link <old> + refresh + remove <old>`, run as one step. Use the lower-level commands
 when you want manual control:
 
 ```sh
-darc project link <old-project-name> --dry-run       # bring an old project's known paths into the current one (non-destructive)
-darc project remove <old-project-name> --dry-run     # delete a configured project, its archive, and its indexed rows (destructive)
+darc project link <old-project-name> --dry-run    # bring an old project's known paths into the current one (non-destructive)
+darc project remove <old-project-name> --dry-run  # delete a configured project, its archive, and its indexed rows (destructive)
 ```
 
 Always run with `--dry-run` first and rerun without it once the reported changes look right.
 See [Project rename and linking](docs/project-rename.md).
+
+## Upgrade and Uninstall
+
+- See [upgrade and uninstall](docs/upgrade-uninstall.md)
 
 ## Documentation
 
@@ -328,5 +271,3 @@ cargo +stable clippy --locked --workspace --all-targets --all-features -- -D war
 cargo +stable test --locked --workspace
 cargo +stable check --locked --workspace --all-targets --all-features --profile dist
 ```
-
-To reproduce the Linux clippy gate in Docker, run `scripts/check-linux-clippy.sh`.
