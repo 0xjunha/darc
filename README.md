@@ -53,15 +53,19 @@ Run Darc from a project where you already use Claude Code or Codex:
 cd /path/to/project
 
 darc init                       # register the current project in the shared `~/.darc` workspace
+
+# On macOS, keep Darc fresh automatically in the background:
+darc refresh --auto             # enable automatic background refresh and start it now
+
+# Without background jobs, refresh manually:
 darc refresh                    # sync new session rollouts into `~/.darc` and index into the SQLite DB
 darc refresh --provider claude  # limit refresh to one provider
 darc refresh --all              # refresh every registered project
 darc refresh --watch --all      # for continuous foreground refresh
 
-# On macOS, the same refresh workflow can run automatically in the background:
-darc service enable  # turn on automatic background refresh after reboot
-darc service start   # start background refresh now (auto-refresh)
+# Use service commands when you want explicit lifecycle control:
 darc service status  # check whether background refresh is enabled and running
+darc service disable # turn off automatic background refresh
 ```
 
 Then run the read commands:
@@ -156,7 +160,8 @@ payload. Pass `--color never` when piping into another program that needs guaran
 | Command                         | Use                                                                                                          |
 |---------------------------------|--------------------------------------------------------------------------------------------------------------|
 | `darc init`                     | Detect local coding-agent sources and register the current project.                                          |
-| `darc refresh`                  | Sync then index the active project. This is the daily command.                                               |
+| `darc refresh --auto`           | Enable automatic background refresh on macOS and start it now.                                               |
+| `darc refresh`                  | Sync then index the active project once without background jobs.                                             |
 | `darc status`                   | Check active-project or workspace health. Use `--json` for a machine-readable preflight.                     |
 | `darc list sessions`            | Browse recent indexed sessions with compact prompt/final-message previews.                                   |
 | `darc list turns <id>`          | List turns for one session. Use `--view oneline` for a compact skim.                                         |

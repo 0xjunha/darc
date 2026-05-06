@@ -101,7 +101,8 @@ fn root_after_help() -> String {
         "Common workflows",
         concat!(
             "  darc status                                      # check active-project health\n",
-            "  darc refresh                                     # sync and index archived sessions\n",
+            "  darc refresh --auto                              # keep Darc fresh automatically on macOS\n",
+            "  darc refresh                                     # refresh once without background jobs\n",
             "  darc search \"panic\" --limit 5                    # find matching turns\n",
             "  darc show session <SESSION_ID> --turn-limit 5    # inspect a session\n",
             "  darc upgrade --check                             # check for a newer CLI release\n\n",
@@ -177,7 +178,7 @@ enum Commands {
     Init(InitArgs),
     #[command(
         about = "Sync then index archived sessions for the active project",
-        long_about = "Sync then index archived sessions for the active project.\n\nThis is the daily happy path after `darc init`.\nBy default it refreshes the project resolved from the current directory.\nUse `--provider` to limit both sync and index to selected providers.\nUse `--all` to refresh every registered project in the shared darc workspace.\nWhen `--all` is set, darc continues past per-project failures, prints a workspace summary, and exits non-zero if any project failed."
+        long_about = "Sync then index archived sessions for the active project.\n\nThis is the daily happy path after `darc init`.\nBy default it refreshes the project resolved from the current directory.\nUse `--auto` to enable automatic background refresh and start it now.\nUse `--provider` to limit both sync and index to selected providers.\nUse `--all` to refresh every registered project in the shared darc workspace.\nWhen `--all` is set, darc continues past per-project failures, prints a workspace summary, and exits non-zero if any project failed."
     )]
     Refresh(RefreshArgs),
     #[command(
@@ -307,6 +308,22 @@ struct RefreshArgs {
         help = "Refresh every registered project, continue past per-project failures, and summarize the results"
     )]
     all: bool,
+
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "provider",
+            "all",
+            "watch",
+            "debounce",
+            "min_interval",
+            "reconcile_interval",
+            "poll"
+        ],
+        help_heading = "Mode",
+        help = "Enable automatic background refresh for all projects and start it now"
+    )]
+    auto: bool,
 
     #[arg(
         long,
@@ -3533,6 +3550,67 @@ impl<W: Write> RefreshProgressPrinter<W> {
     }
 }
 
+/// Renders automatic background refresh setup progress for interactive terminals.
+struct ServiceProgressPrinter<W> {
+    writer: W,
+    style: HumanStyle,
+    enabled: bool,
+}
+
+impl ServiceProgressPrinter<io::Stderr> {
+    /// Builds one service progress printer for the current stderr stream.
+    fn stderr() -> Self {
+        let term = env::var("TERM").ok();
+        Self::new(
+            io::stderr(),
+            HumanStyle::stderr(),
+            io::stderr().is_terminal() && term.as_deref() != Some("dumb"),
+        )
+    }
+}
+
+impl<W: Write> ServiceProgressPrinter<W> {
+    /// Builds one service progress printer from resolved terminal facts.
+    fn new(writer: W, style: HumanStyle, enabled: bool) -> Self {
+        Self {
+            writer,
+            style,
+            enabled,
+        }
+    }
+
+    /// Writes the setup start message.
+    fn started(&mut self) {
+        if self.enabled {
+            let _ = writeln!(self.writer, "Enabling automatic background refresh...");
+            let _ = self.writer.flush();
+        }
+    }
+
+    /// Writes one numbered setup step.
+    fn step(&mut self, index: usize, total: usize, message: &str) {
+        if self.enabled {
+            let _ = writeln!(
+                self.writer,
+                "  [{}/{}] {}",
+                self.style.count(index),
+                self.style.count(total),
+                message
+            );
+            let _ = self.writer.flush();
+        }
+    }
+
+    /// Writes the setup completion message.
+    fn done(&mut self) {
+        if self.enabled {
+            let _ = writeln!(self.writer, "  {}", self.style.ok("done"));
+            let _ = writeln!(self.writer);
+            let _ = self.writer.flush();
+        }
+    }
+}
+
 /// Returns whether automatic terminal color should be enabled.
 fn should_auto_color_output(is_terminal: bool, no_color: bool, term: Option<&str>) -> bool {
     is_terminal && !no_color && term != Some("dumb")
@@ -4915,6 +4993,10 @@ impl WatchRefreshReason {
 
 /// Runs the daily refresh workflow for one or all projects.
 fn run_refresh(args: RefreshArgs) -> Result<()> {
+    if args.auto {
+        return run_refresh_auto(&args.root);
+    }
+
     let provider_filter = args.provider.into_iter().map(ProviderArg::into).collect();
     let request = RefreshRunRequest {
         root: args.root,
@@ -4935,6 +5017,31 @@ fn run_refresh(args: RefreshArgs) -> Result<()> {
     }
 
     run_refresh_once(&request)
+}
+
+/// Enables automatic background refresh and starts it immediately.
+#[cfg(target_os = "macos")]
+fn run_refresh_auto(root: &Path) -> Result<()> {
+    let mut progress = ServiceProgressPrinter::stderr();
+    progress.started();
+    progress.step(1, 2, "Writing LaunchAgent...");
+    let plist_path = write_macos_launch_agent(root, true)?;
+    progress.step(2, 2, "Starting background service...");
+    start_macos_service_impl(root)?;
+    progress.done();
+
+    let style = HumanStyle::stdout();
+    print_section(style, "Service");
+    print_field(style, 2, "Status", style.ok("enabled and started"));
+    print_field(style, 2, "LaunchAgent", style.path(plist_path.display()));
+    print_field(style, 2, "Command", watch_all_command(root, style));
+    Ok(())
+}
+
+/// Reports unsupported automatic background refresh on non-macOS platforms.
+#[cfg(not(target_os = "macos"))]
+fn run_refresh_auto(_root: &Path) -> Result<()> {
+    bail!("`darc refresh --auto` is currently supported only on macOS")
 }
 
 /// Runs one refresh cycle under the shared workspace lock.
@@ -5483,37 +5590,63 @@ fn disable_macos_service(root: &Path) -> Result<()> {
 /// Starts or restarts the macOS LaunchAgent in the current login session.
 #[cfg(target_os = "macos")]
 fn start_macos_service(root: &Path) -> Result<()> {
+    start_macos_service_impl(root)?;
+    let style = HumanStyle::stdout();
+    print_section(style, "Service");
+    print_field(style, 2, "Status", style.ok("started"));
+    print_field(style, 2, "Command", watch_all_command(root, style));
+    Ok(())
+}
+
+/// Starts or restarts the macOS LaunchAgent without printing status.
+#[cfg(target_os = "macos")]
+fn start_macos_service_impl(root: &Path) -> Result<()> {
     let launch_agent_path = macos_launch_agent_path()?;
     let plist_path = if launch_agent_path.exists() {
         launch_agent_path
     } else {
         write_macos_runtime_plist(root)?
     };
-    if !macos_service_loaded()? {
-        run_launchctl(&[
-            "bootstrap".to_owned(),
-            macos_launch_domain()?,
-            plist_path.display().to_string(),
-        ])?;
-    }
-    run_launchctl(&[
-        "kickstart".to_owned(),
-        "-k".to_owned(),
+    let loaded = macos_service_loaded()?;
+    for args in macos_service_start_launchctl_args(
+        &plist_path,
+        loaded,
+        macos_launch_domain()?,
         macos_launch_target()?,
-    ])?;
-    let style = HumanStyle::stdout();
-    print_section(style, "Service");
-    print_field(style, 2, "Status", style.ok("started"));
-    print_field(
-        style,
-        2,
-        "Command",
-        format!(
-            "darc refresh --watch --all --root {}",
-            style.path(root.display())
-        ),
-    );
+    ) {
+        run_launchctl(&args)?;
+    }
     Ok(())
+}
+
+/// Builds the launchctl commands needed to load and start the service plist.
+#[cfg(any(target_os = "macos", test))]
+fn macos_service_start_launchctl_args(
+    plist_path: &Path,
+    loaded: bool,
+    domain: String,
+    target: String,
+) -> Vec<Vec<String>> {
+    let mut commands = Vec::new();
+    if loaded {
+        commands.push(vec!["bootout".to_owned(), target.clone()]);
+    }
+    commands.push(vec![
+        "bootstrap".to_owned(),
+        domain,
+        plist_path.display().to_string(),
+    ]);
+    commands.push(vec!["kickstart".to_owned(), "-k".to_owned(), target]);
+    commands
+}
+
+/// Formats the foreground command used by the background refresh service.
+#[cfg(target_os = "macos")]
+fn watch_all_command(root: &Path, style: HumanStyle) -> String {
+    format!(
+        "darc refresh --watch --all --root {}",
+        style.path(root.display())
+    )
 }
 
 /// Stops the macOS LaunchAgent in the current login session.
