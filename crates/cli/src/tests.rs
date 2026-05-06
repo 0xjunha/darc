@@ -13,7 +13,8 @@ use darc_core::{
     config::{ClaudeSourceConfig, CodexSourceConfig, SharedConfig, SourcesConfig, WatchConfig},
 };
 use darc_rollout_audit::claude::{
-    ClaudeSchemaAuditReport, ClaudeSchemaDrift, ClaudeSchemaDriftWindow, ClaudeSchemaSurveyMode,
+    ClaudeSchemaAuditFailure, ClaudeSchemaAuditReport, ClaudeSchemaDrift,
+    ClaudeSchemaDriftBoundaryPrecision, ClaudeSchemaDriftWindow, ClaudeSchemaSurveyMode,
     ClaudeSdkSchemaDrift,
 };
 use darc_rollout_audit::codex::{CodexSchemaAuditReport, CodexSchemaDrift};
@@ -73,6 +74,8 @@ fn compatible_claude_report() -> ClaudeSchemaAuditReport {
         latest_exact_covered_version: "2.1.87".to_owned(),
         audited_versions: vec!["2.1.92".to_owned(), "2.1.87".to_owned()],
         inspected_versions: vec!["2.1.92".to_owned(), "2.1.87".to_owned()],
+        compatible_inspected_versions: vec!["2.1.92".to_owned(), "2.1.87".to_owned()],
+        failed_versions: Vec::new(),
         assumed_compatible_intervals: Vec::new(),
         sample_stride: 1,
         used_host_auth: false,
@@ -2054,11 +2057,38 @@ fn formats_compatible_claude_schema_audit_report() {
     assert_eq!(claude_schema_audit_exit_code(&report), 0);
     assert!(output.contains("Status: compatible"));
     assert!(output.contains("Latest Published Claude Version: 2.1.92"));
-    assert!(output.contains("Compatible across 2 audited Claude version(s)."));
+    assert!(output.contains("Compatible Inspected Versions: 2.1.92, 2.1.87"));
+    assert!(output.contains("Compatible across 2 inspected Claude version(s)."));
     assert!(output.contains("Supplementary Agent SDK Drift Version: 2.1.92"));
     assert!(output.contains("Sampling Stride: 1"));
     assert!(output.contains("Survey Mode: refine"));
     assert!(output.contains("Auth Mode: isolated (no auth)"));
+}
+
+#[test]
+fn formats_failed_claude_schema_audit_versions() {
+    let report = ClaudeSchemaAuditReport {
+        compatible_inspected_versions: vec!["2.1.92".to_owned()],
+        failed_versions: vec![ClaudeSchemaAuditFailure {
+            version: "2.1.91".to_owned(),
+            reason: "fixture `read_tool` did not trigger required Claude tool `Read`".to_owned(),
+        }],
+        supplementary_sdk_drift: None,
+        ..compatible_claude_report()
+    };
+    let output = format_claude_schema_audit_report(&report);
+
+    assert_eq!(claude_schema_audit_exit_code(&report), 1);
+    assert!(output.contains("Status: audit incomplete"));
+    assert!(output.contains("Compatible Inspected Versions: 2.1.92"));
+    assert!(output.contains(
+        "No transcript drift detected across 1 compatible inspected Claude version(s), but 1 inspected version(s) failed."
+    ));
+    assert!(output.contains("Failed Inspected Versions:"));
+    assert!(
+        output
+            .contains("- 2.1.91: fixture `read_tool` did not trigger required Claude tool `Read`")
+    );
 }
 
 #[test]
@@ -2074,6 +2104,7 @@ fn formats_drift_claude_schema_audit_report() {
         }],
         outcome: ClaudeSchemaAuditOutcome::Drift(ClaudeSchemaDrift {
             first_drift_version: "2.1.90".to_owned(),
+            boundary_precision: ClaudeSchemaDriftBoundaryPrecision::Exact,
             difference_summary: vec![
                 "$/line_types[2]: changed from \"system\" to \"mystery-event\"".to_owned(),
             ],
@@ -2093,4 +2124,26 @@ fn formats_drift_claude_schema_audit_report() {
     assert!(output.contains("Likely Darc Files To Update:"));
     assert!(output.contains("Survey Mode: coarse"));
     assert!(output.contains("Sampled Transcript Drift Windows:"));
+}
+
+#[test]
+fn formats_sampled_claude_schema_drift_without_first_boundary_claim() {
+    let report = ClaudeSchemaAuditReport {
+        outcome: ClaudeSchemaAuditOutcome::Drift(ClaudeSchemaDrift {
+            first_drift_version: "2.1.90".to_owned(),
+            boundary_precision: ClaudeSchemaDriftBoundaryPrecision::Sampled,
+            difference_summary: vec![
+                "$/line_types[2]: changed from \"system\" to \"mystery-event\"".to_owned(),
+            ],
+            likely_files_to_update: vec!["crates/rollout/src/claude/version.rs".to_owned()],
+        }),
+        supplementary_sdk_drift: None,
+        ..compatible_claude_report()
+    };
+    let output = format_claude_schema_audit_report(&report);
+
+    assert!(output.contains("Status: schema drift detected"));
+    assert!(output.contains("Sampled Drift Version: 2.1.90"));
+    assert!(output.contains("Drift Boundary Precision: sampled window (first drift unproven)"));
+    assert!(!output.contains("First Drift Version: 2.1.90"));
 }

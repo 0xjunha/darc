@@ -7,7 +7,8 @@ Darc keeps the root README focused on overview and quickstart. Use these docs fo
   `darc upgrade --check --json` payload contract, turn-scoped search, compact `--view oneline` skims, session bundles,
   and best-effort model/token/runtime/patch-count fields on session and turn payloads.
 - [Project rename and linking](project-rename.md)
-- [Schema audits](schema-audits.md)
+- [Agent rollout schema audits](schema-audits.md)
+- [Agent rollout schema changelog](schema-changelog.md)
 - [Claude support](claude-support.md)
 - [Background refresh service](service.md)
 - [Release process](release.md)

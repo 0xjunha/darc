@@ -63,14 +63,18 @@ darc claude-schema-audit --use-host-auth --cache-dir /path/to/cache
 
 What the Claude audit checks:
 
-- Darc's current exact Claude rollout support boundary is defined in `crates/rollout/src/claude/version.rs` by `latest_exact_supported_claude_cli_version()`.
-- The audit queries the npm registry for published `@anthropic-ai/claude-code` releases and walks stable package versions from the latest published version down to that exact-support boundary.
+- Darc's current exact Claude rollout support set is defined in `crates/rollout/src/claude/version.rs`; `latest_exact_supported_claude_cli_version()` is only the highest exact audited release.
+- The audit queries the npm registry for published `@anthropic-ai/claude-code` releases and walks stable package versions from the latest published version down to that selected audit floor.
 - For each audited version, it downloads the published package tarball, caches it locally, runs deterministic fixture prompts against the released CLI, and derives a normalized transcript schema manifest from the emitted local transcript JSONL plus hook and stream-json output.
+- The audit probes low-cost model choices in order: Haiku first, then Sonnet, using short aliases and known full model IDs as needed. For older CLIs without `--model`, it probes `ANTHROPIC_MODEL`; when `--effort` is available, it uses `--effort low`. If a cheaper accepted profile runs but misses required fixture tool coverage, the audit retries the next low-cost profile. It never selects Opus explicitly.
 - Darc does not provide an OS-level sandbox for executing published Claude packages. The audit therefore requires explicit `--use-host-auth` opt-in and runs the released CLI with your host Claude login state plus an allowlist of Claude/cloud auth environment variables, not your full shell environment.
 - Each fixture run uses a dedicated workspace under `~/src/.darc-claude-audit`, so Claude session logs never record your actual Darc repository path as the audited project.
 - The command also derives a supplementary Agent SDK surface manifest from published `.d.ts` files when a matching `@anthropic-ai/claude-agent-sdk` package advertises compatibility with that Claude Code version.
-- If the transcript manifest is unchanged across the audited range, the command reports compatibility. It does not update code or docs automatically.
-- If the transcript manifest drifts, the command exits `1` and reports the first drifting version plus likely Darc files to review. Supplementary Agent SDK drift is reported separately and does not determine compatibility by itself.
+- Matching sampled endpoint manifests support a compatible parser epoch across the interval, but only versions that actually completed the fixture suite should be added to the exact-support set.
+- If the transcript manifest is unchanged across the audited range, the command reports compatibility. It does not update code, docs, or [Schema changelog](schema-changelog.md) automatically.
+- If the transcript manifest drifts, the command exits `1` and reports the first drifting version plus likely Darc files to review when refinement proves an exact boundary.
+- If drift refinement is coarse or incomplete, the command reports a sampled drift version instead of claiming a proven first drifting version.
+- If an inspected version cannot complete the fixture suite, the command reports `Status: audit incomplete` and lists it under failed inspected versions; that version is not eligible for exact support.
 
 Claude audit runtime requirements:
 
@@ -83,7 +87,7 @@ What the Claude audit does not do:
 - It does not inspect a local Claude Code source checkout.
 - It does not build Claude Code from source.
 - It does not claim that Agent SDK types and local transcript JSONL are equivalent.
-- It does not bump Darc's exact-support boundary automatically.
+- It does not update Darc's exact-support set automatically.
 
 What the Claude audit caches locally:
 
