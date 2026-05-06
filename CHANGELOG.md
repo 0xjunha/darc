@@ -4,7 +4,7 @@ All notable Darc release changes should be summarized here.
 
 ## Unreleased
 
-- Add `darc refresh --auto` to enable automatic background refresh on macOS and start it immediately.
+- Add `darc refresh --auto` to enable automatic background refresh on macOS, start it immediately, and show setup progress.
 
 ## 0.1.2
 

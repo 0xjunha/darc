@@ -3550,6 +3550,67 @@ impl<W: Write> RefreshProgressPrinter<W> {
     }
 }
 
+/// Renders automatic background refresh setup progress for interactive terminals.
+struct ServiceProgressPrinter<W> {
+    writer: W,
+    style: HumanStyle,
+    enabled: bool,
+}
+
+impl ServiceProgressPrinter<io::Stderr> {
+    /// Builds one service progress printer for the current stderr stream.
+    fn stderr() -> Self {
+        let term = env::var("TERM").ok();
+        Self::new(
+            io::stderr(),
+            HumanStyle::stderr(),
+            io::stderr().is_terminal() && term.as_deref() != Some("dumb"),
+        )
+    }
+}
+
+impl<W: Write> ServiceProgressPrinter<W> {
+    /// Builds one service progress printer from resolved terminal facts.
+    fn new(writer: W, style: HumanStyle, enabled: bool) -> Self {
+        Self {
+            writer,
+            style,
+            enabled,
+        }
+    }
+
+    /// Writes the setup start message.
+    fn started(&mut self) {
+        if self.enabled {
+            let _ = writeln!(self.writer, "Enabling automatic background refresh...");
+            let _ = self.writer.flush();
+        }
+    }
+
+    /// Writes one numbered setup step.
+    fn step(&mut self, index: usize, total: usize, message: &str) {
+        if self.enabled {
+            let _ = writeln!(
+                self.writer,
+                "  [{}/{}] {}",
+                self.style.count(index),
+                self.style.count(total),
+                message
+            );
+            let _ = self.writer.flush();
+        }
+    }
+
+    /// Writes the setup completion message.
+    fn done(&mut self) {
+        if self.enabled {
+            let _ = writeln!(self.writer, "  {}", self.style.ok("done"));
+            let _ = writeln!(self.writer);
+            let _ = self.writer.flush();
+        }
+    }
+}
+
 /// Returns whether automatic terminal color should be enabled.
 fn should_auto_color_output(is_terminal: bool, no_color: bool, term: Option<&str>) -> bool {
     is_terminal && !no_color && term != Some("dumb")
@@ -4961,8 +5022,13 @@ fn run_refresh(args: RefreshArgs) -> Result<()> {
 /// Enables automatic background refresh and starts it immediately.
 #[cfg(target_os = "macos")]
 fn run_refresh_auto(root: &Path) -> Result<()> {
+    let mut progress = ServiceProgressPrinter::stderr();
+    progress.started();
+    progress.step(1, 2, "Writing LaunchAgent...");
     let plist_path = write_macos_launch_agent(root, true)?;
+    progress.step(2, 2, "Starting background service...");
     start_macos_service_impl(root)?;
+    progress.done();
 
     let style = HumanStyle::stdout();
     print_section(style, "Service");

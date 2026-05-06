@@ -1386,6 +1386,39 @@ fn refresh_progress_printer_stays_silent_when_disabled() {
 }
 
 #[test]
+fn service_progress_printer_writes_interactive_steps() {
+    let mut output = Vec::new();
+    {
+        let style = super::HumanStyle::new(false, false, None);
+        let mut printer = super::ServiceProgressPrinter::new(&mut output, style, true);
+        printer.started();
+        printer.step(1, 2, "Writing LaunchAgent...");
+        printer.step(2, 2, "Starting background service...");
+        printer.done();
+    }
+
+    let output = String::from_utf8(output).unwrap();
+    assert!(output.contains("Enabling automatic background refresh..."));
+    assert!(output.contains("  [1/2] Writing LaunchAgent..."));
+    assert!(output.contains("  [2/2] Starting background service..."));
+    assert!(output.contains("  done"));
+}
+
+#[test]
+fn service_progress_printer_stays_silent_when_disabled() {
+    let mut output = Vec::new();
+    {
+        let style = super::HumanStyle::new(false, false, None);
+        let mut printer = super::ServiceProgressPrinter::new(&mut output, style, false);
+        printer.started();
+        printer.step(1, 2, "Writing LaunchAgent...");
+        printer.done();
+    }
+
+    assert!(output.is_empty());
+}
+
+#[test]
 fn index_command_accepts_provider_filters() {
     let cli = Cli::try_parse_from(["darc", "index", "--provider", "claude"]).unwrap();
     assert!(matches!(
