@@ -3551,12 +3551,14 @@ impl<W: Write> RefreshProgressPrinter<W> {
 }
 
 /// Renders automatic background refresh setup progress for interactive terminals.
+#[cfg(any(target_os = "macos", test))]
 struct ServiceProgressPrinter<W> {
     writer: W,
     style: HumanStyle,
     enabled: bool,
 }
 
+#[cfg(target_os = "macos")]
 impl ServiceProgressPrinter<io::Stderr> {
     /// Builds one service progress printer for the current stderr stream.
     fn stderr() -> Self {
@@ -3569,6 +3571,7 @@ impl ServiceProgressPrinter<io::Stderr> {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 impl<W: Write> ServiceProgressPrinter<W> {
     /// Builds one service progress printer from resolved terminal facts.
     fn new(writer: W, style: HumanStyle, enabled: bool) -> Self {
