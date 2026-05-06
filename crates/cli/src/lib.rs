@@ -2329,52 +2329,51 @@ fn render_agents_md_line() -> String {
 
 /// Renders concise operating guidance for agents using Darc.
 fn render_agent_help_guide() -> &'static str {
-    concat!(
-        "# Darc Agent Help\n",
-        "\n",
-        "Darc is a local archive and query layer for coding-agent sessions. Use it as a complementary evidence source for prior work, not as a replacement for reading the current repository or for your existing agent memory system.\n",
-        "\n",
-        "## When to use Darc\n",
-        "\n",
-        "- Use Darc when prior coding-agent context could affect the task: old decisions, regressions, unfinished work, file/module history, repeated errors, PR handoffs, or user references to earlier sessions.\n",
-        "- Skip Darc for fresh tasks where current files, tests, docs, or the user prompt are enough.\n",
-        "\n",
-        "## Safe first commands\n",
-        "\n",
-        "- `darc status --json`: preflight active-project resolution and index freshness.\n",
-        "- `darc search <query> --limit 5`: find matching turns by keyword.\n",
-        "- `darc search --mode literal --query <text> --limit 5`: find exact text without regex escaping.\n",
-        "- `darc list sessions --limit 5`: browse recent indexed sessions.\n",
-        "- `darc list files --limit 10`: rank files touched in prior sessions.\n",
-        "- `darc list sessions --touching <glob> --limit 5`: find sessions that touched a file or path pattern.\n",
-        "- `darc search --mode file-path <glob> --limit 5`: find turns associated with touched file paths.\n",
-        "\n",
-        "## Evidence ladder\n",
-        "\n",
-        "1. Start with bounded `search`, `list`, or `stats` reads.\n",
-        "2. Keep the returned `session_id` and `turn_ordinal` handles.\n",
-        "3. Skim one candidate session with `darc list turns <SESSION_ID> --view oneline --limit 20`.\n",
-        "4. Inspect exact evidence with `darc show turn <SESSION_ID> <TURN_ORDINAL> --step-limit 10`.\n",
-        "5. Use `darc show session <SESSION_ID> --turn-limit 5 --step-limit 10` only after narrowing.\n",
-        "\n",
-        "## File pivots\n",
-        "\n",
-        "- Use `darc list files --session <SESSION_ID> --limit 50` to inspect one session's file footprint.\n",
-        "- Use `darc list files --co-touched-with <path> --limit 10` to find files commonly changed with a seed file.\n",
-        "- Use file pivots to discover adjacent tests, docs, modules, and follow-up sessions before editing.\n",
-        "\n",
-        "## Output discipline\n",
-        "\n",
-        "- Prefer small `--limit`, `--turn-limit`, and `--step-limit` values first; paginate only after the previous read proves useful.\n",
-        "- Prefer `darc show turn` for exact evidence and `darc show session` for bounded broader context.\n",
-        "- Use `--color never` when piping JSON to `jq` or another parser.\n",
-        "- Quote `session_id` and `turn_ordinal` when reporting evidence so later agents can resolve the same context.\n",
-        "\n",
-        "## Mutating boundaries\n",
-        "\n",
-        "- Read surfaces such as `status --json`, `list`, `show`, `search`, `stats`, and `resolve` are safe for investigation.\n",
-        "- `darc refresh`, `darc sync`, `darc index`, `darc init`, `darc project ...`, and service/upgrade commands can write local Darc state or config; run them only when freshness or setup is part of the task.\n",
-    )
+    r#"# Darc Agent Help
+
+Darc is a local archive and query layer for coding-agent sessions. Use it as a complementary evidence source for prior work, not as a replacement for reading the current repository or for your existing agent memory system.
+
+## When to use Darc
+
+- Use Darc when prior coding-agent context could affect the task: old decisions, regressions, unfinished work, file/module history, repeated errors, PR handoffs, or user references to earlier sessions.
+- Skip Darc for fresh tasks where current files, tests, docs, or the user prompt are enough.
+
+## Safe first commands
+
+- `darc status --json`: preflight active-project resolution and index freshness.
+- `darc search <query> --limit 5`: find matching turns by keyword.
+- `darc search --mode literal --query <text> --limit 5`: find exact text without regex escaping.
+- `darc list sessions --limit 5`: browse recent indexed sessions.
+- `darc list files --limit 10`: rank files touched in prior sessions.
+- `darc list sessions --touching <glob> --limit 5`: find sessions that touched a file or path pattern.
+- `darc search --mode file-path <glob> --limit 5`: find turns associated with touched file paths.
+
+## Evidence ladder
+
+1. Start with bounded `search`, `list`, or `stats` reads.
+2. Keep the returned `session_id` and `turn_ordinal` handles.
+3. Skim one candidate session with `darc list turns <SESSION_ID> --view oneline --limit 20`.
+4. Inspect exact evidence with `darc show turn <SESSION_ID> <TURN_ORDINAL> --step-limit 10`.
+5. Use `darc show session <SESSION_ID> --turn-limit 5 --step-limit 10` only after narrowing.
+
+## File pivots
+
+- Use `darc list files --session <SESSION_ID> --limit 50` to inspect one session's file footprint.
+- Use `darc list files --co-touched-with <path> --limit 10` to find files commonly changed with a seed file.
+- Use file pivots to discover adjacent tests, docs, modules, and follow-up sessions before editing.
+
+## Output discipline
+
+- Prefer small `--limit`, `--turn-limit`, and `--step-limit` values first; paginate only after the previous read proves useful.
+- Prefer `darc show turn` for exact evidence and `darc show session` for bounded broader context.
+- Use `--color never` when piping JSON to `jq` or another parser.
+- Quote `session_id` and `turn_ordinal` when reporting evidence so later agents can resolve the same context.
+
+## Mutating boundaries
+
+- Read surfaces such as `status --json`, `list`, `show`, `search`, `stats`, and `resolve` are safe for investigation.
+- `darc refresh`, `darc sync`, `darc index`, `darc init`, `darc project ...`, and service/upgrade commands can write local Darc state or config; run them only when freshness or setup is part of the task.
+"#
 }
 
 /// Dispatches the supported canonical list commands.
