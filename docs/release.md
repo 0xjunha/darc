@@ -40,8 +40,9 @@ available.
    scripts/prepare-release.sh 0.1.0
    ```
 
-   The script updates `Cargo.toml`, moves `CHANGELOG.md` `Unreleased` entries into `## 0.1.0`, then runs fmt, stable
-   clippy, stable tests, a dist-profile check, and `dist plan --tag v0.1.0`.
+   The script updates `Cargo.toml`, moves `CHANGELOG.md` `Unreleased` entries into `## 0.1.0`, refreshes
+   `Cargo.lock` for local workspace package versions, then runs fmt, stable clippy, stable tests, a dist-profile check,
+   and `dist plan --tag v0.1.0`.
 
    CI also runs release-profile Linux target checks when the workspace package version changes in a PR or on `main`.
 
