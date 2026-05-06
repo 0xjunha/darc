@@ -6897,15 +6897,13 @@ fn format_codex_schema_audit_report(report: &CodexSchemaAuditReport) -> String {
 
 /// Formats one Claude schema audit report for the hidden CLI command.
 fn format_claude_schema_audit_report(report: &ClaudeSchemaAuditReport) -> String {
+    let status = match &report.outcome {
+        ClaudeSchemaAuditOutcome::Drift(_) => "schema drift detected",
+        ClaudeSchemaAuditOutcome::Compatible if report.is_incomplete() => "audit incomplete",
+        ClaudeSchemaAuditOutcome::Compatible => "compatible",
+    };
     let mut lines = vec![
-        format!(
-            "Status: {}",
-            if report.is_compatible() {
-                "compatible"
-            } else {
-                "schema drift detected"
-            }
-        ),
+        format!("Status: {status}"),
         format!("Release Source: {}", report.release_source),
         format!("Binary Cache: {}", report.binary_cache_dir.display()),
         format!(
@@ -6920,6 +6918,10 @@ fn format_claude_schema_audit_report(report: &ClaudeSchemaAuditReport) -> String
         format!(
             "Inspected Versions: {}",
             report.inspected_versions.join(", ")
+        ),
+        format!(
+            "Compatible Inspected Versions: {}",
+            report.compatible_inspected_versions.join(", ")
         ),
         format!("Sampling Stride: {}", report.sample_stride),
         format!(
@@ -6941,24 +6943,40 @@ fn format_claude_schema_audit_report(report: &ClaudeSchemaAuditReport) -> String
 
     match &report.outcome {
         ClaudeSchemaAuditOutcome::Compatible => {
-            if report.sample_stride == 1 {
+            if report.is_incomplete() {
                 lines.push(format!(
-                    "Compatible across {} audited Claude version(s).",
-                    report.audited_versions.len()
+                    "No transcript drift detected across {} compatible inspected Claude version(s), but {} inspected version(s) failed.",
+                    report.compatible_inspected_versions.len(),
+                    report.failed_versions.len()
+                ));
+            } else if report.sample_stride == 1 {
+                lines.push(format!(
+                    "Compatible across {} inspected Claude version(s).",
+                    report.compatible_inspected_versions.len()
                 ));
             } else {
                 lines.push(format!(
-                    "Compatible across {} Claude version(s) in range with {} directly inspected version(s).",
+                    "Compatible across {} Claude version(s) in range with {} compatible directly inspected version(s).",
                     report.audited_versions.len(),
-                    report.inspected_versions.len()
+                    report.compatible_inspected_versions.len()
                 ));
             }
         }
         ClaudeSchemaAuditOutcome::Drift(drift) => {
-            lines.push(format!(
-                "First Drift Version: {}",
-                drift.first_drift_version
-            ));
+            if drift.boundary_precision.is_exact() {
+                lines.push(format!(
+                    "First Drift Version: {}",
+                    drift.first_drift_version
+                ));
+            } else {
+                lines.push(format!(
+                    "Sampled Drift Version: {}",
+                    drift.first_drift_version
+                ));
+                lines.push(
+                    "Drift Boundary Precision: sampled window (first drift unproven)".to_owned(),
+                );
+            }
             lines.push("Transcript Differences:".to_owned());
             lines.extend(
                 drift
@@ -6974,6 +6992,16 @@ fn format_claude_schema_audit_report(report: &ClaudeSchemaAuditReport) -> String
                     .map(|path| format!("- {path}")),
             );
         }
+    }
+
+    if !report.failed_versions.is_empty() {
+        lines.push("Failed Inspected Versions:".to_owned());
+        lines.extend(
+            report
+                .failed_versions
+                .iter()
+                .map(|failure| format!("- {}: {}", failure.version, failure.reason)),
+        );
     }
 
     if let Some(drift) = &report.supplementary_sdk_drift {

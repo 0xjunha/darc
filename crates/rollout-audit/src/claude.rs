@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env,
     ffi::{OsStr, OsString},
+    fmt,
     fs::{self, File},
     io::{self, Read},
     path::{Path, PathBuf},
@@ -36,6 +37,10 @@ const NPM_RELEASE_SOURCE: &str = "npm registry (@anthropic-ai/claude-code)";
 const NPM_REGISTRY_BASE_URL: &str = "https://registry.npmjs.org";
 /// Stores the timeout used for released Claude CLI command execution.
 const CLI_COMMAND_TIMEOUT: Duration = Duration::from_secs(180);
+/// Stores how many times npm tarball downloads are retried before failing a version.
+const NPM_DOWNLOAD_ATTEMPTS: usize = 3;
+/// Stores the fixed delay between transient npm tarball download attempts.
+const NPM_DOWNLOAD_RETRY_DELAY: Duration = Duration::from_secs(2);
 /// Lists the Darc files most likely to need updates after Claude schema drift.
 const LIKELY_UPDATE_PATHS: &[&str] = &[
     "crates/rollout/src/claude/version.rs",
@@ -113,6 +118,8 @@ pub struct ClaudeSchemaAuditReport {
     pub latest_exact_covered_version: String,
     pub audited_versions: Vec<String>,
     pub inspected_versions: Vec<String>,
+    pub compatible_inspected_versions: Vec<String>,
+    pub failed_versions: Vec<ClaudeSchemaAuditFailure>,
     pub assumed_compatible_intervals: Vec<String>,
     pub sample_stride: usize,
     pub used_host_auth: bool,
@@ -126,6 +133,13 @@ impl ClaudeSchemaAuditReport {
     /// Returns whether the audited Claude versions are transcript-compatible with darc.
     pub fn is_compatible(&self) -> bool {
         matches!(self.outcome, ClaudeSchemaAuditOutcome::Compatible)
+            && self.failed_versions.is_empty()
+    }
+
+    /// Returns whether the audit found no drift but could not inspect every selected version.
+    pub fn is_incomplete(&self) -> bool {
+        matches!(self.outcome, ClaudeSchemaAuditOutcome::Compatible)
+            && !self.failed_versions.is_empty()
     }
 
     /// Formats the audited Claude version range for user-facing summaries.
@@ -138,12 +152,44 @@ impl ClaudeSchemaAuditReport {
     }
 }
 
+/// Records one Claude release that could not produce an auditable transcript.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ClaudeSchemaAuditFailure {
+    pub version: String,
+    pub reason: String,
+}
+
+/// Builds one compact failed-version entry for a Claude schema audit report.
+fn claude_audit_failure(version: &str, error: &anyhow::Error) -> ClaudeSchemaAuditFailure {
+    ClaudeSchemaAuditFailure {
+        version: version.to_owned(),
+        reason: truncate_text(&format!("{error:#}").replace('\n', " "), 500),
+    }
+}
+
 /// Stores whether the audited Claude versions stayed transcript-compatible or drifted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum ClaudeSchemaAuditOutcome {
     Compatible,
     Drift(ClaudeSchemaDrift),
+}
+
+/// Describes how precisely the audit proved one Claude transcript drift boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClaudeSchemaDriftBoundaryPrecision {
+    /// The audit proved this version is the first drifting version.
+    Exact,
+    /// The audit only proved this version is a sampled drifting endpoint.
+    Sampled,
+}
+
+impl ClaudeSchemaDriftBoundaryPrecision {
+    /// Returns whether the audit proved this as the first drifting Claude version.
+    pub const fn is_exact(self) -> bool {
+        matches!(self, Self::Exact)
+    }
 }
 
 /// Selects how the Claude schema audit handles drift windows.
@@ -155,12 +201,39 @@ pub enum ClaudeSchemaSurveyMode {
     Coarse,
 }
 
-/// Stores the first detected Claude transcript schema drift against darc's baseline.
+/// Stores one detected Claude transcript schema drift against darc's baseline.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ClaudeSchemaDrift {
     pub first_drift_version: String,
+    pub boundary_precision: ClaudeSchemaDriftBoundaryPrecision,
     pub difference_summary: Vec<String>,
     pub likely_files_to_update: Vec<String>,
+}
+
+/// Builds one Claude transcript drift record with the standard update targets.
+fn claude_schema_drift(
+    first_drift_version: String,
+    boundary_precision: ClaudeSchemaDriftBoundaryPrecision,
+    difference_summary: Vec<String>,
+) -> ClaudeSchemaDrift {
+    ClaudeSchemaDrift {
+        first_drift_version,
+        boundary_precision,
+        difference_summary,
+        likely_files_to_update: LIKELY_UPDATE_PATHS
+            .iter()
+            .map(|path| (*path).to_owned())
+            .collect(),
+    }
+}
+
+/// Builds one coarse drift record from a sampled drift window.
+fn sampled_claude_schema_drift(window: &ClaudeSchemaDriftWindow) -> ClaudeSchemaDrift {
+    claude_schema_drift(
+        window.sampled_drift_version.clone(),
+        ClaudeSchemaDriftBoundaryPrecision::Sampled,
+        window.difference_summary.clone(),
+    )
 }
 
 /// Stores one sampled Claude transcript drift window between two compatible anchors.
@@ -462,6 +535,72 @@ struct NpmClaudeSchemaAuditProvider {
     runtime: AuditRuntime,
 }
 
+/// Lists the model aliases Darc is allowed to use during live Claude audits.
+const AUDIT_MODEL_CANDIDATES: &[ClaudeAuditModelCandidate] = &[
+    ClaudeAuditModelCandidate {
+        display_name: "haiku",
+        cli_models: &["haiku", "claude-3-5-haiku-20241022"],
+        env_models: &["claude-3-5-haiku-20241022"],
+    },
+    ClaudeAuditModelCandidate {
+        display_name: "sonnet",
+        cli_models: &[
+            "sonnet",
+            "claude-3-5-sonnet-20241022",
+            "claude-3-7-sonnet-20250219",
+        ],
+        env_models: &["claude-3-5-sonnet-20241022", "claude-3-7-sonnet-20250219"],
+    },
+];
+
+/// Stores one low-cost model candidate for released Claude audit probes.
+struct ClaudeAuditModelCandidate {
+    display_name: &'static str,
+    cli_models: &'static [&'static str],
+    env_models: &'static [&'static str],
+}
+
+/// Stores the low-cost runtime choices selected for one released Claude CLI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ClaudeAuditExecutionProfile {
+    model: Option<String>,
+    model_env: Option<String>,
+    effort: Option<String>,
+}
+
+/// Classifies a fixture coverage failure that may be retried with a stronger model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ClaudeFixtureCoverageError {
+    fixture_name: &'static str,
+    kind: ClaudeFixtureCoverageErrorKind,
+}
+
+/// Stores the specific fixture coverage surface that was missing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ClaudeFixtureCoverageErrorKind {
+    MissingTool(&'static str),
+    MissingSubagentSignal,
+}
+
+impl fmt::Display for ClaudeFixtureCoverageError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.kind {
+            ClaudeFixtureCoverageErrorKind::MissingTool(required) => write!(
+                formatter,
+                "fixture `{}` did not trigger required Claude tool `{required}`",
+                self.fixture_name
+            ),
+            ClaudeFixtureCoverageErrorKind::MissingSubagentSignal => write!(
+                formatter,
+                "fixture `{}` did not produce any observable subagent signal",
+                self.fixture_name
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ClaudeFixtureCoverageError {}
+
 impl NpmClaudeSchemaAuditProvider {
     /// Creates one Claude audit provider backed by npm registry metadata.
     fn new(
@@ -684,13 +823,68 @@ impl NpmClaudeSchemaAuditProvider {
             .with_context(|| format!("failed to create {}", probe_root.display()))?;
         let cli_capabilities =
             self.inspect_cli_capabilities_with_environment(&cli_command, cli_root, &probe_root)?;
+        let execution_profiles = self.select_execution_profiles(
+            version,
+            &cli_command,
+            cli_capabilities,
+            cli_root,
+            report_progress,
+        )?;
+        for (profile_index, execution_profile) in execution_profiles.iter().enumerate() {
+            report_progress(&format!(
+                "Running Claude Code {version} fixture suite with audit profile {}...",
+                audit_execution_profile_label(execution_profile)
+            ));
+            match self.collect_transcript_manifest_with_profile(
+                version,
+                &cli_command,
+                cli_capabilities,
+                execution_profile,
+                report_progress,
+            ) {
+                Ok(manifest) => return Ok(manifest),
+                Err(error)
+                    if profile_index + 1 < execution_profiles.len()
+                        && is_fixture_coverage_error(&error) =>
+                {
+                    report_progress(&format!(
+                        "Claude Code {version} audit profile {} did not satisfy fixture coverage: {}. Trying the next low-cost profile...",
+                        audit_execution_profile_label(execution_profile),
+                        truncate_text(&format!("{error:#}").replace('\n', " "), 240)
+                    ));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        bail!("Claude Code {version} had no accepted audit execution profile")
+    }
+
+    /// Runs the released Claude CLI fixtures with one accepted execution profile.
+    fn collect_transcript_manifest_with_profile<F>(
+        &self,
+        version: &str,
+        cli_command: &ReleasedClaudeCli,
+        cli_capabilities: ClaudeCliCapabilities,
+        execution_profile: &ClaudeAuditExecutionProfile,
+        report_progress: &mut F,
+    ) -> Result<ClaudeTranscriptSchemaManifest>
+    where
+        F: FnMut(&str),
+    {
         let mut builder = TranscriptManifestBuilder::default();
         for fixture in audit_fixtures() {
             report_progress(&format!(
                 "Running Claude transcript fixture `{}` against {}...",
                 fixture.name, version
             ));
-            let session = self.run_fixture(version, &cli_command, cli_capabilities, *fixture)?;
+            let session = self.run_fixture(
+                version,
+                cli_command,
+                cli_capabilities,
+                execution_profile,
+                *fixture,
+            )?;
             builder.record_fixture(&session, fixture.name)?;
             validate_fixture_coverage(&session, *fixture)?;
         }
@@ -787,6 +981,7 @@ impl NpmClaudeSchemaAuditProvider {
         version: &str,
         cli_command: &ReleasedClaudeCli,
         cli_capabilities: ClaudeCliCapabilities,
+        execution_profile: &ClaudeAuditExecutionProfile,
         fixture: ClaudeAuditFixture,
     ) -> Result<ClaudeFixtureSession> {
         let project_root = self.fixture_run_dir.path().join(format!(
@@ -859,6 +1054,7 @@ impl NpmClaudeSchemaAuditProvider {
         }
         self.configure_command_environment(&mut command, &project_root)?;
         cli_command.apply_target_environment(&mut command);
+        apply_execution_profile(&mut command, execution_profile);
 
         let output =
             run_command_with_timeout(&mut command, CLI_COMMAND_TIMEOUT).with_context(|| {
@@ -895,6 +1091,130 @@ impl NpmClaudeSchemaAuditProvider {
             hook_events,
             stream_events,
         })
+    }
+
+    /// Selects low-cost model and effort profiles accepted by one released Claude CLI.
+    fn select_execution_profiles<F>(
+        &self,
+        version: &str,
+        cli_command: &ReleasedClaudeCli,
+        cli_capabilities: ClaudeCliCapabilities,
+        cli_root: &Path,
+        report_progress: &mut F,
+    ) -> Result<Vec<ClaudeAuditExecutionProfile>>
+    where
+        F: FnMut(&str),
+    {
+        let effort = cli_capabilities.supports_effort.then(|| "low".to_owned());
+        let mut profiles = Vec::new();
+        if !cli_capabilities.supports_model {
+            for candidate in AUDIT_MODEL_CANDIDATES {
+                for env_model in candidate.env_models {
+                    let profile = ClaudeAuditExecutionProfile {
+                        model: None,
+                        model_env: Some((*env_model).to_owned()),
+                        effort: effort.clone(),
+                    };
+                    report_progress(&format!(
+                        "Claude Code {version} does not advertise --model; checking ANTHROPIC_MODEL candidate `{}` ({env_model})...",
+                        candidate.display_name
+                    ));
+                    if self.execution_profile_probe_succeeds(
+                        cli_command,
+                        cli_capabilities,
+                        cli_root,
+                        &profile,
+                    )? {
+                        report_progress(&format!(
+                            "Accepted Claude Code {version} audit profile: model={} via ANTHROPIC_MODEL ({env_model}), effort={}.",
+                            candidate.display_name,
+                            profile.effort.as_deref().unwrap_or("<default>")
+                        ));
+                        profiles.push(profile);
+                        break;
+                    }
+                }
+            }
+
+            ensure!(
+                !profiles.is_empty(),
+                "Claude Code {version} does not advertise --model, and none of Darc's low-cost audit model candidates ({}) worked via ANTHROPIC_MODEL",
+                audit_model_candidate_names()
+            );
+            return Ok(profiles);
+        }
+
+        for candidate in AUDIT_MODEL_CANDIDATES {
+            for cli_model in candidate.cli_models {
+                let profile = ClaudeAuditExecutionProfile {
+                    model: Some((*cli_model).to_owned()),
+                    model_env: None,
+                    effort: effort.clone(),
+                };
+                report_progress(&format!(
+                    "Checking Claude Code {version} audit model candidate `{}` ({cli_model})...",
+                    candidate.display_name
+                ));
+                if self.execution_profile_probe_succeeds(
+                    cli_command,
+                    cli_capabilities,
+                    cli_root,
+                    &profile,
+                )? {
+                    report_progress(&format!(
+                        "Accepted Claude Code {version} audit profile: model={} ({cli_model}), effort={}.",
+                        candidate.display_name,
+                        profile.effort.as_deref().unwrap_or("<default>")
+                    ));
+                    profiles.push(profile);
+                    break;
+                }
+            }
+        }
+
+        ensure!(
+            !profiles.is_empty(),
+            "Claude Code {version} advertised --model, but none of Darc's low-cost audit model candidates ({}) worked",
+            audit_model_candidate_names()
+        );
+        Ok(profiles)
+    }
+
+    /// Runs one cheap command to verify that a candidate audit execution profile is accepted.
+    fn execution_profile_probe_succeeds(
+        &self,
+        cli_command: &ReleasedClaudeCli,
+        cli_capabilities: ClaudeCliCapabilities,
+        cli_root: &Path,
+        profile: &ClaudeAuditExecutionProfile,
+    ) -> Result<bool> {
+        let project_root = self.fixture_run_dir.path().join(format!(
+            "profile-probe-{}",
+            sanitize_for_path(&unique_suffix())
+        ));
+        fs::create_dir_all(&project_root)
+            .with_context(|| format!("failed to create {}", project_root.display()))?;
+        fs::write(project_root.join("README.md"), "# Audit Fixture\n").with_context(|| {
+            format!(
+                "failed to write {}",
+                project_root.join("README.md").display()
+            )
+        })?;
+
+        let mut command = cli_command.command(&self.runtime, cli_root);
+        command.arg("--print");
+        command.arg("Reply with exactly READY and do not use tools.");
+        if cli_capabilities.supports_max_turns {
+            command.arg("--max-turns");
+            command.arg("1");
+        }
+        self.configure_command_environment(&mut command, &project_root)?;
+        cli_command.apply_target_environment(&mut command);
+        apply_execution_profile(&mut command, profile);
+
+        let output = run_command_with_timeout(&mut command, CLI_COMMAND_TIMEOUT)
+            .context("failed to probe released Claude CLI audit execution profile")?;
+        Ok(output.status.success())
     }
 
     /// Configures one released Claude CLI command environment for fixture execution.
@@ -1076,7 +1396,18 @@ struct ClaudeSamplingPlan {
 /// Tracks the actual and baseline-compatible versions inspected during refine mode.
 struct RefinementIndexSets<'a> {
     inspected_ascending_indices: &'a mut BTreeSet<usize>,
+    compatible_ascending_indices: &'a mut BTreeSet<usize>,
     baseline_compatible_ascending_indices: &'a mut BTreeSet<usize>,
+    failed_ascending_indices: &'a mut BTreeSet<usize>,
+    failed_versions: &'a mut Vec<ClaudeSchemaAuditFailure>,
+}
+
+/// Stores the interval and baseline manifests used for drift refinement.
+struct DriftRefinementWindow<'a> {
+    start_index: usize,
+    end_index: usize,
+    drift_baseline_transcript: &'a Value,
+    baseline_transcript: &'a Value,
 }
 
 /// Stores the CLI feature flags available for one released Claude package.
@@ -1088,6 +1419,8 @@ struct ClaudeCliCapabilities {
     allowed_tools_flag: Option<ClaudeAllowedToolsFlag>,
     supports_max_turns: bool,
     supports_cwd: bool,
+    supports_model: bool,
+    supports_effort: bool,
 }
 
 /// Stores the accepted spelling of Claude's allowed-tools flag for one release.
@@ -1307,73 +1640,105 @@ where
         ));
     }
 
-    report_progress(&format!(
-        "Collecting baseline Claude transcript manifest from {}...",
-        baseline_version.raw
-    ));
-    let baseline_snapshot = provider.collect_snapshot(&baseline_version.raw, report_progress)?;
-    let baseline_transcript = normalize_json(serde_json::to_value(
-        &baseline_snapshot.transcript_manifest,
-    )?);
-    let baseline_sdk = normalize_json(serde_json::to_value(&baseline_snapshot.sdk_manifest)?);
+    let mut baseline_transcript = None;
+    let mut baseline_sdk = None;
     let mut transcript_drift = None;
     let mut transcript_drift_windows = Vec::new();
     let mut sdk_drift = None;
-    let total_comparisons = sampling_plan
-        .inspected_versions_desc
-        .len()
-        .saturating_sub(1);
-    let baseline_transcript_value = baseline_transcript.clone();
-    let mut epoch_baseline_transcript = baseline_transcript.clone();
-    let mut baseline_compatible_ascending_indices = BTreeSet::from([0usize]);
-    let mut last_sampled_compatible_asc_index = 0usize;
-    let mut inspected_ascending_indices = sampling_plan
-        .inspected_ascending_indices
-        .iter()
-        .copied()
-        .collect::<BTreeSet<_>>();
+    let total_inspections = sampling_plan.inspected_versions_desc.len();
+    let mut epoch_baseline_transcript = None;
+    let mut baseline_compatible_ascending_indices = BTreeSet::new();
+    let mut compatible_ascending_indices = BTreeSet::new();
+    let mut last_successful_asc_index = None;
+    let mut inspected_ascending_indices = BTreeSet::new();
+    let mut failed_ascending_indices = BTreeSet::new();
+    let mut failed_versions = Vec::new();
 
     for (index, sampled_asc_index) in sampling_plan
         .inspected_ascending_indices
         .iter()
         .copied()
-        .skip(1)
         .enumerate()
     {
         let version = &sampling_plan.audited_versions_asc[sampled_asc_index];
-        report_progress(&format!(
-            "Comparing {} against baseline ({}/{})...",
-            version.raw,
-            index + 1,
-            total_comparisons
-        ));
-        let snapshot = provider.collect_snapshot(&version.raw, report_progress)?;
+        inspected_ascending_indices.insert(sampled_asc_index);
+        if baseline_transcript.is_none() {
+            report_progress(&format!(
+                "Collecting baseline Claude transcript manifest from {} ({}/{})...",
+                version.raw,
+                index + 1,
+                total_inspections
+            ));
+        } else {
+            report_progress(&format!(
+                "Comparing {} against baseline ({}/{})...",
+                version.raw,
+                index + 1,
+                total_inspections
+            ));
+        }
+        let snapshot = match provider.collect_snapshot(&version.raw, report_progress) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                report_progress(&format!(
+                    "Skipping Claude Code {}: {}",
+                    version.raw,
+                    truncate_text(&format!("{error:#}").replace('\n', " "), 240)
+                ));
+                failed_versions.push(claude_audit_failure(&version.raw, &error));
+                failed_ascending_indices.insert(sampled_asc_index);
+                continue;
+            }
+        };
         let transcript = normalize_json(serde_json::to_value(&snapshot.transcript_manifest)?);
-        if transcript == baseline_transcript_value {
+
+        if baseline_transcript.is_none() {
+            baseline_transcript = Some(transcript.clone());
+            baseline_sdk = Some(normalize_json(serde_json::to_value(
+                &snapshot.sdk_manifest,
+            )?));
+            epoch_baseline_transcript = Some(transcript);
+            baseline_compatible_ascending_indices.insert(sampled_asc_index);
+            compatible_ascending_indices.insert(sampled_asc_index);
+            last_successful_asc_index = Some(sampled_asc_index);
+            continue;
+        }
+
+        let baseline_transcript_value = baseline_transcript
+            .as_ref()
+            .context("Claude baseline transcript was not initialized")?;
+        if transcript == *baseline_transcript_value {
             baseline_compatible_ascending_indices.insert(sampled_asc_index);
         }
-        if transcript != epoch_baseline_transcript {
+        let epoch_transcript = epoch_baseline_transcript
+            .as_ref()
+            .context("Claude epoch transcript was not initialized")?;
+        if transcript != *epoch_transcript {
+            let last_successful_asc_index =
+                last_successful_asc_index.context("Claude audit had no successful sample")?;
             let drift_window = ClaudeSchemaDriftWindow {
                 window_start_version: sampling_plan.audited_versions_asc
-                    [last_sampled_compatible_asc_index + 1]
+                    [last_successful_asc_index + 1]
                     .raw
                     .clone(),
                 window_end_version: version.raw.clone(),
                 sampled_compatible_version: sampling_plan.audited_versions_asc
-                    [last_sampled_compatible_asc_index]
+                    [last_successful_asc_index]
                     .raw
                     .clone(),
                 sampled_drift_version: version.raw.clone(),
-                difference_summary: summarize_schema_differences(
-                    &epoch_baseline_transcript,
-                    &transcript,
-                ),
+                difference_summary: summarize_schema_differences(epoch_transcript, &transcript),
             };
             transcript_drift_windows.push(drift_window.clone());
 
             if transcript_drift.is_none() {
+                let interval_has_failed_sample = failed_ascending_indices
+                    .range((last_successful_asc_index + 1)..sampled_asc_index)
+                    .next()
+                    .is_some();
                 let first_drift = if survey_mode == ClaudeSchemaSurveyMode::Refine
-                    && sampled_asc_index > last_sampled_compatible_asc_index + 1
+                    && sampled_asc_index > last_successful_asc_index + 1
+                    && !interval_has_failed_sample
                 {
                     report_progress(&format!(
                         "Refining sampled drift window {} ..= {} to find the first drifting version...",
@@ -1382,72 +1747,101 @@ where
                     find_first_transcript_drift_in_interval(
                         provider,
                         &sampling_plan.audited_versions_asc,
-                        last_sampled_compatible_asc_index + 1,
-                        sampled_asc_index,
-                        &baseline_transcript_value,
+                        DriftRefinementWindow {
+                            start_index: last_successful_asc_index + 1,
+                            end_index: sampled_asc_index,
+                            drift_baseline_transcript: epoch_transcript,
+                            baseline_transcript: baseline_transcript_value,
+                        },
                         &mut RefinementIndexSets {
                             inspected_ascending_indices: &mut inspected_ascending_indices,
+                            compatible_ascending_indices: &mut compatible_ascending_indices,
                             baseline_compatible_ascending_indices:
                                 &mut baseline_compatible_ascending_indices,
+                            failed_ascending_indices: &mut failed_ascending_indices,
+                            failed_versions: &mut failed_versions,
                         },
                         report_progress,
                     )?
+                    .unwrap_or_else(|| sampled_claude_schema_drift(&drift_window))
+                } else if survey_mode == ClaudeSchemaSurveyMode::Refine
+                    && interval_has_failed_sample
+                {
+                    report_progress(&format!(
+                        "Skipping refinement for sampled drift window {} ..= {} because one or more sampled anchors in the window failed.",
+                        drift_window.window_start_version, drift_window.window_end_version
+                    ));
+                    sampled_claude_schema_drift(&drift_window)
                 } else if survey_mode == ClaudeSchemaSurveyMode::Coarse {
-                    ClaudeSchemaDrift {
-                        first_drift_version: drift_window.sampled_drift_version.clone(),
-                        difference_summary: drift_window.difference_summary.clone(),
-                        likely_files_to_update: LIKELY_UPDATE_PATHS
-                            .iter()
-                            .map(|path| (*path).to_owned())
-                            .collect(),
-                    }
+                    sampled_claude_schema_drift(&drift_window)
                 } else {
-                    ClaudeSchemaDrift {
-                        first_drift_version: version.raw.clone(),
-                        difference_summary: summarize_schema_differences(
-                            &baseline_transcript,
-                            &transcript,
-                        ),
-                        likely_files_to_update: LIKELY_UPDATE_PATHS
-                            .iter()
-                            .map(|path| (*path).to_owned())
-                            .collect(),
-                    }
+                    claude_schema_drift(
+                        version.raw.clone(),
+                        ClaudeSchemaDriftBoundaryPrecision::Exact,
+                        summarize_schema_differences(baseline_transcript_value, &transcript),
+                    )
                 };
-                report_progress(&format!(
-                    "Detected Claude transcript drift at {}.",
-                    first_drift.first_drift_version
-                ));
+                if first_drift.boundary_precision.is_exact() {
+                    report_progress(&format!(
+                        "Detected Claude transcript drift at {}.",
+                        first_drift.first_drift_version
+                    ));
+                } else {
+                    report_progress(&format!(
+                        "Detected sampled Claude transcript drift at {}.",
+                        first_drift.first_drift_version
+                    ));
+                }
                 transcript_drift = Some(first_drift);
             }
 
-            epoch_baseline_transcript = transcript;
-            last_sampled_compatible_asc_index = sampled_asc_index;
+            epoch_baseline_transcript = Some(transcript);
         } else {
-            last_sampled_compatible_asc_index = sampled_asc_index;
+            compatible_ascending_indices.insert(sampled_asc_index);
         }
+        last_successful_asc_index = Some(sampled_asc_index);
 
         if survey_mode == ClaudeSchemaSurveyMode::Refine {
             let sdk = normalize_json(serde_json::to_value(&snapshot.sdk_manifest)?);
-            if sdk_drift.is_none() && sdk != baseline_sdk {
+            if sdk_drift.is_none()
+                && sdk
+                    != *baseline_sdk
+                        .as_ref()
+                        .context("Claude baseline SDK was not initialized")?
+            {
                 sdk_drift = Some(ClaudeSdkSchemaDrift {
                     first_drift_version: version.raw.clone(),
-                    difference_summary: summarize_schema_differences(&baseline_sdk, &sdk),
+                    difference_summary: summarize_schema_differences(
+                        baseline_sdk
+                            .as_ref()
+                            .context("Claude baseline SDK was not initialized")?,
+                        &sdk,
+                    ),
                 });
-            }
-
-            if transcript_drift.is_some() && sdk_drift.is_some() {
-                break;
             }
         }
     }
 
+    ensure!(
+        baseline_transcript.is_some(),
+        "Claude schema audit could not collect any transcript manifest from inspected versions"
+    );
+
     if transcript_drift.is_none() {
         report_progress(&format!(
-            "No Claude transcript drift detected across {} audited version(s).",
-            audited_versions.len()
+            "No Claude transcript drift detected across {} inspected compatible version(s).",
+            compatible_ascending_indices.len()
         ));
     }
+
+    let assumed_compatible_intervals = if failed_versions.is_empty() {
+        build_assumed_compatible_intervals(
+            &sampling_plan.audited_versions_asc,
+            &baseline_compatible_ascending_indices,
+        )
+    } else {
+        Vec::new()
+    };
 
     Ok(ClaudeSchemaAuditReport {
         release_source,
@@ -1464,10 +1858,14 @@ where
             .rev()
             .map(|index| sampling_plan.audited_versions_asc[index].raw.clone())
             .collect(),
-        assumed_compatible_intervals: build_assumed_compatible_intervals(
-            &sampling_plan.audited_versions_asc,
-            &baseline_compatible_ascending_indices,
-        ),
+        compatible_inspected_versions: compatible_ascending_indices
+            .iter()
+            .copied()
+            .rev()
+            .map(|index| sampling_plan.audited_versions_asc[index].raw.clone())
+            .collect(),
+        failed_versions,
+        assumed_compatible_intervals,
         sample_stride: sampling_plan.sample_stride,
         used_host_auth: provider.uses_host_auth(),
         survey_mode,
@@ -1599,44 +1997,59 @@ fn build_sampling_plan(
 fn find_first_transcript_drift_in_interval<P, F>(
     provider: &P,
     audited_versions_asc: &[StableClaudeReleaseVersion],
-    start_index: usize,
-    end_index: usize,
-    baseline_transcript: &Value,
+    window: DriftRefinementWindow<'_>,
     index_sets: &mut RefinementIndexSets<'_>,
     report_progress: &mut F,
-) -> Result<ClaudeSchemaDrift>
+) -> Result<Option<ClaudeSchemaDrift>>
 where
     P: ClaudeSchemaAuditProvider,
     F: FnMut(&str),
 {
-    for (index, version) in audited_versions_asc[start_index..=end_index]
+    for (index, version) in audited_versions_asc[window.start_index..=window.end_index]
         .iter()
         .enumerate()
     {
-        index_sets
-            .inspected_ascending_indices
-            .insert(start_index + index);
+        let version_index = window.start_index + index;
+        index_sets.inspected_ascending_indices.insert(version_index);
         report_progress(&format!(
             "Inspecting {} inside the sampled drift window...",
             version.raw
         ));
-        let snapshot = provider.collect_snapshot(&version.raw, report_progress)?;
+        let snapshot = match provider.collect_snapshot(&version.raw, report_progress) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                report_progress(&format!(
+                    "Skipping Claude Code {} inside drift refinement: {}",
+                    version.raw,
+                    truncate_text(&format!("{error:#}").replace('\n', " "), 240)
+                ));
+                index_sets.failed_ascending_indices.insert(version_index);
+                index_sets
+                    .failed_versions
+                    .push(claude_audit_failure(&version.raw, &error));
+                report_progress(&format!(
+                    "Stopping refinement for sampled drift window at {} because an in-window inspection failed; the first drift boundary is unproven.",
+                    version.raw
+                ));
+                return Ok(None);
+            }
+        };
         let transcript = normalize_json(serde_json::to_value(&snapshot.transcript_manifest)?);
-        if transcript == *baseline_transcript {
+        if transcript == *window.baseline_transcript {
             index_sets
                 .baseline_compatible_ascending_indices
-                .insert(start_index + index);
+                .insert(version_index);
         }
-        if transcript != *baseline_transcript {
-            return Ok(ClaudeSchemaDrift {
-                first_drift_version: version.raw.clone(),
-                difference_summary: summarize_schema_differences(baseline_transcript, &transcript),
-                likely_files_to_update: LIKELY_UPDATE_PATHS
-                    .iter()
-                    .map(|path| (*path).to_owned())
-                    .collect(),
-            });
+        if transcript != *window.drift_baseline_transcript {
+            return Ok(Some(claude_schema_drift(
+                version.raw.clone(),
+                ClaudeSchemaDriftBoundaryPrecision::Exact,
+                summarize_schema_differences(window.drift_baseline_transcript, &transcript),
+            )));
         }
+        index_sets
+            .compatible_ascending_indices
+            .insert(version_index);
     }
 
     bail!("sampled drift window unexpectedly contained no drifting Claude version")
@@ -1778,22 +2191,27 @@ fn validate_fixture_coverage(
         let satisfied = observed_tools
             .iter()
             .any(|observed| claude_tool_name_matches(observed, required));
-        ensure!(
-            satisfied,
-            "fixture `{}` did not trigger required Claude tool `{required}`",
-            fixture.name
-        );
+        if !satisfied {
+            return Err(ClaudeFixtureCoverageError {
+                fixture_name: fixture.name,
+                kind: ClaudeFixtureCoverageErrorKind::MissingTool(required),
+            }
+            .into());
+        }
     }
     if fixture.require_subagent_signal {
-        ensure!(
-            hook_event_names.contains("SubagentStop")
-                || session
-                    .transcript_lines
-                    .iter()
-                    .any(has_subagent_artifact_line),
-            "fixture `{}` did not produce any observable subagent signal",
-            fixture.name
-        );
+        let satisfied = hook_event_names.contains("SubagentStop")
+            || session
+                .transcript_lines
+                .iter()
+                .any(has_subagent_artifact_line);
+        if !satisfied {
+            return Err(ClaudeFixtureCoverageError {
+                fixture_name: fixture.name,
+                kind: ClaudeFixtureCoverageErrorKind::MissingSubagentSignal,
+            }
+            .into());
+        }
     }
     Ok(())
 }
@@ -2000,7 +2418,51 @@ fn inspect_cli_capabilities(
         allowed_tools_flag: detect_allowed_tools_flag(&stdout),
         supports_max_turns: stdout.contains("--max-turns"),
         supports_cwd: stdout.contains("--cwd"),
+        supports_model: stdout.contains("--model"),
+        supports_effort: stdout.contains("--effort"),
     })
+}
+
+/// Returns the allowed live-audit model candidates in diagnostic form.
+fn audit_model_candidate_names() -> String {
+    AUDIT_MODEL_CANDIDATES
+        .iter()
+        .map(|candidate| candidate.display_name)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Formats one selected Claude audit profile for progress output.
+fn audit_execution_profile_label(profile: &ClaudeAuditExecutionProfile) -> String {
+    let model = profile
+        .model
+        .as_deref()
+        .or(profile.model_env.as_deref())
+        .unwrap_or("<default>");
+    let effort = profile.effort.as_deref().unwrap_or("<default>");
+    format!("model={model}, effort={effort}")
+}
+
+/// Adds the selected low-cost Claude audit execution profile to a command.
+fn apply_execution_profile(command: &mut Command, profile: &ClaudeAuditExecutionProfile) {
+    if let Some(model) = &profile.model {
+        command.arg("--model");
+        command.arg(model);
+    }
+    if let Some(effort) = &profile.effort {
+        command.arg("--effort");
+        command.arg(effort);
+    }
+    if let Some(model_env) = &profile.model_env {
+        command.env("ANTHROPIC_MODEL", model_env);
+    }
+}
+
+/// Returns whether an audit error came from model-sensitive fixture coverage.
+fn is_fixture_coverage_error(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.is::<ClaudeFixtureCoverageError>())
 }
 
 /// Detects which allowed-tools flag spelling one Claude help screen advertises.
@@ -2154,6 +2616,32 @@ fn verify_file_integrity(path: &Path, expected_integrity: &PackageIntegrity) -> 
 
 /// Downloads one HTTP resource into a local file path.
 fn download_to_path(
+    client: &Client,
+    url: &str,
+    destination: &Path,
+    context_message: &str,
+) -> Result<()> {
+    let mut last_error = None;
+    for attempt in 1..=NPM_DOWNLOAD_ATTEMPTS {
+        match download_to_path_once(client, url, destination, context_message) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                if destination.exists() {
+                    let _ = fs::remove_file(destination);
+                }
+                last_error = Some(error);
+                if attempt < NPM_DOWNLOAD_ATTEMPTS {
+                    thread::sleep(NPM_DOWNLOAD_RETRY_DELAY);
+                }
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("failed to {context_message}")))
+}
+
+/// Downloads one HTTP resource once into a local file path.
+fn download_to_path_once(
     client: &Client,
     url: &str,
     destination: &Path,
@@ -2686,15 +3174,17 @@ mod tests {
     use tar::{Builder, Header};
 
     use super::{
-        ClaudeAuditSnapshot, ClaudeSchemaAuditOutcome, ClaudeSchemaAuditProvider,
-        ClaudeSchemaSurveyMode, ClaudeSdkSchemaManifest, ClaudeTranscriptSchemaManifest,
-        NpmPackageManifest, TranscriptManifestBuilder, audit_fixtures, build_hook_settings,
+        ClaudeAuditExecutionProfile, ClaudeAuditSnapshot, ClaudeSchemaAuditOutcome,
+        ClaudeSchemaAuditProvider, ClaudeSchemaDriftBoundaryPrecision, ClaudeSchemaSurveyMode,
+        ClaudeSdkSchemaManifest, ClaudeTranscriptSchemaManifest, NpmPackageManifest,
+        TranscriptManifestBuilder, apply_execution_profile, audit_fixtures, build_hook_settings,
         build_sampling_plan, collect_cli_sdk_manifest, collect_field_string_literals,
         collect_fixture_transcript_lines, collect_stable_release_versions,
         collect_type_union_members, configure_host_auth_environment_from_iter,
-        detect_allowed_tools_flag, native_cli_dependency, node_modules_package_path,
-        parse_hook_events, parse_jsonl_text, run_claude_schema_audit_with_provider,
-        run_command_with_timeout, select_audited_release_versions, validate_fixture_coverage,
+        detect_allowed_tools_flag, is_fixture_coverage_error, native_cli_dependency,
+        node_modules_package_path, parse_hook_events, parse_jsonl_text,
+        run_claude_schema_audit_with_provider, run_command_with_timeout,
+        select_audited_release_versions, validate_fixture_coverage,
     };
     use crate::schema_diff::{normalize_json, summarize_schema_differences};
 
@@ -2903,11 +3393,7 @@ mod tests {
                 .iter()
                 .map(|version| version.raw.clone())
                 .collect::<Vec<_>>(),
-            vec![
-                "2.1.130".to_owned(),
-                "2.1.128".to_owned(),
-                "2.1.126".to_owned(),
-            ]
+            vec!["2.1.130".to_owned(), "2.1.128".to_owned()]
         );
     }
 
@@ -2957,12 +3443,11 @@ mod tests {
                 "2.1.131".to_owned(),
                 "2.1.130".to_owned(),
                 "2.1.128".to_owned(),
-                "2.1.126".to_owned(),
             ]
         );
         assert_eq!(
             plan.assumed_compatible_intervals,
-            vec!["2.1.127".to_owned(), "2.1.129".to_owned()]
+            vec!["2.1.129".to_owned()]
         );
     }
 
@@ -3019,7 +3504,7 @@ mod tests {
             ClaudeSchemaAuditOutcome::Compatible
         ));
         assert_eq!(report.latest_published_version, "2.1.130");
-        assert_eq!(report.audited_versions.len(), 3);
+        assert_eq!(report.audited_versions.len(), 2);
         assert!(report.supplementary_sdk_drift.is_some());
     }
 
@@ -3042,20 +3527,10 @@ mod tests {
                     "2.1.128",
                     ClaudeAuditSnapshot {
                         transcript_manifest: manifest(
-                            &["assistant", "mystery-event", "progress", "system", "user"],
-                            &["Bash", "Read", "Task"],
-                        ),
-                        sdk_manifest: sdk_manifest(Some("0.2.128")),
-                    },
-                ),
-                (
-                    "2.1.126",
-                    ClaudeAuditSnapshot {
-                        transcript_manifest: manifest(
                             &["assistant", "progress", "system", "user"],
                             &["Bash", "Read", "Task"],
                         ),
-                        sdk_manifest: sdk_manifest(Some("0.2.126")),
+                        sdk_manifest: sdk_manifest(Some("0.2.128")),
                     },
                 ),
             ],
@@ -3074,7 +3549,11 @@ mod tests {
         let ClaudeSchemaAuditOutcome::Drift(drift) = report.outcome else {
             panic!("expected transcript drift");
         };
-        assert_eq!(drift.first_drift_version, "2.1.128");
+        assert_eq!(drift.first_drift_version, "2.1.130");
+        assert_eq!(
+            drift.boundary_precision,
+            ClaudeSchemaDriftBoundaryPrecision::Exact
+        );
         assert!(
             drift
                 .difference_summary
@@ -3083,6 +3562,11 @@ mod tests {
         );
         assert!(report.supplementary_sdk_drift.is_some());
         assert!(report.inspected_versions.contains(&"2.1.128".to_owned()));
+        assert!(
+            !report
+                .compatible_inspected_versions
+                .contains(&"2.1.130".to_owned())
+        );
         assert!(
             !report
                 .assumed_compatible_intervals
@@ -3165,7 +3649,7 @@ mod tests {
             PathBuf::from("/tmp/darc-claude-cache"),
             &provider,
             5,
-            None,
+            Some("2.1.126".to_owned()),
             ClaudeSchemaSurveyMode::Refine,
         )
         .unwrap();
@@ -3174,10 +3658,77 @@ mod tests {
             panic!("expected transcript drift");
         };
         assert_eq!(drift.first_drift_version, "2.1.129");
+        assert_eq!(
+            drift.boundary_precision,
+            ClaudeSchemaDriftBoundaryPrecision::Exact
+        );
         assert!(report.inspected_versions.contains(&"2.1.131".to_owned()));
         assert!(report.inspected_versions.contains(&"2.1.129".to_owned()));
         assert!(!report.inspected_versions.contains(&"2.1.130".to_owned()));
+        assert!(
+            !report
+                .compatible_inspected_versions
+                .contains(&"2.1.131".to_owned())
+        );
+        assert!(
+            !report
+                .compatible_inspected_versions
+                .contains(&"2.1.129".to_owned())
+        );
         assert!(report.assumed_compatible_intervals.is_empty());
+    }
+
+    #[test]
+    fn refinement_failure_keeps_drift_boundary_sampled() {
+        let provider = FakeClaudeSchemaAuditProvider::new(
+            &[
+                "2.1.131", "2.1.130", "2.1.129", "2.1.128", "2.1.127", "2.1.126",
+            ],
+            &[
+                (
+                    "2.1.131",
+                    ClaudeAuditSnapshot {
+                        transcript_manifest: manifest(
+                            &["assistant", "mystery-event", "progress", "system", "user"],
+                            &["Bash", "Read", "Task"],
+                        ),
+                        sdk_manifest: sdk_manifest(Some("0.2.131")),
+                    },
+                ),
+                (
+                    "2.1.126",
+                    ClaudeAuditSnapshot {
+                        transcript_manifest: manifest(
+                            &["assistant", "progress", "system", "user"],
+                            &["Bash", "Read", "Task"],
+                        ),
+                        sdk_manifest: sdk_manifest(Some("0.2.126")),
+                    },
+                ),
+            ],
+        );
+
+        let report = run_claude_schema_audit_with_provider(
+            "npm".to_owned(),
+            PathBuf::from("/tmp/darc-claude-cache"),
+            &provider,
+            5,
+            Some("2.1.126".to_owned()),
+            ClaudeSchemaSurveyMode::Refine,
+        )
+        .unwrap();
+
+        let ClaudeSchemaAuditOutcome::Drift(drift) = report.outcome else {
+            panic!("expected transcript drift");
+        };
+        assert_eq!(drift.first_drift_version, "2.1.131");
+        assert_eq!(
+            drift.boundary_precision,
+            ClaudeSchemaDriftBoundaryPrecision::Sampled
+        );
+        assert!(report.inspected_versions.contains(&"2.1.127".to_owned()));
+        assert!(!report.inspected_versions.contains(&"2.1.130".to_owned()));
+        assert_eq!(report.failed_versions[0].version, "2.1.127");
     }
 
     #[test]
@@ -3348,6 +3899,42 @@ export declare type SessionEndHookInput = BaseHookInput & {
     }
 
     #[test]
+    fn applies_low_cost_execution_profile_flags() {
+        let profile = ClaudeAuditExecutionProfile {
+            model: Some("haiku".to_owned()),
+            model_env: None,
+            effort: Some("low".to_owned()),
+        };
+        let mut command = Command::new("claude");
+
+        apply_execution_profile(&mut command, &profile);
+
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(args, vec!["--model", "haiku", "--effort", "low"]);
+    }
+
+    #[test]
+    fn applies_low_cost_execution_profile_model_env() {
+        let profile = ClaudeAuditExecutionProfile {
+            model: None,
+            model_env: Some("claude-3-5-haiku-20241022".to_owned()),
+            effort: None,
+        };
+        let mut command = Command::new("claude");
+
+        apply_execution_profile(&mut command, &profile);
+
+        let envs = command_envs(&command);
+        assert_eq!(
+            envs.get(&OsString::from("ANTHROPIC_MODEL")),
+            Some(&Some(OsString::from("claude-3-5-haiku-20241022")))
+        );
+    }
+
+    #[test]
     fn provider_level_audit_requires_explicit_host_auth() {
         let error = super::run_claude_schema_audit_with_progress(
             super::ClaudeSchemaAuditOptions::default(),
@@ -3448,7 +4035,30 @@ export declare type SessionEndHookInput = BaseHookInput & {
         };
 
         let error = validate_fixture_coverage(&session, fixture).unwrap_err();
+        assert!(is_fixture_coverage_error(&error));
         assert!(error.to_string().contains("observable subagent signal"));
+    }
+
+    #[test]
+    fn required_tool_coverage_failures_are_model_retryable() {
+        let fixture = audit_fixtures()
+            .iter()
+            .copied()
+            .find(|fixture| fixture.name == "read_tool")
+            .expect("read fixture should exist");
+        let session = super::ClaudeFixtureSession {
+            transcript_lines: parse_jsonl_text(
+                r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"No tool."}]}}"#,
+                "transcript",
+            )
+            .unwrap(),
+            hook_events: Vec::new(),
+            stream_events: Vec::new(),
+        };
+
+        let error = validate_fixture_coverage(&session, fixture).unwrap_err();
+        assert!(is_fixture_coverage_error(&error));
+        assert!(error.to_string().contains("required Claude tool `Read`"));
     }
 
     #[test]
