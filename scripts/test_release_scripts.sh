@@ -180,7 +180,8 @@ prepare_success_updates_version_changelog_and_runs_checks() {
   assert_unreleased_empty_before_next_section "$repo/CHANGELOG.md"
 
   actual="$(cat "$log")"
-  expected="cargo +nightly fmt
+  expected="cargo +stable update --offline --workspace
+cargo +nightly fmt
 cargo +stable clippy --locked --workspace --all-targets --all-features -- -D warnings -W clippy::all
 cargo +stable test --locked --workspace
 cargo +stable check --locked --workspace --all-targets --all-features --profile dist

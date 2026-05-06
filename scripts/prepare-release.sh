@@ -106,6 +106,8 @@ tmp_cargo=""
 mv "$tmp_changelog" CHANGELOG.md
 tmp_changelog=""
 
+# Refresh local workspace package versions before the locked validation gates.
+run cargo +stable update --offline --workspace
 run cargo +nightly fmt
 run cargo +stable clippy --locked --workspace --all-targets --all-features -- -D warnings -W clippy::all
 run cargo +stable test --locked --workspace
