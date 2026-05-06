@@ -318,3 +318,5 @@ cargo +stable clippy --locked --workspace --all-targets --all-features -- -D war
 cargo +stable test --locked --workspace
 cargo +stable check --locked --workspace --all-targets --all-features --profile dist
 ```
+
+To reproduce the Linux clippy gate in Docker, run `scripts/check-linux-clippy.sh`.
