@@ -143,7 +143,10 @@ fn top_level_help_points_to_common_workflows() {
         "darc status                                      # check active-project health"
     ));
     assert!(help.contains(
-        "darc refresh                                     # sync and index archived sessions"
+        "darc refresh --auto                              # keep Darc fresh automatically on macOS"
+    ));
+    assert!(help.contains(
+        "darc refresh                                     # refresh once without background jobs"
     ));
     assert!(
         help.contains("darc search \"panic\" --limit 5                    # find matching turns")
@@ -240,6 +243,15 @@ fn refresh_command_accepts_provider_filters_and_all() {
 }
 
 #[test]
+fn refresh_command_accepts_auto_mode() {
+    let cli = Cli::try_parse_from(["darc", "refresh", "--auto"]).unwrap();
+    assert!(matches!(
+        cli.command,
+        Commands::Refresh(super::RefreshArgs { auto: true, .. })
+    ));
+}
+
+#[test]
 fn refresh_command_accepts_watch_options() {
     let cli = Cli::try_parse_from([
         "darc",
@@ -269,6 +281,15 @@ fn refresh_command_accepts_watch_options() {
             && min_interval.as_deref() == Some("60s")
             && reconcile_interval.as_deref() == Some("10m")
     ));
+}
+
+#[test]
+fn refresh_help_mentions_auto_mode() {
+    let help = help_for_command_path(&["refresh"]);
+
+    assert!(help.contains("Use `--auto` to enable automatic background refresh and start it now."));
+    assert!(help.contains("--auto"));
+    assert!(help.contains("Enable automatic background refresh for all projects and start it now"));
 }
 
 #[test]
@@ -468,6 +489,23 @@ fn refresh_watch_options_require_watch_mode() {
 }
 
 #[test]
+fn refresh_auto_conflicts_with_refresh_selection_and_watch_options() {
+    for args in [
+        vec!["darc", "refresh", "--auto", "--provider", "claude"],
+        vec!["darc", "refresh", "--auto", "--all"],
+        vec!["darc", "refresh", "--auto", "--watch"],
+        vec!["darc", "refresh", "--auto", "--debounce", "30s"],
+        vec!["darc", "refresh", "--auto", "--min-interval", "60s"],
+        vec!["darc", "refresh", "--auto", "--reconcile-interval", "10m"],
+        vec!["darc", "refresh", "--auto", "--poll"],
+    ] {
+        let error = Cli::try_parse_from(args).unwrap_err();
+
+        assert!(error.to_string().contains("--auto"));
+    }
+}
+
+#[test]
 fn parses_service_lifecycle_command() {
     let cli = Cli::try_parse_from(["darc", "service", "enable"]).unwrap();
     assert!(matches!(
@@ -477,6 +515,62 @@ fn parses_service_lifecycle_command() {
             ..
         })
     ));
+}
+
+#[test]
+fn macos_service_start_launchctl_args_reload_loaded_service() {
+    let args = super::macos_service_start_launchctl_args(
+        Path::new("/tmp/darc.plist"),
+        true,
+        "gui/501".to_owned(),
+        "gui/501/com.0xjunha.darc.refresh".to_owned(),
+    );
+
+    assert_eq!(
+        args,
+        vec![
+            vec![
+                "bootout".to_owned(),
+                "gui/501/com.0xjunha.darc.refresh".to_owned()
+            ],
+            vec![
+                "bootstrap".to_owned(),
+                "gui/501".to_owned(),
+                "/tmp/darc.plist".to_owned()
+            ],
+            vec![
+                "kickstart".to_owned(),
+                "-k".to_owned(),
+                "gui/501/com.0xjunha.darc.refresh".to_owned()
+            ],
+        ]
+    );
+}
+
+#[test]
+fn macos_service_start_launchctl_args_load_unloaded_service() {
+    let args = super::macos_service_start_launchctl_args(
+        Path::new("/tmp/darc.plist"),
+        false,
+        "gui/501".to_owned(),
+        "gui/501/com.0xjunha.darc.refresh".to_owned(),
+    );
+
+    assert_eq!(
+        args,
+        vec![
+            vec![
+                "bootstrap".to_owned(),
+                "gui/501".to_owned(),
+                "/tmp/darc.plist".to_owned()
+            ],
+            vec![
+                "kickstart".to_owned(),
+                "-k".to_owned(),
+                "gui/501/com.0xjunha.darc.refresh".to_owned()
+            ],
+        ]
+    );
 }
 
 #[test]

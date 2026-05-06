@@ -4,6 +4,8 @@ All notable Darc release changes should be summarized here.
 
 ## Unreleased
 
+- Add `darc refresh --auto` to enable automatic background refresh on macOS and start it immediately.
+
 ## 0.1.2
 
 - Refresh workspace package versions in `Cargo.lock` during release preparation before running locked Cargo checks.
