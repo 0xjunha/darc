@@ -4,6 +4,8 @@ All notable Darc release changes should be summarized here.
 
 ## Unreleased
 
+## 0.1.2
+
 - Refresh workspace package versions in `Cargo.lock` during release preparation before running locked Cargo checks.
 - Keep release-profile CI checks fail-open when the workspace version gate cannot read a push base.
 - Mark Codex 0.128.0 and sampled audited Claude Code rollout versions from 1.0.91 through 2.1.128 as exact-supported after schema review.
