@@ -5152,14 +5152,17 @@ fn run_refresh_auto(root: &Path) -> Result<()> {
     progress.step(1, 2, "Writing LaunchAgent...");
     let plist_path = write_macos_launch_agent(root, true)?;
     progress.step(2, 2, "Starting background service...");
-    start_macos_service_impl(root)?;
+    let outcome = start_macos_service_impl(root)?;
     progress.done();
 
     let style = HumanStyle::stdout();
     print_section(style, "Service");
-    print_field(style, 2, "Status", style.ok("enabled and started"));
+    print_field(style, 2, "Status", style.ok(outcome.auto_status()));
     print_field(style, 2, "LaunchAgent", style.path(plist_path.display()));
     print_field(style, 2, "Command", watch_all_command(root, style));
+    if let Some(hint) = outcome.auto_hint() {
+        print_field(style, 2, "Note", style.muted(hint));
+    }
     Ok(())
 }
 
@@ -5643,6 +5646,49 @@ fn install_native_watchers(
 
 #[cfg(target_os = "macos")]
 const MACOS_SERVICE_LABEL: &str = "com.0xjunha.darc.refresh";
+#[cfg(target_os = "macos")]
+const MACOS_SERVICE_UNLOAD_TIMEOUT: Duration = Duration::from_secs(2);
+#[cfg(target_os = "macos")]
+const MACOS_SERVICE_RETRY_DELAY: Duration = Duration::from_millis(250);
+#[cfg(target_os = "macos")]
+const MACOS_SERVICE_BOOTSTRAP_ATTEMPTS: usize = 4;
+
+/// Describes whether service start created a new service or replaced an existing one.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MacosServiceStartOutcome {
+    Started,
+    Restarted,
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl MacosServiceStartOutcome {
+    /// Returns the status text for `darc refresh --auto`.
+    fn auto_status(self) -> &'static str {
+        match self {
+            Self::Started => "enabled and started",
+            Self::Restarted => "enabled and restarted",
+        }
+    }
+
+    /// Returns the status text for `darc service start`.
+    fn service_status(self) -> &'static str {
+        match self {
+            Self::Started => "started",
+            Self::Restarted => "restarted",
+        }
+    }
+
+    /// Returns the explanatory hint for an automatic refresh restart.
+    fn auto_hint(self) -> Option<&'static str> {
+        match self {
+            Self::Started => None,
+            Self::Restarted => Some(
+                "auto-refresh was already running; Darc stopped the existing service and started the updated one",
+            ),
+        }
+    }
+}
 
 /// Dispatches one service lifecycle command.
 fn run_service(args: ServiceArgs) -> Result<()> {
@@ -5715,54 +5761,78 @@ fn disable_macos_service(root: &Path) -> Result<()> {
 /// Starts or restarts the macOS LaunchAgent in the current login session.
 #[cfg(target_os = "macos")]
 fn start_macos_service(root: &Path) -> Result<()> {
-    start_macos_service_impl(root)?;
+    let outcome = start_macos_service_impl(root)?;
     let style = HumanStyle::stdout();
     print_section(style, "Service");
-    print_field(style, 2, "Status", style.ok("started"));
+    print_field(style, 2, "Status", style.ok(outcome.service_status()));
     print_field(style, 2, "Command", watch_all_command(root, style));
     Ok(())
 }
 
 /// Starts or restarts the macOS LaunchAgent without printing status.
 #[cfg(target_os = "macos")]
-fn start_macos_service_impl(root: &Path) -> Result<()> {
+fn start_macos_service_impl(root: &Path) -> Result<MacosServiceStartOutcome> {
     let launch_agent_path = macos_launch_agent_path()?;
     let plist_path = if launch_agent_path.exists() {
         launch_agent_path
     } else {
         write_macos_runtime_plist(root)?
     };
-    let loaded = macos_service_loaded()?;
-    for args in macos_service_start_launchctl_args(
+    let domain = macos_launch_domain()?;
+    let target = macos_launch_target_for_domain(&domain);
+    let outcome = if macos_service_target_loaded(&target)? {
+        run_launchctl(&macos_service_bootout_launchctl_args(&target))?;
+        wait_for_macos_service_unloaded(&target)?;
+        MacosServiceStartOutcome::Restarted
+    } else {
+        MacosServiceStartOutcome::Started
+    };
+
+    run_launchctl_with_bootstrap_retry(&macos_service_bootstrap_launchctl_args(
         &plist_path,
-        loaded,
-        macos_launch_domain()?,
-        macos_launch_target()?,
-    ) {
-        run_launchctl(&args)?;
-    }
-    Ok(())
+        &domain,
+    ))?;
+    run_launchctl(&macos_service_kickstart_launchctl_args(&target))?;
+    Ok(outcome)
 }
 
-/// Builds the launchctl commands needed to load and start the service plist.
-#[cfg(any(target_os = "macos", test))]
-fn macos_service_start_launchctl_args(
-    plist_path: &Path,
-    loaded: bool,
-    domain: String,
-    target: String,
-) -> Vec<Vec<String>> {
-    let mut commands = Vec::new();
-    if loaded {
-        commands.push(vec!["bootout".to_owned(), target.clone()]);
+/// Waits until launchd no longer reports the service target as loaded.
+#[cfg(target_os = "macos")]
+fn wait_for_macos_service_unloaded(target: &str) -> Result<()> {
+    let deadline = Instant::now() + MACOS_SERVICE_UNLOAD_TIMEOUT;
+    loop {
+        if !macos_service_target_loaded(target)? {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "timed out waiting for the macOS LaunchAgent to unload\n  Target: {target}\n  Hint: launchd still reports the old Darc auto-refresh service as loaded"
+            );
+        }
+        std::thread::sleep(MACOS_SERVICE_RETRY_DELAY);
     }
-    commands.push(vec![
+}
+
+/// Builds the launchctl commands needed to start the service plist.
+#[cfg(any(target_os = "macos", test))]
+fn macos_service_bootstrap_launchctl_args(plist_path: &Path, domain: &str) -> Vec<String> {
+    vec![
         "bootstrap".to_owned(),
-        domain,
+        domain.to_owned(),
         plist_path.display().to_string(),
-    ]);
-    commands.push(vec!["kickstart".to_owned(), "-k".to_owned(), target]);
-    commands
+    ]
+}
+
+/// Builds the launchctl command needed to unload the service target.
+#[cfg(any(target_os = "macos", test))]
+fn macos_service_bootout_launchctl_args(target: &str) -> Vec<String> {
+    vec!["bootout".to_owned(), target.to_owned()]
+}
+
+/// Builds the launchctl command needed to kickstart the service target.
+#[cfg(any(target_os = "macos", test))]
+fn macos_service_kickstart_launchctl_args(target: &str) -> Vec<String> {
+    vec!["kickstart".to_owned(), "-k".to_owned(), target.to_owned()]
 }
 
 /// Formats the foreground command used by the background refresh service.
@@ -6004,19 +6074,27 @@ fn macos_launch_domain() -> Result<String> {
 /// Returns the launchd service target.
 #[cfg(target_os = "macos")]
 fn macos_launch_target() -> Result<String> {
-    Ok(format!(
-        "{}/{}",
-        macos_launch_domain()?,
-        MACOS_SERVICE_LABEL
-    ))
+    Ok(macos_launch_target_for_domain(&macos_launch_domain()?))
+}
+
+/// Returns the launchd service target inside one launchd domain.
+#[cfg(target_os = "macos")]
+fn macos_launch_target_for_domain(domain: &str) -> String {
+    format!("{domain}/{MACOS_SERVICE_LABEL}")
 }
 
 /// Returns whether the LaunchAgent is loaded.
 #[cfg(target_os = "macos")]
 fn macos_service_loaded() -> Result<bool> {
+    macos_service_target_loaded(&macos_launch_target()?)
+}
+
+/// Returns whether one LaunchAgent target is loaded.
+#[cfg(target_os = "macos")]
+fn macos_service_target_loaded(target: &str) -> Result<bool> {
     let output = Command::new("launchctl")
         .arg("print")
-        .arg(macos_launch_target()?)
+        .arg(target)
         .output()
         .context("failed to run launchctl print")?;
     Ok(output.status.success())
@@ -6025,15 +6103,57 @@ fn macos_service_loaded() -> Result<bool> {
 /// Runs `launchctl` and fails on a non-zero exit.
 #[cfg(target_os = "macos")]
 fn run_launchctl(args: &[String]) -> Result<()> {
+    if let Some(failure) = run_launchctl_once(args)? {
+        bail!(
+            "{}",
+            launchctl_failure_message(&failure.args, &failure.stderr)
+        );
+    }
+    Ok(())
+}
+
+/// Runs bootstrap with retries for transient launchd restart failures.
+#[cfg(target_os = "macos")]
+fn run_launchctl_with_bootstrap_retry(args: &[String]) -> Result<()> {
+    for attempt in 1..=MACOS_SERVICE_BOOTSTRAP_ATTEMPTS {
+        match run_launchctl_once(args)? {
+            None => return Ok(()),
+            Some(failure)
+                if attempt < MACOS_SERVICE_BOOTSTRAP_ATTEMPTS
+                    && launchctl_failure_is_retryable_bootstrap(&failure.args, &failure.stderr) =>
+            {
+                std::thread::sleep(MACOS_SERVICE_RETRY_DELAY);
+            }
+            Some(failure) => bail!(
+                "{}",
+                launchctl_failure_message(&failure.args, &failure.stderr)
+            ),
+        }
+    }
+    Ok(())
+}
+
+/// Runs one launchctl command and returns captured failure details.
+#[cfg(target_os = "macos")]
+fn run_launchctl_once(args: &[String]) -> Result<Option<LaunchctlFailure>> {
     let output = Command::new("launchctl")
         .args(args)
         .output()
         .context("failed to run launchctl")?;
     if output.status.success() {
-        return Ok(());
+        return Ok(None);
     }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    bail!("{}", launchctl_failure_message(args, &stderr));
+    Ok(Some(LaunchctlFailure {
+        args: args.to_vec(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    }))
+}
+
+/// Captures one non-zero launchctl result.
+#[cfg(target_os = "macos")]
+struct LaunchctlFailure {
+    args: Vec<String>,
+    stderr: String,
 }
 
 /// Formats one launchctl failure as a structured human-readable error.
@@ -6069,15 +6189,20 @@ fn launchctl_command_display(args: &[String]) -> String {
 /// Returns a contextual hint for known launchctl failure modes.
 #[cfg(any(target_os = "macos", test))]
 fn launchctl_failure_hint(args: &[String], stderr: &str) -> Option<&'static str> {
-    if args.first().is_some_and(|command| command == "bootstrap")
-        && stderr.contains("Bootstrap failed: 5")
-        && stderr.contains("Input/output error")
-    {
+    if launchctl_failure_is_retryable_bootstrap(args, stderr) {
         return Some(
-            "launchd can report this when the Darc service is already loaded or still shutting down. Run `darc service status` to confirm the current state.",
+            "launchd can report this while replacing a service that was just stopped; Darc retried the start before giving up. Run `darc service status` to confirm the current state.",
         );
     }
     None
+}
+
+/// Returns whether one launchctl failure is worth retrying during bootstrap.
+#[cfg(any(target_os = "macos", test))]
+fn launchctl_failure_is_retryable_bootstrap(args: &[String], stderr: &str) -> bool {
+    args.first().is_some_and(|command| command == "bootstrap")
+        && stderr.contains("Bootstrap failed: 5")
+        && stderr.contains("Input/output error")
 }
 
 /// Returns the current numeric user id.

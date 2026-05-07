@@ -12,7 +12,8 @@ darc refresh --auto
 ```
 
 This is equivalent to `darc service enable` followed by `darc service start`: it enables auto-start on future logins and
-starts or restarts the background refresh service now.
+starts or restarts the background refresh service now. If auto-refresh is already running, Darc stops the existing
+LaunchAgent and starts the updated one.
 
 The foreground command is:
 
@@ -37,8 +38,9 @@ darc service disable
 ```
 
 - `enable` writes `~/Library/LaunchAgents/com.0xjunha.darc.refresh.plist` so the service auto-starts on future logins.
-- `start` loads and starts the service in the current login session. If auto-start is not enabled, it uses a runtime
-  plist under `~/.darc/run` instead of writing a LaunchAgent auto-start file.
+- `start` loads and starts the service in the current login session, restarting an already loaded service from the
+  current plist. If auto-start is not enabled, it uses a runtime plist under `~/.darc/run` instead of writing a
+  LaunchAgent auto-start file.
 - `stop` unloads the LaunchAgent in the current login session without removing the auto-start file.
 - `restart` stops and starts the LaunchAgent.
 - `status` reports whether the LaunchAgent file exists, whether launchd has it loaded, the active watch settings, and
