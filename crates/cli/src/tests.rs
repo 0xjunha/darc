@@ -642,6 +642,32 @@ fn macos_service_start_launchctl_args_load_unloaded_service() {
 }
 
 #[test]
+fn launchctl_failure_message_structures_bootstrap_errors() {
+    let args = vec![
+        "bootstrap".to_owned(),
+        "gui/501".to_owned(),
+        "/tmp/darc/LaunchAgents/com.0xjunha.darc.refresh.plist".to_owned(),
+    ];
+    let message = super::launchctl_failure_message(
+        &args,
+        "Bootstrap failed: 5: Input/output error\nTry re-running the command as root for richer errors.",
+    );
+
+    assert_contains_in_order(
+        &message,
+        &[
+            "failed to manage the macOS LaunchAgent",
+            "Command: launchctl bootstrap gui/501 /tmp/darc/LaunchAgents/com.0xjunha.darc.refresh.plist",
+            "Detail:",
+            "Bootstrap failed: 5: Input/output error",
+            "Try re-running the command as root for richer errors.",
+            "Hint:",
+            "already loaded or still shutting down",
+        ],
+    );
+}
+
+#[test]
 fn service_help_marks_feature_beta_and_macos_only() {
     let help = help_for_command_path(&["service"]);
 

@@ -12,7 +12,7 @@ darc refresh --auto
 ```
 
 This is equivalent to `darc service enable` followed by `darc service start`: it enables auto-start on future logins and
-starts the background refresh service now.
+starts or restarts the background refresh service now.
 
 The foreground command is:
 

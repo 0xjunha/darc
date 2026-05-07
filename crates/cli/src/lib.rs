@@ -6033,7 +6033,51 @@ fn run_launchctl(args: &[String]) -> Result<()> {
         return Ok(());
     }
     let stderr = String::from_utf8_lossy(&output.stderr);
-    bail!("launchctl {} failed: {}", args.join(" "), stderr.trim());
+    bail!("{}", launchctl_failure_message(args, &stderr));
+}
+
+/// Formats one launchctl failure as a structured human-readable error.
+#[cfg(any(target_os = "macos", test))]
+fn launchctl_failure_message(args: &[String], stderr: &str) -> String {
+    let mut message = format!(
+        "failed to manage the macOS LaunchAgent\n  Command: {}",
+        launchctl_command_display(args)
+    );
+    let detail = stderr.trim();
+    if !detail.is_empty() {
+        message.push_str("\n  Detail:");
+        for line in detail.lines() {
+            message.push_str("\n    ");
+            message.push_str(line);
+        }
+    }
+    if let Some(hint) = launchctl_failure_hint(args, detail) {
+        message.push_str("\n  Hint: ");
+        message.push_str(hint);
+    }
+    message
+}
+
+/// Formats the launchctl command line that failed.
+#[cfg(any(target_os = "macos", test))]
+fn launchctl_command_display(args: &[String]) -> String {
+    let mut command = vec!["launchctl".to_owned()];
+    command.extend(args.iter().cloned());
+    command.join(" ")
+}
+
+/// Returns a contextual hint for known launchctl failure modes.
+#[cfg(any(target_os = "macos", test))]
+fn launchctl_failure_hint(args: &[String], stderr: &str) -> Option<&'static str> {
+    if args.first().is_some_and(|command| command == "bootstrap")
+        && stderr.contains("Bootstrap failed: 5")
+        && stderr.contains("Input/output error")
+    {
+        return Some(
+            "launchd can report this when the Darc service is already loaded or still shutting down. Run `darc service status` to confirm the current state.",
+        );
+    }
+    None
 }
 
 /// Returns the current numeric user id.
