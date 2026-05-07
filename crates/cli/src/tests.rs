@@ -209,17 +209,22 @@ fn agent_help_renders_operating_guide() {
         guide,
         &[
             "# Darc Agent Help",
-            "## When to use Darc",
-            "## Safe first commands",
-            "## Evidence ladder",
-            "## File pivots",
-            "## Output discipline",
-            "## Mutating boundaries",
+            "## When to Use Darc",
+            "## Safe First Commands",
+            "## Task Recipes",
+            "## Evidence Ladder",
+            "## Reporting Darc Evidence",
+            "## Output Discipline",
+            "## Mutating Boundaries",
         ],
     );
     assert!(guide.contains("`darc status --json`"));
     assert!(guide.contains("`darc search --mode file-path <glob> --limit 5`"));
     assert!(guide.contains("`darc list files --co-touched-with <path> --limit 10`"));
+    assert!(guide.contains("Treat historical churn as a map, not a verdict."));
+    assert!(guide.contains("Darc showed:"));
+    assert!(guide.contains("Current source/tests confirmed:"));
+    assert!(guide.contains("Do not list Darc commands unless they help reproduce the evidence."));
     assert!(guide.contains("`darc refresh`, `darc sync`, `darc index`"));
     assert!(!guide.contains("AGENTS.md trigger"));
     assert!(!guide.contains("darc agent-help --agents-md-line >> AGENTS.md"));
@@ -231,7 +236,7 @@ fn agents_md_line_is_single_marker_wrapped_line() {
 
     assert_eq!(
         line,
-        "<!-- darc:agent-help:start --> When prior coding-agent context could affect the task, run `darc agent-help` and use Darc to find exact prior-session evidence. <!-- darc:agent-help:end -->"
+        "<!-- darc:agent-help:start --> When a task depends on prior decisions, regressions, repeated failures, PR handoffs, ambiguous references to earlier work, or file/module history, run `darc agent-help` and use Darc for exact prior-session evidence. Verify conclusions against current files and tests. <!-- darc:agent-help:end -->"
     );
     assert_eq!(line.lines().count(), 1);
     assert!(line.starts_with("<!-- darc:agent-help:start --> "));
