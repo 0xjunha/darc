@@ -19,10 +19,12 @@ Current crate ownership:
 
 Current state:
 
-- Sync now matches Codex sessions by registered path spellings or by `git.repository_url` recorded in the log, without
-  probing arbitrary historical `cwd` directories.
+- Sync now matches Codex sessions by logged `git.repository_url`, by explicit linked/known paths, or by current-project
+  paths when metadata is missing, without probing arbitrary historical `cwd` directories.
 - Additional checkouts must be explicitly registered or linked before path-only legacy logs can be associated with the
-  active project.
+  active project; broad parent-prefix matches do not override a mismatched logged remote.
+- Broad linked-path matches with logged remotes require scoped remote evidence for that linked path; missing old paths
+  without stored/live upstream evidence are skipped instead of being trusted by prefix alone.
 
 Needed:
 

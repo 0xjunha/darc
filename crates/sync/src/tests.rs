@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
@@ -35,7 +35,8 @@ fn sample_request(
         project_path_aliases: project_paths,
         other_project_paths: BTreeSet::new(),
         other_project_path_aliases: BTreeSet::new(),
-        project_upstream: None,
+        project_upstreams: BTreeSet::new(),
+        project_path_upstreams: BTreeMap::new(),
         sources: vec![SourceKind::Claude, SourceKind::Codex],
         claude: Some(ClaudeSource {
             include_subagents: true,
@@ -556,7 +557,7 @@ fn prepare_sync_matches_unregistered_codex_checkout_by_logged_upstream() -> Resu
     )?;
 
     let mut request = ws.default_request();
-    request.project_upstream = Some(remote.into());
+    request.project_upstreams.insert(remote.into());
 
     let plan = prepare_sync(request)?;
 
@@ -608,8 +609,8 @@ fn prepare_sync_matches_registered_codex_cwd_alias() -> Result<()> {
 }
 
 #[test]
-fn prepare_sync_keeps_registered_nested_cwd_despite_mismatched_logged_upstream() -> Result<()> {
-    let ws = TestWorkspace::new("sync-codex-registered-nested-mismatched-upstream")?;
+fn prepare_sync_skips_broad_nested_cwd_with_mismatched_logged_upstream() -> Result<()> {
+    let ws = TestWorkspace::new("sync-codex-nested-mismatched-upstream")?;
     let remote = "https://example.com/acme/darc.git";
     let other_remote = "https://example.com/acme/other.git";
     let nested_repo = ws.canonical_project_root.join("vendor/other-repo");
@@ -627,7 +628,116 @@ fn prepare_sync_keeps_registered_nested_cwd_despite_mismatched_logged_upstream()
     )?;
 
     let mut request = ws.default_request();
-    request.project_upstream = Some(remote.into());
+    request.project_upstreams.insert(remote.into());
+
+    let plan = prepare_sync(request)?;
+
+    assert_eq!(plan.sessions_to_copy(), 0);
+    assert!(plan.new_known_paths.is_empty());
+    assert!(plan.warnings.is_empty());
+
+    Ok(())
+}
+
+#[test]
+fn prepare_sync_ignores_ancestor_remote_when_current_path_wins() -> Result<()> {
+    let ws = TestWorkspace::new("sync-codex-ancestor-remote")?;
+    let remote = "https://example.com/acme/darc.git";
+    let ancestor_remote = "https://example.com/acme/ancestor.git";
+    let cwd = ws.canonical_project_root.join("src");
+    let codex_sessions = ws.codex_sessions_root.join("2026/04/01");
+    fs::create_dir_all(&codex_sessions)?;
+    init_git_repo(&ws.project_root, remote)?;
+
+    write_file(
+        &codex_sessions
+            .join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl"),
+        &format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.128.0\",\"git\":{{\"repository_url\":\"{ancestor_remote}\"}}}}}}\n{{\"type\":\"message\"}}\n",
+            cwd.display()
+        ),
+    )?;
+
+    let ancestor_path = fs::canonicalize(&ws.root)?;
+    let mut request = ws.default_request();
+    request.project_upstreams.insert(remote.into());
+    request.other_project_paths = BTreeSet::from([ancestor_path.clone()]);
+    request
+        .project_path_upstreams
+        .entry(ancestor_path)
+        .or_default()
+        .insert(ancestor_remote.into());
+
+    let plan = prepare_sync(request)?;
+
+    assert_eq!(plan.sessions_to_copy(), 0);
+    assert!(plan.new_known_paths.is_empty());
+    assert!(plan.warnings.is_empty());
+
+    Ok(())
+}
+
+#[test]
+fn prepare_sync_keeps_registered_subdir_with_known_old_logged_upstream() -> Result<()> {
+    let ws = TestWorkspace::new("sync-codex-registered-mismatched-upstream")?;
+    let remote = "https://example.com/acme/darc.git";
+    let old_remote = "git@example.com:acme/darc.git";
+    let cwd = ws.canonical_project_root.join("src");
+    let codex_sessions = ws.codex_sessions_root.join("2026/04/01");
+    fs::create_dir_all(&codex_sessions)?;
+    init_git_repo(&ws.project_root, remote)?;
+
+    write_file(
+        &codex_sessions
+            .join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl"),
+        &format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.128.0\",\"git\":{{\"repository_url\":\"{old_remote}\"}}}}}}\n{{\"type\":\"message\"}}\n",
+            cwd.display()
+        ),
+    )?;
+
+    let mut request = ws.default_request();
+    request.project_upstreams.insert(remote.into());
+    request.project_upstreams.insert(old_remote.into());
+
+    let plan = prepare_sync(request)?;
+
+    assert_eq!(plan.sessions_to_copy(), 1);
+    assert!(plan.warnings.is_empty());
+
+    Ok(())
+}
+
+#[test]
+fn prepare_sync_keeps_linked_cwd_despite_mismatched_logged_upstream() -> Result<()> {
+    let ws = TestWorkspace::new("sync-codex-linked-mismatched-upstream")?;
+    let remote = "https://example.com/acme/darc.git";
+    let old_remote = "https://example.com/acme/old-darc.git";
+    let linked_root = ws.root.join("old-darc");
+    let linked_cwd = linked_root.join("src");
+    let codex_sessions = ws.codex_sessions_root.join("2026/04/01");
+    fs::create_dir_all(&codex_sessions)?;
+    init_git_repo(&ws.project_root, remote)?;
+
+    write_file(
+        &codex_sessions
+            .join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl"),
+        &format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.128.0\",\"git\":{{\"repository_url\":\"{old_remote}\"}}}}}}\n{{\"type\":\"message\"}}\n",
+            linked_cwd.display()
+        ),
+    )?;
+
+    let mut request = ws.default_request();
+    request.project_upstreams.insert(remote.into());
+    request.stored_known_paths = BTreeSet::from([linked_root.clone()]);
+    request.project_paths.insert(linked_root.clone());
+    request.project_path_aliases.insert(linked_root.clone());
+    request
+        .project_path_upstreams
+        .entry(linked_root)
+        .or_default()
+        .insert(old_remote.into());
 
     let plan = prepare_sync(request)?;
 
@@ -639,10 +749,11 @@ fn prepare_sync_keeps_registered_nested_cwd_despite_mismatched_logged_upstream()
 }
 
 #[test]
-fn prepare_sync_keeps_registered_cwd_despite_mismatched_logged_upstream() -> Result<()> {
-    let ws = TestWorkspace::new("sync-codex-registered-mismatched-upstream")?;
+fn prepare_sync_keeps_exact_linked_cwd_with_unknown_logged_upstream() -> Result<()> {
+    let ws = TestWorkspace::new("sync-codex-exact-linked-unknown-upstream")?;
     let remote = "https://example.com/acme/darc.git";
-    let old_remote = "git@example.com:acme/darc.git";
+    let old_remote = "https://example.com/acme/old-darc.git";
+    let linked_root = ws.root.join("old-darc");
     let codex_sessions = ws.codex_sessions_root.join("2026/04/01");
     fs::create_dir_all(&codex_sessions)?;
     init_git_repo(&ws.project_root, remote)?;
@@ -652,16 +763,130 @@ fn prepare_sync_keeps_registered_cwd_despite_mismatched_logged_upstream() -> Res
             .join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl"),
         &format!(
             "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.128.0\",\"git\":{{\"repository_url\":\"{old_remote}\"}}}}}}\n{{\"type\":\"message\"}}\n",
-            ws.canonical_project_root.display()
+            linked_root.display()
         ),
     )?;
 
     let mut request = ws.default_request();
-    request.project_upstream = Some(remote.into());
+    request.project_upstreams.insert(remote.into());
+    request.stored_known_paths = BTreeSet::from([linked_root.clone()]);
+    request.project_paths.insert(linked_root.clone());
+    request.project_path_aliases.insert(linked_root);
 
     let plan = prepare_sync(request)?;
 
     assert_eq!(plan.sessions_to_copy(), 1);
+    assert!(plan.new_known_paths.is_empty());
+    assert!(plan.warnings.is_empty());
+
+    Ok(())
+}
+
+#[test]
+fn prepare_sync_skips_linked_nested_cwd_with_mismatched_logged_upstream() -> Result<()> {
+    let ws = TestWorkspace::new("sync-codex-linked-nested-mismatched-upstream")?;
+    let remote = "https://example.com/acme/darc.git";
+    let old_remote = "https://example.com/acme/old-darc.git";
+    let other_remote = "https://example.com/acme/other.git";
+    let linked_root = ws.root.join("old-darc");
+    let nested_cwd = linked_root.join("vendor/other-repo");
+    let codex_sessions = ws.codex_sessions_root.join("2026/04/01");
+    fs::create_dir_all(&codex_sessions)?;
+    init_git_repo(&ws.project_root, remote)?;
+
+    write_file(
+        &codex_sessions
+            .join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl"),
+        &format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.128.0\",\"git\":{{\"repository_url\":\"{other_remote}\"}}}}}}\n{{\"type\":\"message\"}}\n",
+            nested_cwd.display()
+        ),
+    )?;
+
+    let mut request = ws.default_request();
+    request.project_upstreams.insert(remote.into());
+    request.stored_known_paths = BTreeSet::from([linked_root.clone()]);
+    request.project_paths.insert(linked_root.clone());
+    request.project_path_aliases.insert(linked_root.clone());
+    request
+        .project_path_upstreams
+        .entry(linked_root)
+        .or_default()
+        .insert(old_remote.into());
+
+    let plan = prepare_sync(request)?;
+
+    assert_eq!(plan.sessions_to_copy(), 0);
+    assert!(plan.new_known_paths.is_empty());
+    assert!(plan.warnings.is_empty());
+
+    Ok(())
+}
+
+#[test]
+fn prepare_sync_skips_linked_nested_cwd_without_scoped_upstream() -> Result<()> {
+    let ws = TestWorkspace::new("sync-codex-linked-nested-no-scoped-upstream")?;
+    let remote = "https://example.com/acme/darc.git";
+    let other_remote = "https://example.com/acme/other.git";
+    let linked_root = ws.root.join("old-darc");
+    let nested_cwd = linked_root.join("vendor/other-repo");
+    let codex_sessions = ws.codex_sessions_root.join("2026/04/01");
+    fs::create_dir_all(&codex_sessions)?;
+    init_git_repo(&ws.project_root, remote)?;
+
+    write_file(
+        &codex_sessions
+            .join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl"),
+        &format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.128.0\",\"git\":{{\"repository_url\":\"{other_remote}\"}}}}}}\n{{\"type\":\"message\"}}\n",
+            nested_cwd.display()
+        ),
+    )?;
+
+    let mut request = ws.default_request();
+    request.project_upstreams.insert(remote.into());
+    request.stored_known_paths = BTreeSet::from([linked_root.clone()]);
+    request.project_paths.insert(linked_root.clone());
+    request.project_path_aliases.insert(linked_root);
+
+    let plan = prepare_sync(request)?;
+
+    assert_eq!(plan.sessions_to_copy(), 0);
+    assert!(plan.new_known_paths.is_empty());
+    assert!(plan.warnings.is_empty());
+
+    Ok(())
+}
+
+#[test]
+fn prepare_sync_skips_project_upstream_for_unscoped_linked_nested_cwd() -> Result<()> {
+    let ws = TestWorkspace::new("sync-codex-linked-nested-project-upstream-no-scoped")?;
+    let remote = "https://example.com/acme/darc.git";
+    let linked_root = ws.root.join("old-darc");
+    let nested_cwd = linked_root.join("vendor/darc-copy");
+    let codex_sessions = ws.codex_sessions_root.join("2026/04/01");
+    fs::create_dir_all(&codex_sessions)?;
+    init_git_repo(&ws.project_root, remote)?;
+
+    write_file(
+        &codex_sessions
+            .join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl"),
+        &format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.128.0\",\"git\":{{\"repository_url\":\"{remote}\"}}}}}}\n{{\"type\":\"message\"}}\n",
+            nested_cwd.display()
+        ),
+    )?;
+
+    let mut request = ws.default_request();
+    request.project_upstreams.insert(remote.into());
+    request.stored_known_paths = BTreeSet::from([linked_root.clone()]);
+    request.project_paths.insert(linked_root.clone());
+    request.project_path_aliases.insert(linked_root);
+
+    let plan = prepare_sync(request)?;
+
+    assert_eq!(plan.sessions_to_copy(), 0);
+    assert!(plan.new_known_paths.is_empty());
     assert!(plan.warnings.is_empty());
 
     Ok(())
@@ -686,7 +911,7 @@ fn prepare_sync_skips_unregistered_codex_checkout_without_logged_upstream() -> R
     )?;
 
     let mut request = ws.default_request();
-    request.project_upstream = Some(remote.into());
+    request.project_upstreams.insert(remote.into());
 
     let plan = prepare_sync(request)?;
 
@@ -819,7 +1044,7 @@ fn prepare_sync_skips_codex_session_in_other_projects_live_worktree() -> Result<
     )?;
 
     let mut request = ws.default_request();
-    request.project_upstream = Some(remote.into());
+    request.project_upstreams.insert(remote.into());
     request.other_project_paths = darc_paths::project_path_set(&repo_b_root, &[])?;
 
     let plan = prepare_sync(request)?;
@@ -851,7 +1076,7 @@ fn prepare_sync_skips_other_project_cwd_alias_before_logged_upstream() -> Result
     )?;
 
     let mut request = ws.default_request();
-    request.project_upstream = Some(remote.into());
+    request.project_upstreams.insert(remote.into());
     request.other_project_paths = BTreeSet::from([canonical_other]);
     request.other_project_path_aliases = BTreeSet::from([alias_other]);
 
@@ -886,7 +1111,7 @@ fn prepare_sync_skips_codex_checkout_owned_by_other_project() -> Result<()> {
     )?;
 
     let mut request = ws.default_request();
-    request.project_upstream = Some(remote.into());
+    request.project_upstreams.insert(remote.into());
     request.other_project_paths = darc_paths::project_path_set(&related_root, &[])?;
 
     let plan = prepare_sync(request)?;

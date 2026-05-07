@@ -229,7 +229,7 @@ pub fn project_path_text_aliases(path: &Path) -> BTreeSet<PathBuf> {
     #[cfg(target_os = "macos")]
     {
         let mut aliases = BTreeSet::from([normalized.clone()]);
-        if let Some(alias) = macos_private_var_alias(&normalized) {
+        if let Some(alias) = macos_private_mount_alias(&normalized) {
             aliases.insert(alias);
         }
         aliases
@@ -238,6 +238,14 @@ pub fn project_path_text_aliases(path: &Path) -> BTreeSet<PathBuf> {
     {
         BTreeSet::from([normalized])
     }
+}
+
+/// Returns non-probing text spellings for a set of project paths.
+pub fn project_path_set_text_aliases(paths: &BTreeSet<PathBuf>) -> BTreeSet<PathBuf> {
+    paths
+        .iter()
+        .flat_map(|path| project_path_text_aliases(path).into_iter())
+        .collect()
 }
 
 /// Builds the full project path set from the current root, live worktrees, and known paths.
@@ -351,9 +359,9 @@ fn normalize_path_textually(path: &Path) -> PathBuf {
     }
 }
 
-/// Returns the alternate macOS spelling for `/var` and `/private/var` paths.
+/// Returns the alternate macOS private/public spelling for known redirected roots.
 #[cfg(target_os = "macos")]
-fn macos_private_var_alias(path: &Path) -> Option<PathBuf> {
+fn macos_private_mount_alias(path: &Path) -> Option<PathBuf> {
     macos_private_path_alias(path, Path::new("/private/var"), Path::new("/var"))
         .or_else(|| macos_private_path_alias(path, Path::new("/private/tmp"), Path::new("/tmp")))
 }

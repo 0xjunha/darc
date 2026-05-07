@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use darc_paths::encode_path_for_claude;
+use darc_paths::{encode_path_for_claude, project_path_set_text_aliases};
 use darc_rollout::codex::{
     CodexRolloutSessionMeta, compare_rollout_priority, read_rollout_session_meta,
     reconcile_rollout_session_id,
@@ -81,6 +81,7 @@ pub fn prepare_sync(request: SyncRequest) -> Result<SyncPlan> {
     let mut manifest = load_manifest(&manifest_path)?;
     let synced_at = format_system_time_utc(SystemTime::now())?;
     let mut warnings = Vec::new();
+    let project_known_path_aliases = project_path_set_text_aliases(&request.stored_known_paths);
 
     let mut discovered_sessions = Vec::new();
     let mut discovered_auxiliary = Vec::new();
@@ -104,15 +105,17 @@ pub fn prepare_sync(request: SyncRequest) -> Result<SyncPlan> {
                     .codex
                     .as_ref()
                     .context("Codex source was selected but no Codex config was provided")?;
-                let sessions = discover_codex_sessions(
-                    codex,
-                    &request.project_paths,
-                    &request.project_path_aliases,
-                    request.project_upstream.as_deref(),
-                    &request.other_project_paths,
-                    &request.other_project_path_aliases,
-                    &mut warnings,
-                )?;
+                let path_sets = CodexPathSets {
+                    project_paths: &request.project_paths,
+                    project_path_aliases: &request.project_path_aliases,
+                    project_linked_paths: &request.stored_known_paths,
+                    project_linked_path_aliases: &project_known_path_aliases,
+                    other_project_paths: &request.other_project_paths,
+                    other_project_path_aliases: &request.other_project_path_aliases,
+                    project_upstreams: &request.project_upstreams,
+                    project_path_upstreams: &request.project_path_upstreams,
+                };
+                let sessions = discover_codex_sessions(codex, path_sets, &mut warnings)?;
                 discovered_sessions.extend(sessions);
             }
         }
@@ -568,18 +571,35 @@ pub(crate) struct CodexCandidate {
 /// Identifies whether a Codex cwd belongs to the active project or another configured project.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum CodexPathOwner {
-    Current,
+    Current(CodexCurrentPathOwner),
     Other,
+}
+
+/// Classifies the active-project path evidence for a Codex cwd.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
+enum CodexCurrentPathMatch {
+    Broad,
+    Exact,
+    Linked,
+}
+
+/// Groups the path sets used to classify Codex cwd ownership.
+#[derive(Debug, Clone, Copy)]
+struct CodexPathSets<'a> {
+    project_paths: &'a BTreeSet<PathBuf>,
+    project_path_aliases: &'a BTreeSet<PathBuf>,
+    project_linked_paths: &'a BTreeSet<PathBuf>,
+    project_linked_path_aliases: &'a BTreeSet<PathBuf>,
+    other_project_paths: &'a BTreeSet<PathBuf>,
+    other_project_path_aliases: &'a BTreeSet<PathBuf>,
+    project_upstreams: &'a BTreeSet<String>,
+    project_path_upstreams: &'a BTreeMap<PathBuf, BTreeSet<String>>,
 }
 
 /// Discovers Codex rollout files, matches them from metadata, and resolves duplicates by logical session id.
 fn discover_codex_sessions(
     source: &CodexSource,
-    project_paths: &BTreeSet<PathBuf>,
-    project_path_aliases: &BTreeSet<PathBuf>,
-    project_upstream: Option<&str>,
-    other_project_paths: &BTreeSet<PathBuf>,
-    other_project_path_aliases: &BTreeSet<PathBuf>,
+    path_sets: CodexPathSets<'_>,
     warnings: &mut Vec<String>,
 ) -> Result<Vec<DiscoveredSession>> {
     let archived_root = source.home.join("archived_sessions");
@@ -641,24 +661,7 @@ fn discover_codex_sessions(
                             continue;
                         }
                     };
-                    if codex_cwd_path_owner(
-                        &meta.cwd,
-                        project_paths,
-                        project_path_aliases,
-                        other_project_paths,
-                        other_project_path_aliases,
-                    ) == Some(CodexPathOwner::Other)
-                    {
-                        continue;
-                    }
-                    let matches_project = codex_session_matches_project(
-                        &meta,
-                        project_paths,
-                        project_path_aliases,
-                        project_upstream,
-                        other_project_paths,
-                        other_project_path_aliases,
-                    );
+                    let matches_project = codex_session_matches_project(&meta, path_sets);
                     (session_id, meta.cwd, matches_project)
                 }
                 Ok(None) => {
@@ -712,46 +715,135 @@ fn discover_codex_sessions(
 /// Returns whether a Codex session belongs to the active project.
 fn codex_session_matches_project(
     meta: &CodexRolloutSessionMeta,
-    project_paths: &BTreeSet<PathBuf>,
-    project_path_aliases: &BTreeSet<PathBuf>,
-    project_upstream: Option<&str>,
-    other_project_paths: &BTreeSet<PathBuf>,
-    other_project_path_aliases: &BTreeSet<PathBuf>,
+    path_sets: CodexPathSets<'_>,
 ) -> bool {
-    match codex_cwd_path_owner(
-        &meta.cwd,
-        project_paths,
-        project_path_aliases,
-        other_project_paths,
-        other_project_path_aliases,
-    ) {
-        Some(CodexPathOwner::Current) => return true,
+    match codex_cwd_path_owner(&meta.cwd, path_sets) {
+        Some(CodexPathOwner::Current(current_match)) => {
+            return codex_current_path_match_accepts_session(current_match, meta, path_sets);
+        }
         Some(CodexPathOwner::Other) => return false,
         None => {}
     }
 
-    project_upstream.is_some_and(|upstream| meta.repository_url.as_deref() == Some(upstream))
+    meta.repository_url
+        .as_deref()
+        .is_some_and(|repository_url| path_sets.project_upstreams.contains(repository_url))
+}
+
+/// Returns whether active-project path evidence is sufficient for one Codex session.
+fn codex_current_path_match_accepts_session(
+    current_match: CodexCurrentPathOwner,
+    meta: &CodexRolloutSessionMeta,
+    path_sets: CodexPathSets<'_>,
+) -> bool {
+    let Some(repository_url) = meta.repository_url.as_deref() else {
+        return true;
+    };
+    if path_scoped_upstreams_match(
+        &meta.cwd,
+        path_sets.project_path_upstreams,
+        repository_url,
+        current_match.prefix_len,
+    ) {
+        return true;
+    }
+    if current_match.kind == CodexCurrentPathMatch::Exact {
+        return true;
+    }
+    if current_match.kind == CodexCurrentPathMatch::Linked {
+        return false;
+    }
+    if path_sets.project_upstreams.contains(repository_url) {
+        return true;
+    }
+
+    let has_path_remote_evidence = path_scoped_upstreams_exist(
+        &meta.cwd,
+        path_sets.project_path_upstreams,
+        current_match.prefix_len,
+    );
+    let has_project_remote_evidence = !path_sets.project_upstreams.is_empty();
+    let has_remote_evidence = has_path_remote_evidence || has_project_remote_evidence;
+    !has_remote_evidence || matches!(current_match.kind, CodexCurrentPathMatch::Exact)
 }
 
 /// Returns whether a Codex cwd path is under the active project or another configured project.
-fn codex_cwd_path_owner(
+fn codex_cwd_path_owner(cwd: &Path, path_sets: CodexPathSets<'_>) -> Option<CodexPathOwner> {
+    let current_match = best_current_path_match(
+        cwd,
+        path_sets.project_paths,
+        path_sets.project_path_aliases,
+        path_sets.project_linked_paths,
+        path_sets.project_linked_path_aliases,
+    );
+    let other_prefix_len = longest_matching_prefix_len(path_sets.other_project_paths, cwd).max(
+        longest_matching_prefix_len(path_sets.other_project_path_aliases, cwd),
+    );
+
+    match (current_match, other_prefix_len) {
+        (Some(current), Some(other)) if other > current.prefix_len => Some(CodexPathOwner::Other),
+        (Some(current), Some(_)) => Some(CodexPathOwner::Current(current)),
+        (Some(current), None) => Some(CodexPathOwner::Current(current)),
+        (None, Some(_)) => Some(CodexPathOwner::Other),
+        (None, None) => None,
+    }
+}
+
+/// Stores the best active-project path match for one Codex cwd.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+struct CodexCurrentPathOwner {
+    prefix_len: usize,
+    kind: CodexCurrentPathMatch,
+}
+
+/// Returns the strongest active-project path evidence for one Codex cwd.
+fn best_current_path_match(
     cwd: &Path,
     project_paths: &BTreeSet<PathBuf>,
     project_path_aliases: &BTreeSet<PathBuf>,
-    other_project_paths: &BTreeSet<PathBuf>,
-    other_project_path_aliases: &BTreeSet<PathBuf>,
-) -> Option<CodexPathOwner> {
-    let current_prefix_len = longest_matching_prefix_len(project_paths, cwd)
-        .max(longest_matching_prefix_len(project_path_aliases, cwd));
-    let other_prefix_len = longest_matching_prefix_len(other_project_paths, cwd)
-        .max(longest_matching_prefix_len(other_project_path_aliases, cwd));
+    project_linked_paths: &BTreeSet<PathBuf>,
+    project_linked_path_aliases: &BTreeSet<PathBuf>,
+) -> Option<CodexCurrentPathOwner> {
+    longest_matching_prefix_len(project_paths, cwd)
+        .into_iter()
+        .chain(longest_matching_prefix_len(project_path_aliases, cwd))
+        .map(|prefix_len| CodexCurrentPathOwner {
+            prefix_len,
+            kind: codex_current_path_match_kind(prefix_len, cwd, CodexCurrentPathMatch::Broad),
+        })
+        .chain(
+            longest_matching_prefix_len(project_linked_paths, cwd)
+                .into_iter()
+                .chain(longest_matching_prefix_len(
+                    project_linked_path_aliases,
+                    cwd,
+                ))
+                .map(|prefix_len| CodexCurrentPathOwner {
+                    prefix_len,
+                    kind: codex_current_path_match_kind(
+                        prefix_len,
+                        cwd,
+                        CodexCurrentPathMatch::Linked,
+                    ),
+                }),
+        )
+        .max_by(|left, right| {
+            left.prefix_len
+                .cmp(&right.prefix_len)
+                .then_with(|| left.kind.cmp(&right.kind))
+        })
+}
 
-    match (current_prefix_len, other_prefix_len) {
-        (Some(current), Some(other)) if other > current => Some(CodexPathOwner::Other),
-        (Some(_), Some(_)) => Some(CodexPathOwner::Current),
-        (Some(_), None) => Some(CodexPathOwner::Current),
-        (None, Some(_)) => Some(CodexPathOwner::Other),
-        (None, None) => None,
+/// Returns exact-path evidence when a match consumes the whole Codex cwd.
+fn codex_current_path_match_kind(
+    prefix_len: usize,
+    cwd: &Path,
+    child_kind: CodexCurrentPathMatch,
+) -> CodexCurrentPathMatch {
+    if prefix_len == cwd.components().count() {
+        CodexCurrentPathMatch::Exact
+    } else {
+        child_kind
     }
 }
 
@@ -762,6 +854,30 @@ fn longest_matching_prefix_len(paths: &BTreeSet<PathBuf>, candidate: &Path) -> O
         .filter(|path| candidate.starts_with(path))
         .map(|path| path.components().count())
         .max()
+}
+
+/// Returns whether a path-scoped configured remote matches one logged remote.
+fn path_scoped_upstreams_match(
+    cwd: &Path,
+    upstreams_by_path: &BTreeMap<PathBuf, BTreeSet<String>>,
+    repository_url: &str,
+    min_prefix_len: usize,
+) -> bool {
+    upstreams_by_path
+        .iter()
+        .filter(|(path, _)| cwd.starts_with(path) && path.components().count() >= min_prefix_len)
+        .any(|(_, upstreams)| upstreams.contains(repository_url))
+}
+
+/// Returns whether any path-scoped configured remote applies to one cwd.
+fn path_scoped_upstreams_exist(
+    cwd: &Path,
+    upstreams_by_path: &BTreeMap<PathBuf, BTreeSet<String>>,
+    min_prefix_len: usize,
+) -> bool {
+    upstreams_by_path
+        .keys()
+        .any(|path| cwd.starts_with(path) && path.components().count() >= min_prefix_len)
 }
 
 /// Chooses the winning Codex copy for one logical session id.
