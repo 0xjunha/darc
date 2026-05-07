@@ -24,6 +24,7 @@ cd /path/to/project
 darc init
 
 # 4. Auto-sync and index new agent sessions in the background (macOS only)
+#    Initial refresh backfills the SQLite index and may take a few seconds
 darc refresh --auto  # omit `--auto` to refresh once
 
 # 5. Tell your agents to use Darc

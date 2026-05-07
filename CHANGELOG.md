@@ -4,6 +4,7 @@ All notable Darc release changes should be summarized here.
 
 ## Unreleased
 
+- Mention the initial SQLite backfill in `darc refresh --auto` setup progress.
 - Clarify `darc agent-help` guidance around history-dependent work, current-code verification, and reporting prior-session evidence.
 
 ## 0.1.3
