@@ -215,7 +215,37 @@ pub fn current_project_root(current_dir: &Path) -> Result<PathBuf> {
 
 /// Normalizes a project path using canonicalization when possible.
 pub fn normalize_project_path(path: &Path) -> PathBuf {
-    fs::canonicalize(path).unwrap_or_else(|_| normalize_path_textually(path))
+    fs::canonicalize(path).unwrap_or_else(|_| normalize_project_path_textually(path))
+}
+
+/// Normalizes a project path textually without touching the filesystem.
+pub fn normalize_project_path_textually(path: &Path) -> PathBuf {
+    normalize_path_textually(path)
+}
+
+/// Returns non-probing text spellings that can refer to the same project path.
+pub fn project_path_text_aliases(path: &Path) -> BTreeSet<PathBuf> {
+    let normalized = normalize_project_path_textually(path);
+    #[cfg(target_os = "macos")]
+    {
+        let mut aliases = BTreeSet::from([normalized.clone()]);
+        if let Some(alias) = macos_private_mount_alias(&normalized) {
+            aliases.insert(alias);
+        }
+        aliases
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        BTreeSet::from([normalized])
+    }
+}
+
+/// Returns non-probing text spellings for a set of project paths.
+pub fn project_path_set_text_aliases(paths: &BTreeSet<PathBuf>) -> BTreeSet<PathBuf> {
+    paths
+        .iter()
+        .flat_map(|path| project_path_text_aliases(path).into_iter())
+        .collect()
 }
 
 /// Builds the full project path set from the current root, live worktrees, and known paths.
@@ -329,6 +359,30 @@ fn normalize_path_textually(path: &Path) -> PathBuf {
     }
 }
 
+/// Returns the alternate macOS private/public spelling for known redirected roots.
+#[cfg(target_os = "macos")]
+fn macos_private_mount_alias(path: &Path) -> Option<PathBuf> {
+    macos_private_path_alias(path, Path::new("/private/var"), Path::new("/var"))
+        .or_else(|| macos_private_path_alias(path, Path::new("/private/tmp"), Path::new("/tmp")))
+}
+
+/// Returns one alternate macOS private/public spelling for a path prefix pair.
+#[cfg(target_os = "macos")]
+fn macos_private_path_alias(
+    path: &Path,
+    private_prefix: &Path,
+    public_prefix: &Path,
+) -> Option<PathBuf> {
+    path.strip_prefix(private_prefix)
+        .ok()
+        .map(|suffix| public_prefix.join(suffix))
+        .or_else(|| {
+            path.strip_prefix(public_prefix)
+                .ok()
+                .map(|suffix| private_prefix.join(suffix))
+        })
+}
+
 /// Converts one Unix-day count into a UTC civil date.
 fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
@@ -392,6 +446,42 @@ mod tests {
         let normalized = normalize_project_path(Path::new("/tmp/example/./old/../repo/"));
 
         assert_eq!(normalized, PathBuf::from("/tmp/example/repo"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn project_path_text_aliases_match_macos_var_spellings() {
+        let private_aliases =
+            project_path_text_aliases(Path::new("/private/var/folders/example/../repo"));
+        let public_aliases = project_path_text_aliases(Path::new("/var/folders/example/repo"));
+
+        assert!(private_aliases.contains(Path::new("/private/var/folders/repo")));
+        assert!(private_aliases.contains(Path::new("/var/folders/repo")));
+        assert!(public_aliases.contains(Path::new("/var/folders/example/repo")));
+        assert!(public_aliases.contains(Path::new("/private/var/folders/example/repo")));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn project_path_text_aliases_match_macos_tmp_spellings() {
+        let private_aliases = project_path_text_aliases(Path::new("/private/tmp/example/repo"));
+        let public_aliases = project_path_text_aliases(Path::new("/tmp/example/repo"));
+
+        assert!(private_aliases.contains(Path::new("/private/tmp/example/repo")));
+        assert!(private_aliases.contains(Path::new("/tmp/example/repo")));
+        assert!(public_aliases.contains(Path::new("/tmp/example/repo")));
+        assert!(public_aliases.contains(Path::new("/private/tmp/example/repo")));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn project_path_text_aliases_do_not_invent_macos_var_spellings() {
+        let aliases = project_path_text_aliases(Path::new("/var/folders/example/repo"));
+
+        assert_eq!(
+            aliases,
+            BTreeSet::from([PathBuf::from("/var/folders/example/repo")])
+        );
     }
 
     #[test]

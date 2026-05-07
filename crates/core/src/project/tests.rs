@@ -7,6 +7,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use darc_index::{INDEX_DB_FILE_NAME, open_index_database};
+use darc_test_utils::init_git_repo;
 use rusqlite::{Connection, params};
 
 use super::{
@@ -947,17 +948,21 @@ fn rename_project_links_syncs_indexes_and_removes_source() -> Result<()> {
     let source_sessions_root = root.join("projects/memstack-456/sessions");
     let target_sessions_root = root.join("projects/darc-123/sessions");
     let rollout_name = "rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl";
+    let target_remote = "https://example.com/acme/darc.git";
+    let source_remote = "https://example.com/acme/memstack.git";
     fs::create_dir_all(&target_root)?;
+    init_git_repo(&source_root, source_remote)?;
     write_file(
         &codex_sessions_root.join(format!("2026/04/01/{rollout_name}")),
         &format!(
             concat!(
-                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.128.0\",\"git\":{{\"repository_url\":\"{}\"}}}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:02Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"First task\"}}}}\n",
                 "{{\"timestamp\":\"2026-04-01T10:00:03Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"First reply\"}}]}}}}\n"
             ),
-            source_root.display()
+            source_root.display(),
+            source_remote
         ),
     )?;
     write_file(
@@ -974,7 +979,7 @@ fn rename_project_links_syncs_indexes_and_removes_source() -> Result<()> {
                     id: "darc-123".into(),
                     name: "darc".into(),
                     local_path: target_root.clone(),
-                    git_upstream: None,
+                    git_upstream: Some(target_remote.into()),
                     sessions_root: target_sessions_root.clone(),
                     known_paths: Vec::new(),
                 },
@@ -1022,7 +1027,10 @@ fn rename_project_links_syncs_indexes_and_removes_source() -> Result<()> {
     let config = load_normalized_shared_config(&root.join(CONFIG_FILE_NAME))?;
     assert_eq!(config.projects.len(), 1);
     assert_eq!(config.projects[0].name, "darc");
-    assert_eq!(config.projects[0].known_paths, vec![source_root]);
+    assert_eq!(
+        config.projects[0].known_paths,
+        vec![fs::canonicalize(source_root)?]
+    );
 
     let connection = open_index_database(&index_db_path)?;
     let target_sessions: i64 = connection.query_row(
@@ -1037,6 +1045,326 @@ fn rename_project_links_syncs_indexes_and_removes_source() -> Result<()> {
     )?;
     assert_eq!(target_sessions, 1);
     assert_eq!(source_sessions, 0);
+
+    Ok(())
+}
+
+#[test]
+fn rename_project_syncs_source_known_path_live_upstream() -> Result<()> {
+    let root = unique_test_dir(&format!("rename-known-path-remote-{}", timestamp_seed()));
+    let target_root = root.join("darc");
+    let source_root = root.join("memstack-missing");
+    let source_worktree = root.join("memstack-worktree");
+    let codex_home = root.join(".codex");
+    let codex_sessions_root = codex_home.join("sessions");
+    let source_sessions_root = root.join("projects/memstack-456/sessions");
+    let target_sessions_root = root.join("projects/darc-123/sessions");
+    let rollout_name = "rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl";
+    let target_remote = "https://example.com/acme/darc.git";
+    let source_remote = "https://example.com/acme/memstack.git";
+    let source_cwd = source_worktree.join("src");
+    fs::create_dir_all(&target_root)?;
+    init_git_repo(&source_worktree, source_remote)?;
+    write_file(
+        &codex_sessions_root.join(format!("2026/04/01/{rollout_name}")),
+        &format!(
+            concat!(
+                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.128.0\",\"git\":{{\"repository_url\":\"{}\"}}}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:02Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Known path task\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:03Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Known path reply\"}}]}}}}\n"
+            ),
+            source_cwd.display(),
+            source_remote
+        ),
+    )?;
+    write_file(
+        &source_sessions_root.join("codex/stale.jsonl"),
+        "{\"type\":\"session_meta\"}\n",
+    )?;
+
+    write_config(
+        &root,
+        &SharedConfig::new(
+            root.clone(),
+            vec![
+                ProjectConfig {
+                    id: "darc-123".into(),
+                    name: "darc".into(),
+                    local_path: target_root.clone(),
+                    git_upstream: Some(target_remote.into()),
+                    sessions_root: target_sessions_root.clone(),
+                    known_paths: Vec::new(),
+                },
+                ProjectConfig {
+                    id: "memstack-456".into(),
+                    name: "memstack".into(),
+                    local_path: source_root,
+                    git_upstream: None,
+                    sessions_root: source_sessions_root.clone(),
+                    known_paths: vec![source_worktree.clone()],
+                },
+            ],
+            SourcesConfig {
+                claude: None,
+                codex: Some(CodexSourceConfig {
+                    enabled: true,
+                    home: codex_home.clone(),
+                    sessions_root: codex_sessions_root.clone(),
+                }),
+            },
+        ),
+    )?;
+
+    let report = rename_project_from(&target_root, root.clone(), "memstack")?;
+
+    assert_eq!(report.sync.sessions_copied, 1);
+    assert_eq!(report.index.sessions_currently_indexed, 1);
+    assert!(
+        target_sessions_root
+            .join(format!("codex/{rollout_name}"))
+            .exists()
+    );
+    assert_eq!(report.remove.project_name, "memstack");
+    assert!(!source_sessions_root.exists());
+
+    Ok(())
+}
+
+#[test]
+fn rename_project_skips_missing_source_path_without_scoped_upstream() -> Result<()> {
+    let root = unique_test_dir(&format!("rename-missing-path-remote-{}", timestamp_seed()));
+    let target_root = root.join("darc");
+    let source_root = root.join("memstack-missing");
+    let source_cwd = source_root.join("src");
+    let codex_home = root.join(".codex");
+    let codex_sessions_root = codex_home.join("sessions");
+    let source_sessions_root = root.join("projects/memstack-456/sessions");
+    let target_sessions_root = root.join("projects/darc-123/sessions");
+    let rollout_name = "rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl";
+    let target_remote = "https://example.com/acme/darc.git";
+    let source_remote = "https://example.com/acme/memstack.git";
+    fs::create_dir_all(&target_root)?;
+    write_file(
+        &codex_sessions_root.join(format!("2026/04/01/{rollout_name}")),
+        &format!(
+            concat!(
+                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.128.0\",\"git\":{{\"repository_url\":\"{}\"}}}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:02Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Missing source path task\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:03Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Missing source path reply\"}}]}}}}\n"
+            ),
+            source_cwd.display(),
+            source_remote
+        ),
+    )?;
+    write_file(
+        &source_sessions_root.join("codex/stale.jsonl"),
+        "{\"type\":\"session_meta\"}\n",
+    )?;
+
+    write_config(
+        &root,
+        &SharedConfig::new(
+            root.clone(),
+            vec![
+                ProjectConfig {
+                    id: "darc-123".into(),
+                    name: "darc".into(),
+                    local_path: target_root.clone(),
+                    git_upstream: Some(target_remote.into()),
+                    sessions_root: target_sessions_root.clone(),
+                    known_paths: Vec::new(),
+                },
+                ProjectConfig {
+                    id: "memstack-456".into(),
+                    name: "memstack".into(),
+                    local_path: source_root,
+                    git_upstream: None,
+                    sessions_root: source_sessions_root.clone(),
+                    known_paths: Vec::new(),
+                },
+            ],
+            SourcesConfig {
+                claude: None,
+                codex: Some(CodexSourceConfig {
+                    enabled: true,
+                    home: codex_home.clone(),
+                    sessions_root: codex_sessions_root.clone(),
+                }),
+            },
+        ),
+    )?;
+
+    let report = rename_project_from(&target_root, root.clone(), "memstack")?;
+
+    assert_eq!(report.sync.sessions_copied, 0);
+    assert_eq!(report.index.sessions_currently_indexed, 0);
+    assert!(
+        !target_sessions_root
+            .join(format!("codex/{rollout_name}"))
+            .exists()
+    );
+    assert_eq!(report.remove.project_name, "memstack");
+    assert!(!source_sessions_root.exists());
+
+    Ok(())
+}
+
+#[test]
+fn rename_project_skips_nested_target_repo_with_mismatched_logged_upstream() -> Result<()> {
+    let root = unique_test_dir(&format!("rename-nested-remote-{}", timestamp_seed()));
+    let target_root = root.join("darc");
+    let source_root = root.join("memstack");
+    let codex_home = root.join(".codex");
+    let codex_sessions_root = codex_home.join("sessions");
+    let source_sessions_root = root.join("projects/memstack-456/sessions");
+    let target_sessions_root = root.join("projects/darc-123/sessions");
+    let rollout_name = "rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl";
+    let target_remote = "https://example.com/acme/darc.git";
+    let nested_remote = "https://example.com/acme/other.git";
+    let nested_cwd = target_root.join("vendor/other-repo");
+    fs::create_dir_all(&target_root)?;
+    write_file(
+        &codex_sessions_root.join(format!("2026/04/01/{rollout_name}")),
+        &format!(
+            concat!(
+                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.128.0\",\"git\":{{\"repository_url\":\"{}\"}}}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:02Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Nested task\"}}}}\n"
+            ),
+            nested_cwd.display(),
+            nested_remote
+        ),
+    )?;
+    write_file(
+        &source_sessions_root.join("codex/stale.jsonl"),
+        "{\"type\":\"session_meta\"}\n",
+    )?;
+
+    write_config(
+        &root,
+        &SharedConfig::new(
+            root.clone(),
+            vec![
+                ProjectConfig {
+                    id: "darc-123".into(),
+                    name: "darc".into(),
+                    local_path: target_root.clone(),
+                    git_upstream: Some(target_remote.into()),
+                    sessions_root: target_sessions_root.clone(),
+                    known_paths: Vec::new(),
+                },
+                ProjectConfig {
+                    id: "memstack-456".into(),
+                    name: "memstack".into(),
+                    local_path: source_root,
+                    git_upstream: Some("https://example.com/acme/memstack.git".into()),
+                    sessions_root: source_sessions_root.clone(),
+                    known_paths: Vec::new(),
+                },
+            ],
+            SourcesConfig {
+                claude: None,
+                codex: Some(CodexSourceConfig {
+                    enabled: true,
+                    home: codex_home.clone(),
+                    sessions_root: codex_sessions_root.clone(),
+                }),
+            },
+        ),
+    )?;
+
+    let report = rename_project_from(&target_root, root.clone(), "memstack")?;
+
+    assert_eq!(report.sync.sessions_copied, 0);
+    assert!(
+        !target_sessions_root
+            .join(format!("codex/{rollout_name}"))
+            .exists()
+    );
+    assert_eq!(report.remove.project_name, "memstack");
+    assert!(!source_sessions_root.exists());
+
+    Ok(())
+}
+
+#[test]
+fn rename_project_skips_nested_source_repo_with_mismatched_logged_upstream() -> Result<()> {
+    let root = unique_test_dir(&format!("rename-source-nested-remote-{}", timestamp_seed()));
+    let target_root = root.join("darc");
+    let source_root = root.join("memstack");
+    let codex_home = root.join(".codex");
+    let codex_sessions_root = codex_home.join("sessions");
+    let source_sessions_root = root.join("projects/memstack-456/sessions");
+    let target_sessions_root = root.join("projects/darc-123/sessions");
+    let rollout_name = "rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl";
+    let target_remote = "https://example.com/acme/darc.git";
+    let source_remote = "https://example.com/acme/memstack.git";
+    let nested_remote = "https://example.com/acme/other.git";
+    let nested_cwd = source_root.join("vendor/other-repo");
+    fs::create_dir_all(&target_root)?;
+    init_git_repo(&source_root, source_remote)?;
+    write_file(
+        &codex_sessions_root.join(format!("2026/04/01/{rollout_name}")),
+        &format!(
+            concat!(
+                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.128.0\",\"git\":{{\"repository_url\":\"{}\"}}}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:02Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Nested source task\"}}}}\n"
+            ),
+            nested_cwd.display(),
+            nested_remote
+        ),
+    )?;
+    write_file(
+        &source_sessions_root.join("codex/stale.jsonl"),
+        "{\"type\":\"session_meta\"}\n",
+    )?;
+
+    write_config(
+        &root,
+        &SharedConfig::new(
+            root.clone(),
+            vec![
+                ProjectConfig {
+                    id: "darc-123".into(),
+                    name: "darc".into(),
+                    local_path: target_root.clone(),
+                    git_upstream: Some(target_remote.into()),
+                    sessions_root: target_sessions_root.clone(),
+                    known_paths: Vec::new(),
+                },
+                ProjectConfig {
+                    id: "memstack-456".into(),
+                    name: "memstack".into(),
+                    local_path: source_root,
+                    git_upstream: None,
+                    sessions_root: source_sessions_root.clone(),
+                    known_paths: Vec::new(),
+                },
+            ],
+            SourcesConfig {
+                claude: None,
+                codex: Some(CodexSourceConfig {
+                    enabled: true,
+                    home: codex_home.clone(),
+                    sessions_root: codex_sessions_root.clone(),
+                }),
+            },
+        ),
+    )?;
+
+    let report = rename_project_from(&target_root, root.clone(), "memstack")?;
+
+    assert_eq!(report.sync.sessions_copied, 0);
+    assert!(
+        !target_sessions_root
+            .join(format!("codex/{rollout_name}"))
+            .exists()
+    );
+    assert_eq!(report.remove.project_name, "memstack");
+    assert!(!source_sessions_root.exists());
 
     Ok(())
 }

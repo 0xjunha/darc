@@ -1,4 +1,7 @@
-use std::{collections::BTreeSet, path::PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+};
 
 pub use darc_paths::SourceKind;
 
@@ -25,8 +28,11 @@ pub struct SyncRequest {
     pub primary_project_path: PathBuf,
     pub stored_known_paths: BTreeSet<PathBuf>,
     pub project_paths: BTreeSet<PathBuf>,
+    pub project_path_aliases: BTreeSet<PathBuf>,
     pub other_project_paths: BTreeSet<PathBuf>,
-    pub project_upstream: Option<String>,
+    pub other_project_path_aliases: BTreeSet<PathBuf>,
+    pub project_upstreams: BTreeSet<String>,
+    pub project_path_upstreams: BTreeMap<PathBuf, BTreeSet<String>>,
     pub sources: Vec<SourceKind>,
     pub claude: Option<ClaudeSource>,
     pub codex: Option<CodexSource>,

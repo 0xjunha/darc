@@ -19,9 +19,12 @@ Current crate ownership:
 
 Current state:
 
-- Sync can already learn additional Codex repo roots into `known_paths` when live `cwd`, repo-root,
-  and upstream matching says they belong to the active project.
-- That works for live worktrees, but it stays weak once a checkout disappears.
+- Sync now matches Codex sessions by logged `git.repository_url`, by explicit linked/known paths, or by current-project
+  paths when metadata is missing, without probing arbitrary historical `cwd` directories.
+- Additional checkouts must be explicitly registered or linked before path-only legacy logs can be associated with the
+  active project; broad parent-prefix matches do not override a mismatched logged remote.
+- Broad linked-path matches with logged remotes require scoped remote evidence for that linked path; missing old paths
+  without stored/live upstream evidence are skipped instead of being trusted by prefix alone.
 
 Needed:
 
