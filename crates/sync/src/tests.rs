@@ -24,14 +24,17 @@ fn sample_request(
     codex_sessions_root: &Path,
 ) -> SyncRequest {
     let project_root = normalize_project_path(project_root);
+    let project_paths = BTreeSet::from([project_root.clone()]);
     SyncRequest {
         project_name: "darc".into(),
         project_root: project_root.clone(),
         sessions_root: sessions_root.to_path_buf(),
         primary_project_path: project_root.clone(),
         stored_known_paths: BTreeSet::new(),
-        project_paths: BTreeSet::from([project_root]),
+        project_paths: project_paths.clone(),
+        project_path_aliases: project_paths,
         other_project_paths: BTreeSet::new(),
+        other_project_path_aliases: BTreeSet::new(),
         project_upstream: None,
         sources: vec![SourceKind::Claude, SourceKind::Codex],
         claude: Some(ClaudeSource {
@@ -103,6 +106,7 @@ fn extract_codex_session_meta_normalizes_cwd_textually() -> Result<()> {
 
     assert_eq!(meta.cwd, PathBuf::from("/tmp/demo/repo"));
     assert_eq!(meta.session_id, "x");
+    assert_eq!(meta.repository_url, None);
 
     Ok(())
 }
@@ -120,6 +124,7 @@ fn extract_codex_session_meta_accepts_legacy_rollouts_without_cli_version() -> R
 
     assert_eq!(meta.session_id, "x");
     assert_eq!(meta.cwd, PathBuf::from("/tmp/demo/repo"));
+    assert_eq!(meta.repository_url, None);
 
     Ok(())
 }
@@ -205,7 +210,7 @@ fn codex_duplicate_resolution_prefers_larger_then_newer_match() {
         session_id: "id".into(),
         source_path: PathBuf::from("/tmp/a"),
         archive_path: PathBuf::from("codex/a.jsonl"),
-        repo_root: PathBuf::from("/tmp/project"),
+        cwd: PathBuf::from("/tmp/project"),
         matches_project: true,
         size: 10,
         mtime_ms: 20,
@@ -233,7 +238,7 @@ fn codex_duplicate_resolution_uses_stable_source_path_tie_break() {
         session_id: "id".into(),
         source_path: PathBuf::from("/tmp/a"),
         archive_path: PathBuf::from("codex/a.jsonl"),
-        repo_root: PathBuf::from("/tmp/project"),
+        cwd: PathBuf::from("/tmp/project"),
         matches_project: true,
         size: 10,
         mtime_ms: 20,
@@ -533,21 +538,147 @@ fn prepare_sync_copies_legacy_codex_rollout_without_cli_version() -> Result<()> 
 }
 
 #[test]
-fn prepare_sync_learns_codex_checkout_with_same_upstream() -> Result<()> {
-    let ws = TestWorkspace::new("sync-codex-known-path")?;
+fn prepare_sync_matches_unregistered_codex_checkout_by_logged_upstream() -> Result<()> {
+    let ws = TestWorkspace::new("sync-codex-logged-upstream")?;
     let remote = "https://example.com/acme/darc.git";
-    let related_root = ws.root.join("repo-b");
-    let related_subdir = related_root.join("nested");
+    let related_subdir = ws.root.join("protected").join("repo-b").join("nested");
     let codex_sessions = ws.codex_sessions_root.join("2026/04/01");
     fs::create_dir_all(&codex_sessions)?;
     init_git_repo(&ws.project_root, remote)?;
-    init_git_repo(&related_root, remote)?;
-    fs::create_dir_all(&related_subdir)?;
-    let canonical_related_root = fs::canonicalize(&related_root)?;
 
     let rollout_name = "rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl";
     write_file(
         &codex_sessions.join(rollout_name),
+        &format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.128.0\",\"git\":{{\"repository_url\":\"{remote}\"}}}}}}\n{{\"type\":\"message\"}}\n",
+            related_subdir.display(),
+        ),
+    )?;
+
+    let mut request = ws.default_request();
+    request.project_upstream = Some(remote.into());
+
+    let plan = prepare_sync(request)?;
+
+    assert_eq!(plan.project_root, ws.canonical_project_root);
+    assert_eq!(plan.sessions_to_copy(), 1);
+    assert!(plan.new_known_paths.is_empty());
+    assert!(plan.persisted_known_paths().is_empty());
+    assert!(plan.warnings.is_empty());
+
+    let report = execute_sync(plan)?;
+    assert_eq!(report.sessions_copied, 1);
+    assert!(
+        ws.sessions_root
+            .join(format!("codex/{rollout_name}"))
+            .exists()
+    );
+
+    Ok(())
+}
+
+#[test]
+fn prepare_sync_matches_registered_codex_cwd_alias() -> Result<()> {
+    let ws = TestWorkspace::new("sync-codex-cwd-alias")?;
+    let alias_root = PathBuf::from("/var/folders/example/repo");
+    let canonical_root = PathBuf::from("/private/var/folders/example/repo");
+    let codex_sessions = ws.codex_sessions_root.join("2026/04/01");
+    fs::create_dir_all(&codex_sessions)?;
+
+    write_file(
+        &codex_sessions
+            .join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl"),
+        &format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}/nested\",\"cli_version\":\"0.118.0\"}}}}\n{{\"type\":\"message\"}}\n",
+            alias_root.display()
+        ),
+    )?;
+
+    let mut request = ws.default_request();
+    request.primary_project_path = canonical_root.clone();
+    request.project_paths = BTreeSet::from([canonical_root]);
+    request.project_path_aliases = BTreeSet::from([alias_root]);
+
+    let plan = prepare_sync(request)?;
+
+    assert_eq!(plan.sessions_to_copy(), 1);
+    assert!(plan.warnings.is_empty());
+
+    Ok(())
+}
+
+#[test]
+fn prepare_sync_keeps_registered_nested_cwd_despite_mismatched_logged_upstream() -> Result<()> {
+    let ws = TestWorkspace::new("sync-codex-registered-nested-mismatched-upstream")?;
+    let remote = "https://example.com/acme/darc.git";
+    let other_remote = "https://example.com/acme/other.git";
+    let nested_repo = ws.canonical_project_root.join("vendor/other-repo");
+    let codex_sessions = ws.codex_sessions_root.join("2026/04/01");
+    fs::create_dir_all(&codex_sessions)?;
+    init_git_repo(&ws.project_root, remote)?;
+
+    write_file(
+        &codex_sessions
+            .join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl"),
+        &format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.128.0\",\"git\":{{\"repository_url\":\"{other_remote}\"}}}}}}\n{{\"type\":\"message\"}}\n",
+            nested_repo.display()
+        ),
+    )?;
+
+    let mut request = ws.default_request();
+    request.project_upstream = Some(remote.into());
+
+    let plan = prepare_sync(request)?;
+
+    assert_eq!(plan.sessions_to_copy(), 1);
+    assert!(plan.new_known_paths.is_empty());
+    assert!(plan.warnings.is_empty());
+
+    Ok(())
+}
+
+#[test]
+fn prepare_sync_keeps_registered_cwd_despite_mismatched_logged_upstream() -> Result<()> {
+    let ws = TestWorkspace::new("sync-codex-registered-mismatched-upstream")?;
+    let remote = "https://example.com/acme/darc.git";
+    let old_remote = "git@example.com:acme/darc.git";
+    let codex_sessions = ws.codex_sessions_root.join("2026/04/01");
+    fs::create_dir_all(&codex_sessions)?;
+    init_git_repo(&ws.project_root, remote)?;
+
+    write_file(
+        &codex_sessions
+            .join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl"),
+        &format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.128.0\",\"git\":{{\"repository_url\":\"{old_remote}\"}}}}}}\n{{\"type\":\"message\"}}\n",
+            ws.canonical_project_root.display()
+        ),
+    )?;
+
+    let mut request = ws.default_request();
+    request.project_upstream = Some(remote.into());
+
+    let plan = prepare_sync(request)?;
+
+    assert_eq!(plan.sessions_to_copy(), 1);
+    assert!(plan.warnings.is_empty());
+
+    Ok(())
+}
+
+#[test]
+fn prepare_sync_skips_unregistered_codex_checkout_without_logged_upstream() -> Result<()> {
+    let ws = TestWorkspace::new("sync-codex-missing-logged-upstream")?;
+    let remote = "https://example.com/acme/darc.git";
+    let related_subdir = ws.root.join("protected").join("repo-b").join("nested");
+    let codex_sessions = ws.codex_sessions_root.join("2026/04/01");
+    fs::create_dir_all(&codex_sessions)?;
+    init_git_repo(&ws.project_root, remote)?;
+
+    write_file(
+        &codex_sessions
+            .join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl"),
         &format!(
             "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n{{\"type\":\"message\"}}\n",
             related_subdir.display()
@@ -559,10 +690,41 @@ fn prepare_sync_learns_codex_checkout_with_same_upstream() -> Result<()> {
 
     let plan = prepare_sync(request)?;
 
-    assert_eq!(plan.project_root, ws.canonical_project_root);
-    assert_eq!(plan.sessions_to_copy(), 1);
-    assert_eq!(plan.new_known_paths, vec![canonical_related_root.clone()]);
-    assert_eq!(plan.persisted_known_paths(), &[canonical_related_root]);
+    assert_eq!(plan.sessions_to_copy(), 0);
+    assert!(plan.new_known_paths.is_empty());
+    assert!(
+        plan.warnings
+            .iter()
+            .any(|warning| warning.contains("git.repository_url"))
+    );
+
+    Ok(())
+}
+
+#[test]
+fn prepare_sync_skips_nested_configured_project_without_logged_upstream() -> Result<()> {
+    let ws = TestWorkspace::new("sync-codex-nested-configured-project")?;
+    let nested_project = ws.canonical_project_root.join("vendor/tool");
+    let nested_cwd = nested_project.join("src");
+    let codex_sessions = ws.codex_sessions_root.join("2026/04/01");
+    fs::create_dir_all(&codex_sessions)?;
+
+    write_file(
+        &codex_sessions
+            .join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl"),
+        &format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n{{\"type\":\"message\"}}\n",
+            nested_cwd.display()
+        ),
+    )?;
+
+    let mut request = ws.default_request();
+    request.other_project_paths = BTreeSet::from([nested_project]);
+
+    let plan = prepare_sync(request)?;
+
+    assert_eq!(plan.sessions_to_copy(), 0);
+    assert!(plan.warnings.is_empty());
 
     Ok(())
 }
@@ -674,6 +836,38 @@ fn prepare_sync_skips_codex_session_in_other_projects_live_worktree() -> Result<
 }
 
 #[test]
+fn prepare_sync_skips_other_project_cwd_alias_before_logged_upstream() -> Result<()> {
+    let ws = TestWorkspace::new("sync-codex-other-alias")?;
+    let remote = "https://example.com/acme/darc.git";
+    let canonical_other = PathBuf::from("/private/var/folders/example/other-repo");
+    let alias_other = PathBuf::from("/var/folders/example/other-repo");
+    let codex_sessions = ws.codex_sessions_root.join("2026/04/01");
+    fs::create_dir_all(&codex_sessions)?;
+    init_git_repo(&ws.project_root, remote)?;
+
+    write_file(
+        &codex_sessions
+            .join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl"),
+        &format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}/nested\",\"cli_version\":\"0.128.0\",\"git\":{{\"repository_url\":\"{remote}\"}}}}}}\n{{\"type\":\"message\"}}\n",
+            alias_other.display()
+        ),
+    )?;
+
+    let mut request = ws.default_request();
+    request.project_upstream = Some(remote.into());
+    request.other_project_paths = BTreeSet::from([canonical_other]);
+    request.other_project_path_aliases = BTreeSet::from([alias_other]);
+
+    let plan = prepare_sync(request)?;
+
+    assert_eq!(plan.sessions_to_copy(), 0);
+    assert!(plan.warnings.is_empty());
+
+    Ok(())
+}
+
+#[test]
 fn prepare_sync_skips_codex_checkout_owned_by_other_project() -> Result<()> {
     let ws = TestWorkspace::new("sync-codex-other-project")?;
     let remote = "https://example.com/acme/darc.git";
@@ -684,13 +878,14 @@ fn prepare_sync_skips_codex_checkout_owned_by_other_project() -> Result<()> {
     init_git_repo(&ws.project_root, remote)?;
     init_git_repo(&related_root, remote)?;
     fs::create_dir_all(&related_subdir)?;
+    let canonical_related_subdir = fs::canonicalize(&related_subdir)?;
 
     write_file(
         &codex_sessions
             .join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222223f.jsonl"),
         &format!(
             "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n{{\"type\":\"message\"}}\n",
-            related_subdir.display()
+            canonical_related_subdir.display()
         ),
     )?;
 

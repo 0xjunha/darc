@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use darc_paths::normalize_project_path;
+use darc_paths::normalize_project_path_textually;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -18,6 +18,7 @@ pub struct CodexRolloutSessionMeta {
     pub session_id: String,
     pub cwd: PathBuf,
     pub cli_version: Option<String>,
+    pub repository_url: Option<String>,
 }
 
 /// Stores the parsed session-level metadata needed before schema dispatch.
@@ -43,6 +44,7 @@ struct ParsedSessionMeta {
     session_id: String,
     cwd: PathBuf,
     cli_version: Option<String>,
+    repository_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -51,6 +53,14 @@ struct RawSessionMetaPayload {
     cwd: String,
     #[serde(default)]
     cli_version: Option<String>,
+    #[serde(default)]
+    git: Option<RawSessionMetaGit>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawSessionMetaGit {
+    #[serde(default)]
+    repository_url: Option<String>,
 }
 
 /// Extracts the logical Codex session id from one rollout filename.
@@ -150,6 +160,7 @@ pub fn parse_rollout_session_meta_line(
             session_id: meta.session_id,
             cwd: meta.cwd,
             cli_version: meta.cli_version,
+            repository_url: meta.repository_url,
         })
     })
 }
@@ -194,8 +205,12 @@ fn parse_rollout_session_meta_parts(
 
     Ok(Some(ParsedSessionMeta {
         session_id: payload.id,
-        cwd: normalize_project_path(Path::new(&payload.cwd)),
+        cwd: normalize_project_path_textually(Path::new(&payload.cwd)),
         cli_version: payload.cli_version.and_then(non_empty_text),
+        repository_url: payload
+            .git
+            .and_then(|git| git.repository_url)
+            .and_then(non_empty_text),
     }))
 }
 
@@ -245,6 +260,22 @@ mod tests {
         assert_eq!(meta.session_id, "session-1");
         assert_eq!(meta.cwd, PathBuf::from("/tmp/repo"));
         assert_eq!(meta.cli_version, None);
+        assert_eq!(meta.repository_url, None);
+    }
+
+    #[test]
+    fn parses_tolerant_session_meta_repository_url() {
+        let meta = parse_rollout_session_meta_line(
+            r#"{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"session-1","cwd":"/tmp/repo","cli_version":"0.118.0","git":{"repository_url":"https://example.com/acme/repo.git"}}}"#,
+            Path::new("fixture.jsonl"),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            meta.repository_url.as_deref(),
+            Some("https://example.com/acme/repo.git")
+        );
     }
 
     #[test]

@@ -6,9 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use darc_paths::{
-    current_project_root, encode_path_for_claude, normalize_project_path, try_git_output,
-};
+use darc_paths::encode_path_for_claude;
 use darc_rollout::codex::{
     CodexRolloutSessionMeta, compare_rollout_priority, read_rollout_session_meta,
     reconcile_rollout_session_id,
@@ -109,17 +107,12 @@ pub fn prepare_sync(request: SyncRequest) -> Result<SyncPlan> {
                 let sessions = discover_codex_sessions(
                     codex,
                     &request.project_paths,
+                    &request.project_path_aliases,
                     request.project_upstream.as_deref(),
                     &request.other_project_paths,
+                    &request.other_project_path_aliases,
                     &mut warnings,
                 )?;
-                for session in &sessions {
-                    if let Some(path) = &session.cwd
-                        && path != &request.primary_project_path
-                    {
-                        persisted_known_paths.insert(path.clone());
-                    }
-                }
                 discovered_sessions.extend(sessions);
             }
         }
@@ -208,39 +201,6 @@ pub fn execute_sync(plan: SyncPlan) -> Result<SyncReport> {
         warnings,
         manifest_written,
     })
-}
-
-/// Caches Codex repo lookups for one sync run.
-#[derive(Debug, Default)]
-struct CodexRepoCache {
-    repo_root_by_cwd: BTreeMap<PathBuf, PathBuf>,
-    remote_origin_by_root: BTreeMap<PathBuf, Option<String>>,
-}
-
-impl CodexRepoCache {
-    /// Resolves the repo root for one reported Codex cwd.
-    fn repo_root(&mut self, cwd: &Path) -> PathBuf {
-        let cwd = normalize_project_path(cwd);
-        if let Some(repo_root) = self.repo_root_by_cwd.get(&cwd) {
-            return repo_root.clone();
-        }
-
-        let repo_root = current_project_root(&cwd).unwrap_or_else(|_| cwd.clone());
-        self.repo_root_by_cwd.insert(cwd, repo_root.clone());
-        repo_root
-    }
-
-    /// Resolves the git origin for one repo root.
-    fn remote_origin(&mut self, repo_root: &Path) -> Option<String> {
-        if let Some(remote_origin) = self.remote_origin_by_root.get(repo_root) {
-            return remote_origin.clone();
-        }
-
-        let remote_origin = try_git_output(repo_root, &["config", "--get", "remote.origin.url"]);
-        self.remote_origin_by_root
-            .insert(repo_root.to_path_buf(), remote_origin.clone());
-        remote_origin
-    }
 }
 
 /// Captures supported Claude discovery results.
@@ -599,23 +559,32 @@ pub(crate) struct CodexCandidate {
     pub(crate) session_id: String,
     pub(crate) source_path: PathBuf,
     pub(crate) archive_path: PathBuf,
-    pub(crate) repo_root: PathBuf,
+    pub(crate) cwd: PathBuf,
     pub(crate) matches_project: bool,
     pub(crate) size: u64,
     pub(crate) mtime_ms: u64,
 }
 
-/// Discovers Codex rollout files, matches them by cwd, and resolves duplicates by logical session id.
+/// Identifies whether a Codex cwd belongs to the active project or another configured project.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum CodexPathOwner {
+    Current,
+    Other,
+}
+
+/// Discovers Codex rollout files, matches them from metadata, and resolves duplicates by logical session id.
 fn discover_codex_sessions(
     source: &CodexSource,
     project_paths: &BTreeSet<PathBuf>,
+    project_path_aliases: &BTreeSet<PathBuf>,
     project_upstream: Option<&str>,
     other_project_paths: &BTreeSet<PathBuf>,
+    other_project_path_aliases: &BTreeSet<PathBuf>,
     warnings: &mut Vec<String>,
 ) -> Result<Vec<DiscoveredSession>> {
     let archived_root = source.home.join("archived_sessions");
     let mut candidates = BTreeMap::<String, Vec<CodexCandidate>>::new();
-    let mut repo_cache = CodexRepoCache::default();
+    let mut skipped_without_remote = 0usize;
 
     for root in [&source.sessions_root, &archived_root] {
         if !root.exists() {
@@ -653,7 +622,7 @@ fn discover_codex_sessions(
                 }
             };
 
-            let (session_id, repo_root, matches_project) = match extract_codex_session_meta(path) {
+            let (session_id, cwd, matches_project) = match extract_codex_session_meta(path) {
                 Ok(Some(meta)) => {
                     let session_id = match reconcile_rollout_session_id(
                         path,
@@ -673,19 +642,28 @@ fn discover_codex_sessions(
                             continue;
                         }
                     };
-                    let repo_root = repo_cache.repo_root(&meta.cwd);
-                    if !project_paths.contains(&repo_root)
-                        && other_project_paths.contains(&repo_root)
+                    if codex_cwd_path_owner(
+                        &meta.cwd,
+                        project_paths,
+                        project_path_aliases,
+                        other_project_paths,
+                        other_project_path_aliases,
+                    ) == Some(CodexPathOwner::Other)
                     {
                         continue;
                     }
                     let matches_project = codex_session_matches_project(
-                        &repo_root,
+                        &meta,
                         project_paths,
+                        project_path_aliases,
                         project_upstream,
-                        &mut repo_cache,
+                        other_project_paths,
+                        other_project_path_aliases,
                     );
-                    (session_id, repo_root, matches_project)
+                    if !matches_project && meta.repository_url.is_none() {
+                        skipped_without_remote += 1;
+                    }
+                    (session_id, meta.cwd, matches_project)
                 }
                 Ok(None) => {
                     warnings.push(format!(
@@ -710,12 +688,18 @@ fn discover_codex_sessions(
                     session_id,
                     source_path: path.to_path_buf(),
                     archive_path: PathBuf::from(SourceKind::Codex.directory_name()).join(file_name),
-                    repo_root,
+                    cwd,
                     matches_project,
                     size: snapshot.size,
                     mtime_ms: snapshot.mtime_ms,
                 });
         }
+    }
+
+    if skipped_without_remote > 0 {
+        warnings.push(format!(
+            "skipped {skipped_without_remote} Codex session(s) whose cwd was not registered and whose log did not include git.repository_url; register or link any checkout Darc should include"
+        ));
     }
 
     let sessions = candidates
@@ -726,7 +710,7 @@ fn discover_codex_sessions(
             provider: SourceKind::Codex,
             source_path: candidate.source_path.clone(),
             archive_path: candidate.archive_path.clone(),
-            cwd: Some(candidate.repo_root.clone()),
+            cwd: Some(candidate.cwd.clone()),
             size: candidate.size,
             mtime_ms: candidate.mtime_ms,
         })
@@ -737,15 +721,57 @@ fn discover_codex_sessions(
 
 /// Returns whether a Codex session belongs to the active project.
 fn codex_session_matches_project(
-    repo_root: &Path,
+    meta: &CodexRolloutSessionMeta,
     project_paths: &BTreeSet<PathBuf>,
+    project_path_aliases: &BTreeSet<PathBuf>,
     project_upstream: Option<&str>,
-    repo_cache: &mut CodexRepoCache,
+    other_project_paths: &BTreeSet<PathBuf>,
+    other_project_path_aliases: &BTreeSet<PathBuf>,
 ) -> bool {
-    project_paths.contains(repo_root)
-        || project_upstream.is_some_and(|upstream| {
-            repo_cache.remote_origin(repo_root).as_deref() == Some(upstream)
-        })
+    match codex_cwd_path_owner(
+        &meta.cwd,
+        project_paths,
+        project_path_aliases,
+        other_project_paths,
+        other_project_path_aliases,
+    ) {
+        Some(CodexPathOwner::Current) => return true,
+        Some(CodexPathOwner::Other) => return false,
+        None => {}
+    }
+
+    project_upstream.is_some_and(|upstream| meta.repository_url.as_deref() == Some(upstream))
+}
+
+/// Returns whether a Codex cwd path is under the active project or another configured project.
+fn codex_cwd_path_owner(
+    cwd: &Path,
+    project_paths: &BTreeSet<PathBuf>,
+    project_path_aliases: &BTreeSet<PathBuf>,
+    other_project_paths: &BTreeSet<PathBuf>,
+    other_project_path_aliases: &BTreeSet<PathBuf>,
+) -> Option<CodexPathOwner> {
+    let current_prefix_len = longest_matching_prefix_len(project_paths, cwd)
+        .max(longest_matching_prefix_len(project_path_aliases, cwd));
+    let other_prefix_len = longest_matching_prefix_len(other_project_paths, cwd)
+        .max(longest_matching_prefix_len(other_project_path_aliases, cwd));
+
+    match (current_prefix_len, other_prefix_len) {
+        (Some(current), Some(other)) if other > current => Some(CodexPathOwner::Other),
+        (Some(_), Some(_)) => Some(CodexPathOwner::Current),
+        (Some(_), None) => Some(CodexPathOwner::Current),
+        (None, Some(_)) => Some(CodexPathOwner::Other),
+        (None, None) => None,
+    }
+}
+
+/// Returns the length of the longest configured prefix matching one candidate path.
+fn longest_matching_prefix_len(paths: &BTreeSet<PathBuf>, candidate: &Path) -> Option<usize> {
+    paths
+        .iter()
+        .filter(|path| candidate.starts_with(path))
+        .map(|path| path.components().count())
+        .max()
 }
 
 /// Chooses the winning Codex copy for one logical session id.

@@ -6,7 +6,8 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use darc_paths::{
-    normalize_project_path, normalized_known_paths, project_path_set, try_git_output,
+    normalize_project_path, normalized_known_paths, project_path_set, project_path_text_aliases,
+    try_git_output,
 };
 use darc_sync::{ClaudeSource, CodexSource, SyncRequest};
 
@@ -158,10 +159,18 @@ pub(crate) fn prepare_sync_for_active_project(
         project_index,
         project,
     } = active_project;
+    let configured_project = config
+        .projects
+        .get(project_index)
+        .cloned()
+        .with_context(|| format!("missing configured project index {project_index}"))?;
     let primary_project_path = normalize_project_path(&project.local_path);
     let full_project_paths = project_path_set(&current_root, &project.known_paths)?;
+    let project_path_aliases = project_path_aliases(&configured_project, &full_project_paths);
     let previous_known_paths = normalized_known_paths(&project.local_path, &project.known_paths);
     let other_project_paths = other_project_paths(&config.projects, project_index)?;
+    let other_project_path_aliases =
+        other_project_path_aliases(&config.projects, project_index, &other_project_paths);
     let project_upstream = try_git_output(&current_root, &["config", "--get", "remote.origin.url"])
         .or(project.git_upstream.clone());
     let sources = selected_sources(&config, &options.provider_filter)?;
@@ -172,7 +181,9 @@ pub(crate) fn prepare_sync_for_active_project(
         primary_project_path,
         stored_known_paths: previous_known_paths.clone(),
         project_paths: full_project_paths,
+        project_path_aliases,
         other_project_paths,
+        other_project_path_aliases,
         project_upstream,
         sources: sources.clone(),
         claude: config.sources.claude.as_ref().map(|source| ClaudeSource {
@@ -229,6 +240,48 @@ fn other_project_paths(
     Ok(paths)
 }
 
+/// Returns project path spellings from registered paths and discovered live paths.
+fn project_path_aliases(
+    project: &ProjectConfig,
+    live_paths: &BTreeSet<PathBuf>,
+) -> BTreeSet<PathBuf> {
+    let mut aliases = registered_project_path_aliases(project);
+    aliases.extend(path_set_text_aliases(live_paths));
+    aliases
+}
+
+/// Returns text spellings for one project's configured paths.
+fn registered_project_path_aliases(project: &ProjectConfig) -> BTreeSet<PathBuf> {
+    std::iter::once(&project.local_path)
+        .chain(project.known_paths.iter())
+        .flat_map(|path| project_path_text_aliases(path).into_iter())
+        .collect()
+}
+
+/// Returns text spellings for one precomputed project path set.
+fn path_set_text_aliases(paths: &BTreeSet<PathBuf>) -> BTreeSet<PathBuf> {
+    paths
+        .iter()
+        .flat_map(|path| project_path_text_aliases(path).into_iter())
+        .collect()
+}
+
+/// Returns path spellings for every inactive project and its discovered live paths.
+fn other_project_path_aliases(
+    projects: &[ProjectConfig],
+    active_index: usize,
+    live_paths: &BTreeSet<PathBuf>,
+) -> BTreeSet<PathBuf> {
+    let mut aliases = projects
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != active_index)
+        .flat_map(|(_, project)| registered_project_path_aliases(project))
+        .collect::<BTreeSet<_>>();
+    aliases.extend(path_set_text_aliases(live_paths));
+    aliases
+}
+
 /// Resolves the enabled source list after applying any CLI filter.
 fn selected_sources(config: &SharedConfig, filter: &[SourceKind]) -> Result<Vec<SourceKind>> {
     let mut sources = Vec::new();
@@ -270,6 +323,8 @@ fn selected_sources(config: &SharedConfig, filter: &[SourceKind]) -> Result<Vec<
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    use std::collections::BTreeSet;
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -404,18 +459,33 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
-    fn execute_sync_persists_learned_known_paths() -> Result<()> {
-        let ws = TestWorkspace::new("sync-codex-known-path-adapter")?;
+    fn project_path_aliases_include_live_path_text_aliases() {
+        let project = ProjectConfig {
+            id: "darc-abc123".into(),
+            name: "darc".into(),
+            local_path: PathBuf::from("/Users/example/repo"),
+            git_upstream: None,
+            sessions_root: PathBuf::from("/tmp/darc/sessions"),
+            known_paths: Vec::new(),
+        };
+        let live_paths = BTreeSet::from([PathBuf::from("/private/var/folders/example/repo-wt")]);
+
+        let aliases = project_path_aliases(&project, &live_paths);
+
+        assert!(aliases.contains(Path::new("/private/var/folders/example/repo-wt")));
+        assert!(aliases.contains(Path::new("/var/folders/example/repo-wt")));
+    }
+
+    #[test]
+    fn execute_sync_matches_logged_upstream_without_learning_known_paths() -> Result<()> {
+        let ws = TestWorkspace::new("sync-codex-logged-upstream-adapter")?;
         let remote = "https://example.com/acme/darc.git";
-        let related_root = ws.root.join("repo-b");
-        let related_subdir = related_root.join("nested");
+        let related_subdir = ws.root.join("repo-b").join("nested");
         let codex_sessions = ws.codex_sessions_root.join("2026/04/01");
         fs::create_dir_all(&codex_sessions)?;
         init_git_repo(&ws.project_root, remote)?;
-        init_git_repo(&related_root, remote)?;
-        fs::create_dir_all(&related_subdir)?;
-        let canonical_related_root = fs::canonicalize(&related_root)?;
 
         let mut config = ws.default_config();
         config.projects[0].git_upstream = Some(remote.into());
@@ -425,8 +495,8 @@ mod tests {
         write_file(
             &codex_sessions.join(rollout_name),
             &format!(
-                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n{{\"type\":\"message\"}}\n",
-                related_subdir.display()
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"22222222-2222-4222-8222-22222222223f\",\"cwd\":\"{}\",\"cli_version\":\"0.128.0\",\"git\":{{\"repository_url\":\"{remote}\"}}}}}}\n{{\"type\":\"message\"}}\n",
+                related_subdir.display(),
             ),
         )?;
 
@@ -437,19 +507,18 @@ mod tests {
         )?;
 
         assert_eq!(plan.project_root, ws.canonical_project_root);
-        assert_eq!(plan.new_known_paths, vec![canonical_related_root.clone()]);
-        assert!(plan.config_written());
+        assert_eq!(plan.sessions_to_copy(), 1);
+        assert!(plan.new_known_paths.is_empty());
+        assert!(!plan.config_written());
 
         let report = execute_sync(plan)?;
 
-        assert_eq!(report.new_known_paths, vec![canonical_related_root.clone()]);
-        assert!(report.config_written);
+        assert_eq!(report.sessions_copied, 1);
+        assert!(report.new_known_paths.is_empty());
+        assert!(!report.config_written);
 
         let config_after = load_config(&ws.darc_root.join(CONFIG_FILE_NAME))?;
-        assert_eq!(
-            config_after.projects[0].known_paths,
-            vec![canonical_related_root]
-        );
+        assert!(config_after.projects[0].known_paths.is_empty());
 
         Ok(())
     }

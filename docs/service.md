@@ -24,6 +24,11 @@ darc refresh --watch --all
 This is the process used by the background service. It watches configured Claude and Codex source roots, debounces file
 events, periodically reconciles missed events, and runs the same refresh path as `darc refresh --all`.
 
+For Codex sessions, Darc reads Codex's own log files and matches sessions from recorded metadata. It does not probe
+arbitrary historical `cwd` directories from those logs during background refresh; older Codex logs without
+`git.repository_url` may need the checkout to be explicitly registered or linked before Darc can associate it with the
+current project.
+
 ## macOS support
 
 `darc service` is currently beta and macOS-only. It manages a user LaunchAgent for the current macOS login session.
