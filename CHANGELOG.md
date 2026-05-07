@@ -4,6 +4,8 @@ All notable Darc release changes should be summarized here.
 
 ## Unreleased
 
+- Clarify `darc agent-help` guidance around history-dependent work, current-code verification, and reporting prior-session evidence.
+
 ## 0.1.3
 
 - Add `darc refresh --auto` to enable automatic background refresh on macOS, start it immediately, and show setup progress.
