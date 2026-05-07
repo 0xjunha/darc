@@ -3703,7 +3703,11 @@ impl<W: Write> ServiceProgressPrinter<W> {
     /// Writes the setup start message.
     fn started(&mut self) {
         if self.enabled {
-            let _ = writeln!(self.writer, "Enabling automatic background refresh...");
+            let _ = writeln!(self.writer, "Enabling background auto-refresh.");
+            let _ = writeln!(
+                self.writer,
+                "Initial refresh backfills the SQLite index and may take a few seconds."
+            );
             let _ = self.writer.flush();
         }
     }

@@ -24,6 +24,7 @@ cd /path/to/project
 darc init
 
 # 4. Auto-sync and index new agent sessions in the background (macOS only)
+#    Initial refresh backfills the SQLite index and may take a few seconds
 darc refresh --auto  # omit `--auto` to refresh once
 
 # 5. Tell your agents to use Darc
@@ -45,6 +46,7 @@ darc search "panic unwrap" --limit 5                           # keyword search 
 darc list sessions --since 7d --touching "src/**/*.rs"         # sessions touching Rust src this week
 darc search --mode regex --query "error\s+code" \
   --include-tool-output --since 7d --limit 5                   # regex into tool output, time-bounded
+darc search --mode path-fragment query-protocol --limit 5      # fuzzy path/module discovery
 darc search --mode file-path "docs/**/*.md" --limit 5          # find sessions that touched matching files
 
 # Pivot through related files

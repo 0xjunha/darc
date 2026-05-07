@@ -1466,10 +1466,16 @@ fn service_progress_printer_writes_interactive_steps() {
     }
 
     let output = String::from_utf8(output).unwrap();
-    assert!(output.contains("Enabling automatic background refresh..."));
-    assert!(output.contains("  [1/2] Writing LaunchAgent..."));
-    assert!(output.contains("  [2/2] Starting background service..."));
-    assert!(output.contains("  done"));
+    assert_contains_in_order(
+        &output,
+        &[
+            "Enabling background auto-refresh.",
+            "Initial refresh backfills the SQLite index and may take a few seconds.",
+            "  [1/2] Writing LaunchAgent...",
+            "  [2/2] Starting background service...",
+            "  done",
+        ],
+    );
 }
 
 #[test]
