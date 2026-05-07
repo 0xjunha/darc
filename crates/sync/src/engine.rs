@@ -584,7 +584,6 @@ fn discover_codex_sessions(
 ) -> Result<Vec<DiscoveredSession>> {
     let archived_root = source.home.join("archived_sessions");
     let mut candidates = BTreeMap::<String, Vec<CodexCandidate>>::new();
-    let mut skipped_without_remote = 0usize;
 
     for root in [&source.sessions_root, &archived_root] {
         if !root.exists() {
@@ -660,9 +659,6 @@ fn discover_codex_sessions(
                         other_project_paths,
                         other_project_path_aliases,
                     );
-                    if !matches_project && meta.repository_url.is_none() {
-                        skipped_without_remote += 1;
-                    }
                     (session_id, meta.cwd, matches_project)
                 }
                 Ok(None) => {
@@ -694,12 +690,6 @@ fn discover_codex_sessions(
                     mtime_ms: snapshot.mtime_ms,
                 });
         }
-    }
-
-    if skipped_without_remote > 0 {
-        warnings.push(format!(
-            "skipped {skipped_without_remote} Codex session(s) whose cwd was not registered and whose log did not include git.repository_url; register or link any checkout Darc should include"
-        ));
     }
 
     let sessions = candidates

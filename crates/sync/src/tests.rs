@@ -692,11 +692,7 @@ fn prepare_sync_skips_unregistered_codex_checkout_without_logged_upstream() -> R
 
     assert_eq!(plan.sessions_to_copy(), 0);
     assert!(plan.new_known_paths.is_empty());
-    assert!(
-        plan.warnings
-            .iter()
-            .any(|warning| warning.contains("git.repository_url"))
-    );
+    assert!(plan.warnings.is_empty());
 
     Ok(())
 }
