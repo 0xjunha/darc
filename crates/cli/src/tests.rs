@@ -586,59 +586,99 @@ fn parses_service_lifecycle_command() {
 }
 
 #[test]
-fn macos_service_start_launchctl_args_reload_loaded_service() {
-    let args = super::macos_service_start_launchctl_args(
-        Path::new("/tmp/darc.plist"),
-        true,
-        "gui/501".to_owned(),
-        "gui/501/com.0xjunha.darc.refresh".to_owned(),
-    );
+fn macos_service_launchctl_args_cover_restart_sequence() {
+    let target = "gui/501/com.0xjunha.darc.refresh";
 
     assert_eq!(
-        args,
+        super::macos_service_bootout_launchctl_args(target),
+        vec!["bootout".to_owned(), target.to_owned()]
+    );
+    assert_eq!(
+        super::macos_service_bootstrap_launchctl_args(Path::new("/tmp/darc.plist"), "gui/501"),
         vec![
-            vec![
-                "bootout".to_owned(),
-                "gui/501/com.0xjunha.darc.refresh".to_owned()
-            ],
-            vec![
-                "bootstrap".to_owned(),
-                "gui/501".to_owned(),
-                "/tmp/darc.plist".to_owned()
-            ],
-            vec![
-                "kickstart".to_owned(),
-                "-k".to_owned(),
-                "gui/501/com.0xjunha.darc.refresh".to_owned()
-            ],
+            "bootstrap".to_owned(),
+            "gui/501".to_owned(),
+            "/tmp/darc.plist".to_owned()
         ]
+    );
+    assert_eq!(
+        super::macos_service_kickstart_launchctl_args(target),
+        vec!["kickstart".to_owned(), "-k".to_owned(), target.to_owned()]
     );
 }
 
 #[test]
-fn macos_service_start_launchctl_args_load_unloaded_service() {
-    let args = super::macos_service_start_launchctl_args(
-        Path::new("/tmp/darc.plist"),
-        false,
+fn macos_service_start_outcome_describes_auto_restart() {
+    assert_eq!(
+        super::MacosServiceStartOutcome::Started.auto_status(),
+        "enabled and started"
+    );
+    assert_eq!(
+        super::MacosServiceStartOutcome::Restarted.auto_status(),
+        "enabled and restarted"
+    );
+    assert_eq!(
+        super::MacosServiceStartOutcome::Restarted.service_status(),
+        "restarted"
+    );
+    assert!(
+        super::MacosServiceStartOutcome::Restarted
+            .auto_hint()
+            .unwrap()
+            .contains("stopped the existing service")
+    );
+}
+
+#[test]
+fn launchctl_failure_message_structures_bootstrap_errors() {
+    let args = vec![
+        "bootstrap".to_owned(),
         "gui/501".to_owned(),
-        "gui/501/com.0xjunha.darc.refresh".to_owned(),
+        "/tmp/darc/LaunchAgents/com.0xjunha.darc.refresh.plist".to_owned(),
+    ];
+    let message = super::launchctl_failure_message(
+        &args,
+        "Bootstrap failed: 5: Input/output error\nTry re-running the command as root for richer errors.",
     );
 
-    assert_eq!(
-        args,
-        vec![
-            vec![
-                "bootstrap".to_owned(),
-                "gui/501".to_owned(),
-                "/tmp/darc.plist".to_owned()
-            ],
-            vec![
-                "kickstart".to_owned(),
-                "-k".to_owned(),
-                "gui/501/com.0xjunha.darc.refresh".to_owned()
-            ],
-        ]
+    assert_contains_in_order(
+        &message,
+        &[
+            "failed to manage the macOS LaunchAgent",
+            "Command: launchctl bootstrap gui/501 /tmp/darc/LaunchAgents/com.0xjunha.darc.refresh.plist",
+            "Detail:",
+            "Bootstrap failed: 5: Input/output error",
+            "Try re-running the command as root for richer errors.",
+            "Hint:",
+            "Darc retried the start before giving up",
+        ],
     );
+}
+
+#[test]
+fn launchctl_retryable_bootstrap_detection_is_specific() {
+    let bootstrap_args = vec![
+        "bootstrap".to_owned(),
+        "gui/501".to_owned(),
+        "/tmp/darc.plist".to_owned(),
+    ];
+    let bootout_args = vec![
+        "bootout".to_owned(),
+        "gui/501/com.0xjunha.darc.refresh".to_owned(),
+    ];
+
+    assert!(super::launchctl_failure_is_retryable_bootstrap(
+        &bootstrap_args,
+        "Bootstrap failed: 5: Input/output error",
+    ));
+    assert!(!super::launchctl_failure_is_retryable_bootstrap(
+        &bootout_args,
+        "Bootstrap failed: 5: Input/output error",
+    ));
+    assert!(!super::launchctl_failure_is_retryable_bootstrap(
+        &bootstrap_args,
+        "Bootstrap failed: 37: Operation already in progress",
+    ));
 }
 
 #[test]

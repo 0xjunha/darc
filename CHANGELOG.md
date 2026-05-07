@@ -4,6 +4,7 @@ All notable Darc release changes should be summarized here.
 
 ## Unreleased
 
+- Restart already-running auto-refresh services reliably and structure LaunchAgent startup failures.
 - Mention the initial SQLite backfill in `darc refresh --auto` setup progress.
 - Clarify `darc agent-help` guidance around history-dependent work, current-code verification, and reporting prior-session evidence.
 
