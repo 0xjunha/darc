@@ -11,6 +11,8 @@ and decisions behind past work.
 
 **Platforms:** macOS, Linux | **Agents:** Codex, Claude Code
 
+https://github.com/user-attachments/assets/f38317a4-bcc8-438a-8a81-0315b5c8a4e9
+
 ## Quickstart
 
 ```sh
