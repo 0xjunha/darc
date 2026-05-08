@@ -1,4 +1,15 @@
-use super::*;
+use anyhow::Result;
+use darc_core::{
+    ProjectStatusReport, StatusProject, StatusSource, StatusSyncCheck, StatusSyncPlan,
+    WorkspaceStatusReport, status_project, status_workspace,
+};
+
+use crate::args::{ColorArg, StatusArgs};
+use crate::output::{
+    HumanStyle, QueryOutput, StatusJsonError, count_label, print_field, print_json_envelope,
+    print_line, print_section,
+};
+use crate::sync_index::{add_init_hint_for_unconfigured_project, format_sources};
 
 /// Shows Darc status for the active project or shared workspace.
 pub(crate) fn run_status(args: StatusArgs) -> Result<()> {
@@ -45,7 +56,7 @@ fn status_check_exit(
 }
 
 /// Prints one active-project status report.
-fn print_project_status(report: &darc_core::ProjectStatusReport) {
+fn print_project_status(report: &ProjectStatusReport) {
     let style = HumanStyle::stdout();
     print_status_header(style, &report.root, None);
     println!();

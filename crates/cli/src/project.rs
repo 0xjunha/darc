@@ -1,4 +1,12 @@
-use super::*;
+use anyhow::Result;
+use darc_core::{
+    InitDraft, LinkReport, link_project, prepare_init, preview_link_project,
+    preview_remove_project, preview_rename_project, remove_project, rename_project, write_init,
+};
+
+use crate::args::{InitArgs, LinkArgs, ProjectArgs, ProjectCommands, RemoveArgs, RenameArgs};
+use crate::output::{HumanStyle, print_field, print_line, print_section};
+use crate::sync_index::print_index_summary;
 
 /// Dispatches the supported project-management commands.
 pub(crate) fn run_project(args: ProjectArgs) -> Result<()> {

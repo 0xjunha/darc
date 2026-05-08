@@ -1,4 +1,9 @@
-use super::*;
+use anyhow::Result;
+
+use crate::args::{
+    AGENTS_MD_GUIDANCE_END_MARKER, AGENTS_MD_GUIDANCE_START_MARKER, AGENTS_MD_GUIDANCE_TEXT,
+    AgentHelpArgs,
+};
 
 /// Prints the selected agent-facing Darc usage surface.
 pub(crate) fn run_agent_help(args: AgentHelpArgs) -> Result<()> {

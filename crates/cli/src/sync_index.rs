@@ -1,4 +1,13 @@
-use super::*;
+use std::path::Path;
+
+use anyhow::Result;
+use darc_core::{
+    IndexOptions, IndexReport, SkippedRollout, SourceKind, SyncOptions, SyncReport, execute_sync,
+    index_project_sessions, prepare_sync,
+};
+
+use crate::args::{IndexArgs, ProviderArg, SyncArgs};
+use crate::output::{HumanStyle, print_field, print_line, print_section, print_warning};
 
 /// Prepares and optionally executes the project-scoped sync workflow.
 pub(crate) fn run_sync(args: SyncArgs) -> Result<()> {
@@ -74,8 +83,8 @@ pub(crate) fn print_project_run_header(
     style: HumanStyle,
     title: &str,
     project_name: &str,
-    project_root: &std::path::Path,
-    archive: Option<&std::path::Path>,
+    project_root: &Path,
+    archive: Option<&Path>,
 ) {
     print_section(style, title);
     print_field(style, 2, "Project", project_name);

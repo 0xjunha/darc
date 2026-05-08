@@ -1,4 +1,33 @@
-use super::*;
+use anyhow::{Context, Result, anyhow, bail};
+use darc_core::SourceKind;
+use darc_core::query::{
+    DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_QUERY_PAGE_LIMIT, DEFAULT_RESOLVE_SESSION_MATCH_LIMIT,
+    DEFAULT_SEARCH_MATCH_LIMIT, FilesQueryRequest, QueryProtocolError, ResolveSessionQueryRequest,
+    ResolvedQueryProject, ResolvedSessionMatch, SearchEvidenceField, SearchMode,
+    SearchTurnsRequest, SessionBundleQueryRequest, SessionBundleView, SessionsQueryRequest,
+    SessionsView, TurnDetailOptions, TurnsQueryRequest, TurnsView, query_files_for_project,
+    query_project_insight_report_for_project, query_resolve_sessions,
+    query_search_turns_for_project, query_session_bundle_for_project,
+    query_session_files_for_project, query_sessions_for_project, query_turn_for_project,
+    query_turn_insight_report_for_project, query_turns_for_project, query_workspace,
+    query_workspace_insight_report, resolve_query_project,
+    resolve_query_search_session_id_for_project, resolve_query_session_for_project,
+};
+use darc_paths::resolve_query_time_bound as resolve_shared_query_time_bound;
+use serde::Serialize;
+
+use crate::args::{
+    ListArgs, ListCommands, ListFilesArgs, ListSessionsArgs, ProviderArg, QueryFilesArgs,
+    QueryProjectInsightsArgs, QueryResolveSessionArgs, QuerySearchTurnsArgs,
+    QuerySessionBundleArgs, QuerySessionFilesArgs, QuerySessionsArgs, QueryTurnArgs,
+    QueryTurnInsightsArgs, QueryTurnsArgs, QueryWorkspaceArgs, QueryWorkspaceInsightsArgs,
+    ResolveArgs, ResolveCommands, SearchArgs, SearchModeArg, SessionListViewArg, ShowArgs,
+    ShowCommands, StatsArgs, StatsCommands, TurnListViewArg, ViewArg,
+};
+use crate::output::{
+    QueryOutput, ReadValidationError, print_json_envelope, print_search_turns_json_envelope,
+    print_turns_query_envelope,
+};
 
 /// Dispatches the supported canonical list commands.
 pub(crate) fn run_list(args: ListArgs) -> Result<()> {

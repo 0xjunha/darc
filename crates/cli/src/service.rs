@@ -1,7 +1,28 @@
+#[cfg(any(target_os = "macos", test))]
+use std::io::Write;
+use std::path::Path;
 #[cfg(target_os = "macos")]
-use std::process::Command;
+use std::{
+    env, fs,
+    io::{self, IsTerminal},
+    path::PathBuf,
+    process::Command,
+    time::{Duration, Instant},
+};
 
-use super::*;
+#[cfg(target_os = "macos")]
+use anyhow::Context;
+use anyhow::{Result, bail};
+#[cfg(target_os = "macos")]
+use serde_json::Value as JsonValue;
+
+use crate::args::ServiceArgs;
+#[cfg(target_os = "macos")]
+use crate::args::ServiceCommands;
+#[cfg(any(target_os = "macos", test))]
+use crate::output::HumanStyle;
+#[cfg(target_os = "macos")]
+use crate::output::{print_field, print_line, print_section};
 
 /// Renders automatic background refresh setup progress for interactive terminals.
 #[cfg(any(target_os = "macos", test))]

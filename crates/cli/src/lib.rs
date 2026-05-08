@@ -12,74 +12,39 @@ mod sync_index;
 mod tests;
 mod upgrade;
 
-use std::{
-    env,
-    ffi::OsString,
-    fs::{self, File, OpenOptions},
-    io::{self, IsTerminal, Write},
-    path::{Path, PathBuf},
-    sync::mpsc,
-    time::{Duration, Instant},
-};
+use std::{env, ffi::OsString};
 
+use agent_help::run_agent_help;
+#[cfg(test)]
 use agent_help::*;
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::Result;
+#[cfg(test)]
 use args::*;
-use clap::{
-    Arg, ArgAction, Args, ColorChoice, Command as ClapCommand, CommandFactory, FromArgMatches,
-    Parser, Subcommand, ValueEnum,
-    builder::styling::{AnsiColor, Styles},
-    error::ErrorKind,
-};
-use darc_core::config::load_config;
-use darc_core::query::{
-    DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_QUERY_PAGE_LIMIT, DEFAULT_RESOLVE_SESSION_MATCH_LIMIT,
-    DEFAULT_SEARCH_MATCH_LIMIT, DEFAULT_SESSION_BUNDLE_TURN_LIMIT, DEFAULT_TURN_STEP_LIMIT,
-    DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT, FilesQueryRequest, QueryProtocolError,
-    ResolveSessionQueryRequest, ResolvedQueryProject, ResolvedSessionMatch, SearchEvidenceField,
-    SearchMode, SearchSnippetMatcher, SearchTurnsQueryData, SearchTurnsRequest,
-    SessionBundleQueryRequest, SessionBundleView, SessionsQueryRequest, SessionsView,
-    TurnDetailOptions, TurnsQueryRequest, TurnsView, query_files_for_project,
-    query_project_insight_report_for_project, query_resolve_sessions,
-    query_search_turns_for_project, query_session_bundle_for_project,
-    query_session_files_for_project, query_sessions_for_project, query_turn_for_project,
-    query_turn_insight_report_for_project, query_turns_for_project, query_workspace,
-    query_workspace_insight_report, resolve_query_project,
-    resolve_query_search_session_id_for_project, resolve_query_session_for_project,
-};
-use darc_core::{
-    IndexOptions, IndexReport, InitDraft, LinkReport, RefreshAllBestEffortReport, RefreshOptions,
-    RefreshProgress, RefreshProjectAttempt, RefreshProjectFailure, RefreshReport, SkippedRollout,
-    SourceKind, StatusProject, StatusSource, StatusSyncCheck, StatusSyncPlan, SyncOptions,
-    SyncReport, WorkspaceStatusReport, default_root_path, execute_sync, index_project_sessions,
-    link_project, prepare_init, prepare_sync, preview_link_project, preview_remove_project,
-    preview_rename_project, refresh_all_projects_best_effort_with_progress,
-    refresh_project_with_progress, remove_project, rename_project, status_project,
-    status_workspace, write_init,
-};
-use darc_paths::{
-    current_utc_timestamp, resolve_query_time_bound as resolve_shared_query_time_bound,
-};
-use darc_rollout_audit::claude::{
-    ClaudeSchemaAuditOptions, ClaudeSchemaAuditOutcome, ClaudeSchemaAuditReport,
-    ClaudeSchemaSurveyMode, run_claude_schema_audit_with_progress,
-};
-use darc_rollout_audit::codex::{
-    CodexSchemaAuditOptions, CodexSchemaAuditOutcome, CodexSchemaAuditReport,
-    run_codex_schema_audit_with_progress,
-};
-use fs2::FileExt;
+use args::{Cli, Commands, cli_command};
+use clap::{FromArgMatches, error::ErrorKind};
+#[cfg(test)]
+use darc_core::query::SearchEvidenceField;
+#[cfg(test)]
 use output::*;
-use project::*;
+use output::{format_json_clap_error, format_query_error};
+use project::{run_init, run_link, run_project, run_remove, run_rename_from};
+#[cfg(test)]
 use query_commands::*;
+use query_commands::{run_list, run_resolve, run_search, run_show, run_stats};
+use refresh::run_refresh;
+#[cfg(test)]
 use refresh::*;
+#[cfg(test)]
 use schema_audit::*;
-use serde::Serialize;
-use serde_json::{Value as JsonValue, json};
+use schema_audit::{run_claude_schema_audit_command, run_codex_schema_audit_command};
+use service::run_service;
+#[cfg(test)]
 use service::*;
-use status::*;
-use sync_index::*;
+use status::run_status;
+use sync_index::{run_index, run_sync};
+#[cfg(test)]
 use upgrade::*;
+use upgrade::{UpgradeNudgeContext, run_upgrade};
 
 /// Parses CLI arguments and dispatches the selected command.
 pub fn run() -> i32 {

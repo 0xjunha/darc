@@ -1,4 +1,29 @@
-use super::*;
+use std::{
+    env, fs,
+    fs::{File, OpenOptions},
+    io::{self, IsTerminal, Write},
+    path::{Path, PathBuf},
+    sync::mpsc,
+    time::{Duration, Instant},
+};
+
+use anyhow::{Context, Result, bail};
+use darc_core::{
+    RefreshAllBestEffortReport, RefreshOptions, RefreshProgress, RefreshProjectAttempt,
+    RefreshProjectFailure, RefreshReport, SourceKind, config::load_config,
+    refresh_all_projects_best_effort_with_progress, refresh_project_with_progress,
+};
+use darc_paths::current_utc_timestamp;
+use fs2::FileExt;
+use serde::Serialize;
+
+use crate::args::{ProviderArg, RefreshArgs};
+use crate::output::{HumanStyle, print_field, print_line, print_project_warning, print_section};
+use crate::service::run_refresh_auto;
+use crate::sync_index::{
+    add_init_hint_for_unconfigured_project, format_skipped_rollout, format_sources,
+    print_index_summary, print_project_run_header, print_sync_result,
+};
 
 /// Renders refresh progress events for interactive terminals.
 pub(crate) struct RefreshProgressPrinter<W> {

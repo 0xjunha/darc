@@ -1,4 +1,19 @@
-use super::*;
+use std::{
+    env,
+    ffi::OsString,
+    io::{self, IsTerminal},
+};
+
+use anyhow::{Context, Result};
+use darc_core::query::{
+    QueryProtocolError, SearchMode, SearchSnippetMatcher, SearchTurnsQueryData, TurnsView,
+};
+use darc_paths::current_utc_timestamp;
+use serde::Serialize;
+use serde_json::{Value as JsonValue, json};
+
+use crate::args::ColorArg;
+use crate::query_commands::TurnsOnelineQueryData;
 
 /// Stores the resolved output behavior for one query invocation.
 #[derive(Debug, Clone, Copy)]
