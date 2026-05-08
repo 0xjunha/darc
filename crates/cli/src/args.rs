@@ -94,6 +94,15 @@ pub(crate) enum ProviderArg {
     Codex,
 }
 
+impl From<ProviderArg> for SourceKind {
+    fn from(value: ProviderArg) -> Self {
+        match value {
+            ProviderArg::Claude => SourceKind::Claude,
+            ProviderArg::Codex => SourceKind::Codex,
+        }
+    }
+}
+
 /// Represents the supported search modes for machine-readable turn search.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub(crate) enum SearchModeArg {
@@ -139,6 +148,15 @@ pub(crate) enum ViewArg {
 pub(crate) enum ClaudeSurveyModeArg {
     Refine,
     Coarse,
+}
+
+impl From<ClaudeSurveyModeArg> for ClaudeSchemaSurveyMode {
+    fn from(value: ClaudeSurveyModeArg) -> Self {
+        match value {
+            ClaudeSurveyModeArg::Refine => ClaudeSchemaSurveyMode::Refine,
+            ClaudeSurveyModeArg::Coarse => ClaudeSchemaSurveyMode::Coarse,
+        }
+    }
 }
 
 #[derive(Debug, Parser)]

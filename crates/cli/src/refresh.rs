@@ -709,6 +709,148 @@ pub(crate) fn install_native_watchers(
     Ok(watcher)
 }
 
+/// Prints the combined sync and index summary for one refreshed project.
+pub(crate) fn print_refresh_report(report: &RefreshReport) {
+    let style = HumanStyle::stdout();
+    print_refresh_report_with_style(style, report);
+}
+
+/// Prints the combined sync and index summary using one resolved style context.
+pub(crate) fn print_refresh_report_with_style(style: HumanStyle, report: &RefreshReport) {
+    for warning in &report.sync.warnings {
+        print_project_warning(&report.sync.project_name, warning);
+    }
+    for skipped in &report.index.skipped_rollouts {
+        print_project_warning(&report.sync.project_name, format_skipped_rollout(skipped));
+    }
+
+    print_project_run_header(
+        style,
+        "Refresh",
+        &report.sync.project_name,
+        &report.sync.project_root,
+        Some(report.sync.sessions_root.as_path()),
+    );
+    println!();
+    print_section(style, "Providers");
+    match format_refresh_provider_lines(report) {
+        RefreshProviderLines::Shared(providers) => print_field(style, 2, "Selected", providers),
+        RefreshProviderLines::Split {
+            sync_providers,
+            index_providers,
+        } => {
+            print_field(style, 2, "Sync", sync_providers);
+            print_field(style, 2, "Index", index_providers);
+        }
+    }
+    println!();
+    print_sync_result(style, &report.sync);
+    println!();
+    print_index_summary(style, &report.index);
+    println!();
+    print_section(style, "Changes");
+    print_field(
+        style,
+        2,
+        "Manifest",
+        if report.sync.manifest_written {
+            style.ok("updated")
+        } else {
+            style.muted("unchanged")
+        },
+    );
+    print_field(
+        style,
+        2,
+        "Config",
+        if report.sync.config_written {
+            style.ok("updated")
+        } else {
+            style.muted("unchanged")
+        },
+    );
+    println!();
+    print_section(style, "Status");
+    let status = if report.index.skipped_rollouts.is_empty() {
+        style.ok("refreshed")
+    } else {
+        style.warn("refreshed with skipped rollouts")
+    };
+    print_field(style, 2, "Overall", status);
+}
+
+/// Prints one multi-project refresh report with per-project results and totals.
+pub(crate) fn print_refresh_all_report(report: &RefreshAllBestEffortReport) {
+    let style = HumanStyle::stdout();
+    for (index, project) in report.projects.iter().enumerate() {
+        if index > 0 {
+            println!();
+        }
+        print_refresh_all_project_report(style, project);
+    }
+    println!();
+    print_section(style, "Workspace Summary");
+    print_field(style, 2, "Succeeded", style.ok(report.refreshed_count()));
+    let failed = report.failed_count();
+    let failed = if failed == 0 {
+        style.ok(failed)
+    } else {
+        style.error(failed)
+    };
+    print_field(style, 2, "Failed", failed);
+}
+
+/// Prints one project-scoped entry from a multi-project refresh report.
+pub(crate) fn print_refresh_all_project_report(style: HumanStyle, project: &RefreshProjectAttempt) {
+    match project {
+        RefreshProjectAttempt::Refreshed(report) => print_refresh_report_with_style(style, report),
+        RefreshProjectAttempt::Failed(failure) => print_refresh_project_failure(style, failure),
+    }
+}
+
+/// Prints one structured project refresh failure from a best-effort workspace refresh.
+pub(crate) fn print_refresh_project_failure(style: HumanStyle, failure: &RefreshProjectFailure) {
+    print_project_run_header(
+        style,
+        "Refresh",
+        &failure.project_name,
+        &failure.project_root,
+        None,
+    );
+    println!();
+    print_section(style, "Status");
+    print_field(style, 2, "Overall", style.error("failed"));
+    print_field(
+        style,
+        2,
+        "Error",
+        style.error(format!("{:#}", failure.error)),
+    );
+}
+
+/// Stores the provider lines rendered for one refresh report.
+pub(crate) enum RefreshProviderLines {
+    Shared(String),
+    Split {
+        sync_providers: String,
+        index_providers: String,
+    },
+}
+
+/// Formats the provider lines for one refresh report.
+pub(crate) fn format_refresh_provider_lines(report: &RefreshReport) -> RefreshProviderLines {
+    let sync_providers = format_sources(&report.sync.sources);
+    let index_providers = format_sources(&report.index.providers);
+    if report.sync.sources == report.index.providers {
+        RefreshProviderLines::Shared(sync_providers)
+    } else {
+        RefreshProviderLines::Split {
+            sync_providers,
+            index_providers,
+        }
+    }
+}
+
 /// Converts one workspace refresh report into the final CLI exit result.
 pub(crate) fn refresh_all_exit_status(report: &RefreshAllBestEffortReport) -> Result<()> {
     if report.has_failures() {
