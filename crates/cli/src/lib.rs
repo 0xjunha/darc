@@ -3,6 +3,7 @@ mod output;
 mod query_commands;
 mod refresh;
 mod schema_audit;
+mod service;
 #[cfg(test)]
 mod tests;
 mod upgrade;
@@ -69,6 +70,7 @@ use refresh::*;
 use schema_audit::*;
 use serde::Serialize;
 use serde_json::{Value as JsonValue, json};
+use service::*;
 use upgrade::*;
 
 /// Parses CLI arguments and dispatches the selected command.
