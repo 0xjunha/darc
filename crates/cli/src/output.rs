@@ -1,4 +1,19 @@
-use super::*;
+use std::{
+    env,
+    ffi::OsString,
+    io::{self, IsTerminal},
+};
+
+use anyhow::{Context, Result};
+use darc_core::query::{
+    QueryProtocolError, SearchMode, SearchSnippetMatcher, SearchTurnsQueryData, TurnsView,
+};
+use darc_paths::current_utc_timestamp;
+use serde::Serialize;
+use serde_json::{Value as JsonValue, json};
+
+use crate::args::ColorArg;
+use crate::query_commands::TurnsOnelineQueryData;
 
 /// Stores the resolved output behavior for one query invocation.
 #[derive(Debug, Clone, Copy)]
@@ -181,6 +196,47 @@ impl HumanStyle {
     pub(crate) fn count(self, value: impl std::fmt::Display) -> String {
         self.color(ANSI_BOLD, value)
     }
+}
+
+/// Prints a plain section heading.
+pub(crate) fn print_section(style: HumanStyle, title: &str) {
+    println!("{}", style.bold(title));
+}
+
+/// Prints one indented label/value field.
+pub(crate) fn print_field(
+    style: HumanStyle,
+    indent: usize,
+    label: &str,
+    value: impl std::fmt::Display,
+) {
+    println!("{}{}: {}", " ".repeat(indent), style.label(label), value);
+}
+
+/// Prints one indented continuation line.
+pub(crate) fn print_line(indent: usize, value: impl std::fmt::Display) {
+    println!("{}{}", " ".repeat(indent), value);
+}
+
+/// Prints one warning to stderr using human-output styling when available.
+pub(crate) fn print_warning(message: impl std::fmt::Display) {
+    let style = HumanStyle::stderr();
+    eprintln!("{}", style.warn(format!("warning: {message}")));
+}
+
+/// Prints one project-scoped warning to stderr using human-output styling when available.
+pub(crate) fn print_project_warning(project_name: &str, message: impl std::fmt::Display) {
+    let style = HumanStyle::stderr();
+    eprintln!(
+        "{}",
+        style.warn(format!("warning [{project_name}]: {message}"))
+    );
+}
+
+/// Returns a count phrase for one singular/plural noun pair.
+pub(crate) fn count_label(count: usize, singular: &str, plural: &str) -> String {
+    let noun = if count == 1 { singular } else { plural };
+    format!("{count} {noun}")
 }
 
 /// Returns whether automatic terminal color should be enabled.

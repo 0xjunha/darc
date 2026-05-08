@@ -1,11 +1,13 @@
 use std::{
     env, fs,
+    io::{self, IsTerminal},
     path::{Path, PathBuf},
     process::Command,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, anyhow, bail};
+use darc_core::config::load_config;
 pub(crate) use reqwest::header::AUTHORIZATION;
 use reqwest::{
     StatusCode,
@@ -14,7 +16,10 @@ use reqwest::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::*;
+use crate::args::{
+    Commands, ProjectCommands, ServiceCommands, UpgradeArgs, UpgradeCommands, UpgradeDismissArgs,
+};
+use crate::output::{HumanStyle, print_field, print_line, print_section, render_json_envelope};
 
 const DARC_LATEST_RELEASE_API_URL: &str =
     "https://api.github.com/repos/0xjunha/darc/releases/latest";

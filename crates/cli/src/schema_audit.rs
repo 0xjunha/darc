@@ -1,4 +1,13 @@
-use super::*;
+use darc_rollout_audit::claude::{
+    ClaudeSchemaAuditOptions, ClaudeSchemaAuditOutcome, ClaudeSchemaAuditReport,
+    ClaudeSchemaSurveyMode, run_claude_schema_audit_with_progress,
+};
+use darc_rollout_audit::codex::{
+    CodexSchemaAuditOptions, CodexSchemaAuditOutcome, CodexSchemaAuditReport,
+    run_codex_schema_audit_with_progress,
+};
+
+use crate::args::{ClaudeSchemaAuditArgs, CodexSchemaAuditArgs};
 
 /// Runs the hidden Codex rollout schema audit command with dedicated exit codes.
 pub(crate) fn run_codex_schema_audit_command(args: CodexSchemaAuditArgs) -> i32 {
