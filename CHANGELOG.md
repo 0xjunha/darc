@@ -4,6 +4,8 @@ All notable Darc release changes should be summarized here.
 
 ## Unreleased
 
+## 0.1.4
+
 - Restart already-running auto-refresh services reliably and structure LaunchAgent startup failures.
 - Avoid probing arbitrary historical Codex `cwd` directories during refresh; Darc now preserves same-repo matching from logged `git.repository_url` metadata, keeps explicitly linked rename paths recoverable when backed by scoped remote evidence, and avoids broad-prefix imports from nested repos with mismatched remotes.
 - Mention the initial SQLite backfill in `darc refresh --auto` setup progress.
