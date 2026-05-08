@@ -183,6 +183,47 @@ impl HumanStyle {
     }
 }
 
+/// Prints a plain section heading.
+pub(crate) fn print_section(style: HumanStyle, title: &str) {
+    println!("{}", style.bold(title));
+}
+
+/// Prints one indented label/value field.
+pub(crate) fn print_field(
+    style: HumanStyle,
+    indent: usize,
+    label: &str,
+    value: impl std::fmt::Display,
+) {
+    println!("{}{}: {}", " ".repeat(indent), style.label(label), value);
+}
+
+/// Prints one indented continuation line.
+pub(crate) fn print_line(indent: usize, value: impl std::fmt::Display) {
+    println!("{}{}", " ".repeat(indent), value);
+}
+
+/// Prints one warning to stderr using human-output styling when available.
+pub(crate) fn print_warning(message: impl std::fmt::Display) {
+    let style = HumanStyle::stderr();
+    eprintln!("{}", style.warn(format!("warning: {message}")));
+}
+
+/// Prints one project-scoped warning to stderr using human-output styling when available.
+pub(crate) fn print_project_warning(project_name: &str, message: impl std::fmt::Display) {
+    let style = HumanStyle::stderr();
+    eprintln!(
+        "{}",
+        style.warn(format!("warning [{project_name}]: {message}"))
+    );
+}
+
+/// Returns a count phrase for one singular/plural noun pair.
+pub(crate) fn count_label(count: usize, singular: &str, plural: &str) -> String {
+    let noun = if count == 1 { singular } else { plural };
+    format!("{count} {noun}")
+}
+
 /// Returns whether automatic terminal color should be enabled.
 pub(crate) fn should_auto_color_output(
     is_terminal: bool,
