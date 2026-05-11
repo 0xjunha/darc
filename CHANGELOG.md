@@ -4,6 +4,7 @@ All notable Darc release changes should be summarized here.
 
 ## Unreleased
 
+- Clarify README guidance for agent setup and prompt-driven prior-session investigations.
 - Show release dates in changelog version headings and have release preparation add them automatically.
 - Speed up regex search for queries with a required literal prefix.
 
