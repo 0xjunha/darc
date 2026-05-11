@@ -40,9 +40,9 @@ available.
    scripts/prepare-release.sh 0.1.0
    ```
 
-   The script updates `Cargo.toml`, moves `CHANGELOG.md` `Unreleased` entries into `## 0.1.0`, refreshes
-   `Cargo.lock` for local workspace package versions, then runs fmt, stable clippy, stable tests, a dist-profile check,
-   and `dist plan --tag v0.1.0`.
+   The script updates `Cargo.toml`, moves `CHANGELOG.md` `Unreleased` entries into a dated `## [0.1.0] - YYYY-MM-DD`
+   section, refreshes `Cargo.lock` for local workspace package versions, then runs fmt, stable clippy, stable tests, a
+   dist-profile check, and `dist plan --tag v0.1.0`.
 
    CI also runs release-profile Linux target checks when the workspace package version changes in a PR or on `main`.
 
@@ -61,8 +61,8 @@ available.
    scripts/tag-release.sh 0.1.0
    ```
 
-   The script syncs `main`, verifies `Cargo.toml` and `CHANGELOG.md` match the requested version, creates an annotated
-   tag, and pushes it to `origin`.
+   The script syncs `main`, verifies `Cargo.toml` and `CHANGELOG.md` match the requested version and include a release
+   date, creates an annotated tag, and pushes it to `origin`.
 
 The release workflow also refuses to continue if the tagged commit is not reachable from `origin/main`.
 

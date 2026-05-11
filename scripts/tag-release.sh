@@ -87,8 +87,13 @@ actual_version="$(workspace_version)"
 [[ "$actual_version" == "$version" ]] ||
   fail "Cargo.toml version is $actual_version, expected $version"
 
-grep -Fqx "## $version" CHANGELOG.md ||
-  fail "CHANGELOG.md missing ## $version section"
+awk -v prefix="## [$version] - " '
+  index($0, prefix) == 1 && length($0) == length(prefix) + 10 {
+    date = substr($0, length(prefix) + 1)
+    if (date ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/) found = 1
+  }
+  END { exit !found }
+' CHANGELOG.md || fail "CHANGELOG.md missing ## [$version] - YYYY-MM-DD section"
 
 git tag -a "$tag" -m "$tag"
 if ! git push origin "$tag"; then

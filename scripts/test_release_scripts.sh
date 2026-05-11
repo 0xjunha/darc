@@ -109,7 +109,7 @@ All notable Darc release changes should be summarized here.
 
 ## Unreleased
 
-## $version
+## [$version] - 2026-01-01
 
 - Add release automation.
 EOF
@@ -172,10 +172,10 @@ prepare_success_updates_version_changelog_and_runs_checks() {
   log="$TEST_TMP_ROOT/prepare-success.log"
   make_fake_release_tools "$fake_bin"
 
-  (cd "$repo" && PATH="$fake_bin:$PATH" DARC_RELEASE_TEST_LOG="$log" "$PREPARE_SCRIPT" 0.2.0) >/dev/null
+  (cd "$repo" && PATH="$fake_bin:$PATH" DARC_RELEASE_DATE=2026-01-02 DARC_RELEASE_TEST_LOG="$log" "$PREPARE_SCRIPT" 0.2.0) >/dev/null
 
   assert_eq "0.2.0" "$(workspace_version "$repo/Cargo.toml")" "prepared Cargo.toml version"
-  assert_contains "$repo/CHANGELOG.md" "## 0.2.0"
+  assert_contains "$repo/CHANGELOG.md" "## [0.2.0] - 2026-01-02"
   assert_contains "$repo/CHANGELOG.md" "- Add release automation."
   assert_unreleased_empty_before_next_section "$repo/CHANGELOG.md"
 
@@ -225,7 +225,7 @@ prepare_rejects_empty_unreleased_without_partial_write() {
   assert_fails "$out" bash -c "cd '$repo' && PATH='$fake_bin':\$PATH DARC_RELEASE_TEST_LOG='$log' '$PREPARE_SCRIPT' 0.2.0"
   assert_contains "$out" "Unreleased section is empty"
   assert_eq "0.1.0" "$(workspace_version "$repo/Cargo.toml")" "Cargo.toml after empty changelog rejection"
-  assert_not_contains "$repo/CHANGELOG.md" "## 0.2.0"
+  assert_not_contains "$repo/CHANGELOG.md" "## [0.2.0]"
   [[ ! -f "$log" ]] || fail "prepare script should not run checks after changelog rejection"
 }
 
@@ -238,7 +238,7 @@ prepare_rejects_existing_version_section() {
   make_fake_release_tools "$fake_bin"
   cat >>"$repo/CHANGELOG.md" <<'EOF'
 
-## 0.2.0
+## [0.2.0] - 2026-01-01
 
 - Previous release.
 EOF
@@ -314,9 +314,25 @@ tag_rejects_missing_changelog_section() {
   out="$TEST_TMP_ROOT/tag-missing-changelog.out"
 
   assert_fails "$out" bash -c "cd '$repo' && '$TAG_SCRIPT' 0.2.0"
-  assert_contains "$out" "CHANGELOG.md missing ## 0.2.0 section"
+  assert_contains "$out" "CHANGELOG.md missing ## [0.2.0] - YYYY-MM-DD section"
   if git -C "$repo" rev-parse -q --verify refs/tags/v0.2.0 >/dev/null; then
     fail "missing changelog test unexpectedly created a local tag"
+  fi
+}
+
+tag_rejects_undated_changelog_section() {
+  local repo out
+  repo="$(make_release_ready_repo tag-undated-changelog 0.2.0)"
+  perl -0pi -e 's/^## \[0\.2\.0\] - 2026-01-01$/## [0.2.0]/m' "$repo/CHANGELOG.md"
+  git -C "$repo" add CHANGELOG.md
+  git -C "$repo" commit -m "docs: remove release date" >/dev/null
+  git -C "$repo" push origin main >/dev/null 2>&1
+  out="$TEST_TMP_ROOT/tag-undated-changelog.out"
+
+  assert_fails "$out" bash -c "cd '$repo' && '$TAG_SCRIPT' 0.2.0"
+  assert_contains "$out" "CHANGELOG.md missing ## [0.2.0] - YYYY-MM-DD section"
+  if git -C "$repo" rev-parse -q --verify refs/tags/v0.2.0 >/dev/null; then
+    fail "undated changelog test unexpectedly created a local tag"
   fi
 }
 
@@ -360,6 +376,7 @@ run_test "tag pushes annotated tag from synced main" tag_success_pushes_annotate
 run_test "tag rejects dirty worktrees" tag_rejects_dirty_worktree
 run_test "tag rejects Cargo.toml version mismatch" tag_rejects_version_mismatch
 run_test "tag rejects missing changelog section" tag_rejects_missing_changelog_section
+run_test "tag rejects undated changelog sections" tag_rejects_undated_changelog_section
 run_test "tag rejects existing remote tag" tag_rejects_existing_remote_tag
 run_test "tag rejects leading-v versions" tag_rejects_leading_v_version
 
