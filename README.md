@@ -35,12 +35,13 @@ darc init
 # 4. Sync and index existing agent sessions once
 darc refresh
 
-# 5. Teach your agents to use Darc
+# 5. Teach your agents when to use Darc
+#    Adds guidance to recover prior-session evidence when relevant and verify it against current files/tests.
 darc agent-help --agents-md-line >> AGENTS.md
 # or:
 darc agent-help --agents-md-line >> CLAUDE.md
 
-# 6. Search prior work
+# 6. Test Darc manually
 darc search "something you worked on before" --limit 5
 ```
 
@@ -118,6 +119,38 @@ Darc lets you ask:
 
 Instead of dumping raw transcript logs into a prompt, Darc gives agents small, structured, evidence-backed reads they
 can chain safely.
+
+## Useful Prompts With Darc
+
+The `AGENTS.md` / `CLAUDE.md` guidance teaches agents to use Darc when prior context may matter. You can also invoke
+Darc explicitly in a prompt when you want an agent to investigate prior sessions.
+
+Darc provides exact prior-session evidence; the agent synthesizes it and verifies current facts against the repository.
+
+Example prompts:
+
+```text
+Use Darc CLI to review the last 30 days of agent sessions. Group the work
+into distinct workstreams, summarize what looks resolved or open, and cite
+the key session/turn evidence.
+```
+
+```text
+Use Darc CLI to find important implementation decisions that are not
+obvious from current code or docs. Explain the rationale and cite evidence.
+```
+
+```text
+Use Darc CLI to investigate repeated failures around <module-or-feature>.
+Identify recurring patterns, fixes already tried, and risks that still
+need verification.
+```
+
+For broad investigations, add this line to the end of the prompt:
+
+```text
+In your answer, separate Darc evidence, current source/test verification, and remaining uncertainty.
+```
 
 ## Common Workflows
 
