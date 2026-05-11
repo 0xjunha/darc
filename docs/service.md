@@ -13,7 +13,8 @@ darc refresh --auto
 
 This is equivalent to `darc service enable` followed by `darc service start`: it enables auto-start on future logins and
 starts or restarts the background refresh service now. If auto-refresh is already running, Darc stops the existing
-LaunchAgent and starts the updated one.
+LaunchAgent and starts the updated one. The LaunchAgent also asks launchd to restart the watcher after a failed exit,
+with launchd throttling repeated restarts.
 
 The foreground command is:
 
@@ -21,8 +22,9 @@ The foreground command is:
 darc refresh --watch --all
 ```
 
-This is the process used by the background service. It watches configured Claude and Codex source roots, debounces file
-events, periodically reconciles missed events, and runs the same refresh path as `darc refresh --all`.
+This is the process used by the background service. It watches configured Claude and Codex source roots, waits for the
+debounce quiet period after the latest file event, periodically reconciles missed events, and runs the same refresh path
+as `darc refresh --all`.
 
 For Codex sessions, Darc reads Codex's own log files and matches sessions from recorded metadata. It does not probe
 arbitrary historical `cwd` directories from those logs during background refresh; older Codex logs without
@@ -50,8 +52,9 @@ darc service disable
   LaunchAgent auto-start file.
 - `stop` unloads the LaunchAgent in the current login session without removing the auto-start file.
 - `restart` stops and starts the LaunchAgent.
-- `status` reports whether the LaunchAgent file exists, whether launchd has it loaded, the active watch settings, and
-  the latest Darc watch status.
+- `status` reports whether the LaunchAgent file exists, whether launchd has it loaded, active or stale refresh lock
+  metadata, whether the latest watch status still matches launchd, the active watch settings, and the latest Darc watch
+  status.
 - `disable` unloads the LaunchAgent and removes the auto-start file.
 
 Linux systemd user units and Windows service or Task Scheduler support are not implemented yet.
@@ -90,3 +93,7 @@ Runtime files live under the Darc root:
 ~/.darc/log/refresh-watch.out.log
 ~/.darc/log/refresh-watch.err.log
 ```
+
+`refresh.lock` contains holder metadata only while a refresh owns the advisory lock. A leftover lock file without an
+active lock is treated as available; if it still contains valid holder metadata, `darc service status` reports that
+metadata as stale.
