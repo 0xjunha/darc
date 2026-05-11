@@ -241,6 +241,18 @@ fn watched_refresh_runs_when_debounce_and_min_interval_are_ready() {
 }
 
 #[test]
+fn watch_change_resets_debounce_to_latest_event() {
+    let now = Instant::now();
+    let mut state = super::WatchState::default();
+    let mut dirty_since = Some(now - Duration::from_secs(120));
+
+    super::record_watch_change(&mut state, &mut dirty_since, now);
+
+    assert_eq!(dirty_since, Some(now));
+    assert!(state.last_event_at.is_some());
+}
+
+#[test]
 fn reconcile_refresh_preempts_stale_dirty_event() {
     let settings = sample_watch_settings(
         Duration::from_secs(30),
@@ -457,6 +469,7 @@ fn write_watch_status_records_settings_and_refresh_state() -> Result<()> {
         Duration::from_secs(600),
     );
     let state = super::WatchState {
+        watch_identity: None,
         last_event_at: Some("2026-04-30T04:00:00Z".to_owned()),
         last_refresh_reason: Some("change".to_owned()),
         last_refresh_started_at: Some("2026-04-30T04:00:30Z".to_owned()),
@@ -472,6 +485,8 @@ fn write_watch_status_records_settings_and_refresh_state() -> Result<()> {
     assert_eq!(status["root"], root.display().to_string());
     assert_eq!(status["mode"], "refresh-watch");
     assert_eq!(status["running"], true);
+    assert!(status["watch_pid"].is_null());
+    assert!(status["watch_token"].is_null());
     assert_eq!(status["debounce"], "30s");
     assert_eq!(status["min_interval"], "1m");
     assert_eq!(status["reconcile_interval"], "10m");
@@ -506,7 +521,6 @@ fn write_watch_status_keeps_settings_optional_for_legacy_compatibility() -> Resu
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
 #[test]
 fn macos_launch_agent_plist_uses_refresh_watch_all_and_escapes_paths() {
     let root = PathBuf::from("/tmp/darc & root");
@@ -523,8 +537,305 @@ fn macos_launch_agent_plist_uses_refresh_watch_all_and_escapes_paths() {
     assert!(plist.contains("<string>--root</string>"));
     assert!(plist.contains("<string>/tmp/darc &amp; root</string>"));
     assert!(plist.contains("<key>RunAtLoad</key>\n  <true/>"));
+    assert!(plist.contains("<key>KeepAlive</key>"));
+    assert!(plist.contains("<key>SuccessfulExit</key>\n    <false/>"));
+    assert!(plist.contains("<key>ThrottleInterval</key>\n  <integer>30</integer>"));
     assert!(plist.contains("<string>/tmp/darc &amp; root/log/refresh-watch.out.log</string>"));
     assert!(plist.contains("<string>/tmp/darc &amp; root/log/refresh-watch.err.log</string>"));
+}
+
+#[test]
+fn watch_status_stop_marker_preserves_refresh_details() -> Result<()> {
+    let root = unique_test_dir("watch-status-stop");
+    let settings = sample_watch_settings(
+        Duration::from_secs(30),
+        Duration::from_secs(60),
+        Duration::from_secs(600),
+    );
+    let state = super::WatchState {
+        watch_identity: None,
+        last_event_at: Some("2026-04-30T04:00:00Z".to_owned()),
+        last_refresh_reason: Some("change".to_owned()),
+        last_refresh_started_at: Some("2026-04-30T04:00:30Z".to_owned()),
+        last_refresh_completed_at: Some("2026-04-30T04:00:31Z".to_owned()),
+        last_refresh_succeeded: Some(false),
+        last_error: Some("synthetic failure".to_owned()),
+    };
+
+    super::write_watch_status(&root, &state, true, "refresh-watch", Some(&settings))?;
+    super::mark_watch_status_stopped(&root)?;
+    let status: Value = serde_json::from_str(&fs::read_to_string(root.join("run/status.json"))?)?;
+
+    assert_eq!(status["running"], false);
+    assert_eq!(status["last_refresh_reason"], "change");
+    assert_eq!(status["last_error"], "synthetic failure");
+    Ok(())
+}
+
+#[test]
+fn watch_status_stop_marker_rewrites_malformed_status() -> Result<()> {
+    let root = unique_test_dir("watch-status-stop-malformed");
+    let status_path = root.join("run/status.json");
+    fs::create_dir_all(status_path.parent().unwrap())?;
+    write_file(&status_path, "not json")?;
+
+    super::mark_watch_status_stopped(&root)?;
+    let status: Value = serde_json::from_str(&fs::read_to_string(status_path)?)?;
+
+    assert_eq!(status["schema"], "darc.watch.status.v1");
+    assert_eq!(status["root"], root.display().to_string());
+    assert_eq!(status["mode"], "refresh-watch");
+    assert_eq!(status["running"], false);
+    assert!(status["last_refresh_reason"].is_null());
+    Ok(())
+}
+
+#[test]
+fn watch_status_stop_marker_rewrites_non_object_status() -> Result<()> {
+    let root = unique_test_dir("watch-status-stop-non-object");
+    let status_path = root.join("run/status.json");
+    fs::create_dir_all(status_path.parent().unwrap())?;
+    write_file(&status_path, "[]")?;
+
+    super::mark_watch_status_stopped(&root)?;
+    let status: Value = serde_json::from_str(&fs::read_to_string(status_path)?)?;
+
+    assert_eq!(status["running"], false);
+    assert_eq!(status["root"], root.display().to_string());
+    Ok(())
+}
+
+#[test]
+fn watch_status_stop_marker_creates_missing_run_dir() -> Result<()> {
+    let root = unique_test_dir("watch-status-stop-missing-run");
+
+    super::mark_watch_status_stopped(&root)?;
+    let status_path = root.join("run/status.json");
+    let status: Value = serde_json::from_str(&fs::read_to_string(status_path)?)?;
+
+    assert_eq!(status["running"], false);
+    assert_eq!(status["root"], root.display().to_string());
+    Ok(())
+}
+
+#[test]
+fn watch_status_guard_stops_matching_watch_identity() -> Result<()> {
+    let root = unique_test_dir("watch-status-stop-matching-identity");
+    let identity = super::WatchIdentity {
+        pid: 123,
+        token: "watch-a".to_owned(),
+    };
+    let state = super::WatchState {
+        watch_identity: Some(identity.clone()),
+        last_refresh_reason: Some("change".to_owned()),
+        ..super::WatchState::default()
+    };
+
+    super::write_watch_status(&root, &state, true, "refresh-watch", None)?;
+    super::mark_watch_status_stopped_if_current(&root, &identity)?;
+    let status: Value = serde_json::from_str(&fs::read_to_string(root.join("run/status.json"))?)?;
+
+    assert_eq!(status["running"], false);
+    assert_eq!(status["watch_pid"].as_u64(), Some(u64::from(identity.pid)));
+    assert_eq!(
+        status["watch_token"].as_str(),
+        Some(identity.token.as_str())
+    );
+    assert_eq!(status["last_refresh_reason"], "change");
+    Ok(())
+}
+
+#[test]
+fn watch_status_guard_does_not_stop_newer_watch_identity() -> Result<()> {
+    let root = unique_test_dir("watch-status-stop-newer-identity");
+    let old_identity = super::WatchIdentity {
+        pid: 123,
+        token: "watch-old".to_owned(),
+    };
+    let new_identity = super::WatchIdentity {
+        pid: 123,
+        token: "watch-new".to_owned(),
+    };
+    let state = super::WatchState {
+        watch_identity: Some(new_identity.clone()),
+        last_refresh_reason: Some("reconcile".to_owned()),
+        ..super::WatchState::default()
+    };
+
+    super::write_watch_status(&root, &state, true, "refresh-watch", None)?;
+    super::mark_watch_status_stopped_if_current(&root, &old_identity)?;
+    let status: Value = serde_json::from_str(&fs::read_to_string(root.join("run/status.json"))?)?;
+
+    assert_eq!(status["running"], true);
+    assert_eq!(
+        status["watch_token"].as_str(),
+        Some(new_identity.token.as_str())
+    );
+    assert_eq!(status["last_refresh_reason"], "reconcile");
+    Ok(())
+}
+
+#[test]
+fn refresh_lock_records_holder_metadata_and_clears_on_drop() -> Result<()> {
+    let root = unique_test_dir("refresh-lock-metadata");
+    let lock_path = root.join("run/refresh.lock");
+
+    let lock = super::acquire_refresh_lock(&root)?;
+    let info = super::read_refresh_lock_info(&lock_path)?.unwrap();
+
+    assert_eq!(info.schema, super::REFRESH_LOCK_SCHEMA);
+    assert_eq!(info.pid, std::process::id());
+    assert!(!info.started_at.is_empty());
+
+    drop(lock);
+
+    assert!(fs::read_to_string(&lock_path)?.trim().is_empty());
+    assert_eq!(
+        super::inspect_refresh_lock(&root)?,
+        super::RefreshLockSnapshot::Available { stale_info: None }
+    );
+    Ok(())
+}
+
+#[test]
+fn refresh_lock_inspection_reports_stale_metadata() -> Result<()> {
+    let root = unique_test_dir("refresh-lock-stale-metadata");
+    let lock_path = root.join("run/refresh.lock");
+    fs::create_dir_all(lock_path.parent().unwrap())?;
+    let stale_info = super::RefreshLockInfo {
+        schema: super::REFRESH_LOCK_SCHEMA.to_owned(),
+        pid: 42,
+        started_at: "2026-04-30T04:00:00Z".to_owned(),
+    };
+    write_file(&lock_path, &serde_json::to_string_pretty(&stale_info)?)?;
+
+    assert_eq!(
+        super::inspect_refresh_lock(&root)?,
+        super::RefreshLockSnapshot::Available {
+            stale_info: Some(stale_info)
+        }
+    );
+    Ok(())
+}
+
+#[test]
+fn service_status_helpers_flag_stale_watch_status() {
+    let running_status = serde_json::json!({ "running": true });
+    let stopped_status = serde_json::json!({ "running": false });
+    let style = super::HumanStyle::new(false, false, None);
+
+    assert_eq!(
+        super::macos_watch_process_state(false, Some(&running_status), false),
+        super::MacosWatchProcessState::StaleLaunchdStopped
+    );
+    assert_eq!(
+        super::macos_watch_process_state(true, Some(&running_status), false),
+        super::MacosWatchProcessState::Running
+    );
+    assert_eq!(
+        super::macos_watch_process_state(true, Some(&stopped_status), false),
+        super::MacosWatchProcessState::Starting
+    );
+    assert_eq!(
+        super::macos_watch_process_state(true, Some(&stopped_status), true),
+        super::MacosWatchProcessState::StaleLaunchdRunning
+    );
+    assert_eq!(
+        super::macos_watch_process_state(true, Some(&running_status), true),
+        super::MacosWatchProcessState::StaleLaunchdRunning
+    );
+    assert_eq!(
+        super::macos_watch_process_state(false, Some(&stopped_status), true),
+        super::MacosWatchProcessState::Stopped
+    );
+    assert_eq!(
+        super::format_macos_watch_process_state(
+            style,
+            super::MacosWatchProcessState::StaleLaunchdRunning
+        ),
+        "stale; launchd running"
+    );
+    assert_eq!(
+        super::format_macos_watch_process_state(
+            style,
+            super::MacosWatchProcessState::StaleLaunchdStopped
+        ),
+        "stale; launchd not running"
+    );
+}
+
+#[test]
+fn service_status_helpers_flag_old_watch_status_as_stale() {
+    let status = serde_json::json!({ "running": true, "reconcile_interval": "10m" });
+
+    assert!(!super::macos_watch_status_stale(
+        &status,
+        Duration::from_secs(1_200)
+    ));
+    assert!(super::macos_watch_status_stale(
+        &status,
+        Duration::from_secs(1_201)
+    ));
+}
+
+#[test]
+fn service_stop_marker_marks_running_status_stopped() -> Result<()> {
+    let root = unique_test_dir("service-stop-status");
+    let state = super::WatchState {
+        last_refresh_reason: Some("change".to_owned()),
+        last_refresh_succeeded: Some(true),
+        ..super::WatchState::default()
+    };
+
+    super::write_watch_status(&root, &state, true, "refresh-watch", None)?;
+    super::mark_macos_service_stopped(&root)?;
+    let status: Value = serde_json::from_str(&fs::read_to_string(root.join("run/status.json"))?)?;
+
+    assert_eq!(status["running"], false);
+    assert_eq!(status["last_refresh_reason"], "change");
+    assert_eq!(
+        super::macos_watch_process_state(false, Some(&status), false),
+        super::MacosWatchProcessState::Stopped
+    );
+    Ok(())
+}
+
+#[test]
+fn service_stop_marker_tolerates_malformed_status() -> Result<()> {
+    let root = unique_test_dir("service-stop-status-malformed");
+    let status_path = root.join("run/status.json");
+    fs::create_dir_all(status_path.parent().unwrap())?;
+    write_file(&status_path, "{")?;
+
+    super::mark_macos_service_stopped(&root)?;
+    let status: Value = serde_json::from_str(&fs::read_to_string(status_path)?)?;
+
+    assert_eq!(status["running"], false);
+    assert_eq!(
+        super::macos_watch_process_state(false, Some(&status), false),
+        super::MacosWatchProcessState::Stopped
+    );
+    Ok(())
+}
+
+#[test]
+fn service_status_helpers_format_stale_lock_metadata() {
+    let style = super::HumanStyle::new(false, false, None);
+    let info = super::RefreshLockInfo {
+        schema: super::REFRESH_LOCK_SCHEMA.to_owned(),
+        pid: 42,
+        started_at: "2026-04-30T04:00:00Z".to_owned(),
+    };
+
+    let formatted = super::format_refresh_lock_snapshot(
+        style,
+        &super::RefreshLockSnapshot::Available {
+            stale_info: Some(info),
+        },
+    );
+
+    assert!(formatted.contains("stale holder metadata"));
+    assert!(formatted.contains("pid 42 since 2026-04-30T04:00:00Z"));
 }
 
 #[cfg(target_os = "macos")]

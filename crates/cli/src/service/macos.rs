@@ -7,14 +7,14 @@ use std::{
     io::{self, IsTerminal},
     path::PathBuf,
     process::Command,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
+#[cfg(any(target_os = "macos", test))]
+use anyhow::Result;
 #[cfg(target_os = "macos")]
-use anyhow::Context;
-#[cfg(target_os = "macos")]
-use anyhow::{Result, bail};
-#[cfg(target_os = "macos")]
+use anyhow::{Context, bail};
+#[cfg(any(target_os = "macos", test))]
 use serde_json::Value as JsonValue;
 
 #[cfg(target_os = "macos")]
@@ -25,6 +25,13 @@ use crate::args::ServiceCommands;
 use crate::output::HumanStyle;
 #[cfg(target_os = "macos")]
 use crate::output::{print_field, print_line, print_section};
+#[cfg(target_os = "macos")]
+use crate::refresh::inspect_refresh_lock;
+#[cfg(any(target_os = "macos", test))]
+use crate::refresh::{
+    DEFAULT_WATCH_RECONCILE_INTERVAL, RefreshLockInfo, RefreshLockSnapshot,
+    mark_watch_status_stopped, parse_duration,
+};
 
 /// Renders automatic background refresh setup progress for interactive terminals.
 #[cfg(any(target_os = "macos", test))]
@@ -116,7 +123,7 @@ pub(crate) fn run_refresh_auto(root: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 pub(crate) const MACOS_SERVICE_LABEL: &str = "com.0xjunha.darc.refresh";
 #[cfg(target_os = "macos")]
 pub(crate) const MACOS_SERVICE_UNLOAD_TIMEOUT: Duration = Duration::from_secs(2);
@@ -131,6 +138,18 @@ pub(crate) const MACOS_SERVICE_BOOTSTRAP_ATTEMPTS: usize = 4;
 pub(crate) enum MacosServiceStartOutcome {
     Started,
     Restarted,
+}
+
+/// Summarizes the watch process state from launchd and Darc status facts.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MacosWatchProcessState {
+    Running,
+    Starting,
+    StaleLaunchdRunning,
+    StaleLaunchdStopped,
+    Stopped,
+    Unknown,
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -320,6 +339,7 @@ pub(crate) fn stop_macos_service(root: &Path) -> Result<()> {
         print_section(style, "Service");
         print_field(style, 2, "Status", style.muted("not running"));
     }
+    mark_macos_service_stopped(root)?;
     remove_macos_runtime_plist(root)?;
     Ok(())
 }
@@ -353,12 +373,29 @@ pub(crate) fn print_macos_service_status(root: &Path) -> Result<()> {
 
     println!();
     print_section(style, "Watch Status");
+    print_field(
+        style,
+        2,
+        "Refresh lock",
+        format_refresh_lock_snapshot(style, &inspect_refresh_lock(root)?),
+    );
     let status_path = root.join("run/status.json");
     if status_path.exists() {
         let content = fs::read_to_string(&status_path)
             .with_context(|| format!("failed to read {}", status_path.display()))?;
         let status: JsonValue =
             serde_json::from_str(&content).context("failed to parse watch status JSON")?;
+        let status_stale = macos_watch_status_age(&status_path)?
+            .is_some_and(|age| macos_watch_status_stale(&status, age));
+        print_field(
+            style,
+            2,
+            "Watch process",
+            format_macos_watch_process_state(
+                style,
+                macos_watch_process_state(running, Some(&status), status_stale),
+            ),
+        );
         print_field(style, 2, "Status file", style.path(status_path.display()));
         print_field(
             style,
@@ -416,6 +453,15 @@ pub(crate) fn print_macos_service_status(root: &Path) -> Result<()> {
             json_error_or_dash(style, &status["last_error"]),
         );
     } else {
+        print_field(
+            style,
+            2,
+            "Watch process",
+            format_macos_watch_process_state(
+                style,
+                macos_watch_process_state(running, None, false),
+            ),
+        );
         print_field(
             style,
             2,
@@ -486,7 +532,7 @@ pub(crate) fn macos_runtime_plist_path(root: &Path) -> PathBuf {
 }
 
 /// Builds the LaunchAgent plist XML.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn macos_launch_agent_plist(
     root: &Path,
     executable: &Path,
@@ -513,6 +559,13 @@ pub(crate) fn macos_launch_agent_plist(
   </array>
   <key>RunAtLoad</key>
   <{run_at_load}/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
   <key>StandardOutPath</key>
   <string>{stdout}</string>
   <key>StandardErrorPath</key>
@@ -691,7 +744,7 @@ pub(crate) fn current_uid() -> Result<String> {
 }
 
 /// Escapes one value for XML text content.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn xml_escape(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -699,6 +752,102 @@ pub(crate) fn xml_escape(value: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
+}
+
+/// Marks the latest watch status stopped after an explicit service stop.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn mark_macos_service_stopped(root: &Path) -> Result<()> {
+    mark_watch_status_stopped(root)
+}
+
+/// Resolves the watch process state from launchd and the latest status file.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn macos_watch_process_state(
+    launchd_running: bool,
+    status: Option<&JsonValue>,
+    status_stale: bool,
+) -> MacosWatchProcessState {
+    let status_running = status
+        .and_then(|status| status.get("running"))
+        .and_then(JsonValue::as_bool);
+    match (launchd_running, status_running) {
+        (true, Some(true)) if status_stale => MacosWatchProcessState::StaleLaunchdRunning,
+        (true, Some(true)) => MacosWatchProcessState::Running,
+        (true, Some(false)) if status_stale => MacosWatchProcessState::StaleLaunchdRunning,
+        (true, Some(false)) => MacosWatchProcessState::Starting,
+        (false, Some(true)) => MacosWatchProcessState::StaleLaunchdStopped,
+        (false, Some(false)) => MacosWatchProcessState::Stopped,
+        (true, None) if status_stale => MacosWatchProcessState::StaleLaunchdRunning,
+        (true, None) => MacosWatchProcessState::Unknown,
+        (false, None) => MacosWatchProcessState::Stopped,
+    }
+}
+
+/// Returns whether a watch status file is too old for its reconcile cadence.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn macos_watch_status_stale(status: &JsonValue, age: std::time::Duration) -> bool {
+    let interval = status
+        .get("reconcile_interval")
+        .and_then(JsonValue::as_str)
+        .and_then(|value| parse_duration(value).ok())
+        .unwrap_or(DEFAULT_WATCH_RECONCILE_INTERVAL);
+    let stale_after = interval.checked_mul(2).unwrap_or(interval);
+    age > stale_after
+}
+
+/// Returns how long ago the watch status file was updated.
+#[cfg(target_os = "macos")]
+pub(crate) fn macos_watch_status_age(status_path: &Path) -> Result<Option<Duration>> {
+    let modified = status_path
+        .metadata()
+        .with_context(|| format!("failed to stat {}", status_path.display()))?
+        .modified()
+        .with_context(|| format!("failed to read modified time for {}", status_path.display()))?;
+    Ok(SystemTime::now().duration_since(modified).ok())
+}
+
+/// Formats the watch process state for service status output.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn format_macos_watch_process_state(
+    style: HumanStyle,
+    state: MacosWatchProcessState,
+) -> String {
+    match state {
+        MacosWatchProcessState::Running => style.ok("running"),
+        MacosWatchProcessState::Starting => style.warn("launchd running; status stopped"),
+        MacosWatchProcessState::StaleLaunchdRunning => style.warn("stale; launchd running"),
+        MacosWatchProcessState::StaleLaunchdStopped => style.warn("stale; launchd not running"),
+        MacosWatchProcessState::Stopped => style.muted("stopped"),
+        MacosWatchProcessState::Unknown => style.muted("unknown"),
+    }
+}
+
+/// Formats the refresh lock state for service status output.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn format_refresh_lock_snapshot(
+    style: HumanStyle,
+    snapshot: &RefreshLockSnapshot,
+) -> String {
+    match snapshot {
+        RefreshLockSnapshot::Missing => style.muted("none"),
+        RefreshLockSnapshot::Available { stale_info: None } => style.ok("available"),
+        RefreshLockSnapshot::Available {
+            stale_info: Some(info),
+        } => style.warn(format!(
+            "available; stale holder metadata: {}",
+            format_refresh_lock_holder(info)
+        )),
+        RefreshLockSnapshot::Held { holder: None } => style.warn("held"),
+        RefreshLockSnapshot::Held { holder: Some(info) } => {
+            style.warn(format!("held by {}", format_refresh_lock_holder(info)))
+        }
+    }
+}
+
+/// Formats one refresh lock holder for diagnostics.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn format_refresh_lock_holder(info: &RefreshLockInfo) -> String {
+    format!("pid {} since {}", info.pid, info.started_at)
 }
 
 /// Formats a boolean as a styled yes or no.
