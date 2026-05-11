@@ -567,11 +567,6 @@ impl EvidenceFieldSelection {
                 .map(|field| Value::Text(field.as_str().to_owned())),
         );
     }
-
-    /// Returns whether this exact-search field set includes bulky tool output text.
-    fn includes_tool_output(&self) -> bool {
-        self.allowed.contains(&SearchEvidenceField::ToolOutput)
-    }
 }
 
 /// Deduplicates evidence fields while preserving caller order.
@@ -681,14 +676,22 @@ fn evidence_search_turns_sql(fields: &EvidenceFieldSelection, literal: bool) -> 
 }
 
 /// Builds the per-turn evidence row SQL for exact evidence search.
-fn turn_evidence_rows_sql(fields: &EvidenceFieldSelection, literal: bool) -> String {
+fn turn_evidence_rows_sql(
+    fields: &EvidenceFieldSelection,
+    text_prefilter: bool,
+    limit_prefiltered_rows: bool,
+) -> String {
     let field_predicate = fields.sql_predicate("field");
-    let text_predicate = if literal {
+    let text_predicate = if text_prefilter {
         " AND instr(text, ?) > 0"
     } else {
         ""
     };
-    let limit = if literal { "\n    LIMIT ?" } else { "" };
+    let limit = if limit_prefiltered_rows {
+        "\n    LIMIT ?"
+    } else {
+        ""
+    };
     format!(
         "
     SELECT
@@ -827,11 +830,9 @@ fn query_regex_evidence_hits_by_turn(
     matcher: &EvidenceMatcher,
 ) -> Result<Vec<SearchTurnHit>> {
     let scope = request.scope;
-    let literal_prefilter = (!request.fields.includes_tool_output())
-        .then(|| regex_literal_prefilter(request.query))
-        .flatten();
+    let literal_prefilter = regex_literal_prefilter(request.query);
     let turn_sql = evidence_search_turns_sql(request.fields, literal_prefilter.is_some());
-    let evidence_sql = turn_evidence_rows_sql(request.fields, literal_prefilter.is_some());
+    let evidence_sql = turn_evidence_rows_sql(request.fields, literal_prefilter.is_some(), false);
     let mut turn_statement = connection
         .prepare(&turn_sql)
         .context("failed to prepare evidence turn search query")?;
@@ -872,7 +873,7 @@ fn query_literal_evidence_hits_by_turn(
 ) -> Result<Vec<SearchTurnHit>> {
     let scope = request.scope;
     let turn_sql = evidence_search_turns_sql(request.fields, true);
-    let evidence_sql = turn_evidence_rows_sql(request.fields, true);
+    let evidence_sql = turn_evidence_rows_sql(request.fields, true, true);
     let mut turn_statement = connection
         .prepare(&turn_sql)
         .context("failed to prepare literal evidence turn search query")?;
@@ -1092,8 +1093,6 @@ fn query_regex_evidence_hit_for_turn(
     literal_prefilter: Option<&str>,
     match_limit: usize,
 ) -> Result<Option<SearchTurnHit>> {
-    let sql_match_limit = i64::try_from(match_limit.saturating_add(1))
-        .context("evidence match preview limit exceeds SQLite INTEGER range")?;
     let mut params = vec![
         Value::Text(project_id.to_owned()),
         Value::Text(turn.provider_key.clone()),
@@ -1103,7 +1102,6 @@ fn query_regex_evidence_hit_for_turn(
     fields.push_params(&mut params);
     if let Some(prefilter) = literal_prefilter {
         params.push(Value::Text(prefilter.to_owned()));
-        params.push(Value::Integer(sql_match_limit));
     }
     let mut rows = statement
         .query(params_from_iter(params))
@@ -1189,18 +1187,39 @@ fn build_regex_matcher(query: &str) -> Result<EvidenceMatcher> {
     Ok(EvidenceMatcher::Regex(regex))
 }
 
-/// Returns a regex query as a SQLite literal prefilter when regex matching is equivalent.
+/// Returns one required literal regex prefix for SQLite candidate-turn prefiltering.
 fn regex_literal_prefilter(query: &str) -> Option<&str> {
-    if query.chars().count() < MIN_REGEX_LITERAL_PREFILTER_CHARS {
+    let literal = required_regex_literal_prefix(query)?;
+    if literal.chars().count() < MIN_REGEX_LITERAL_PREFILTER_CHARS {
         return None;
     }
-    let has_regex_syntax = query.chars().any(|ch| {
-        matches!(
-            ch,
-            '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$'
-        )
-    });
-    (!has_regex_syntax).then_some(query)
+    Some(literal)
+}
+
+/// Extracts the unescaped literal prefix that every regex match must contain.
+fn required_regex_literal_prefix(query: &str) -> Option<&str> {
+    if query.contains('|') {
+        return None;
+    }
+
+    for (index, ch) in query.char_indices() {
+        if !is_regex_syntax(ch) {
+            continue;
+        }
+        if index == 0 || matches!(ch, '\\' | '+' | '*' | '?' | '|' | '{' | ')' | ']' | '}') {
+            return None;
+        }
+        return Some(&query[..index]);
+    }
+    (!query.is_empty()).then_some(query)
+}
+
+/// Returns whether one character has regex syntax outside character classes.
+fn is_regex_syntax(ch: char) -> bool {
+    matches!(
+        ch,
+        '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$'
+    )
 }
 
 impl EvidenceMatcher {
@@ -2083,11 +2102,14 @@ pub(super) fn smoke_test_sql(connection: &Connection) -> Result<()> {
         .prepare(&evidence_search_turns_sql(&fields, true))
         .context("failed to prepare literal evidence turn search query")?;
     connection
-        .prepare(&turn_evidence_rows_sql(&fields, false))
+        .prepare(&turn_evidence_rows_sql(&fields, false, false))
         .context("failed to prepare turn evidence row query")?;
     connection
-        .prepare(&turn_evidence_rows_sql(&fields, true))
+        .prepare(&turn_evidence_rows_sql(&fields, true, true))
         .context("failed to prepare literal turn evidence row query")?;
+    connection
+        .prepare(&turn_evidence_rows_sql(&fields, true, false))
+        .context("failed to prepare regex-prefiltered turn evidence row query")?;
     for kind in [FileSearchKind::Name, FileSearchKind::Path] {
         for stage in [
             FileSearchStage::Exact,
@@ -2115,4 +2137,29 @@ pub(super) fn smoke_test_sql(connection: &Connection) -> Result<()> {
             .context("failed to prepare file-path glob search query")?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::regex_literal_prefilter;
+
+    #[test]
+    fn regex_prefilter_extracts_required_benchmark_prefix() {
+        assert_eq!(
+            regex_literal_prefilter("literal-scale-token-000-[0-9]{3}"),
+            Some("literal-scale-token-000-")
+        );
+        assert_eq!(
+            regex_literal_prefilter("__synthetic_no_match__"),
+            Some("__synthetic_no_match__")
+        );
+    }
+
+    #[test]
+    fn regex_prefilter_rejects_optional_or_alternative_prefixes() {
+        assert_eq!(regex_literal_prefilter("[0-9]{3}-suffix"), None);
+        assert_eq!(regex_literal_prefilter("maybe?suffix"), None);
+        assert_eq!(regex_literal_prefilter("left|right"), None);
+        assert_eq!(regex_literal_prefilter("literal[0-9]|other"), None);
+    }
 }

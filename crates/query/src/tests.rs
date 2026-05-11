@@ -4722,7 +4722,7 @@ fn search_turns_regex_streams_past_legacy_candidate_cap() -> Result<()> {
             project_id: "repo-a",
             project_root: None,
             mode: SearchMode::Regex,
-            query: "rare-regex-[a-z]+",
+            query: "[a-z]+-regex-needle",
             include_tool_output: false,
             fields: &[],
             excluded_fields: &[],
@@ -4739,6 +4739,93 @@ fn search_turns_regex_streams_past_legacy_candidate_cap() -> Result<()> {
 
     assert_eq!(result.hits.len(), 1);
     assert_eq!(result.hits[0].turn_ordinal, 1);
+    assert_eq!(result.hits[0].matches[0].field, "user_message");
+    assert!(!result.has_more);
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn search_turns_regex_literal_prefix_filters_scaled_candidates() -> Result<()> {
+    const NON_MATCHING_TURN_COUNT: usize = 1_100;
+
+    let index_path = test_index_path("search-regex-prefix-scale");
+    let connection = open_index_database(&index_path)?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, "session-1", "/tmp/repo-a"),
+    )?;
+
+    for turn_index in 0..NON_MATCHING_TURN_COUNT {
+        let started_at = format!(
+            "2026-04-07T{:02}:{:02}:00Z",
+            turn_index / 60,
+            turn_index % 60
+        );
+        let user_message = format!("recent filler turn {turn_index}");
+        insert_indexed_turn(
+            &connection,
+            IndexedTurnFixture {
+                user_message: &user_message,
+                ..IndexedTurnFixture::new(
+                    "repo-a",
+                    SourceKind::Codex,
+                    "session-1",
+                    i64::try_from(turn_index).context("turn index should fit in i64")?,
+                    &started_at,
+                    "completed",
+                    "[]",
+                )
+            },
+        )?;
+    }
+
+    let matching_turn_ordinal =
+        i64::try_from(NON_MATCHING_TURN_COUNT).context("turn count should fit in i64")?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            user_message: "older literal-scale-token-000-123 turn",
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                "session-1",
+                matching_turn_ordinal,
+                "2026-04-06T10:00:00Z",
+                "completed",
+                "[]",
+            )
+        },
+    )?;
+
+    let result = query_search_turns(
+        &index_path,
+        SearchTurnsRequest {
+            project_id: "repo-a",
+            project_root: None,
+            mode: SearchMode::Regex,
+            query: "literal-scale-token-000-[0-9]{3}",
+            include_tool_output: false,
+            fields: &[],
+            excluded_fields: &[],
+            provider: None,
+            session_id: None,
+            since: None,
+            until: None,
+            limit: 10,
+            offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
+            match_limit: None,
+        },
+    )?;
+
+    assert_eq!(result.hits.len(), 1);
+    assert_eq!(result.hits[0].turn_ordinal, NON_MATCHING_TURN_COUNT as u64);
     assert_eq!(result.hits[0].matches[0].field, "user_message");
     assert!(!result.has_more);
 
