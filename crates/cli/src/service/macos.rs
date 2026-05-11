@@ -253,10 +253,10 @@ pub(crate) fn start_macos_service(root: &Path) -> Result<()> {
 #[cfg(target_os = "macos")]
 pub(crate) fn start_macos_service_impl(root: &Path) -> Result<MacosServiceStartOutcome> {
     let launch_agent_path = macos_launch_agent_path()?;
-    let plist_path = if launch_agent_path.exists() {
-        launch_agent_path
+    let (plist_path, needs_kickstart) = if launch_agent_path.exists() {
+        (launch_agent_path, false)
     } else {
-        write_macos_runtime_plist(root)?
+        (write_macos_runtime_plist(root)?, true)
     };
     let domain = macos_launch_domain()?;
     let target = macos_launch_target_for_domain(&domain);
@@ -272,7 +272,9 @@ pub(crate) fn start_macos_service_impl(root: &Path) -> Result<MacosServiceStartO
         &plist_path,
         &domain,
     ))?;
-    run_launchctl(&macos_service_kickstart_launchctl_args(&target))?;
+    if needs_kickstart {
+        run_launchctl(&macos_service_kickstart_launchctl_args(&target))?;
+    }
     Ok(outcome)
 }
 
@@ -315,7 +317,7 @@ pub(crate) fn macos_service_bootout_launchctl_args(target: &str) -> Vec<String> 
 /// Builds the launchctl command needed to kickstart the service target.
 #[cfg(any(target_os = "macos", test))]
 pub(crate) fn macos_service_kickstart_launchctl_args(target: &str) -> Vec<String> {
-    vec!["kickstart".to_owned(), "-k".to_owned(), target.to_owned()]
+    vec!["kickstart".to_owned(), target.to_owned()]
 }
 
 /// Formats the foreground command used by the background refresh service.

@@ -125,7 +125,7 @@ fn macos_service_launchctl_args_cover_restart_sequence() {
     );
     assert_eq!(
         super::macos_service_kickstart_launchctl_args(target),
-        vec!["kickstart".to_owned(), "-k".to_owned(), target.to_owned()]
+        vec!["kickstart".to_owned(), target.to_owned()]
     );
 }
 

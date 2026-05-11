@@ -8,6 +8,7 @@ All notable Darc release changes should be summarized here.
 - Show release dates in changelog version headings and have release preparation add them automatically.
 - Speed up regex search for queries with a required literal prefix.
 - Harden auto-refresh restart, debounce, stale lock, and service status reporting.
+- Avoid killing freshly bootstrapped auto-refresh services during start.
 
 ## [0.1.4] - 2026-05-08
 
