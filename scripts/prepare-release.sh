@@ -41,6 +41,7 @@ run() {
 version="$1"
 validate_version "$version"
 tag="v$version"
+release_date="${DARC_RELEASE_DATE:-$(date -u +%F)}"
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || fail "not inside a git repository"
 cd "$repo_root"
@@ -82,10 +83,12 @@ die "Cargo.toml missing [workspace.package] version\n" unless $changed;
 print $text;
 ' Cargo.toml > "$tmp_cargo"
 
-LC_ALL=C DARC_RELEASE_VERSION="$version" perl -0 -e '
+LC_ALL=C DARC_RELEASE_VERSION="$version" DARC_RELEASE_DATE="$release_date" perl -0 -e '
 my $version = $ENV{"DARC_RELEASE_VERSION"} // die "missing DARC_RELEASE_VERSION\n";
+my $release_date = $ENV{"DARC_RELEASE_DATE"} // die "missing DARC_RELEASE_DATE\n";
 my $text = do { local $/; <> };
-die "CHANGELOG.md already has a section for $version\n" if $text =~ /^##\s+\Q$version\E(?:\s|\z)/m;
+die "CHANGELOG.md already has a section for $version\n" if $text =~ /^##\s+\[?\Q$version\E\]?(?:\s|\z)/m;
+die "release date must use YYYY-MM-DD\n" unless $release_date =~ /^\d{4}-\d{2}-\d{2}$/;
 
 my $changed = 0;
 $text =~ s{(^##\s+Unreleased[^\n]*\n)(.*?)(?=^##\s+|\z)}{
@@ -94,7 +97,7 @@ $text =~ s{(^##\s+Unreleased[^\n]*\n)(.*?)(?=^##\s+|\z)}{
     $body =~ s/[ \t\r\n]+\z//;
     die "CHANGELOG.md Unreleased section is empty\n" unless length $body;
     $changed = 1;
-    "$header\n## $version\n\n$body\n\n";
+    "$header\n## [$version] - $release_date\n\n$body\n\n";
 }egms;
 
 die "CHANGELOG.md missing ## Unreleased section\n" unless $changed;

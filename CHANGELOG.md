@@ -4,21 +4,22 @@ All notable Darc release changes should be summarized here.
 
 ## Unreleased
 
+- Show release dates in changelog version headings and have release preparation add them automatically.
 - Speed up regex search for queries with a required literal prefix.
 
-## 0.1.4
+## [0.1.4] - 2026-05-08
 
 - Restart already-running auto-refresh services reliably and structure LaunchAgent startup failures.
 - Avoid probing arbitrary historical Codex `cwd` directories during refresh; Darc now preserves same-repo matching from logged `git.repository_url` metadata, keeps explicitly linked rename paths recoverable when backed by scoped remote evidence, and avoids broad-prefix imports from nested repos with mismatched remotes.
 - Mention the initial SQLite backfill in `darc refresh --auto` setup progress.
 - Clarify `darc agent-help` guidance around history-dependent work, current-code verification, and reporting prior-session evidence.
 
-## 0.1.3
+## [0.1.3] - 2026-05-07
 
 - Add `darc refresh --auto` to enable automatic background refresh on macOS, start it immediately, and show setup progress.
 - Add `darc agent-help` and a marker-wrapped AGENTS.md guidance line for coding agents.
 
-## 0.1.2
+## [0.1.2] - 2026-05-06
 
 - Refresh workspace package versions in `Cargo.lock` during release preparation before running locked Cargo checks.
 - Keep release-profile CI checks fail-open when the workspace version gate cannot read a push base.
@@ -28,7 +29,7 @@ All notable Darc release changes should be summarized here.
 - Distinguish sampled Claude drift boundaries from proven first-drift versions in audit output.
 - Retry Claude schema audit fixtures with the next low-cost model profile when a cheaper profile misses required tool coverage.
 
-## 0.1.1
+## [0.1.1] - 2026-05-04
 
 - Improve file analytics to drop shell syntax pseudo-paths while preserving concrete tool, patch, metadata-reference, and shell-test paths.
 - Install `darc` into `~/.local/bin` by default when using the shell installer.
@@ -41,6 +42,6 @@ All notable Darc release changes should be summarized here.
 - Build release artifacts with a pinned stable Rust toolchain and check release-profile Linux targets when the workspace
   version changes.
 
-## 0.1.0
+## [0.1.0] - 2026-05-04
 
 - Initial release.
