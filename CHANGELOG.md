@@ -4,6 +4,8 @@ All notable Darc release changes should be summarized here.
 
 ## Unreleased
 
+- Speed up regex search for queries with a required literal prefix.
+
 ## 0.1.4
 
 - Restart already-running auto-refresh services reliably and structure LaunchAgent startup failures.
