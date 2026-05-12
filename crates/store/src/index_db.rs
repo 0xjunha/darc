@@ -1,5 +1,5 @@
 mod migrations;
-pub mod schema;
+pub(crate) mod schema;
 
 use std::{fs, path::Path, time::Duration};
 

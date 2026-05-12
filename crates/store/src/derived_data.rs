@@ -24,17 +24,17 @@ struct TurnEvidenceRecord {
 }
 
 /// Stores the canonical turn identity and text needed to derive search analytics rows.
-pub struct TurnDerivedContext<'a> {
-    pub project_id: &'a str,
-    pub provider: SourceKind,
-    pub session_id: &'a str,
-    pub turn_ordinal: i64,
-    pub user_message: &'a str,
-    pub final_answer_text: Option<&'a str>,
+pub(crate) struct TurnDerivedContext<'a> {
+    pub(crate) project_id: &'a str,
+    pub(crate) provider: SourceKind,
+    pub(crate) session_id: &'a str,
+    pub(crate) turn_ordinal: i64,
+    pub(crate) user_message: &'a str,
+    pub(crate) final_answer_text: Option<&'a str>,
 }
 
 /// Inserts one turn's derived analytics and search records into SQLite.
-pub fn insert_turn_derived_records(
+pub(crate) fn insert_turn_derived_records(
     connection: &Connection,
     context: &TurnDerivedContext<'_>,
     steps: &[NormalizedTurnStep],

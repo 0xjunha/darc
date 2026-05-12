@@ -560,7 +560,7 @@ const CREATE_SUPPLEMENTAL_SCHEMA_SQL: &str = "
 ";
 
 /// Stores the canonical normalized-session insert statement shared across writers and helpers.
-pub const INSERT_SESSION_SQL: &str = "
+pub(crate) const INSERT_SESSION_SQL: &str = "
     INSERT INTO sessions (
         project_id,
         provider,
@@ -578,7 +578,7 @@ pub const INSERT_SESSION_SQL: &str = "
 ";
 
 /// Stores the canonical normalized-turn insert statement shared across writers and helpers.
-pub const INSERT_TURN_SQL: &str = "
+pub(crate) const INSERT_TURN_SQL: &str = "
     INSERT INTO turns (
         project_id,
         provider,

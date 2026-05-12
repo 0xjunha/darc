@@ -28,9 +28,8 @@ use darc_rollout::{
 #[cfg(test)]
 use darc_store::INDEX_DB_FILE_NAME;
 use darc_store::{
-    TurnDerivedContext, insert_turn_derived_records, open_index_database,
-    schema::{INSERT_SESSION_SQL, INSERT_TURN_SQL},
-    summarize_turn_metrics,
+    StoredSessionKind, StoredSessionRecord, StoredTurnRecord, insert_session_record,
+    insert_turn_record, open_index_database,
 };
 use rusqlite::{Connection, Transaction, params};
 use thiserror::Error;
@@ -88,11 +87,11 @@ enum IndexedSessionKind {
 }
 
 impl IndexedSessionKind {
-    /// Returns the stable SQLite string value for one indexed session kind.
-    fn as_sql_text(self) -> &'static str {
+    /// Converts one indexed session kind into the store-owned session kind.
+    fn into_stored_kind(self) -> StoredSessionKind {
         match self {
-            Self::Primary => "primary",
-            Self::Subagent => "subagent",
+            Self::Primary => StoredSessionKind::Primary,
+            Self::Subagent => StoredSessionKind::Subagent,
         }
     }
 }
@@ -279,36 +278,23 @@ impl<'conn> SqliteSessionWriter<'conn> {
         schema_id: &str,
         determinism: ParseDeterminism,
     ) -> Result<()> {
-        let source_size =
-            i64::try_from(self.source_size).context("source_size exceeds SQLite INTEGER range")?;
-        let source_mtime_ms = i64::try_from(self.source_mtime_ms)
-            .context("source_mtime_ms exceeds SQLite INTEGER range")?;
-
-        self.connection
-            .execute(
-                INSERT_SESSION_SQL,
-                params![
-                    self.project_id.as_str(),
-                    self.provider.directory_name(),
-                    session_id,
-                    self.parent_session_id.as_deref(),
-                    self.session_kind.as_sql_text(),
-                    self.archive_path.as_str(),
-                    cwd.to_string_lossy(),
-                    cli_version,
-                    schema_id,
-                    determinism.as_sql_text(),
-                    source_size,
-                    source_mtime_ms,
-                ],
-            )
-            .with_context(|| {
-                format!(
-                    "failed to insert {} session {}",
-                    self.provider.title(),
-                    session_id
-                )
-            })?;
+        insert_session_record(
+            self.connection,
+            &StoredSessionRecord {
+                project_id: &self.project_id,
+                provider: self.provider,
+                session_id,
+                parent_session_id: self.parent_session_id.as_deref(),
+                session_kind: self.session_kind.into_stored_kind(),
+                archive_path: &self.archive_path,
+                cwd,
+                cli_version,
+                schema_id,
+                determinism,
+                source_size: self.source_size,
+                source_mtime_ms: self.source_mtime_ms,
+            },
+        )?;
         self.session_id = Some(session_id.to_owned());
         self.turn_ordinal = 0;
         Ok(())
@@ -321,88 +307,16 @@ impl<'conn> SqliteSessionWriter<'conn> {
             .as_deref()
             .context("missing active session id while inserting turn")?;
         let turn_ordinal = self.turn_ordinal;
-        let metrics = summarize_turn_metrics(&turn);
-        let CodexTurn {
-            turn_id,
-            user_message,
-            final_answer,
-            started_at,
-            completed_at,
-            status,
-            primary_model,
-            token_usage: _token_usage,
-            steps,
-        } = turn;
-        let steps_json = serde_json::to_string(&steps).context("failed to serialize turn steps")?;
-        let final_answer_at = final_answer.as_ref().map(|message| &message.timestamp);
-        let final_answer_text = final_answer.as_ref().map(|message| &message.text);
-
-        self.connection
-            .execute(
-                INSERT_TURN_SQL,
-                params![
-                    self.project_id.as_str(),
-                    self.provider.directory_name(),
-                    session_id,
-                    turn_ordinal,
-                    turn_id,
-                    started_at,
-                    completed_at,
-                    status.as_sql_text(),
-                    user_message,
-                    final_answer_at,
-                    final_answer_text,
-                    steps_json,
-                    metrics.step_count,
-                    metrics.tool_call_count,
-                    metrics.tool_output_count,
-                    metrics.attachment_count,
-                    metrics.delegation_count,
-                    metrics.hook_summary_count,
-                    metrics.has_final_answer,
-                    metrics.duration_ms,
-                    metrics.effective_agent_runtime_ms,
-                    metrics.provider_total_token_count,
-                    metrics.input_uncached_token_count,
-                    metrics.cache_read_token_count,
-                    metrics.cache_write_token_count,
-                    metrics.output_token_count,
-                    metrics.reasoning_token_count,
-                    metrics.total_token_count,
-                    primary_model.as_deref(),
-                    metrics.changed_file_count,
-                    metrics.added_line_count,
-                    metrics.removed_line_count,
-                ],
-            )
-            .with_context(|| {
-                format!(
-                    "failed to insert {} turn {} for session {}",
-                    self.provider.title(),
-                    self.turn_ordinal,
-                    session_id
-                )
-            })?;
-        insert_turn_derived_records(
+        insert_turn_record(
             self.connection,
-            &TurnDerivedContext {
+            StoredTurnRecord {
                 project_id: &self.project_id,
                 provider: self.provider,
                 session_id,
                 turn_ordinal,
-                user_message: &user_message,
-                final_answer_text: final_answer_text.map(String::as_str),
+                turn,
             },
-            &steps,
-        )
-        .with_context(|| {
-            format!(
-                "failed to insert derived analytics for {} turn {} in session {}",
-                self.provider.title(),
-                turn_ordinal,
-                session_id
-            )
-        })?;
+        )?;
         self.turn_ordinal += 1;
 
         Ok(())
