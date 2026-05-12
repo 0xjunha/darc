@@ -56,7 +56,10 @@ pub(crate) fn sync_after_help() -> String {
 
 /// Returns index command examples.
 pub(crate) fn index_after_help() -> String {
-    styled_help_section("Examples", "  darc index\n  darc index --provider claude")
+    styled_help_section(
+        "Examples",
+        "  darc index\n  darc index --provider claude\n  darc index --rebuild",
+    )
 }
 
 /// Returns canonical search command examples.

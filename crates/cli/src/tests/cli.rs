@@ -139,6 +139,84 @@ fn rendered_help_is_plain_but_carries_ansi_styles() {
 }
 
 #[test]
+fn standard_error_formats_index_rebuild_guidance() -> Result<()> {
+    let root = unique_test_dir("cli-rebuild-error");
+    let index_path = root.join("index.sqlite");
+    write_file(&index_path, "not a sqlite database")?;
+    let error = darc_store::open_index_database(&index_path).expect_err("index should fail");
+    let command = index_rebuild_command(&index_path);
+
+    let plain = format_standard_error(&error, HumanStyle { enabled: false });
+    assert_contains_in_order(
+        &plain,
+        &[
+            "error: local SQLite index needs to be rebuilt",
+            "Index DB:",
+            &format!("Run: {command}"),
+            "This deletes only the shared SQLite index cache",
+            "Archived sessions are not deleted.",
+            "Cause:",
+        ],
+    );
+    assert!(!plain.contains("\x1b["));
+
+    let styled = format_standard_error(&error, HumanStyle { enabled: true });
+    assert!(styled.contains(&format!("\x1b[1m{command}\x1b[0m")));
+    assert_eq!(strip_ansi_text(&styled), plain);
+
+    Ok(())
+}
+
+#[test]
+fn index_rebuild_command_preserves_custom_root() {
+    let path = PathBuf::from("/tmp/darc root/with'quote/index.sqlite");
+
+    assert_eq!(
+        index_rebuild_command(&path),
+        "darc index --rebuild --root '/tmp/darc root/with'\\''quote'"
+    );
+}
+
+#[test]
+fn query_error_formats_custom_root_index_rebuild_guidance() -> Result<()> {
+    let root = unique_test_dir("query-rebuild-error");
+    let index_path = root.join("index.sqlite");
+    write_file(&index_path, "not a sqlite database")?;
+    let error = darc_store::open_existing_index_database(&index_path)
+        .expect_err("query index open should fail");
+    let command = index_rebuild_command(&index_path);
+
+    let payload: Value = serde_json::from_str(&format_query_error(&error))?;
+    let message = payload["error"]["message"]
+        .as_str()
+        .expect("message should be a string");
+
+    assert!(message.contains(&format!("run `{command}`")));
+    assert!(message.contains(&index_path.display().to_string()));
+
+    Ok(())
+}
+
+#[test]
+fn index_rebuild_respects_workspace_refresh_lock() -> Result<()> {
+    let root = unique_test_dir("index-rebuild-lock");
+    write_file(&root.join("config.toml"), "projects = []\n")?;
+    let _lock = acquire_refresh_lock(&root)?;
+
+    let error = run_index(IndexArgs {
+        provider: Vec::new(),
+        rebuild: true,
+        root,
+    })
+    .expect_err("index rebuild should not run while the workspace lock is held");
+    let message = format!("{error:#}");
+
+    assert!(message.contains("another Darc refresh is already running"));
+    assert!(message.contains("refresh.lock"));
+    Ok(())
+}
+
+#[test]
 fn launchctl_failure_message_structures_bootstrap_errors() {
     let args = vec![
         "bootstrap".to_owned(),

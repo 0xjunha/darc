@@ -1,13 +1,20 @@
-use std::path::Path;
+use std::{
+    env,
+    io::{self, IsTerminal},
+    path::{Path, PathBuf},
+};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use darc_core::{
-    IndexOptions, IndexReport, SkippedRollout, SourceKind, SyncOptions, SyncReport, execute_sync,
-    index_project_sessions, prepare_sync,
+    IndexOptions, IndexReport, SkippedRollout, SourceKind, SyncOptions, SyncReport,
+    WorkspaceIndexReport, execute_sync, index_project_sessions, prepare_sync,
+    rebuild_workspace_index,
 };
 
 use crate::args::{IndexArgs, ProviderArg, SyncArgs};
-use crate::output::{HumanStyle, print_field, print_line, print_section, print_warning};
+use crate::output::{
+    HumanStyle, print_field, print_line, print_project_warning, print_section, print_warning,
+};
 
 /// Prepares and optionally executes the project-scoped sync workflow.
 pub(crate) fn run_sync(args: SyncArgs) -> Result<()> {
@@ -183,12 +190,25 @@ pub(crate) fn add_init_hint_for_unconfigured_project(error: anyhow::Error) -> an
 
 /// Indexes archived sessions for the active project into SQLite.
 pub(crate) fn run_index(args: IndexArgs) -> Result<()> {
-    let report = index_project_sessions(
-        Some(args.root),
-        IndexOptions {
-            provider_filter: args.provider.into_iter().map(ProviderArg::into).collect(),
-        },
-    )?;
+    let IndexArgs {
+        provider,
+        rebuild,
+        root,
+    } = args;
+    if rebuild && !provider.is_empty() {
+        bail!(
+            "`darc index --rebuild` rebuilds all providers; remove `--provider` and run it again"
+        );
+    }
+
+    let _lock = acquire_index_lock_if_configured(&root)?;
+    if rebuild {
+        return run_index_rebuild(root);
+    }
+    let options = IndexOptions {
+        provider_filter: provider.into_iter().map(ProviderArg::into).collect(),
+    };
+    let report = index_project_sessions(Some(root), options)?;
     let style = HumanStyle::stdout();
 
     for skipped in &report.skipped_rollouts {
@@ -214,6 +234,94 @@ pub(crate) fn run_index(args: IndexArgs) -> Result<()> {
     print_field(style, 2, "Overall", status);
 
     Ok(())
+}
+
+/// Acquires the shared index writer lock when this Darc root is configured.
+fn acquire_index_lock_if_configured(root: &Path) -> Result<Option<crate::refresh::RefreshLock>> {
+    if root.join("config.toml").exists() {
+        crate::refresh::acquire_refresh_lock(root).map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
+/// Rebuilds the shared workspace index from every configured project.
+fn run_index_rebuild(root: PathBuf) -> Result<()> {
+    print_index_rebuild_started();
+    let report = rebuild_workspace_index(Some(root))?;
+    let style = HumanStyle::stdout();
+
+    for project in &report.projects {
+        for skipped in &project.skipped_rollouts {
+            print_project_warning(&project.project_name, format_skipped_rollout(skipped));
+        }
+    }
+
+    print_workspace_rebuild_summary(style, &report);
+    println!();
+    print_section(style, "Status");
+    let status = if report.skipped_rollout_count() == 0 {
+        style.ok("indexed")
+    } else {
+        style.warn("indexed with skipped rollouts")
+    };
+    print_field(style, 2, "Overall", status);
+
+    Ok(())
+}
+
+/// Prints one short rebuild progress line when stderr is interactive.
+fn print_index_rebuild_started() {
+    let term = env::var("TERM").ok();
+    if io::stderr().is_terminal() && term.as_deref() != Some("dumb") {
+        eprintln!("{}", format_index_rebuild_started(HumanStyle::stderr()));
+    }
+}
+
+/// Formats the initial rebuild progress line.
+fn format_index_rebuild_started(style: HumanStyle) -> String {
+    format!(
+        "Rebuilding {} from archived sessions...",
+        style.bold("shared index")
+    )
+}
+
+/// Prints one workspace-wide rebuild summary.
+fn print_workspace_rebuild_summary(style: HumanStyle, report: &WorkspaceIndexReport) {
+    print_section(style, "Index Rebuild");
+    print_field(style, 2, "Root", style.path(report.root.display()));
+    print_field(style, 2, "Providers", format_sources(&report.providers));
+    print_field(
+        style,
+        2,
+        "Index DB",
+        style.path(report.index_db_path.display()),
+    );
+    print_field(
+        style,
+        2,
+        "Projects indexed",
+        style.count(report.projects.len()),
+    );
+    print_field(
+        style,
+        2,
+        "Sessions currently indexed",
+        style.count(report.sessions_currently_indexed()),
+    );
+    print_field(
+        style,
+        2,
+        "Turns currently indexed",
+        style.count(report.turns_currently_indexed()),
+    );
+    let skipped = report.skipped_rollout_count();
+    let skipped = if skipped == 0 {
+        style.ok(skipped)
+    } else {
+        style.warn(skipped)
+    };
+    print_field(style, 2, "Skipped rollout files", skipped);
 }
 
 /// Formats a source list for compact CLI output.
@@ -249,5 +357,19 @@ pub(crate) fn format_skipped_rollout(skipped: &SkippedRollout) -> String {
             details.join(", "),
             skipped.reason
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HumanStyle, format_index_rebuild_started};
+
+    #[test]
+    fn index_rebuild_started_message_is_short_and_styled() {
+        let plain = format_index_rebuild_started(HumanStyle { enabled: false });
+        assert_eq!(plain, "Rebuilding shared index from archived sessions...");
+
+        let styled = format_index_rebuild_started(HumanStyle { enabled: true });
+        assert!(styled.contains("\x1b[1mshared index\x1b[0m"));
     }
 }

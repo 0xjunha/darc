@@ -26,7 +26,7 @@ use clap::{FromArgMatches, error::ErrorKind};
 use darc_core::query::SearchEvidenceField;
 #[cfg(test)]
 use output::*;
-use output::{format_json_clap_error, format_query_error};
+use output::{HumanStyle, format_json_clap_error, format_query_error, format_standard_error};
 use project::{run_init, run_link, run_project, run_remove, run_rename_from};
 #[cfg(test)]
 use query_commands::*;
@@ -133,7 +133,7 @@ fn standard_exit(result: Result<()>) -> i32 {
     match result {
         Ok(()) => 0,
         Err(error) => {
-            eprintln!("error: {error:#}");
+            eprintln!("{}", format_standard_error(&error, HumanStyle::stderr()));
             1
         }
     }

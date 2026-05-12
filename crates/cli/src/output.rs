@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use darc_core::query::{
     QueryProtocolError, SearchMode, SearchSnippetMatcher, SearchTurnsQueryData, TurnsView,
 };
+use darc_core::{IndexDatabaseRebuildRecommendation, index_rebuild_command};
 use darc_paths::current_utc_timestamp;
 use serde::Serialize;
 use serde_json::{Value as JsonValue, json};
@@ -533,7 +534,7 @@ pub(crate) fn format_query_error(error: &anyhow::Error) -> String {
         generated_at: current_utc_timestamp(),
         darc_version: env!("CARGO_PKG_VERSION"),
         error: QueryErrorData {
-            message: error.to_string(),
+            message: format_query_error_message(error),
             code: structured
                 .map(QueryProtocolError::code)
                 .or_else(|| read_validation.map(|error| error.code))
@@ -548,6 +549,78 @@ pub(crate) fn format_query_error(error: &anyhow::Error) -> String {
     serde_json::to_string_pretty(&payload).unwrap_or_else(|serialization_error| {
         format!(r#"{{"schema":"darc.error.v1","error":"{serialization_error}"}}"#)
     })
+}
+
+/// Returns one query error message with actionable index rebuild guidance when available.
+fn format_query_error_message(error: &anyhow::Error) -> String {
+    if let Some(rebuild) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<IndexDatabaseRebuildRecommendation>())
+    {
+        return format!(
+            "local SQLite index at {} needs to be rebuilt; run `{}` to rebuild the shared index cache from archived sessions",
+            rebuild.path().display(),
+            index_rebuild_command(rebuild.path())
+        );
+    }
+
+    error.to_string()
+}
+
+/// Formats one standard human-facing command error.
+pub(crate) fn format_standard_error(error: &anyhow::Error, style: HumanStyle) -> String {
+    if let Some(rebuild) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<IndexDatabaseRebuildRecommendation>())
+    {
+        return format_index_rebuild_error(error, rebuild, style);
+    }
+
+    format!("error: {error:#}")
+}
+
+/// Formats the actionable recovery message for an unusable SQLite index.
+fn format_index_rebuild_error(
+    error: &anyhow::Error,
+    rebuild: &IndexDatabaseRebuildRecommendation,
+    style: HumanStyle,
+) -> String {
+    let mut lines = vec![
+        "error: local SQLite index needs to be rebuilt".to_owned(),
+        format!("  Index DB: {}", style.path(rebuild.path().display())),
+        format!(
+            "  Run: {}",
+            style.bold(index_rebuild_command(rebuild.path()))
+        ),
+        "  This deletes only the shared SQLite index cache, then rebuilds it from every configured project's archived sessions.".to_owned(),
+        "  Archived sessions are not deleted.".to_owned(),
+    ];
+    if let Some(cause) = index_rebuild_source_detail(error) {
+        lines.push(format!("  Cause: {cause}"));
+    }
+    lines.join("\n")
+}
+
+/// Returns source details after the rebuild recommendation in an error chain.
+fn index_rebuild_source_detail(error: &anyhow::Error) -> Option<String> {
+    let mut saw_rebuild = false;
+    let mut details = Vec::new();
+    for cause in error.chain() {
+        if saw_rebuild {
+            details.push(cause.to_string());
+        } else if cause
+            .downcast_ref::<IndexDatabaseRebuildRecommendation>()
+            .is_some()
+        {
+            saw_rebuild = true;
+        }
+    }
+
+    if details.is_empty() {
+        None
+    } else {
+        Some(details.join(": "))
+    }
 }
 
 /// Returns one machine-readable JSON error envelope string for JSON parse failures.

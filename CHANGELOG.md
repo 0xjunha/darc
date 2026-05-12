@@ -4,6 +4,7 @@ All notable Darc release changes should be summarized here.
 
 ## Unreleased
 
+- Add `darc index --rebuild` to recreate the shared SQLite index from every configured project's archived sessions, and point users to it when the local index cannot be opened or migrated.
 - Show GitHub Release titles as tags, such as `v0.1.6`, while preserving dated changelog headings.
 - Narrow internal Rust storage APIs so SQLite schema details are no longer exposed outside the storage crate.
 - Streamline public documentation around JSON query contracts and remove the internal backlog from docs.

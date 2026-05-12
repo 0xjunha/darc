@@ -118,8 +118,8 @@ pub(crate) enum Commands {
     )]
     Sync(SyncArgs),
     #[command(
-        about = "Index archived sessions for the active project into SQLite",
-        long_about = "Index archived sessions for the active project into the shared Darc SQLite database.\n\nRun this after `darc sync` when you want to rebuild searchable/queryable state without copying new archive files.",
+        about = "Index archived sessions into SQLite",
+        long_about = "Index archived sessions into the shared Darc SQLite database.\n\nWithout `--rebuild`, this indexes the active project. Run it after `darc sync` when you want to refresh searchable/queryable state without copying new archive files.\n\nUse `--rebuild` only when Darc reports that the SQLite index cannot be opened or migrated. Rebuild deletes the shared local index cache, then recreates it from every configured project's archived sessions.",
         after_help = index_after_help()
     )]
     Index(IndexArgs),
@@ -474,9 +474,16 @@ pub(crate) struct IndexArgs {
         long = "provider",
         value_enum,
         help_heading = "Selection",
-        help = "Limit indexing to the selected providers"
+        help = "Limit non-rebuild indexing to the selected providers"
     )]
     pub(crate) provider: Vec<ProviderArg>,
+
+    #[arg(
+        long,
+        help_heading = "Mode",
+        help = "Delete the shared SQLite index and rebuild it from every configured project's archived sessions"
+    )]
+    pub(crate) rebuild: bool,
 
     #[arg(
         long,
