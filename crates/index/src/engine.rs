@@ -25,21 +25,16 @@ use darc_rollout::{
     },
     model::NormalizedTurn as CodexTurn,
 };
+#[cfg(test)]
+use darc_store::INDEX_DB_FILE_NAME;
+use darc_store::{
+    TurnDerivedContext, insert_turn_derived_records, open_index_database,
+    schema::{INSERT_SESSION_SQL, INSERT_TURN_SQL},
+    summarize_turn_metrics,
+};
 use rusqlite::{Connection, Transaction, params};
 use thiserror::Error;
 use walkdir::WalkDir;
-
-use crate::{
-    derived_data::{TurnDerivedContext, insert_turn_derived_records},
-    index_db::{
-        open_index_database,
-        schema::{INSERT_SESSION_SQL, INSERT_TURN_SQL},
-    },
-    turn_metrics::summarize_turn_metrics,
-};
-
-/// Stores the shared SQLite index filename inside the darc workspace root.
-pub const INDEX_DB_FILE_NAME: &str = "index.sqlite";
 
 /// Parses one Codex rollout file into user-visible turns.
 #[cfg(test)]

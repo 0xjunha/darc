@@ -5,9 +5,10 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use darc_index::{INDEX_DB_FILE_NAME, ProjectIndexRequest, index_project_archived_sessions};
 pub use darc_index::{IndexReport, SkippedCodexRollout, SkippedRollout};
+use darc_index::{ProjectIndexRequest, index_project_archived_sessions};
 use darc_paths::SourceKind;
+use darc_store::INDEX_DB_FILE_NAME;
 
 use crate::{
     active_project::{ActiveProject, load_active_project},

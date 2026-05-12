@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use darc_index::{INDEX_DB_FILE_NAME, open_index_database};
+use darc_store::{INDEX_DB_FILE_NAME, open_index_database};
 use darc_test_utils::init_git_repo;
 use rusqlite::{Connection, params};
 

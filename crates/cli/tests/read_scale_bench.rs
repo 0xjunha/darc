@@ -6,8 +6,8 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use darc_index::open_index_database;
 use darc_paths::SourceKind;
+use darc_store::open_index_database;
 use darc_test_utils::{
     IndexedSessionFixture, IndexedTurnFixture, insert_indexed_session, insert_indexed_turn,
     unique_test_dir, write_file,

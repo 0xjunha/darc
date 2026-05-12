@@ -6,8 +6,9 @@ behind, and keep code references aligned with the current crate split.
 Current crate ownership:
 
 - `crates/rollout`: Codex and Claude transcript parsing plus schema and version logic.
-- `crates/index`: archive ingestion, duplicate resolution, and SQLite indexing.
-- `crates/query`: read-side query, search, and insights.
+- `crates/index`: archive ingestion, duplicate resolution, and write-side indexing flow.
+- `crates/store`: SQLite schema, migrations, storage helpers, and derived-index analytics.
+- `crates/query`: read-side query, search, and insights over the shared store.
 - `crates/sync`: Claude and Codex discovery plus archive copy planning.
 - `crates/core`: facade and orchestration glue.
 

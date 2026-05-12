@@ -322,7 +322,8 @@ Darc is split into focused Rust crates:
 - `crates/cli`: command-line surface.
 - `darc-core`: thin facade and orchestration layer.
 - `darc-sync`: source discovery, sync planning, and archive copy execution.
-- `darc-index`: normalized ingestion, SQLite schema, migrations, and indexing metrics.
+- `darc-store`: SQLite schema, migrations, and derived-index analytics shared by indexing and query.
+- `darc-index`: normalized archive ingestion and duplicate resolution.
 - `darc-query`: read-only query, search, and stats over indexed data.
 - `darc-rollout`: provider transcript models and parsers.
 - `darc-paths`, `darc-rollout-audit`, and `darc-test-utils`: shared support, maintainer audits, and tests.

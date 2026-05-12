@@ -12,30 +12,30 @@ use crate::policy::{
 
 /// Stores the derived per-turn analytics counters persisted in the SQLite index.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct IndexedTurnMetrics {
-    pub(crate) step_count: u32,
-    pub(crate) tool_call_count: u32,
-    pub(crate) tool_output_count: u32,
-    pub(crate) attachment_count: u32,
-    pub(crate) delegation_count: u32,
-    pub(crate) hook_summary_count: u32,
-    pub(crate) has_final_answer: bool,
-    pub(crate) duration_ms: Option<i64>,
-    pub(crate) effective_agent_runtime_ms: Option<i64>,
-    pub(crate) provider_total_token_count: Option<i64>,
-    pub(crate) input_uncached_token_count: Option<i64>,
-    pub(crate) cache_read_token_count: Option<i64>,
-    pub(crate) cache_write_token_count: Option<i64>,
-    pub(crate) output_token_count: Option<i64>,
-    pub(crate) reasoning_token_count: Option<i64>,
-    pub(crate) total_token_count: Option<i64>,
-    pub(crate) changed_file_count: u32,
-    pub(crate) added_line_count: u32,
-    pub(crate) removed_line_count: u32,
+pub struct IndexedTurnMetrics {
+    pub step_count: u32,
+    pub tool_call_count: u32,
+    pub tool_output_count: u32,
+    pub attachment_count: u32,
+    pub delegation_count: u32,
+    pub hook_summary_count: u32,
+    pub has_final_answer: bool,
+    pub duration_ms: Option<i64>,
+    pub effective_agent_runtime_ms: Option<i64>,
+    pub provider_total_token_count: Option<i64>,
+    pub input_uncached_token_count: Option<i64>,
+    pub cache_read_token_count: Option<i64>,
+    pub cache_write_token_count: Option<i64>,
+    pub output_token_count: Option<i64>,
+    pub reasoning_token_count: Option<i64>,
+    pub total_token_count: Option<i64>,
+    pub changed_file_count: u32,
+    pub added_line_count: u32,
+    pub removed_line_count: u32,
 }
 
 /// Summarizes one normalized turn into the derived analytics counters stored in SQLite.
-pub(crate) fn summarize_turn_metrics(turn: &CodexTurn) -> IndexedTurnMetrics {
+pub fn summarize_turn_metrics(turn: &CodexTurn) -> IndexedTurnMetrics {
     summarize_turn_parts(
         &turn.started_at,
         turn.completed_at.as_deref(),

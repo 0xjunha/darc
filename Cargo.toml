@@ -9,6 +9,7 @@ members = [
     "crates/query",
     "crates/rollout-audit",
     "crates/rollout",
+    "crates/store",
     "crates/sync",
     "crates/test-utils",
 ]
@@ -31,6 +32,7 @@ darc-paths = { path = "crates/paths" }
 darc-query = { path = "crates/query" }
 darc-rollout-audit = { path = "crates/rollout-audit" }
 darc-rollout = { path = "crates/rollout" }
+darc-store = { path = "crates/store" }
 darc-sync = { path = "crates/sync" }
 darc-test-utils = { path = "crates/test-utils" }
 # External Dependencies

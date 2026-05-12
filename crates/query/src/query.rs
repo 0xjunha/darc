@@ -9,10 +9,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 pub use bundles::query_project_session_bundle;
-pub use darc_index::evidence::EvidenceField as SearchEvidenceField;
-use darc_index::open_index_database;
 use darc_paths::SourceKind;
 use darc_rollout::model::{NormalizedTokenUsage, NormalizedTurnStatus, NormalizedTurnStep};
+pub use darc_store::evidence::EvidenceField as SearchEvidenceField;
+use darc_store::open_existing_index_database as open_existing_store_index_database;
 pub use files::{display_path_for_access, query_project_files, query_project_session_files};
 #[cfg(test)]
 pub(crate) use insights::{build_project_insights, build_workspace_insights};
@@ -773,12 +773,9 @@ pub struct ProjectInsights {
     pub total_time_ms: u64,
 }
 
-/// Opens one existing index database while still applying lightweight migrations.
+/// Opens one existing index database while still applying supported storage migrations.
 pub(crate) fn open_existing_index_database(index_db_path: &Path) -> Result<Connection> {
-    if !index_db_path.exists() {
-        bail!("index database not found at {}", index_db_path.display());
-    }
-    open_index_database(index_db_path)
+    open_existing_store_index_database(index_db_path)
 }
 
 /// Parses one provider value stored in SQLite back into a source kind.

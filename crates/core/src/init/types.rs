@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use darc_index::INDEX_DB_FILE_NAME;
+use darc_store::INDEX_DB_FILE_NAME;
 
 use crate::{
     config::{ProjectConfig, SharedConfig, SourceKind},
