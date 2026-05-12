@@ -4,6 +4,7 @@ All notable Darc release changes should be summarized here.
 
 ## Unreleased
 
+- Show GitHub Release titles as tags, such as `v0.1.6`, while preserving dated changelog headings.
 - Narrow internal Rust storage APIs so SQLite schema details are no longer exposed outside the storage crate.
 
 ## [0.1.5] - 2026-05-11
