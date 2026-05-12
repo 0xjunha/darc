@@ -1,3 +1,6 @@
+#[cfg(target_os = "windows")]
+compile_error!("Darc CLI does not support Windows.");
+
 mod agent_help;
 mod args;
 mod output;
