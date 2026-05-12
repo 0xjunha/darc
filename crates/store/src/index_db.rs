@@ -17,13 +17,42 @@ use self::{
     },
 };
 
+/// Stores the shared SQLite index filename inside the darc workspace root.
+pub const INDEX_DB_FILE_NAME: &str = "index.sqlite";
+
 /// Tracks one-shot SQLite migrations for normalized index tables.
 const INDEX_DB_SCHEMA_VERSION: i32 = 13;
 
+/// Opens or creates the index database for write-side commands that may initialize storage.
+pub fn open_index_database_writer(path: &Path) -> Result<Connection> {
+    create_parent_dir(path)?;
+    open_migrating_connection(path)
+}
+
+/// Opens an existing index database for read-side commands without creating a missing file.
+pub fn open_existing_index_database(path: &Path) -> Result<Connection> {
+    ensure_existing_database_path(path)?;
+    open_migrating_connection(path)
+}
+
+/// Opens an existing index database read-only without initializing or migrating storage.
+pub fn open_index_database_read_only(path: &Path) -> Result<Connection> {
+    ensure_existing_database_path(path)?;
+    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .with_context(|| format!("failed to open index database {} read-only", path.display()))?;
+    connection
+        .busy_timeout(Duration::from_secs(5))
+        .context("failed to configure SQLite busy timeout")?;
+    Ok(connection)
+}
+
 /// Opens the index database and creates the current schema when missing.
 pub fn open_index_database(path: &Path) -> Result<Connection> {
-    create_parent_dir(path)?;
+    open_index_database_writer(path)
+}
 
+/// Opens one SQLite connection and applies all supported index migrations.
+fn open_migrating_connection(path: &Path) -> Result<Connection> {
     let mut connection = Connection::open(path)
         .with_context(|| format!("failed to open index database {}", path.display()))?;
     connection
@@ -39,11 +68,7 @@ pub fn count_project_index_rows_read_only(path: &Path, project_id: &str) -> Resu
         return Ok((0, 0));
     }
 
-    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .with_context(|| format!("failed to open index database {} read-only", path.display()))?;
-    connection
-        .busy_timeout(Duration::from_secs(5))
-        .context("failed to configure SQLite busy timeout")?;
+    let connection = open_index_database_read_only(path)?;
 
     let mut session_count =
         count_project_rows_if_table_exists(&connection, SchemaTable::Sessions, project_id)?;
@@ -65,7 +90,7 @@ pub fn count_project_index_rows_read_only(path: &Path, project_id: &str) -> Resu
 
 /// Ensures the index database file and schema exist.
 pub fn ensure_index_database(path: &Path) -> Result<()> {
-    let _connection = open_index_database(path)?;
+    let _connection = open_index_database_writer(path)?;
     Ok(())
 }
 
@@ -150,6 +175,14 @@ fn managed_tables_are_missing(connection: &Connection, tables: &[SchemaTable]) -
         }
     }
     Ok(false)
+}
+
+/// Ensures one existing SQLite database path is available before opening it.
+fn ensure_existing_database_path(path: &Path) -> Result<()> {
+    if !path.exists() {
+        anyhow::bail!("index database not found at {}", path.display());
+    }
+    Ok(())
 }
 
 /// Creates the parent directory for one SQLite database path.

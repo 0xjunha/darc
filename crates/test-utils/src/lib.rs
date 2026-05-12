@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-pub use darc_index::test_support::{
+pub use darc_store::test_support::{
     IndexedSessionFixture, IndexedTurnFixture, create_pre_analytics_index_schema,
     insert_indexed_session, insert_indexed_turn, insert_pre_analytics_turn,
     seed_legacy_codex_index,

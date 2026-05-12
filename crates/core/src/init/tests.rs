@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::Result;
-use darc_index::INDEX_DB_FILE_NAME;
+use darc_store::INDEX_DB_FILE_NAME;
 
 use super::{
     config_io::{ExistingConfig, build_config, load_existing_config},

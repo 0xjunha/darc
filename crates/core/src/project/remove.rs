@@ -1,7 +1,7 @@
 use std::{fs, path::Path};
 
 use anyhow::{Context, Result, bail};
-use darc_index::{INDEX_DB_FILE_NAME, count_project_index_rows_read_only, open_index_database};
+use darc_store::{INDEX_DB_FILE_NAME, count_project_index_rows_read_only, open_index_database};
 use rusqlite::params;
 
 use super::{

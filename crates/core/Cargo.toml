@@ -10,6 +10,7 @@ repository.workspace = true
 darc-query = { workspace = true }
 darc-index = { workspace = true }
 darc-paths = { workspace = true }
+darc-store = { workspace = true }
 darc-sync = { workspace = true }
 anyhow = { workspace = true }
 directories = { workspace = true }

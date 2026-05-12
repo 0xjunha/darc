@@ -221,10 +221,10 @@ dependencies = [
  "anyhow",
  "clap",
  "darc-core",
- "darc-index",
  "darc-paths",
  "darc-rollout",
  "darc-rollout-audit",
+ "darc-store",
  "darc-test-utils",
  "fs2",
  "notify",
@@ -243,6 +243,7 @@ dependencies = [
  "darc-index",
  "darc-paths",
  "darc-query",
+ "darc-store",
  "darc-sync",
  "darc-test-utils",
  "directories",
@@ -261,6 +262,7 @@ dependencies = [
  "anyhow",
  "darc-paths",
  "darc-rollout",
+ "darc-store",
  "rusqlite",
  "serde_json",
  "thiserror",
@@ -280,9 +282,9 @@ name = "darc-query"
 version = "0.1.5"
 dependencies = [
  "anyhow",
- "darc-index",
  "darc-paths",
  "darc-rollout",
+ "darc-store",
  "darc-test-utils",
  "glob",
  "regex",
@@ -320,6 +322,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "darc-store"
+version = "0.1.5"
+dependencies = [
+ "anyhow",
+ "darc-paths",
+ "darc-rollout",
+ "rusqlite",
+ "serde_json",
+]
+
+[[package]]
 name = "darc-sync"
 version = "0.1.5"
 dependencies = [
@@ -337,9 +350,9 @@ name = "darc-test-utils"
 version = "0.1.5"
 dependencies = [
  "anyhow",
- "darc-index",
  "darc-paths",
  "darc-rollout",
+ "darc-store",
  "rusqlite",
  "serde_json",
 ]

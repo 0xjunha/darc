@@ -8,8 +8,8 @@ use anyhow::{Context, Result};
 use darc_core::query::{
     DEFAULT_QUERY_PAGE_LIMIT, DEFAULT_SESSION_BUNDLE_TURN_LIMIT, DEFAULT_TURN_STEP_LIMIT,
 };
-use darc_index::open_index_database;
 use darc_paths::SourceKind;
+use darc_store::open_index_database;
 use darc_test_utils::{
     IndexedSessionFixture, IndexedTurnFixture, insert_indexed_session, insert_indexed_turn,
     unique_test_dir, write_file,

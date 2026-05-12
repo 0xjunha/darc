@@ -4,8 +4,8 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use darc_index::policy::{extract_shell_command, should_include_turn_in_active_time};
 use darc_paths::{SourceKind, normalize_access_path_candidate};
+use darc_store::policy::{extract_shell_command, should_include_turn_in_active_time};
 use rusqlite::Connection;
 
 use super::{

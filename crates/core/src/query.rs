@@ -5,7 +5,6 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use darc_index::INDEX_DB_FILE_NAME;
 use darc_paths::SourceKind;
 pub use darc_query::{
     ActiveProjectSummary, DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_QUERY_PAGE_LIMIT,
@@ -33,6 +32,7 @@ use darc_query::{
     query_session_turn_details as query_project_session_turn_details, query_turn_detail,
     query_turn_insights, query_workspace_insights,
 };
+use darc_store::INDEX_DB_FILE_NAME;
 use serde_json::{Value as JsonValue, json};
 use thiserror::Error;
 

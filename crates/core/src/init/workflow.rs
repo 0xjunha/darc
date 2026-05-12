@@ -1,7 +1,7 @@
 use std::{env, fs, path::PathBuf};
 
 use anyhow::{Context, Result, bail};
-use darc_index::ensure_index_database;
+use darc_store::ensure_index_database;
 use directories::BaseDirs;
 
 use super::{
