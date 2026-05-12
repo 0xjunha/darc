@@ -4,6 +4,8 @@ All notable Darc release changes should be summarized here.
 
 ## Unreleased
 
+- Narrow internal Rust storage APIs so SQLite schema details are no longer exposed outside the storage crate.
+
 ## [0.1.5] - 2026-05-11
 
 - Clarify README guidance for agent setup and prompt-driven prior-session investigations.
