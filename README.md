@@ -290,8 +290,8 @@ Run `darc --help` or `darc help <command>` for the current CLI surface.
 ## Documentation
 
 - [Documentation index](docs/README.md)
-- [Query protocol](docs/query-protocol.md): command matrix, JSON schemas, pagination, search modes, performance
-  expectations, and error contracts.
+- [Query protocol](docs/query-protocol.md): JSON envelopes, command contracts, search modes, payload semantics, and
+  error contracts.
 - [Background refresh service](docs/service.md): macOS auto-refresh service behavior and watch settings.
 - [Project rename and linking](docs/project-rename.md): keep history across checkout moves and repository renames.
 - [Upgrade and uninstall](docs/upgrade-uninstall.md)
