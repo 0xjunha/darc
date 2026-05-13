@@ -9,9 +9,11 @@ mod status;
 mod sync;
 
 pub use config::SourceKind;
+pub use darc_store::IndexDatabaseRebuildRecommendation;
 pub use index::{
-    IndexOptions, IndexReport, SkippedCodexRollout, SkippedRollout, index_project_codex_turns,
-    index_project_sessions,
+    IndexOptions, IndexReport, SkippedCodexRollout, SkippedRollout, WorkspaceIndexReport,
+    index_project_codex_turns, index_project_sessions, index_rebuild_command,
+    rebuild_workspace_index,
 };
 pub use init::{DetectedRolloutSource, InitDraft, default_root_path, prepare_init, write_init};
 pub use project::{

@@ -490,30 +490,7 @@ fn build_released_binary_command(
     command.env("XDG_STATE_HOME", &xdg_state);
     command.env("XDG_RUNTIME_DIR", &xdg_runtime);
 
-    #[cfg(windows)]
-    {
-        let appdata = runtime_home.join("AppData").join("Roaming");
-        let local_appdata = runtime_home.join("AppData").join("Local");
-        for path in [&appdata, &local_appdata] {
-            fs::create_dir_all(path)
-                .with_context(|| format!("failed to create {}", path.display()))?;
-        }
-        command.env("USERPROFILE", &runtime_home);
-        command.env("APPDATA", &appdata);
-        command.env("LOCALAPPDATA", &local_appdata);
-        copy_env_if_present(&mut command, "SystemRoot");
-        copy_env_if_present(&mut command, "WINDIR");
-    }
-
     Ok(command)
-}
-
-/// Copies one inherited environment variable into a child process when it exists.
-#[cfg(windows)]
-fn copy_env_if_present(command: &mut Command, name: &str) {
-    if let Some(value) = env::var_os(name) {
-        command.env(name, value);
-    }
 }
 
 /// Stores one supported host platform for released Codex binaries.
@@ -582,18 +559,6 @@ fn host_platform_from_parts(os: &str, arch: &str) -> Result<HostPlatform> {
             vendor_target: "x86_64-unknown-linux-musl",
             binary_file_name: "codex",
             display_name: "Linux x86_64",
-        }),
-        ("windows", "aarch64") => Ok(HostPlatform {
-            release_asset_suffix: "win32-arm64",
-            vendor_target: "aarch64-pc-windows-msvc",
-            binary_file_name: "codex.exe",
-            display_name: "Windows arm64",
-        }),
-        ("windows", "x86_64") => Ok(HostPlatform {
-            release_asset_suffix: "win32-x64",
-            vendor_target: "x86_64-pc-windows-msvc",
-            binary_file_name: "codex.exe",
-            display_name: "Windows x86_64",
         }),
         _ => bail!("unsupported host platform `{os}` / `{arch}` for released Codex binaries"),
     }

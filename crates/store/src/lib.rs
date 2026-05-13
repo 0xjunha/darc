@@ -10,9 +10,10 @@ mod turn_metrics;
 mod write;
 
 pub use index_db::{
-    INDEX_DB_FILE_NAME, count_project_index_rows_read_only, ensure_index_database,
-    open_existing_index_database, open_index_database, open_index_database_read_only,
-    open_index_database_writer,
+    INDEX_DB_FILE_NAME, IndexDatabaseRebuildRecommendation, count_project_index_rows_read_only,
+    ensure_index_database, open_existing_index_database, open_index_database,
+    open_index_database_read_only, open_index_database_writer, remove_index_database,
+    replace_index_database,
 };
 pub use write::{
     StoredSessionKind, StoredSessionRecord, StoredTurnRecord, insert_session_record,

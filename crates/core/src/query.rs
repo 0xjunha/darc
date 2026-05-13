@@ -32,7 +32,7 @@ use darc_query::{
     query_session_turn_details as query_project_session_turn_details, query_turn_detail,
     query_turn_insights, query_workspace_insights,
 };
-use darc_store::INDEX_DB_FILE_NAME;
+use darc_store::{INDEX_DB_FILE_NAME, IndexDatabaseRebuildRecommendation};
 use serde_json::{Value as JsonValue, json};
 use thiserror::Error;
 
@@ -40,7 +40,7 @@ use crate::{
     active_project::{is_no_active_project_error, load_active_project},
     config::{ProjectConfig, SharedConfig, load_config},
     constants::CONFIG_FILE_NAME,
-    default_root_path,
+    default_root_path, index_rebuild_command,
     init::normalize_project_config,
 };
 
@@ -97,10 +97,9 @@ pub fn query_workspace(root: Option<PathBuf>) -> WorkspaceQueryData {
         match list_project_index_aggregates(&root_info.database_path) {
             Ok(aggregates) => aggregate_map(aggregates),
             Err(error) => {
-                root_info.issues.push(format!(
-                    "Darc database could not be queried: {}",
-                    error.root_cause()
-                ));
+                root_info
+                    .issues
+                    .push(format_workspace_database_issue(&error));
                 Default::default()
             }
         }
@@ -141,6 +140,22 @@ pub fn query_workspace(root: Option<PathBuf>) -> WorkspaceQueryData {
         active_project,
         projects,
     }
+}
+
+/// Formats one workspace database issue with index rebuild guidance when possible.
+fn format_workspace_database_issue(error: &anyhow::Error) -> String {
+    if let Some(rebuild) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<IndexDatabaseRebuildRecommendation>())
+    {
+        return format!(
+            "Darc database could not be queried: local SQLite index at {} needs to be rebuilt; run `{}` to rebuild the shared index cache from archived sessions",
+            rebuild.path().display(),
+            index_rebuild_command(rebuild.path())
+        );
+    }
+
+    format!("Darc database could not be queried: {}", error.root_cause())
 }
 
 /// Stores one resolved project-scoped query target plus its root metadata.
@@ -1196,4 +1211,62 @@ fn is_uuid_character_at(index: usize, ch: char) -> bool {
 struct ProjectQueryContext {
     root: RootInfo,
     project: ProjectConfig,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use anyhow::Result;
+    use darc_test_utils::{unique_test_dir, write_file};
+
+    use super::query_workspace;
+    use crate::{
+        config::{ProjectConfig, SharedConfig, SourcesConfig},
+        constants::CONFIG_FILE_NAME,
+        index_rebuild_command,
+    };
+
+    #[test]
+    fn query_workspace_issue_recommends_rebuild_for_unusable_index() -> Result<()> {
+        let root = unique_test_dir("workspace-query-rebuild");
+        let project_root = root.join("repo");
+        let sessions_root = root.join("projects/repo-123/sessions");
+        fs::create_dir_all(&project_root)?;
+        let config = SharedConfig::new(
+            root.clone(),
+            vec![ProjectConfig {
+                id: "repo-123".to_owned(),
+                name: "repo".to_owned(),
+                local_path: project_root,
+                git_upstream: None,
+                sessions_root,
+                known_paths: Vec::new(),
+            }],
+            SourcesConfig::default(),
+        );
+        write_file(
+            &root.join(CONFIG_FILE_NAME),
+            &toml::to_string_pretty(&config)?,
+        )?;
+        let index_db_path = root.join(darc_store::INDEX_DB_FILE_NAME);
+        write_file(&index_db_path, "not a sqlite database")?;
+
+        let workspace = query_workspace(Some(root));
+        let issue = workspace
+            .root
+            .issues
+            .first()
+            .expect("workspace should report database issue");
+
+        assert!(issue.contains("Darc database could not be queried"));
+        assert!(issue.contains("needs to be rebuilt"));
+        assert!(issue.contains(&format!(
+            "run `{}`",
+            index_rebuild_command(&workspace.root.database_path)
+        )));
+        assert!(issue.contains(&workspace.root.database_path.display().to_string()));
+        assert_eq!(workspace.projects.len(), 1);
+        Ok(())
+    }
 }

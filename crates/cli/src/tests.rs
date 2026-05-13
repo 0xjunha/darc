@@ -11,6 +11,7 @@ use darc_core::{
     IndexReport, RefreshAllBestEffortReport, RefreshProgress, RefreshProjectAttempt,
     RefreshProjectFailure, RefreshReport, SourceKind, SyncReport,
     config::{ClaudeSourceConfig, CodexSourceConfig, SharedConfig, SourcesConfig, WatchConfig},
+    index_rebuild_command,
 };
 use darc_rollout_audit::claude::{
     ClaudeSchemaAuditFailure, ClaudeSchemaAuditReport, ClaudeSchemaDrift,

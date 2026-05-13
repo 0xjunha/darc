@@ -28,6 +28,15 @@ fn human_command_help_groups_options() {
     assert!(sync_help.contains("Preview pending copies without writing files"));
     assert!(sync_help.contains("darc sync --dry-run"));
 
+    let index_help = help_for_command_path(&["index"]);
+    assert_contains_in_order(&index_help, &["Selection:", "Mode:", "Workspace:"]);
+    assert!(
+        index_help.contains(
+            "Delete the shared SQLite index and rebuild it from every configured project's archived sessions"
+        )
+    );
+    assert!(index_help.contains("darc index --rebuild"));
+
     let refresh_help = help_for_command_path(&["refresh"]);
     assert_contains_in_order(
         &refresh_help,
@@ -42,8 +51,37 @@ fn index_command_accepts_provider_filters() {
     let cli = Cli::try_parse_from(["darc", "index", "--provider", "claude"]).unwrap();
     assert!(matches!(
         cli.command,
-        Commands::Index(super::IndexArgs { provider, .. }) if provider.len() == 1
+        Commands::Index(super::IndexArgs {
+            provider,
+            rebuild: false,
+            ..
+        }) if provider.len() == 1
     ));
+
+    let rebuild = Cli::try_parse_from(["darc", "index", "--rebuild"]).unwrap();
+    assert!(matches!(
+        rebuild.command,
+        Commands::Index(super::IndexArgs {
+            provider,
+            rebuild: true,
+            ..
+        }) if provider.is_empty()
+    ));
+}
+
+#[test]
+fn index_rebuild_rejects_provider_filters() {
+    let error = run_index(super::IndexArgs {
+        provider: vec![super::ProviderArg::Codex],
+        rebuild: true,
+        root: unique_test_dir("index-rebuild-provider-filter"),
+    })
+    .expect_err("rebuild should reject provider filters");
+
+    assert!(
+        format!("{error:#}")
+            .contains("`darc index --rebuild` rebuilds all providers; remove `--provider`")
+    );
 }
 
 #[test]

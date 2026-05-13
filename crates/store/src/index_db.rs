@@ -1,10 +1,17 @@
 mod migrations;
 pub(crate) mod schema;
 
-use std::{fs, path::Path, time::Duration};
+use std::{
+    error::Error as StdError,
+    ffi::OsString,
+    fmt, fs,
+    io::ErrorKind,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use anyhow::{Context, Result};
-use rusqlite::{Connection, OpenFlags, params};
+use rusqlite::{Connection, ErrorCode, OpenFlags, params};
 
 use self::{
     migrations::{
@@ -23,6 +30,44 @@ pub const INDEX_DB_FILE_NAME: &str = "index.sqlite";
 /// Tracks one-shot SQLite migrations for normalized index tables.
 const INDEX_DB_SCHEMA_VERSION: i32 = 13;
 
+/// Describes an existing index database that should be rebuilt from archived sessions.
+#[derive(Debug)]
+pub struct IndexDatabaseRebuildRecommendation {
+    path: PathBuf,
+    source: anyhow::Error,
+}
+
+impl IndexDatabaseRebuildRecommendation {
+    /// Wraps one failed SQLite open or migration with user-facing rebuild guidance.
+    fn new(path: &Path, source: anyhow::Error) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            source,
+        }
+    }
+
+    /// Returns the SQLite index path that should be rebuilt.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl fmt::Display for IndexDatabaseRebuildRecommendation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "local SQLite index at {} could not be opened or migrated",
+            self.path.display()
+        )
+    }
+}
+
+impl StdError for IndexDatabaseRebuildRecommendation {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        Some(self.source.as_ref())
+    }
+}
+
 /// Opens or creates the index database for write-side commands that may initialize storage.
 pub fn open_index_database_writer(path: &Path) -> Result<Connection> {
     create_parent_dir(path)?;
@@ -38,6 +83,12 @@ pub fn open_existing_index_database(path: &Path) -> Result<Connection> {
 /// Opens an existing index database read-only without initializing or migrating storage.
 pub fn open_index_database_read_only(path: &Path) -> Result<Connection> {
     ensure_existing_database_path(path)?;
+    open_index_database_read_only_inner(path)
+        .or_else(|error| recommend_rebuild_for_index_error(path, true, error))
+}
+
+/// Opens an existing index database read-only without wrapping rebuild guidance.
+fn open_index_database_read_only_inner(path: &Path) -> Result<Connection> {
     let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .with_context(|| format!("failed to open index database {} read-only", path.display()))?;
     connection
@@ -53,6 +104,13 @@ pub fn open_index_database(path: &Path) -> Result<Connection> {
 
 /// Opens one SQLite connection and applies all supported index migrations.
 fn open_migrating_connection(path: &Path) -> Result<Connection> {
+    let existing_database = path.exists();
+    open_migrating_connection_inner(path)
+        .or_else(|error| recommend_rebuild_for_index_error(path, existing_database, error))
+}
+
+/// Opens one SQLite connection and runs migration without wrapping rebuild guidance.
+fn open_migrating_connection_inner(path: &Path) -> Result<Connection> {
     let mut connection = Connection::open(path)
         .with_context(|| format!("failed to open index database {}", path.display()))?;
     connection
@@ -68,6 +126,15 @@ pub fn count_project_index_rows_read_only(path: &Path, project_id: &str) -> Resu
         return Ok((0, 0));
     }
 
+    count_project_index_rows_read_only_inner(path, project_id)
+        .or_else(|error| recommend_rebuild_for_index_error(path, true, error))
+}
+
+/// Counts one project's indexed rows from an existing read-only database.
+fn count_project_index_rows_read_only_inner(
+    path: &Path,
+    project_id: &str,
+) -> Result<(usize, usize)> {
     let connection = open_index_database_read_only(path)?;
 
     let mut session_count =
@@ -92,6 +159,73 @@ pub fn count_project_index_rows_read_only(path: &Path, project_id: &str) -> Resu
 pub fn ensure_index_database(path: &Path) -> Result<()> {
     let _connection = open_index_database_writer(path)?;
     Ok(())
+}
+
+/// Removes one SQLite index database and its common sidecar files.
+pub fn remove_index_database(path: &Path) -> Result<usize> {
+    let mut removed = 0;
+    for candidate in index_database_file_set(path)? {
+        match fs::remove_file(&candidate) {
+            Ok(()) => removed += 1,
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed to remove index database file {}",
+                        candidate.display()
+                    )
+                });
+            }
+        }
+    }
+    Ok(removed)
+}
+
+/// Replaces one SQLite index database with a fully built sibling database.
+pub fn replace_index_database(replacement: &Path, destination: &Path) -> Result<()> {
+    ensure_existing_database_path(replacement)?;
+    for sidecar in index_database_file_set(destination)?.into_iter().skip(1) {
+        match fs::remove_file(&sidecar) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed to remove stale index database sidecar {}",
+                        sidecar.display()
+                    )
+                });
+            }
+        }
+    }
+
+    replace_index_database_file(replacement, destination)?;
+    for sidecar in index_database_file_set(replacement)?.into_iter().skip(1) {
+        match fs::remove_file(&sidecar) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed to remove temporary index database sidecar {}",
+                        sidecar.display()
+                    )
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Replaces one SQLite database file after the replacement has been fully built.
+fn replace_index_database_file(replacement: &Path, destination: &Path) -> Result<()> {
+    fs::rename(replacement, destination).with_context(|| {
+        format!(
+            "failed to replace index database {} with {}",
+            destination.display(),
+            replacement.display()
+        )
+    })
 }
 
 /// Counts rows for one project in a table when that table already exists.
@@ -177,6 +311,100 @@ fn managed_tables_are_missing(connection: &Connection, tables: &[SchemaTable]) -
     Ok(false)
 }
 
+/// Wraps one existing-index failure with rebuild guidance when appropriate.
+fn recommend_rebuild_for_index_error<T>(
+    path: &Path,
+    existing_database: bool,
+    error: anyhow::Error,
+) -> Result<T> {
+    if !existing_database
+        || error.chain().any(|cause| {
+            cause
+                .downcast_ref::<IndexDatabaseRebuildRecommendation>()
+                .is_some()
+        })
+        || !index_database_error_recommends_rebuild(&error)
+    {
+        return Err(error);
+    }
+
+    Err(IndexDatabaseRebuildRecommendation::new(path, error).into())
+}
+
+/// Returns whether one failed existing index open should recommend a rebuild.
+fn index_database_error_recommends_rebuild(error: &anyhow::Error) -> bool {
+    let mut saw_sqlite_error = false;
+    for cause in error.chain() {
+        if let Some(sqlite_error) = cause.downcast_ref::<rusqlite::Error>() {
+            saw_sqlite_error = true;
+            if sqlite_error_blocks_rebuild_recommendation(sqlite_error) {
+                return false;
+            }
+        }
+        if let Some(io_error) = cause.downcast_ref::<std::io::Error>()
+            && matches!(
+                io_error.kind(),
+                ErrorKind::PermissionDenied | ErrorKind::Interrupted
+            )
+        {
+            return false;
+        }
+    }
+
+    saw_sqlite_error || error.chain().any(error_is_index_migration_context)
+}
+
+/// Returns whether one SQLite error points to an access/runtime problem instead.
+fn sqlite_error_blocks_rebuild_recommendation(error: &rusqlite::Error) -> bool {
+    matches!(
+        error.sqlite_error_code(),
+        Some(
+            ErrorCode::PermissionDenied
+                | ErrorCode::DatabaseBusy
+                | ErrorCode::DatabaseLocked
+                | ErrorCode::OutOfMemory
+                | ErrorCode::ReadOnly
+                | ErrorCode::OperationInterrupted
+                | ErrorCode::SystemIoFailure
+                | ErrorCode::DiskFull
+                | ErrorCode::CannotOpen
+        )
+    )
+}
+
+/// Returns whether one error message is from the index migration/rebuild phase.
+fn error_is_index_migration_context(error: &(dyn StdError + 'static)) -> bool {
+    let message = error.to_string();
+    message.contains("index database")
+        || message.contains("schema-version migration")
+        || message.contains("legacy Codex migration")
+        || message.contains("derived analytics")
+        || message.contains("stored steps_json")
+}
+
+/// Returns the main SQLite database path and its common sidecar paths.
+fn index_database_file_set(path: &Path) -> Result<[PathBuf; 4]> {
+    Ok([
+        path.to_path_buf(),
+        index_database_sidecar_path(path, "-wal")?,
+        index_database_sidecar_path(path, "-shm")?,
+        index_database_sidecar_path(path, "-journal")?,
+    ])
+}
+
+/// Returns one SQLite sidecar path by appending a suffix to the database filename.
+fn index_database_sidecar_path(path: &Path, suffix: &str) -> Result<PathBuf> {
+    let file_name = path.file_name().with_context(|| {
+        format!(
+            "index database path {} is missing a filename",
+            path.display()
+        )
+    })?;
+    let mut sidecar_name = OsString::from(file_name);
+    sidecar_name.push(suffix);
+    Ok(path.with_file_name(sidecar_name))
+}
+
 /// Ensures one existing SQLite database path is available before opening it.
 fn ensure_existing_database_path(path: &Path) -> Result<()> {
     if !path.exists() {
@@ -197,7 +425,7 @@ fn create_parent_dir(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use std::{
-        env,
+        env, fs,
         path::PathBuf,
         time::{SystemTime, UNIX_EPOCH},
     };
@@ -207,8 +435,9 @@ mod tests {
     use rusqlite::Connection;
 
     use super::{
-        INDEX_DB_SCHEMA_VERSION, count_project_index_rows_read_only, migrations,
-        open_index_database, schema,
+        INDEX_DB_SCHEMA_VERSION, IndexDatabaseRebuildRecommendation,
+        count_project_index_rows_read_only, migrations, open_existing_index_database,
+        open_index_database, remove_index_database, schema,
     };
     use crate::test_support::{
         IndexedSessionFixture, IndexedTurnFixture, create_pre_analytics_index_schema,
@@ -330,6 +559,85 @@ mod tests {
         let migrated = open_index_database(&path)?;
         schema::smoke_test_sql(&migrated)?;
         migrations::smoke_test_sql(&migrated, INDEX_DB_SCHEMA_VERSION)?;
+        Ok(())
+    }
+
+    #[test]
+    fn open_index_database_recommends_rebuild_for_unreadable_sqlite_cache() -> Result<()> {
+        let path = unique_db_path("index-db-corrupt-cache");
+        fs::write(&path, "not a sqlite database")?;
+
+        let error = open_index_database(&path).expect_err("corrupt index should fail");
+        let rebuild = error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<IndexDatabaseRebuildRecommendation>())
+            .expect("existing corrupt index should carry rebuild guidance");
+
+        assert_eq!(rebuild.path(), path.as_path());
+        assert!(error.to_string().contains("local SQLite index at"));
+        assert!(format!("{error:#}").contains("file is not a database"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn open_existing_index_database_does_not_recommend_rebuild_when_index_is_missing() {
+        let path = unique_db_path("index-db-missing-cache");
+
+        let error = open_existing_index_database(&path).expect_err("missing index should fail");
+
+        assert!(!error.chain().any(|cause| {
+            cause
+                .downcast_ref::<IndexDatabaseRebuildRecommendation>()
+                .is_some()
+        }));
+        assert!(!error.to_string().contains("darc index --rebuild"));
+    }
+
+    #[test]
+    fn count_project_index_rows_read_only_recommends_rebuild_for_corrupt_index() -> Result<()> {
+        let path = unique_db_path("index-db-corrupt-read-only-cache");
+        fs::write(&path, "not a sqlite database")?;
+
+        let error = count_project_index_rows_read_only(&path, "repo-abc123")
+            .expect_err("corrupt read-only index should fail");
+
+        assert!(error.chain().any(|cause| {
+            cause
+                .downcast_ref::<IndexDatabaseRebuildRecommendation>()
+                .is_some()
+        }));
+        assert!(error.to_string().contains("local SQLite index at"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn remove_index_database_removes_sqlite_sidecars() -> Result<()> {
+        let path = unique_db_path("index-db-remove-sidecars");
+        let wal_path = path.with_file_name(format!(
+            "{}-wal",
+            path.file_name().expect("filename").to_string_lossy()
+        ));
+        let shm_path = path.with_file_name(format!(
+            "{}-shm",
+            path.file_name().expect("filename").to_string_lossy()
+        ));
+        let journal_path = path.with_file_name(format!(
+            "{}-journal",
+            path.file_name().expect("filename").to_string_lossy()
+        ));
+        for candidate in [&path, &wal_path, &shm_path, &journal_path] {
+            fs::write(candidate, "cache")?;
+        }
+
+        let removed = remove_index_database(&path)?;
+
+        assert_eq!(removed, 4);
+        for candidate in [&path, &wal_path, &shm_path, &journal_path] {
+            assert!(!candidate.exists());
+        }
+
         Ok(())
     }
 
@@ -989,11 +1297,8 @@ mod tests {
         drop(connection);
 
         let error = open_index_database(&path).expect_err("rebuild should fail");
-        assert!(
-            error
-                .to_string()
-                .contains("failed to parse stored steps_json")
-        );
+        assert!(error.to_string().contains("local SQLite index at"));
+        assert!(format!("{error:#}").contains("failed to parse stored steps_json"));
 
         let reopened = Connection::open(&path)?;
         let state: (i64, i64, i32) = reopened.query_row(

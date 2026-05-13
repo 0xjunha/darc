@@ -1533,8 +1533,6 @@ fn normalize_path_literal(path: &str) -> String {
 
     let (prefix, remainder, absolute) = if let Some(remainder) = path.strip_prefix('/') {
         (Some("/".to_owned()), remainder, true)
-    } else if let Some(remainder) = strip_windows_drive_root(&path) {
-        (Some(path[..2].to_owned()), remainder, true)
     } else {
         (None, path.as_str(), false)
     };
@@ -1581,19 +1579,9 @@ fn strip_root_prefix_from_path(path: &str, root: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Returns whether one normalized path literal is absolute on common host platforms.
+/// Returns whether one normalized path literal is an absolute POSIX path.
 fn is_absolute_path_literal(path: &str) -> bool {
-    path.starts_with('/') || strip_windows_drive_root(path).is_some()
-}
-
-/// Removes one `C:/`-style drive prefix when present.
-fn strip_windows_drive_root(path: &str) -> Option<&str> {
-    let bytes = path.as_bytes();
-    if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/' {
-        Some(&path[3..])
-    } else {
-        None
-    }
+    path.starts_with('/')
 }
 
 /// Yields the macOS `/private` toggled variants for one normalized absolute path.

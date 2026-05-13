@@ -396,11 +396,7 @@ impl AuditRuntime {
         Ok(Self {
             node_binary,
             node_platform_suffix,
-            hook_python: resolve_runtime_binary(if cfg!(windows) {
-                &["python", "python3"]
-            } else {
-                &["python3", "python"]
-            })?,
+            hook_python: resolve_runtime_binary(&["python3", "python"])?,
         })
     }
 }
@@ -2313,8 +2309,6 @@ fn detect_node_native_cli_platform_suffix(node_binary: &Path) -> Result<String> 
                 | "linux-arm64-musl"
                 | "linux-x64"
                 | "linux-x64-musl"
-                | "win32-arm64"
-                | "win32-x64"
         ),
         "unsupported Node platform suffix `{suffix}` for Claude native packages"
     );
@@ -2371,12 +2365,8 @@ fn node_modules_package_path(cli_root: &Path, package_name: &str) -> Result<Path
 }
 
 /// Returns the native Claude binary name for one Node wrapper platform suffix.
-fn native_cli_binary_name(platform_suffix: &str) -> &'static str {
-    if platform_suffix.starts_with("win32-") {
-        "claude.exe"
-    } else {
-        "claude"
-    }
+fn native_cli_binary_name(_platform_suffix: &str) -> &'static str {
+    "claude"
 }
 
 /// Marks one extracted package file executable on Unix hosts.
@@ -3124,11 +3114,7 @@ fn sanitize_for_path(text: &str) -> String {
 
 /// Quotes one string for a shell command embedded in Claude hook settings.
 fn shell_quote(text: &str) -> String {
-    if cfg!(windows) {
-        format!("\"{}\"", text.replace('"', "\\\""))
-    } else {
-        format!("'{}'", text.replace('\'', "'\"'\"'"))
-    }
+    format!("'{}'", text.replace('\'', "'\"'\"'"))
 }
 
 /// Encodes one raw byte slice as unwrapped standard base64 text.
@@ -3228,7 +3214,7 @@ mod tests {
     #[test]
     fn resolves_native_binary_name_from_node_platform() {
         assert_eq!(super::native_cli_binary_name("darwin-arm64"), "claude");
-        assert_eq!(super::native_cli_binary_name("win32-x64"), "claude.exe");
+        assert_eq!(super::native_cli_binary_name("linux-x64"), "claude");
     }
 
     #[test]
