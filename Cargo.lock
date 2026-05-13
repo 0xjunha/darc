@@ -216,7 +216,7 @@ dependencies = [
 
 [[package]]
 name = "darc"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "clap",
@@ -237,7 +237,7 @@ dependencies = [
 
 [[package]]
 name = "darc-core"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "darc-index",
@@ -257,7 +257,7 @@ dependencies = [
 
 [[package]]
 name = "darc-index"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "darc-paths",
@@ -271,7 +271,7 @@ dependencies = [
 
 [[package]]
 name = "darc-paths"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "serde",
@@ -279,7 +279,7 @@ dependencies = [
 
 [[package]]
 name = "darc-query"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "darc-paths",
@@ -295,7 +295,7 @@ dependencies = [
 
 [[package]]
 name = "darc-rollout"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "darc-paths",
@@ -306,7 +306,7 @@ dependencies = [
 
 [[package]]
 name = "darc-rollout-audit"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "darc-paths",
@@ -323,7 +323,7 @@ dependencies = [
 
 [[package]]
 name = "darc-store"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "darc-paths",
@@ -334,7 +334,7 @@ dependencies = [
 
 [[package]]
 name = "darc-sync"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "darc-paths",
@@ -347,7 +347,7 @@ dependencies = [
 
 [[package]]
 name = "darc-test-utils"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "darc-paths",
