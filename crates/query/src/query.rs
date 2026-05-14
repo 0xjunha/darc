@@ -1,6 +1,9 @@
 mod bundles;
 mod files;
 mod insights;
+mod local_date;
+mod paging;
+mod preview;
 mod projects;
 mod search;
 mod turns;
@@ -17,6 +20,9 @@ pub use files::{display_path_for_access, query_project_files, query_project_sess
 #[cfg(test)]
 pub(crate) use insights::{build_project_insights, build_workspace_insights};
 pub use insights::{query_project_insights, query_workspace_insights};
+pub(crate) use local_date::LocalDate;
+pub(crate) use paging::{apply_matched_path_limit, paginate_ranked_rows};
+pub(crate) use preview::{TextPreview, preview_first_line, preview_text};
 pub use projects::{
     list_project_index_aggregates, lookup_project_session_id, lookup_project_session_matches,
     query_project_sessions, query_project_turns, query_resolve_sessions,
@@ -40,34 +46,6 @@ pub(crate) fn smoke_test_sql(connection: &Connection) -> Result<()> {
     insights::smoke_test_sql(connection)?;
     search::smoke_test_sql(connection)?;
     Ok(())
-}
-
-/// Applies offset/limit pagination to a fully ranked in-memory row set.
-pub(crate) fn paginate_ranked_rows<T>(
-    rows: Vec<T>,
-    limit: usize,
-    offset: usize,
-) -> Result<(Vec<T>, bool)> {
-    let page_end = offset
-        .checked_add(limit)
-        .context("query pagination exceeds usize range")?;
-    let has_more = rows.len() > page_end;
-    let rows = rows.into_iter().skip(offset).take(limit).collect();
-    Ok((rows, has_more))
-}
-
-/// Applies one optional matched-path preview cap to an already ordered path list.
-pub(crate) fn apply_matched_path_limit(
-    mut paths: Vec<String>,
-    matched_path_limit: Option<usize>,
-) -> (Vec<String>, bool) {
-    if let Some(limit) = matched_path_limit
-        && paths.len() > limit
-    {
-        paths.truncate(limit);
-        return (paths, true);
-    }
-    (paths, false)
 }
 
 /// Caps `resolve-session` responses to one generous deterministic page.
@@ -816,68 +794,6 @@ fn optional_sql_count_to_u64(value: Option<i64>) -> Result<Option<u64>> {
     value.map(sql_count_to_u64).transpose()
 }
 
-/// Stores one normalized text preview plus source-size metadata.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TextPreview {
-    text: String,
-    truncated: bool,
-    chars: u64,
-    total_chars: u64,
-}
-
-/// Normalizes one text field into a single-line preview with metadata.
-fn preview_text(text: &str) -> TextPreview {
-    preview_text_with_limit(text, DEFAULT_TEXT_PREVIEW_CHARS)
-}
-
-/// Normalizes one text field into a capped single-line preview with metadata.
-fn preview_text_with_limit(text: &str, max_chars: usize) -> TextPreview {
-    preview_normalized_text(&normalize_preview_whitespace(text), max_chars)
-}
-
-/// Normalizes one text field's first line into a capped single-line preview with metadata.
-fn preview_first_line(text: &str) -> TextPreview {
-    preview_text_first_line_with_limit(text, ONELINE_TEXT_PREVIEW_CHARS)
-}
-
-/// Normalizes one text field's first line into a capped single-line preview with metadata.
-fn preview_text_first_line_with_limit(text: &str, max_chars: usize) -> TextPreview {
-    preview_normalized_text(
-        &normalize_preview_whitespace(text.lines().next().unwrap_or_default()),
-        max_chars,
-    )
-}
-
-/// Collapses one preview string's whitespace into single spaces.
-fn normalize_preview_whitespace(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// Builds metadata for one already normalized text preview.
-fn preview_normalized_text(text: &str, max_chars: usize) -> TextPreview {
-    let total_chars = text.chars().count();
-    if total_chars <= max_chars {
-        return TextPreview {
-            text: text.to_owned(),
-            truncated: false,
-            chars: u64::try_from(total_chars).unwrap_or(u64::MAX),
-            total_chars: u64::try_from(total_chars).unwrap_or(u64::MAX),
-        };
-    }
-    let mut preview = text
-        .chars()
-        .take(max_chars.saturating_sub(1))
-        .collect::<String>();
-    preview.push('…');
-    let chars = preview.chars().count();
-    TextPreview {
-        text: preview,
-        truncated: true,
-        chars: u64::try_from(chars).unwrap_or(u64::MAX),
-        total_chars: u64::try_from(total_chars).unwrap_or(u64::MAX),
-    }
-}
-
 /// Stores one internal session aggregate while building workspace insights.
 #[derive(Debug, Clone)]
 struct SessionAggregate {
@@ -1175,86 +1091,4 @@ fn sort_turn_file_usage_stats(stats: &mut [FileUsageStat]) {
             .then_with(|| right.read_count.cmp(&left.read_count))
             .then_with(|| left.path.cmp(&right.path))
     });
-}
-
-/// Stores one civil day used for local-day query-window calculations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct LocalDate {
-    year: i64,
-    month: u32,
-    day: u32,
-}
-
-impl LocalDate {
-    /// Parses one `YYYY-MM-DD` civil date string.
-    pub(crate) fn parse(value: &str) -> Option<Self> {
-        let mut parts = value.split('-');
-        let year = parts.next()?.parse().ok()?;
-        let month = parts.next()?.parse().ok()?;
-        let day = parts.next()?.parse().ok()?;
-        if parts.next().is_some() {
-            return None;
-        }
-        Some(Self { year, month, day })
-    }
-
-    /// Offsets one civil date by a whole-number day count.
-    pub(crate) fn add_days(self, days: i64) -> Option<Self> {
-        let base_days = self.days_since_epoch()?;
-        base_days.checked_add(days).map(Self::from_days_since_epoch)
-    }
-
-    /// Converts one civil day into Unix days.
-    fn days_since_epoch(self) -> Option<i64> {
-        if !(1..=12).contains(&self.month) || !(1..=31).contains(&self.day) {
-            return None;
-        }
-        let month = i64::from(self.month);
-        let day = i64::from(self.day);
-        let adjusted_year = self.year - if month <= 2 { 1 } else { 0 };
-        let era = if adjusted_year >= 0 {
-            adjusted_year / 400
-        } else {
-            (adjusted_year - 399) / 400
-        };
-        let year_of_era = adjusted_year - era * 400;
-        let month_of_year = month + if month > 2 { -3 } else { 9 };
-        let day_of_year = (153 * month_of_year + 2) / 5 + day - 1;
-        let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-        Some(era * 146_097 + day_of_era - 719_468)
-    }
-
-    /// Converts one Unix-day count back into one civil date.
-    fn from_days_since_epoch(days: i64) -> Self {
-        let z = days + 719_468;
-        let era = if z >= 0 {
-            z / 146_097
-        } else {
-            (z - 146_096) / 146_097
-        };
-        let day_of_era = z - era * 146_097;
-        let year_of_era =
-            (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-        let mut year = year_of_era + era * 400;
-        let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-        let month_prime = (5 * day_of_year + 2) / 153;
-        let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
-        let month = month_prime + if month_prime < 10 { 3 } else { -9 };
-        year += if month <= 2 { 1 } else { 0 };
-        Self {
-            year,
-            month: u32::try_from(month).unwrap_or(1),
-            day: u32::try_from(day).unwrap_or(1),
-        }
-    }
-}
-
-impl std::fmt::Display for LocalDate {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "{:04}-{:02}-{:02}",
-            self.year, self.month, self.day
-        )
-    }
 }
