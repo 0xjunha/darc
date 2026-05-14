@@ -173,6 +173,195 @@ pub struct ResolvedQuerySession {
     pub session_id: String,
 }
 
+/// Collects session-list filters for one already-resolved project query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProjectSessionsQueryRequest<'a> {
+    pub provider: Option<SourceKind>,
+    pub since: Option<&'a str>,
+    pub until: Option<&'a str>,
+    pub touched_path: Option<&'a str>,
+    pub view: SessionsView,
+    pub limit: usize,
+    pub offset: usize,
+}
+
+/// Collects file-pivot filters for one already-resolved project query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProjectFilesQueryRequest<'a> {
+    pub provider: Option<SourceKind>,
+    pub path: Option<&'a str>,
+    pub co_touched_with: Option<&'a str>,
+    pub since: Option<&'a str>,
+    pub until: Option<&'a str>,
+    pub limit: usize,
+    pub offset: usize,
+    pub matched_path_limit: Option<usize>,
+}
+
+/// Collects session-bundle filters for one already-resolved project query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProjectSessionBundleQueryRequest<'a> {
+    pub provider: SourceKind,
+    pub session_id: &'a str,
+    pub session_view: SessionsView,
+    pub view: SessionBundleView,
+    pub turn_limit: usize,
+    pub turn_offset: usize,
+    pub step_limit: usize,
+    pub step_offset: usize,
+}
+
+/// Collects turn-list filters for one already-resolved project query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProjectTurnsQueryRequest<'a> {
+    pub provider: SourceKind,
+    pub session_id: &'a str,
+    pub since: Option<&'a str>,
+    pub until: Option<&'a str>,
+    pub view: TurnsView,
+    pub limit: usize,
+    pub offset: usize,
+}
+
+/// Collects turn-search filters for one already-resolved project query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProjectSearchTurnsQueryRequest<'a> {
+    pub mode: SearchMode,
+    pub query: &'a str,
+    pub include_tool_output: bool,
+    pub fields: &'a [SearchEvidenceField],
+    pub excluded_fields: &'a [SearchEvidenceField],
+    pub provider: Option<SourceKind>,
+    pub session_id: Option<&'a str>,
+    pub since: Option<&'a str>,
+    pub until: Option<&'a str>,
+    pub limit: usize,
+    pub offset: usize,
+    pub matched_path_limit: Option<usize>,
+    pub match_limit: Option<usize>,
+}
+
+impl ResolvedQueryProject {
+    /// Queries the session-list payload for this resolved project.
+    pub fn query_sessions(
+        &self,
+        request: ProjectSessionsQueryRequest<'_>,
+    ) -> Result<SessionsQueryData> {
+        let context = &self.context;
+        let mut data = query_project_sessions(
+            &context.root.database_path,
+            SessionsQueryRequest {
+                project_id: &context.project.id,
+                project_root: Some(context.project.local_path.as_path()),
+                provider: request.provider,
+                since: request.since,
+                until: request.until,
+                touched_path: request.touched_path,
+                view: request.view,
+                limit: request.limit,
+                offset: request.offset,
+            },
+        )?;
+        PathDisplayNormalizer::new(&context.project).normalize_sessions(&mut data);
+        Ok(data)
+    }
+
+    /// Queries one file-pivot payload for this resolved project.
+    pub fn query_files(&self, request: ProjectFilesQueryRequest<'_>) -> Result<FilesQueryData> {
+        let context = &self.context;
+        let mut data = query_project_files(
+            &context.root.database_path,
+            FilesQueryRequest {
+                project_id: &context.project.id,
+                project_root: Some(context.project.local_path.as_path()),
+                provider: request.provider,
+                path: request.path,
+                co_touched_with: request.co_touched_with,
+                since: request.since,
+                until: request.until,
+                limit: request.limit,
+                offset: request.offset,
+                matched_path_limit: request.matched_path_limit,
+            },
+        )?;
+        PathDisplayNormalizer::new(&context.project).normalize_files(&mut data);
+        Ok(data)
+    }
+
+    /// Queries one composite session bundle for this resolved project.
+    pub fn query_session_bundle(
+        &self,
+        request: ProjectSessionBundleQueryRequest<'_>,
+    ) -> Result<SessionBundleQueryData> {
+        let context = &self.context;
+        let mut data = query_project_session_bundle(
+            &context.root.database_path,
+            SessionBundleQueryRequest {
+                project_id: &context.project.id,
+                project_root: Some(context.project.local_path.as_path()),
+                provider: request.provider,
+                session_id: request.session_id,
+                session_view: request.session_view,
+                view: request.view,
+                turn_limit: request.turn_limit,
+                turn_offset: request.turn_offset,
+                step_limit: request.step_limit,
+                step_offset: request.step_offset,
+            },
+        )?;
+        PathDisplayNormalizer::new(&context.project).normalize_session_bundle(&mut data);
+        Ok(data)
+    }
+
+    /// Queries the turn-list payload for this resolved project.
+    pub fn query_turns(&self, request: ProjectTurnsQueryRequest<'_>) -> Result<TurnsQueryData> {
+        let context = &self.context;
+        query_index_turns(
+            &context.root.database_path,
+            TurnsQueryRequest {
+                project_id: &context.project.id,
+                provider: request.provider,
+                session_id: request.session_id,
+                since: request.since,
+                until: request.until,
+                view: request.view,
+                limit: request.limit,
+                offset: request.offset,
+            },
+        )
+    }
+
+    /// Queries one paginated turn-search payload for this resolved project.
+    pub fn query_search_turns(
+        &self,
+        request: ProjectSearchTurnsQueryRequest<'_>,
+    ) -> Result<SearchTurnsQueryData> {
+        let context = &self.context;
+        let mut data = query_project_search_turns(
+            &context.root.database_path,
+            SearchTurnsRequest {
+                project_id: &context.project.id,
+                project_root: Some(context.project.local_path.as_path()),
+                mode: request.mode,
+                query: request.query,
+                include_tool_output: request.include_tool_output,
+                fields: request.fields,
+                excluded_fields: request.excluded_fields,
+                provider: request.provider,
+                session_id: request.session_id,
+                since: request.since,
+                until: request.until,
+                limit: request.limit,
+                offset: request.offset,
+                matched_path_limit: request.matched_path_limit,
+                match_limit: request.match_limit,
+            },
+        )?;
+        PathDisplayNormalizer::new(&context.project).normalize_search(&mut data);
+        Ok(data)
+    }
+}
+
 /// Resolves one database-backed project-scoped query target from an explicit id or the current directory.
 pub fn resolve_query_project(
     root: Option<PathBuf>,
@@ -194,18 +383,15 @@ pub fn query_sessions_for_project(
     project: &ResolvedQueryProject,
     request: SessionsQueryRequest<'_>,
 ) -> Result<SessionsQueryData> {
-    let context = &project.context;
-    let mut data = query_project_sessions(
-        &context.root.database_path,
-        SessionsQueryRequest {
-            project_id: &context.project.id,
-            project_root: Some(context.project.local_path.as_path()),
-            provider: request.provider,
-            ..request
-        },
-    )?;
-    PathDisplayNormalizer::new(&context.project).normalize_sessions(&mut data);
-    Ok(data)
+    project.query_sessions(ProjectSessionsQueryRequest {
+        provider: request.provider,
+        since: request.since,
+        until: request.until,
+        touched_path: request.touched_path,
+        view: request.view,
+        limit: request.limit,
+        offset: request.offset,
+    })
 }
 
 /// Queries the session-list payload for one configured project.
@@ -222,18 +408,16 @@ pub fn query_files_for_project(
     project: &ResolvedQueryProject,
     request: FilesQueryRequest<'_>,
 ) -> Result<FilesQueryData> {
-    let context = &project.context;
-    let mut data = query_project_files(
-        &context.root.database_path,
-        FilesQueryRequest {
-            project_id: &context.project.id,
-            project_root: Some(context.project.local_path.as_path()),
-            provider: request.provider,
-            ..request
-        },
-    )?;
-    PathDisplayNormalizer::new(&context.project).normalize_files(&mut data);
-    Ok(data)
+    project.query_files(ProjectFilesQueryRequest {
+        provider: request.provider,
+        path: request.path,
+        co_touched_with: request.co_touched_with,
+        since: request.since,
+        until: request.until,
+        limit: request.limit,
+        offset: request.offset,
+        matched_path_limit: request.matched_path_limit,
+    })
 }
 
 /// Queries one file-pivot payload for one configured project.
@@ -357,17 +541,16 @@ pub fn query_session_bundle_for_project(
     project: &ResolvedQueryProject,
     request: SessionBundleQueryRequest<'_>,
 ) -> Result<SessionBundleQueryData> {
-    let context = &project.context;
-    let mut data = query_project_session_bundle(
-        &context.root.database_path,
-        SessionBundleQueryRequest {
-            project_id: &context.project.id,
-            project_root: Some(context.project.local_path.as_path()),
-            ..request
-        },
-    )?;
-    PathDisplayNormalizer::new(&context.project).normalize_session_bundle(&mut data);
-    Ok(data)
+    project.query_session_bundle(ProjectSessionBundleQueryRequest {
+        provider: request.provider,
+        session_id: request.session_id,
+        session_view: request.session_view,
+        view: request.view,
+        turn_limit: request.turn_limit,
+        turn_offset: request.turn_offset,
+        step_limit: request.step_limit,
+        step_offset: request.step_offset,
+    })
 }
 
 /// Queries one composite session bundle for one configured provider session.
@@ -384,14 +567,15 @@ pub fn query_turns_for_project(
     project: &ResolvedQueryProject,
     request: TurnsQueryRequest<'_>,
 ) -> Result<TurnsQueryData> {
-    let context = &project.context;
-    query_index_turns(
-        &context.root.database_path,
-        TurnsQueryRequest {
-            project_id: &context.project.id,
-            ..request
-        },
-    )
+    project.query_turns(ProjectTurnsQueryRequest {
+        provider: request.provider,
+        session_id: request.session_id,
+        since: request.since,
+        until: request.until,
+        view: request.view,
+        limit: request.limit,
+        offset: request.offset,
+    })
 }
 
 /// Queries the turn-list payload for one configured provider session.
@@ -494,17 +678,21 @@ pub fn query_search_turns_for_project(
     project: &ResolvedQueryProject,
     request: SearchTurnsRequest<'_>,
 ) -> Result<SearchTurnsQueryData> {
-    let context = &project.context;
-    let mut data = query_project_search_turns(
-        &context.root.database_path,
-        SearchTurnsRequest {
-            project_id: &context.project.id,
-            project_root: Some(context.project.local_path.as_path()),
-            ..request
-        },
-    )?;
-    PathDisplayNormalizer::new(&context.project).normalize_search(&mut data);
-    Ok(data)
+    project.query_search_turns(ProjectSearchTurnsQueryRequest {
+        mode: request.mode,
+        query: request.query,
+        include_tool_output: request.include_tool_output,
+        fields: request.fields,
+        excluded_fields: request.excluded_fields,
+        provider: request.provider,
+        session_id: request.session_id,
+        since: request.since,
+        until: request.until,
+        limit: request.limit,
+        offset: request.offset,
+        matched_path_limit: request.matched_path_limit,
+        match_limit: request.match_limit,
+    })
 }
 
 /// Queries one paginated turn-search payload for one configured project.

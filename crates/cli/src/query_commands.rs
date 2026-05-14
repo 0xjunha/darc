@@ -2,15 +2,13 @@ use anyhow::{Context, Result, anyhow, bail};
 use darc_core::SourceKind;
 use darc_core::query::{
     DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_QUERY_PAGE_LIMIT, DEFAULT_RESOLVE_SESSION_MATCH_LIMIT,
-    DEFAULT_SEARCH_MATCH_LIMIT, FilesQueryRequest, QueryProtocolError, ResolveSessionQueryRequest,
-    ResolvedQueryProject, ResolvedSessionMatch, SearchEvidenceField, SearchMode,
-    SearchTurnsRequest, SessionBundleQueryRequest, SessionBundleView, SessionsQueryRequest,
-    SessionsView, TurnDetailOptions, TurnsQueryRequest, TurnsView, query_files_for_project,
+    DEFAULT_SEARCH_MATCH_LIMIT, ProjectFilesQueryRequest, ProjectSearchTurnsQueryRequest,
+    ProjectSessionBundleQueryRequest, ProjectSessionsQueryRequest, ProjectTurnsQueryRequest,
+    QueryProtocolError, ResolveSessionQueryRequest, ResolvedQueryProject, ResolvedSessionMatch,
+    SearchEvidenceField, SearchMode, SessionBundleView, SessionsView, TurnDetailOptions, TurnsView,
     query_project_insight_report_for_project, query_resolve_sessions,
-    query_search_turns_for_project, query_session_bundle_for_project,
-    query_session_files_for_project, query_sessions_for_project, query_turn_for_project,
-    query_turn_insight_report_for_project, query_turns_for_project, query_workspace,
-    query_workspace_insight_report, resolve_query_project,
+    query_session_files_for_project, query_turn_for_project, query_turn_insight_report_for_project,
+    query_workspace, query_workspace_insight_report, resolve_query_project,
     resolve_query_search_session_id_for_project, resolve_query_session_for_project,
 };
 use darc_paths::resolve_query_time_bound as resolve_shared_query_time_bound;
@@ -229,20 +227,15 @@ pub(crate) fn run_query_sessions(output: &QueryOutput, args: QuerySessionsArgs) 
         .as_deref()
         .map(resolve_query_time_bound)
         .transpose()?;
-    let data = query_sessions_for_project(
-        &project,
-        SessionsQueryRequest {
-            project_id: "",
-            project_root: None,
-            provider: args.provider.map(provider_arg_to_source_kind),
-            since: since.as_deref(),
-            until: until.as_deref(),
-            touched_path: args.touched_path.as_deref(),
-            view: session_list_view_arg_to_view(args.view),
-            limit: args.limit,
-            offset: args.offset,
-        },
-    )?;
+    let data = project.query_sessions(ProjectSessionsQueryRequest {
+        provider: args.provider.map(provider_arg_to_source_kind),
+        since: since.as_deref(),
+        until: until.as_deref(),
+        touched_path: args.touched_path.as_deref(),
+        view: session_list_view_arg_to_view(args.view),
+        limit: args.limit,
+        offset: args.offset,
+    })?;
     print_json_envelope(output, "darc.query.sessions.v1", &data)
 }
 
@@ -269,24 +262,19 @@ pub(crate) fn run_query_files(output: &QueryOutput, args: QueryFilesArgs) -> Res
         .as_deref()
         .map(resolve_query_time_bound)
         .transpose()?;
-    let data = query_files_for_project(
-        &project,
-        FilesQueryRequest {
-            project_id: "",
-            project_root: None,
-            provider: args.provider.map(provider_arg_to_source_kind),
-            path,
-            co_touched_with: args.co_touched_with.as_deref(),
-            since: since.as_deref(),
-            until: until.as_deref(),
-            limit: args.limit,
-            offset: args.offset,
-            matched_path_limit: matched_path_limit_arg(
-                args.include_all_matched_paths,
-                args.matched_path_limit,
-            ),
-        },
-    )?;
+    let data = project.query_files(ProjectFilesQueryRequest {
+        provider: args.provider.map(provider_arg_to_source_kind),
+        path,
+        co_touched_with: args.co_touched_with.as_deref(),
+        since: since.as_deref(),
+        until: until.as_deref(),
+        limit: args.limit,
+        offset: args.offset,
+        matched_path_limit: matched_path_limit_arg(
+            args.include_all_matched_paths,
+            args.matched_path_limit,
+        ),
+    })?;
     print_json_envelope(output, "darc.query.files.v1", &data)
 }
 
@@ -336,21 +324,16 @@ pub(crate) fn run_query_session_bundle(
         args.provider.map(provider_arg_to_source_kind),
         session_id,
     )?;
-    let data = query_session_bundle_for_project(
-        &project,
-        SessionBundleQueryRequest {
-            project_id: "",
-            provider: session.provider,
-            session_id: &session.session_id,
-            project_root: None,
-            session_view: session_list_view_arg_to_view(args.session_view),
-            view: view_arg_to_session_bundle_view(args.view),
-            turn_limit: args.turn_limit,
-            turn_offset: args.turn_offset,
-            step_limit: args.step_limit,
-            step_offset: args.step_offset,
-        },
-    )?;
+    let data = project.query_session_bundle(ProjectSessionBundleQueryRequest {
+        provider: session.provider,
+        session_id: &session.session_id,
+        session_view: session_list_view_arg_to_view(args.session_view),
+        view: view_arg_to_session_bundle_view(args.view),
+        turn_limit: args.turn_limit,
+        turn_offset: args.turn_offset,
+        step_limit: args.step_limit,
+        step_offset: args.step_offset,
+    })?;
     print_json_envelope(output, "darc.query.session_bundle.v1", &data)
 }
 
@@ -379,19 +362,15 @@ pub(crate) fn run_query_turns(output: &QueryOutput, args: QueryTurnsArgs) -> Res
         args.provider.map(provider_arg_to_source_kind),
         session_id,
     )?;
-    let data = query_turns_for_project(
-        &project,
-        TurnsQueryRequest {
-            project_id: "",
-            provider: session.provider,
-            session_id: &session.session_id,
-            since: since.as_deref(),
-            until: until.as_deref(),
-            view: turn_list_view_arg_to_view(args.view),
-            limit: args.limit,
-            offset: args.offset,
-        },
-    )?;
+    let data = project.query_turns(ProjectTurnsQueryRequest {
+        provider: session.provider,
+        session_id: &session.session_id,
+        since: since.as_deref(),
+        until: until.as_deref(),
+        view: turn_list_view_arg_to_view(args.view),
+        limit: args.limit,
+        offset: args.offset,
+    })?;
     print_turns_query_envelope(output, &data)
 }
 
@@ -468,29 +447,24 @@ pub(crate) fn run_query_search_turns(
         })
         .transpose()?;
     let mode = search_mode_arg_to_search_mode(args.mode);
-    let data = query_search_turns_for_project(
-        &project,
-        SearchTurnsRequest {
-            project_id: "",
-            project_root: None,
-            mode,
-            query,
-            include_tool_output: args.include_tool_output,
-            fields: &args.fields,
-            excluded_fields: &args.excluded_fields,
-            provider: args.provider.map(provider_arg_to_source_kind),
-            session_id: session_id.as_deref(),
-            since: since.as_deref(),
-            until: until.as_deref(),
-            limit: args.limit,
-            offset: args.offset,
-            matched_path_limit: matched_path_limit_arg(
-                args.include_all_matched_paths,
-                args.matched_path_limit,
-            ),
-            match_limit: args.match_limit,
-        },
-    )?;
+    let data = project.query_search_turns(ProjectSearchTurnsQueryRequest {
+        mode,
+        query,
+        include_tool_output: args.include_tool_output,
+        fields: &args.fields,
+        excluded_fields: &args.excluded_fields,
+        provider: args.provider.map(provider_arg_to_source_kind),
+        session_id: session_id.as_deref(),
+        since: since.as_deref(),
+        until: until.as_deref(),
+        limit: args.limit,
+        offset: args.offset,
+        matched_path_limit: matched_path_limit_arg(
+            args.include_all_matched_paths,
+            args.matched_path_limit,
+        ),
+        match_limit: args.match_limit,
+    })?;
     print_search_turns_json_envelope(output, &data)
 }
 
