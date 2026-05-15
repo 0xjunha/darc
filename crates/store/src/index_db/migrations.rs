@@ -7,7 +7,9 @@ use super::schema::{
     COMPAT_COLUMN_SETS, SchemaTable, TableColumn, alter_table_add_column_sql, table_has_column,
 };
 use crate::{
-    derived_data::rebuild_derived_analytics_tables, turn_metrics::summarize_stored_turn_metrics,
+    derived_data::rebuild_derived_analytics_tables,
+    redaction::{redact_normalized_steps, redact_text},
+    turn_metrics::summarize_stored_turn_metrics,
 };
 
 const SELECT_TURNS_REQUIRING_METRICS_BACKFILL_SQL: &str = "
@@ -136,6 +138,34 @@ const INVALIDATE_BEST_EFFORT_SESSION_SNAPSHOTS_SQL: &str = "
     SET source_size = NULL, source_mtime_ms = NULL
     WHERE determinism IS NULL OR determinism = 'best_effort_forward'
 ";
+const SELECT_SESSIONS_REQUIRING_REDACTION_SQL: &str = "
+    SELECT project_id, provider, session_id, cwd
+    FROM sessions
+";
+const UPDATE_SESSION_CWD_SQL: &str = "
+    UPDATE sessions
+    SET cwd = ?1
+    WHERE project_id = ?2 AND provider = ?3 AND session_id = ?4
+";
+const SELECT_TURNS_REQUIRING_REDACTION_SQL: &str = "
+    SELECT
+        project_id,
+        provider,
+        session_id,
+        turn_ordinal,
+        user_message,
+        final_answer_text,
+        steps_json
+    FROM turns
+";
+const UPDATE_TURN_REDACTED_CONTENT_SQL: &str = "
+    UPDATE turns
+    SET user_message = ?1, final_answer_text = ?2, steps_json = ?3
+    WHERE project_id = ?4 AND provider = ?5 AND session_id = ?6 AND turn_ordinal = ?7
+";
+const REBUILD_TURN_SEARCH_FTS_SQL: &str = "
+    INSERT INTO turn_search_fts(turn_search_fts) VALUES('rebuild')
+";
 
 /// Ensures compatibility columns exist on any legacy or pre-derived tables.
 pub(super) fn ensure_legacy_compat_columns(connection: &Connection) -> Result<()> {
@@ -158,18 +188,186 @@ pub(super) fn migrate_index_db_schema_version(
         return Ok(());
     }
 
+    let needs_redaction = current_version < 14;
+    if needs_redaction {
+        enable_secure_delete(connection)?;
+    }
     let transaction = connection
         .transaction()
         .context("failed to begin schema-version migration transaction")?;
     backfill_turn_metrics(&transaction)?;
+    if needs_redaction {
+        redact_indexed_content(&transaction)?;
+    }
     rebuild_derived_analytics_tables(&transaction)?;
+    if needs_redaction {
+        rebuild_turn_search_fts(&transaction)?;
+    }
     if current_version < 13 {
         invalidate_best_effort_session_snapshots(&transaction)?;
     }
-    set_index_db_schema_version(&transaction, schema_version)?;
+    if !needs_redaction {
+        set_index_db_schema_version(&transaction, schema_version)?;
+    }
     transaction
         .commit()
         .context("failed to commit schema-version migration transaction")?;
+    if needs_redaction {
+        vacuum_redacted_index(connection)?;
+        set_index_db_schema_version(connection, schema_version)?;
+    }
+    Ok(())
+}
+
+/// Redacts indexed content in a schema-current database after importing legacy rows.
+pub(super) fn redact_current_index_content(connection: &mut Connection) -> Result<()> {
+    enable_secure_delete(connection)?;
+    let transaction = connection
+        .transaction()
+        .context("failed to begin current indexed content redaction transaction")?;
+    redact_indexed_content(&transaction)?;
+    rebuild_derived_analytics_tables(&transaction)?;
+    rebuild_turn_search_fts(&transaction)?;
+    transaction
+        .commit()
+        .context("failed to commit current indexed content redaction transaction")?;
+    vacuum_redacted_index(connection)?;
+    Ok(())
+}
+
+/// Enables SQLite overwrite behavior before redacting indexed content in place.
+fn enable_secure_delete(connection: &Connection) -> Result<()> {
+    connection
+        .execute_batch("PRAGMA secure_delete = ON;")
+        .context("failed to enable secure deletion before indexed content redaction")
+}
+
+/// Rebuilds the SQLite file after redaction to drop old table, FTS, and freelist pages.
+fn vacuum_redacted_index(connection: &Connection) -> Result<()> {
+    connection
+        .execute_batch("VACUUM;")
+        .context("failed to vacuum SQLite index after indexed content redaction")
+}
+
+/// Rebuilds the FTS index from the redacted external-content table.
+fn rebuild_turn_search_fts(connection: &Connection) -> Result<()> {
+    connection
+        .execute(REBUILD_TURN_SEARCH_FTS_SQL, [])
+        .context("failed to rebuild turn_search_fts after indexed content redaction")?;
+    Ok(())
+}
+
+/// Redacts already indexed canonical content before derived tables are rebuilt.
+fn redact_indexed_content(connection: &Connection) -> Result<()> {
+    redact_indexed_session_cwds(connection)?;
+    redact_indexed_turn_content(connection)?;
+    Ok(())
+}
+
+/// Redacts session working-directory paths already stored in SQLite.
+fn redact_indexed_session_cwds(connection: &Connection) -> Result<()> {
+    let mut statement = connection
+        .prepare(SELECT_SESSIONS_REQUIRING_REDACTION_SQL)
+        .context("failed to prepare indexed session redaction query")?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .context("failed to query indexed sessions for redaction")?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed to read indexed session redaction rows")?;
+    drop(statement);
+
+    for (project_id, provider, session_id, cwd) in rows {
+        let redacted_cwd = redact_text(&cwd);
+        if redacted_cwd == cwd {
+            continue;
+        }
+        connection
+            .execute(
+                UPDATE_SESSION_CWD_SQL,
+                (&redacted_cwd, &project_id, &provider, &session_id),
+            )
+            .with_context(|| {
+                format!("failed to redact indexed session cwd for {provider}/{session_id}")
+            })?;
+    }
+    Ok(())
+}
+
+/// Redacts turn text and normalized step JSON already stored in SQLite.
+fn redact_indexed_turn_content(connection: &Connection) -> Result<()> {
+    let mut statement = connection
+        .prepare(SELECT_TURNS_REQUIRING_REDACTION_SQL)
+        .context("failed to prepare indexed turn redaction query")?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, String>(6)?,
+            ))
+        })
+        .context("failed to query indexed turns for redaction")?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed to read indexed turn redaction rows")?;
+    drop(statement);
+
+    for (
+        project_id,
+        provider,
+        session_id,
+        turn_ordinal,
+        user_message,
+        final_answer_text,
+        steps_json,
+    ) in rows
+    {
+        let redacted_user_message = redact_text(&user_message);
+        let redacted_final_answer_text = final_answer_text
+            .as_ref()
+            .map(|final_answer_text| redact_text(final_answer_text));
+        let mut steps = from_str::<Vec<CodexTurnStep>>(&steps_json).with_context(|| {
+            format!(
+                "failed to parse stored steps_json while redacting indexed content for {provider}/{session_id}#{turn_ordinal}"
+            )
+        })?;
+        redact_normalized_steps(&mut steps);
+        let redacted_steps_json =
+            serde_json::to_string(&steps).context("failed to serialize redacted turn steps")?;
+        if redacted_user_message == user_message
+            && redacted_final_answer_text == final_answer_text
+            && redacted_steps_json == steps_json
+        {
+            continue;
+        }
+        connection
+            .execute(
+                UPDATE_TURN_REDACTED_CONTENT_SQL,
+                (
+                    &redacted_user_message,
+                    &redacted_final_answer_text,
+                    &redacted_steps_json,
+                    &project_id,
+                    &provider,
+                    &session_id,
+                    turn_ordinal,
+                ),
+            )
+            .with_context(|| {
+                format!("failed to redact indexed turn content for {provider}/{session_id}#{turn_ordinal}")
+            })?;
+    }
+
     Ok(())
 }
 
@@ -201,28 +399,31 @@ pub(super) fn compat_backfill_missing_derived_analytics(
 }
 
 /// Migrates any legacy Codex-only index rows into the provider-neutral tables once.
-pub(super) fn migrate_legacy_codex_tables(connection: &mut Connection) -> Result<()> {
+pub(super) fn migrate_legacy_codex_tables(connection: &mut Connection) -> Result<bool> {
     let has_legacy_sessions = has_table(connection, SchemaTable::CodexSessions)?;
     let has_legacy_turns = has_table(connection, SchemaTable::CodexTurns)?;
     if !has_legacy_sessions && !has_legacy_turns {
-        return Ok(());
+        return Ok(false);
     }
 
     let should_import_legacy_rows = normalized_codex_index_is_empty(connection)?;
+    let mut imported_legacy_rows = false;
     let transaction = connection
         .transaction()
         .context("failed to begin legacy Codex migration transaction")?;
 
     if should_import_legacy_rows && has_legacy_sessions {
-        transaction
+        imported_legacy_rows |= transaction
             .execute(INSERT_LEGACY_CODEX_SESSIONS_SQL, [])
-            .context("failed to migrate legacy Codex sessions into normalized index")?;
+            .context("failed to migrate legacy Codex sessions into normalized index")?
+            > 0;
     }
 
     if should_import_legacy_rows && has_legacy_sessions && has_legacy_turns {
-        transaction
+        imported_legacy_rows |= transaction
             .execute(INSERT_LEGACY_CODEX_TURNS_SQL, [])
-            .context("failed to migrate legacy Codex turns into normalized index")?;
+            .context("failed to migrate legacy Codex turns into normalized index")?
+            > 0;
     }
 
     if has_legacy_turns {
@@ -239,7 +440,7 @@ pub(super) fn migrate_legacy_codex_tables(connection: &mut Connection) -> Result
         .commit()
         .context("failed to commit legacy Codex migration transaction")?;
 
-    Ok(())
+    Ok(imported_legacy_rows)
 }
 
 /// Returns the current SQLite user-version for the normalized index schema.

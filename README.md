@@ -302,6 +302,10 @@ Darc reads local agent rollouts and writes archive/query state under `~/.darc`.
 
 - No Darc cloud account is required.
 - Session archives and query indexes stay local.
+- Indexed data is best-effort redacted before it is stored, including common secrets, credential-shaped values, local
+  home-directory prefixes, and bulky data blobs.
+- Raw SQLite index files are local cache artifacts, not sharing artifacts; future sharing should export fresh redacted
+  projections from the index.
 - Read commands query your local SQLite index.
 - Optional upgrade checks contact GitHub only for release metadata and require explicit opt-in.
 

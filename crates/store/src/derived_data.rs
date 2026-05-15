@@ -11,7 +11,10 @@ use crate::{
         INSERT_TURN_EVIDENCE_SQL, INSERT_TURN_SEARCH_SQL,
         SELECT_DERIVED_ANALYTICS_REBUILD_ROWS_SQL,
     },
-    policy::{build_turn_search_text, derive_file_access_records, extract_tool_call_records},
+    policy::{
+        build_turn_search_text, derive_file_access_records_with_session_cwd,
+        extract_tool_call_records,
+    },
 };
 
 const MAX_USER_MESSAGE_SEARCH_CHARS: usize = 2_048;
@@ -29,6 +32,7 @@ pub(crate) struct TurnDerivedContext<'a> {
     pub(crate) provider: SourceKind,
     pub(crate) session_id: &'a str,
     pub(crate) turn_ordinal: i64,
+    pub(crate) session_cwd: Option<&'a str>,
     pub(crate) user_message: &'a str,
     pub(crate) final_answer_text: Option<&'a str>,
 }
@@ -49,7 +53,8 @@ pub(crate) fn insert_turn_derived_records(
         .context("turn ordinal is negative while inserting analytics")?;
     let tool_calls =
         extract_tool_call_records(project_id, provider, session_id, turn_ordinal, steps);
-    let file_accesses = derive_file_access_records(&tool_calls);
+    let file_accesses =
+        derive_file_access_records_with_session_cwd(&tool_calls, context.session_cwd);
 
     let mut tool_call_statement = connection
         .prepare(INSERT_TOOL_CALL_SQL)
@@ -399,6 +404,7 @@ pub(crate) fn rebuild_derived_analytics_tables(connection: &Connection) -> Resul
                 row.get::<_, String>(4)?,
                 row.get::<_, String>(5)?,
                 row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<String>>(7)?,
             ))
         })
         .context("failed to query turns for derived analytics rebuild")?
@@ -406,8 +412,16 @@ pub(crate) fn rebuild_derived_analytics_tables(connection: &Connection) -> Resul
         .context("failed to read derived analytics rebuild rows")?;
     drop(statement);
 
-    for (project_id, provider, session_id, turn_ordinal, steps_json, user_message, final_answer) in
-        rows
+    for (
+        project_id,
+        provider,
+        session_id,
+        turn_ordinal,
+        steps_json,
+        user_message,
+        final_answer,
+        session_cwd,
+    ) in rows
     {
         let provider = parse_provider(&provider)?;
         let steps = serde_json::from_str::<Vec<NormalizedTurnStep>>(&steps_json).with_context(|| {
@@ -422,6 +436,7 @@ pub(crate) fn rebuild_derived_analytics_tables(connection: &Connection) -> Resul
                 provider,
                 session_id: &session_id,
                 turn_ordinal,
+                session_cwd: session_cwd.as_deref(),
                 user_message: &user_message,
                 final_answer_text: final_answer.as_deref(),
             },

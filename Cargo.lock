@@ -328,6 +328,7 @@ dependencies = [
  "anyhow",
  "darc-paths",
  "darc-rollout",
+ "regex",
  "rusqlite",
  "serde_json",
 ]

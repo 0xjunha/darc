@@ -299,6 +299,7 @@ pub fn insert_indexed_turn(connection: &Connection, fixture: IndexedTurnFixture<
             provider: fixture.provider,
             session_id: fixture.session_id,
             turn_ordinal: fixture.turn_ordinal,
+            session_cwd: None,
             user_message: fixture.user_message,
             final_answer_text,
         },
