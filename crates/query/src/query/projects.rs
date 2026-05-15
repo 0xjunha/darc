@@ -2,6 +2,7 @@ use std::{collections::BTreeSet, fmt::Write, path::Path, sync::OnceLock};
 
 use anyhow::{Context, Result};
 use darc_paths::{SourceKind, normalize_access_path_candidate};
+use darc_store::{SessionProvenance, parse_origin_kind};
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter, types::Value};
 
 use super::files::{
@@ -11,10 +12,10 @@ use super::files::{
 use super::turns::build_token_usage;
 use super::{
     ProjectIndexAggregate, ResolveSessionQueryData, ResolveSessionQueryRequest,
-    ResolvedSessionMatch, SessionSummary, SessionsQueryData, SessionsQueryRequest, SessionsView,
-    TurnSummary, TurnsQueryData, TurnsQueryRequest, open_existing_index_database,
-    optional_sql_count_to_u64, parse_provider, parse_session_kind, parse_turn_status,
-    preview_first_line, preview_text, sql_count_to_u64,
+    ResolvedSessionMatch, SessionOriginScope, SessionSummary, SessionsQueryData,
+    SessionsQueryRequest, SessionsView, TurnSummary, TurnsQueryData, TurnsQueryRequest,
+    open_existing_index_database, optional_sql_count_to_u64, parse_provider, parse_session_kind,
+    parse_turn_status, preview_first_line, preview_text, sql_count_to_u64,
 };
 
 const PROJECT_INDEX_AGGREGATES_SQL: &str = "
@@ -68,8 +69,16 @@ const PROJECT_SESSIONS_SQL: &str = "
             s.parent_session_id,
             s.session_kind,
             s.cwd,
+            s.origin_kind,
+            s.origin_user_id,
+            users.display_name AS origin_user_name,
+            users.email AS origin_user_email,
+            s.origin_remote,
+            s.imported_at,
             latest_session_turns.latest_turn_at
         FROM sessions AS s
+        LEFT JOIN users
+            ON users.user_id = s.origin_user_id
         LEFT JOIN latest_session_turns
             ON latest_session_turns.project_id = s.project_id
             AND latest_session_turns.provider = s.provider
@@ -79,6 +88,8 @@ const PROJECT_SESSIONS_SQL: &str = "
             AND (?3 IS NULL OR julianday(latest_session_turns.latest_turn_at) < julianday(?3))
             AND (?4 IS NULL OR s.provider = ?4)
             AND (?5 IS NULL OR s.session_id = ?5)
+            AND (?8 = 'all' OR s.origin_kind = ?8)
+            AND (?9 IS NULL OR s.origin_user_id = ?9 OR users.user_id = ?9 OR users.email = ?9 OR users.display_name = ?9)
     ),
     paged_session_keys AS (
         SELECT *
@@ -150,6 +161,12 @@ const PROJECT_SESSIONS_SQL: &str = "
             paged_session_keys.parent_session_id,
             paged_session_keys.session_kind,
             paged_session_keys.cwd,
+            paged_session_keys.origin_kind,
+            paged_session_keys.origin_user_id,
+            paged_session_keys.origin_user_name,
+            paged_session_keys.origin_user_email,
+            paged_session_keys.origin_remote,
+            paged_session_keys.imported_at,
             COALESCE(turn_stats.turn_count, 0) AS turn_count,
             paged_session_keys.latest_turn_at,
             latest.status AS latest_status,
@@ -219,6 +236,12 @@ const PROJECT_SESSIONS_SQL: &str = "
         paged_sessions.parent_session_id,
         paged_sessions.session_kind,
         paged_sessions.cwd,
+        paged_sessions.origin_kind,
+        paged_sessions.origin_user_id,
+        paged_sessions.origin_user_name,
+        paged_sessions.origin_user_email,
+        paged_sessions.origin_remote,
+        paged_sessions.imported_at,
         paged_sessions.turn_count,
         paged_sessions.latest_turn_at,
         paged_sessions.latest_status,
@@ -290,6 +313,7 @@ const PROJECT_SESSION_ID_SQL: &str = "
     WHERE project_id = ?1
         AND (?2 IS NULL OR provider = ?2)
         AND session_id = ?3 COLLATE NOCASE
+        AND (?4 = 'all' OR origin_kind = ?4)
     ORDER BY
         provider ASC,
         session_id ASC
@@ -305,10 +329,11 @@ const PROJECT_SESSION_MATCHES_SQL: &str = "
     WHERE project_id = ?1
         AND (?2 IS NULL OR provider = ?2)
         AND session_id LIKE ?3 || '%' COLLATE NOCASE
+        AND (?4 = 'all' OR origin_kind = ?4)
     ORDER BY
         provider ASC,
         session_id ASC
-    LIMIT ?4
+    LIMIT ?5
 ";
 
 /// Collects the filters for one low-level session-summary SQL query.
@@ -319,6 +344,8 @@ pub(crate) struct SessionSummaryQuery<'a> {
     until: Option<&'a str>,
     provider: Option<SourceKind>,
     session_id: Option<&'a str>,
+    origin_scope: SessionOriginScope,
+    author: Option<&'a str>,
     project_root: Option<&'a Path>,
     limit: usize,
     offset: usize,
@@ -331,6 +358,12 @@ type RawSessionSummaryRow = (
     Option<String>,
     String,
     String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
     i64,
     Option<String>,
     Option<String>,
@@ -451,6 +484,8 @@ pub fn query_project_sessions(
         since: request.since.map(str::to_owned),
         until: request.until.map(str::to_owned),
         touched_path: request.touched_path.map(str::to_owned),
+        origin_scope: request.origin_scope,
+        author: request.author.map(str::to_owned),
         view: request.view,
         limit: u64::try_from(request.limit).context("query limit exceeds u64 range")?,
         offset: u64::try_from(request.offset).context("query offset exceeds u64 range")?,
@@ -518,6 +553,8 @@ fn query_session_page(
             until: request.until,
             provider: request.provider,
             session_id: None,
+            origin_scope: request.origin_scope,
+            author: request.author,
             project_root: request.project_root,
             limit: page_limit,
             offset: request.offset,
@@ -542,6 +579,8 @@ fn query_touched_path_session_page(
             provider: request.provider,
             since: request.since,
             until: request.until,
+            origin_scope: request.origin_scope,
+            author: request.author,
             touched_path,
             limit: request.limit,
             offset: request.offset,
@@ -568,6 +607,8 @@ fn query_touched_path_session_page(
                 until: request.until,
                 provider: request.provider,
                 session_id: None,
+                origin_scope: request.origin_scope,
+                author: request.author,
                 project_root: request.project_root,
                 limit: TOUCHED_SESSION_CANDIDATE_BATCH_ROWS,
                 offset: candidate_offset,
@@ -623,7 +664,7 @@ fn query_sessions_by_keys(
         session_keys
             .len()
             .checked_mul(3)
-            .and_then(|value| value.checked_add(1))
+            .and_then(|value| value.checked_add(3))
             .context("session key parameter count exceeds usize range")?,
     );
     for (index, session_key) in session_keys.iter().enumerate() {
@@ -636,6 +677,10 @@ fn query_sessions_by_keys(
         ));
     }
     params.push(Value::Text(request.project_id.to_owned()));
+    params.push(Value::Text(
+        request.origin_scope.sql_filter_value().to_owned(),
+    ));
+    params.push(optional_text_value(request.author));
     query_sessions_with_params(
         connection,
         &sql,
@@ -654,6 +699,8 @@ fn build_selected_sessions_sql(session_count: usize) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     let project_id_param = session_count * 3 + 1;
+    let origin_scope_param = session_count * 3 + 2;
+    let author_param = session_count * 3 + 3;
     format!(
         "
     WITH selected_session_keys(provider, session_id, sort_index) AS (
@@ -719,6 +766,12 @@ fn build_selected_sessions_sql(session_count: usize) -> String {
             sessions.parent_session_id,
             sessions.session_kind,
             sessions.cwd,
+            sessions.origin_kind,
+            sessions.origin_user_id,
+            users.display_name AS origin_user_name,
+            users.email AS origin_user_email,
+            sessions.origin_remote,
+            sessions.imported_at,
             COALESCE(turn_stats.turn_count, 0) AS turn_count,
             turn_stats.latest_turn_at,
             latest.status AS latest_status,
@@ -744,6 +797,8 @@ fn build_selected_sessions_sql(session_count: usize) -> String {
             ON sessions.project_id = ?{project_id_param}
             AND sessions.provider = selected_session_keys.provider
             AND sessions.session_id = selected_session_keys.session_id
+        LEFT JOIN users
+            ON users.user_id = sessions.origin_user_id
         LEFT JOIN turn_stats
             ON turn_stats.project_id = sessions.project_id
             AND turn_stats.provider = sessions.provider
@@ -758,6 +813,8 @@ fn build_selected_sessions_sql(session_count: usize) -> String {
             AND latest.provider = turn_stats.provider
             AND latest.session_id = turn_stats.session_id
             AND latest.turn_ordinal = turn_stats.latest_turn_ordinal
+        WHERE (?{origin_scope_param} = 'all' OR sessions.origin_kind = ?{origin_scope_param})
+            AND (?{author_param} IS NULL OR sessions.origin_user_id = ?{author_param} OR users.user_id = ?{author_param} OR users.email = ?{author_param} OR users.display_name = ?{author_param})
     ),
     session_edited_files AS (
         SELECT
@@ -793,6 +850,12 @@ fn build_selected_sessions_sql(session_count: usize) -> String {
         paged_sessions.parent_session_id,
         paged_sessions.session_kind,
         paged_sessions.cwd,
+        paged_sessions.origin_kind,
+        paged_sessions.origin_user_id,
+        paged_sessions.origin_user_name,
+        paged_sessions.origin_user_email,
+        paged_sessions.origin_remote,
+        paged_sessions.imported_at,
         paged_sessions.turn_count,
         paged_sessions.latest_turn_at,
         paged_sessions.latest_status,
@@ -847,9 +910,10 @@ pub fn lookup_project_session_id(
     project_id: &str,
     provider: Option<SourceKind>,
     session_id: &str,
+    origin_scope: SessionOriginScope,
 ) -> Result<Option<String>> {
     let connection = open_existing_index_database(index_db_path)?;
-    query_project_session_id(&connection, project_id, provider, session_id)
+    query_project_session_id(&connection, project_id, provider, session_id, origin_scope)
 }
 
 /// Queries the stored project aggregates for every indexed project.
@@ -1004,7 +1068,9 @@ pub(crate) fn query_sessions(
             provider,
             request.session_id,
             limit,
-            offset
+            offset,
+            request.origin_scope.sql_filter_value(),
+            request.author
         ],
         request.project_root,
     )
@@ -1033,6 +1099,11 @@ where
         .collect()
 }
 
+/// Converts an optional string into one owned SQLite dynamic value.
+fn optional_text_value(value: Option<&str>) -> Value {
+    value.map_or(Value::Null, |value| Value::Text(value.to_owned()))
+}
+
 /// Reads one raw session-summary row from SQLite before type normalization.
 fn read_raw_session_summary_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawSessionSummaryRow> {
     Ok((
@@ -1042,26 +1113,32 @@ fn read_raw_session_summary_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Raw
         row.get::<_, Option<String>>(3)?,
         row.get::<_, String>(4)?,
         row.get::<_, String>(5)?,
-        row.get::<_, i64>(6)?,
+        row.get::<_, String>(6)?,
         row.get::<_, Option<String>>(7)?,
         row.get::<_, Option<String>>(8)?,
         row.get::<_, Option<String>>(9)?,
-        row.get::<_, Option<i64>>(10)?,
-        row.get::<_, Option<i64>>(11)?,
-        row.get::<_, Option<i64>>(12)?,
-        row.get::<_, Option<i64>>(13)?,
-        row.get::<_, Option<i64>>(14)?,
-        row.get::<_, Option<i64>>(15)?,
+        row.get::<_, Option<String>>(10)?,
+        row.get::<_, Option<String>>(11)?,
+        row.get::<_, i64>(12)?,
+        row.get::<_, Option<String>>(13)?,
+        row.get::<_, Option<String>>(14)?,
+        row.get::<_, Option<String>>(15)?,
         row.get::<_, Option<i64>>(16)?,
         row.get::<_, Option<i64>>(17)?,
-        row.get::<_, i64>(18)?,
-        row.get::<_, i64>(19)?,
-        row.get::<_, i64>(20)?,
-        row.get::<_, Option<String>>(21)?,
-        row.get::<_, Option<String>>(22)?,
-        row.get::<_, Option<String>>(23)?,
+        row.get::<_, Option<i64>>(18)?,
+        row.get::<_, Option<i64>>(19)?,
+        row.get::<_, Option<i64>>(20)?,
+        row.get::<_, Option<i64>>(21)?,
+        row.get::<_, Option<i64>>(22)?,
+        row.get::<_, Option<i64>>(23)?,
         row.get::<_, i64>(24)?,
-        row.get::<_, String>(25)?,
+        row.get::<_, i64>(25)?,
+        row.get::<_, i64>(26)?,
+        row.get::<_, Option<String>>(27)?,
+        row.get::<_, Option<String>>(28)?,
+        row.get::<_, Option<String>>(29)?,
+        row.get::<_, i64>(30)?,
+        row.get::<_, String>(31)?,
     ))
 }
 
@@ -1077,6 +1154,12 @@ fn build_session_summary(
         parent_session_id,
         session_kind,
         cwd,
+        origin_kind,
+        origin_user_id,
+        origin_user_name,
+        origin_user_email,
+        origin_remote,
+        imported_at,
         turn_count,
         latest_turn_at,
         latest_status,
@@ -1100,6 +1183,7 @@ fn build_session_summary(
     ) = row;
     let first_user_prompt_chars = first_user_prompt.as_deref().map(count_chars_u64);
     let final_agent_message_chars = final_agent_message.as_deref().map(count_chars_u64);
+    let origin_kind = parse_origin_kind(&origin_kind)?;
     Ok(SessionSummary {
         project_id,
         provider: parse_provider(&provider)?,
@@ -1137,6 +1221,14 @@ fn build_session_summary(
         final_agent_message_truncated: false,
         final_agent_message_chars,
         final_agent_message_total_chars: final_agent_message_chars,
+        provenance: SessionProvenance {
+            origin_kind,
+            user_id: origin_user_id,
+            user_name: origin_user_name,
+            user_email: origin_user_email,
+            origin_remote,
+            imported_at,
+        },
         aborted_turn_count: sql_count_to_u64(aborted_turn_count)?,
         edited_files: normalize_edited_files(
             parse_edited_files_json(&edited_files_json)?,
@@ -1162,6 +1254,8 @@ pub(crate) fn query_session_summary(
             until: None,
             provider: Some(provider),
             session_id: Some(session_id),
+            origin_scope: SessionOriginScope::All,
+            author: None,
             project_root,
             limit: 1,
             offset: 0,
@@ -1178,15 +1272,22 @@ pub(crate) fn query_project_session_id(
     project_id: &str,
     provider: Option<SourceKind>,
     session_id: &str,
+    origin_scope: SessionOriginScope,
 ) -> Result<Option<String>> {
     let provider = provider.map(SourceKind::directory_name);
     let mut statement = connection
         .prepare(PROJECT_SESSION_ID_SQL)
         .context("failed to prepare project session id query")?;
     let session_id = statement
-        .query_row(params![project_id, provider, session_id], |row| {
-            row.get::<_, String>(0)
-        })
+        .query_row(
+            params![
+                project_id,
+                provider,
+                session_id,
+                origin_scope.sql_filter_value()
+            ],
+            |row| row.get::<_, String>(0),
+        )
         .optional()
         .context("failed to query project session id")?;
     Ok(session_id)
@@ -1198,10 +1299,18 @@ pub fn lookup_project_session_matches(
     project_id: &str,
     provider: Option<SourceKind>,
     session_id: &str,
+    origin_scope: SessionOriginScope,
     limit: usize,
 ) -> Result<Vec<ResolvedSessionMatch>> {
     let connection = open_existing_index_database(index_db_path)?;
-    query_project_session_matches(&connection, project_id, provider, session_id, limit)
+    query_project_session_matches(
+        &connection,
+        project_id,
+        provider,
+        session_id,
+        origin_scope,
+        limit,
+    )
 }
 
 /// Queries project-scoped session matches from one open SQLite connection.
@@ -1210,6 +1319,7 @@ fn query_project_session_matches(
     project_id: &str,
     provider: Option<SourceKind>,
     session_id: &str,
+    origin_scope: SessionOriginScope,
     limit: usize,
 ) -> Result<Vec<ResolvedSessionMatch>> {
     let provider = provider.map(SourceKind::directory_name);
@@ -1218,13 +1328,22 @@ fn query_project_session_matches(
         .prepare(PROJECT_SESSION_MATCHES_SQL)
         .context("failed to prepare project session matches query")?;
     let rows = statement
-        .query_map(params![project_id, provider, session_id, limit], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })
+        .query_map(
+            params![
+                project_id,
+                provider,
+                session_id,
+                origin_scope.sql_filter_value(),
+                limit
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
         .context("failed to query project session matches")?
         .collect::<rusqlite::Result<Vec<_>>>()
         .context("failed to read project session match rows")?;

@@ -26,12 +26,12 @@ use crate::query::{
     DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_SEARCH_MATCH_LIMIT, DEFAULT_TURN_STEP_LIMIT,
     DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT, FilesQueryMode, FilesQueryRequest, LocalDate,
     ProjectInsights, SearchMode, SearchTurnsRequest, SessionBundleQueryRequest, SessionBundleView,
-    SessionFilesQueryRequest, SessionKind, SessionsQueryRequest, SessionsView, TurnDetailOptions,
-    TurnInsights, TurnsQueryRequest, TurnsView, build_project_insights, build_turn_insights,
-    build_workspace_insights, open_existing_index_database, parse_session_kind,
-    query_project_files, query_project_session_bundle, query_project_session_files,
-    query_project_sessions, query_project_turns, query_search_turns, query_session_turn_details,
-    query_turn_detail, query_turn_exists, smoke_test_sql,
+    SessionFilesQueryRequest, SessionKind, SessionOriginScope, SessionsQueryRequest, SessionsView,
+    TurnDetailOptions, TurnInsights, TurnsQueryRequest, TurnsView, build_project_insights,
+    build_turn_insights, build_workspace_insights, open_existing_index_database,
+    parse_session_kind, query_project_files, query_project_session_bundle,
+    query_project_session_files, query_project_sessions, query_project_turns, query_search_turns,
+    query_session_turn_details, query_turn_detail, query_turn_exists, smoke_test_sql,
 };
 
 /// Builds one temporary SQLite index path for query tests.
@@ -827,6 +827,8 @@ fn session_summaries_leave_partial_token_and_runtime_totals_null() -> Result<()>
             since: None,
             until: None,
             touched_path: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             view: SessionsView::Full,
             limit: 50,
             offset: 0,
@@ -897,6 +899,8 @@ fn session_summaries_compact_view_caps_prompt_and_final_message() -> Result<()> 
             since: None,
             until: None,
             touched_path: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             view: SessionsView::Compact,
             limit: 50,
             offset: 0,
@@ -911,6 +915,8 @@ fn session_summaries_compact_view_caps_prompt_and_final_message() -> Result<()> 
             since: None,
             until: None,
             touched_path: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             view: SessionsView::Full,
             limit: 50,
             offset: 0,
@@ -1016,6 +1022,8 @@ fn session_summaries_deduplicate_absolute_and_relative_edited_files() -> Result<
             since: None,
             until: None,
             touched_path: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             view: SessionsView::Compact,
             limit: 50,
             offset: 0,
@@ -1078,6 +1086,8 @@ fn session_summaries_filter_by_latest_turn_bounds() -> Result<()> {
             since: None,
             until: None,
             touched_path: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             view: SessionsView::Full,
             limit: 50,
             offset: 0,
@@ -1092,6 +1102,8 @@ fn session_summaries_filter_by_latest_turn_bounds() -> Result<()> {
             since: Some("2026-04-06T00:00:00Z"),
             until: None,
             touched_path: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             view: SessionsView::Full,
             limit: 50,
             offset: 0,
@@ -1106,6 +1118,8 @@ fn session_summaries_filter_by_latest_turn_bounds() -> Result<()> {
             since: None,
             until: Some("2026-04-06T00:00:00Z"),
             touched_path: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             view: SessionsView::Full,
             limit: 50,
             offset: 0,
@@ -1120,6 +1134,8 @@ fn session_summaries_filter_by_latest_turn_bounds() -> Result<()> {
             since: Some("2026-04-05T12:00:00Z"),
             until: Some("2026-04-06T12:00:00Z"),
             touched_path: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             view: SessionsView::Full,
             limit: 50,
             offset: 0,
@@ -1204,6 +1220,8 @@ fn session_summaries_filter_by_provider() -> Result<()> {
             since: None,
             until: None,
             touched_path: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             view: SessionsView::Full,
             limit: 50,
             offset: 0,
@@ -1310,6 +1328,8 @@ fn session_summaries_filter_by_touched_path_glob() -> Result<()> {
             since: None,
             until: None,
             touched_path: Some("src/components/**"),
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             view: SessionsView::Full,
             limit: 50,
             offset: 0,
@@ -1415,6 +1435,8 @@ fn session_summaries_touched_path_uses_latest_turn_time_bounds() -> Result<()> {
             since: Some("2026-04-07T00:00:00Z"),
             until: None,
             touched_path: Some("src/components/**"),
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             view: SessionsView::Full,
             limit: 50,
             offset: 0,
@@ -1474,6 +1496,8 @@ fn session_summaries_accept_absolute_project_root_touched_paths() -> Result<()> 
             since: None,
             until: None,
             touched_path: Some("/tmp/repo-a/README.md"),
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             view: SessionsView::Full,
             limit: 50,
             offset: 0,
@@ -1554,6 +1578,8 @@ fn session_summaries_paginate_after_touched_path_filter() -> Result<()> {
             since: None,
             until: None,
             touched_path: Some("src/**/*.rs"),
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             view: SessionsView::Full,
             limit: 2,
             offset: 0,
@@ -1568,6 +1594,8 @@ fn session_summaries_paginate_after_touched_path_filter() -> Result<()> {
             since: None,
             until: None,
             touched_path: Some("src/**/*.rs"),
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             view: SessionsView::Full,
             limit: 2,
             offset: 2,
@@ -3879,6 +3907,8 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             session_id: None,
             since: None,
             until: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             limit: 10,
             offset: 0,
             matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
@@ -3899,6 +3929,8 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             session_id: None,
             since: None,
             until: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             limit: 10,
             offset: 0,
             matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
@@ -3939,6 +3971,8 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             session_id: None,
             since: None,
             until: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             limit: 10,
             offset: 0,
             matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
@@ -3959,6 +3993,8 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             session_id: None,
             since: None,
             until: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             limit: 10,
             offset: 0,
             matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
@@ -3979,6 +4015,8 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             session_id: None,
             since: None,
             until: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             limit: 10,
             offset: 0,
             matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
@@ -3999,6 +4037,8 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             session_id: None,
             since: None,
             until: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             limit: 10,
             offset: 0,
             matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
@@ -4019,6 +4059,8 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             session_id: None,
             since: None,
             until: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             limit: 10,
             offset: 0,
             matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
@@ -4039,6 +4081,8 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             session_id: None,
             since: None,
             until: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             limit: 10,
             offset: 0,
             matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
@@ -4059,6 +4103,8 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             session_id: None,
             since: None,
             until: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             limit: 10,
             offset: 0,
             matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
@@ -4079,6 +4125,8 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             session_id: None,
             since: None,
             until: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             limit: 10,
             offset: 0,
             matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
@@ -4099,6 +4147,8 @@ fn search_turns_keyword_matches_indexed_turn_text() -> Result<()> {
             session_id: None,
             since: None,
             until: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             limit: 10,
             offset: 0,
             matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
@@ -4277,6 +4327,8 @@ fn search_turns_exact_modes_match_extended_evidence_fields() -> Result<()> {
                 session_id: None,
                 since: None,
                 until: None,
+                origin_scope: SessionOriginScope::Local,
+                author: None,
                 limit: 10,
                 offset: 0,
                 matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
@@ -4356,6 +4408,8 @@ fn search_turns_exact_modes_preserve_outer_whitespace() -> Result<()> {
                 session_id: None,
                 since: None,
                 until: None,
+                origin_scope: SessionOriginScope::Local,
+                author: None,
                 limit: 10,
                 offset: 0,
                 matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
@@ -4431,6 +4485,8 @@ fn search_turns_exact_modes_cap_nested_matches() -> Result<()> {
             session_id: None,
             since: None,
             until: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             limit: 1,
             offset: 0,
             matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
@@ -4461,6 +4517,8 @@ fn search_turns_exact_modes_cap_nested_matches() -> Result<()> {
             session_id: None,
             since: None,
             until: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             limit: 1,
             offset: 0,
             matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
@@ -4548,6 +4606,8 @@ fn search_turns_literal_filters_evidence_before_preview_cap() -> Result<()> {
             session_id: None,
             since: None,
             until: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             limit: 1,
             offset: 0,
             matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
@@ -4642,6 +4702,8 @@ fn search_turns_literal_streams_past_legacy_candidate_cap() -> Result<()> {
             session_id: None,
             since: None,
             until: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             limit: 10,
             offset: 0,
             matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
@@ -4730,6 +4792,8 @@ fn search_turns_regex_streams_past_legacy_candidate_cap() -> Result<()> {
             session_id: None,
             since: None,
             until: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             limit: 10,
             offset: 0,
             matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
@@ -4817,6 +4881,8 @@ fn search_turns_regex_literal_prefix_filters_scaled_candidates() -> Result<()> {
             session_id: None,
             since: None,
             until: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             limit: 10,
             offset: 0,
             matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
@@ -4878,6 +4944,8 @@ fn search_turns_file_modes_match_derived_paths() -> Result<()> {
             session_id: None,
             since: None,
             until: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             limit: 10,
             offset: 0,
             matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
@@ -4898,6 +4966,8 @@ fn search_turns_file_modes_match_derived_paths() -> Result<()> {
             session_id: None,
             since: None,
             until: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             limit: 10,
             offset: 0,
             matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
@@ -4918,6 +4988,8 @@ fn search_turns_file_modes_match_derived_paths() -> Result<()> {
             session_id: None,
             since: None,
             until: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             limit: 10,
             offset: 0,
             matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
@@ -4938,6 +5010,8 @@ fn search_turns_file_modes_match_derived_paths() -> Result<()> {
             session_id: None,
             since: None,
             until: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             limit: 10,
             offset: 0,
             matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
@@ -5019,6 +5093,8 @@ fn search_turns_file_modes_cap_matched_paths() -> Result<()> {
             session_id: None,
             since: None,
             until: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             limit: 10,
             offset: 0,
             matched_path_limit: Some(1),
@@ -5039,6 +5115,8 @@ fn search_turns_file_modes_cap_matched_paths() -> Result<()> {
             session_id: None,
             since: None,
             until: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             limit: 10,
             offset: 0,
             matched_path_limit: None,
@@ -5115,6 +5193,8 @@ fn search_turns_file_modes_dedupe_before_pagination() -> Result<()> {
             session_id: None,
             since: None,
             until: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
             limit: 3,
             offset: 0,
             matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
@@ -5182,6 +5262,268 @@ fn full_turn_payload_serialization_skips_oneline_helper_fields() -> Result<()> {
         .as_object()
         .context("turn row should serialize as an object")?;
     assert!(!turns_row.contains_key("oneline_user_prompt_preview"));
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn session_and_search_queries_respect_shared_scope_and_author() -> Result<()> {
+    let index_path = test_index_path("shared-scope-query");
+    let connection = open_index_database(&index_path)?;
+    let local_session = "00000000-0000-4000-8000-000000000101";
+    let shared_session = "00000000-0000-4000-8000-000000000202";
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, local_session, "/tmp/repo-a"),
+    )?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, shared_session, "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            user_message: "local marker visible",
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                local_session,
+                1,
+                "2026-05-15T10:00:00Z",
+                "completed",
+                "[]",
+            )
+        },
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            user_message: "shared marker visible",
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                shared_session,
+                1,
+                "2026-05-15T11:00:00Z",
+                "completed",
+                "[]",
+            )
+        },
+    )?;
+    connection.execute(
+        "
+        INSERT INTO users (user_id, display_name, email, public_key, source, updated_at)
+        VALUES (?1, ?2, ?3, ?4, 'test', '2026-05-15T12:00:00Z')
+        ",
+        rusqlite::params![
+            "usr-teammate",
+            "Team Mate",
+            "teammate@example.invalid",
+            "age1synthetic"
+        ],
+    )?;
+    connection.execute(
+        "
+        UPDATE sessions
+        SET origin_kind = 'shared',
+            origin_user_id = 'usr-teammate',
+            origin_remote = 'origin',
+            imported_at = '2026-05-15T12:00:00Z'
+        WHERE project_id = 'repo-a' AND session_id = ?1
+        ",
+        rusqlite::params![shared_session],
+    )?;
+
+    let local_sessions = query_project_sessions(
+        &index_path,
+        SessionsQueryRequest {
+            project_id: "repo-a",
+            project_root: None,
+            provider: None,
+            since: None,
+            until: None,
+            touched_path: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
+            view: SessionsView::Full,
+            limit: 10,
+            offset: 0,
+        },
+    )?;
+    assert_eq!(local_sessions.sessions.len(), 1);
+    assert_eq!(local_sessions.sessions[0].session_id, local_session);
+
+    let shared_sessions = query_project_sessions(
+        &index_path,
+        SessionsQueryRequest {
+            project_id: "repo-a",
+            project_root: None,
+            provider: None,
+            since: None,
+            until: None,
+            touched_path: None,
+            origin_scope: SessionOriginScope::Shared,
+            author: Some("teammate@example.invalid"),
+            view: SessionsView::Full,
+            limit: 10,
+            offset: 0,
+        },
+    )?;
+    assert_eq!(shared_sessions.sessions.len(), 1);
+    assert_eq!(shared_sessions.sessions[0].session_id, shared_session);
+    assert_eq!(
+        shared_sessions.sessions[0].provenance.user_email.as_deref(),
+        Some("teammate@example.invalid")
+    );
+
+    let local_search = query_search_turns(
+        &index_path,
+        SearchTurnsRequest {
+            project_id: "repo-a",
+            project_root: None,
+            mode: SearchMode::Keyword,
+            query: "marker",
+            include_tool_output: false,
+            fields: &[],
+            excluded_fields: &[],
+            provider: None,
+            session_id: None,
+            since: None,
+            until: None,
+            origin_scope: SessionOriginScope::Local,
+            author: None,
+            limit: 10,
+            offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
+            match_limit: None,
+        },
+    )?;
+    assert_eq!(local_search.hits.len(), 1);
+    assert_eq!(local_search.hits[0].session_id, local_session);
+
+    let shared_search = query_search_turns(
+        &index_path,
+        SearchTurnsRequest {
+            project_id: "repo-a",
+            project_root: None,
+            mode: SearchMode::Keyword,
+            query: "marker",
+            include_tool_output: false,
+            fields: &[],
+            excluded_fields: &[],
+            provider: None,
+            session_id: None,
+            since: None,
+            until: None,
+            origin_scope: SessionOriginScope::Shared,
+            author: Some("teammate@example.invalid"),
+            limit: 10,
+            offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
+            match_limit: None,
+        },
+    )?;
+    assert_eq!(shared_search.hits.len(), 1);
+    assert_eq!(shared_search.hits[0].session_id, shared_session);
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn exact_touched_path_sessions_apply_shared_scope_before_pagination() -> Result<()> {
+    let index_path = test_index_path("shared-touched-path-pagination");
+    let connection = open_index_database(&index_path)?;
+    let local_session = "00000000-0000-4000-8000-000000000301";
+    let shared_session = "00000000-0000-4000-8000-000000000302";
+    for (session_id, started_at) in [
+        (local_session, "2026-05-15T12:00:00Z"),
+        (shared_session, "2026-05-15T11:00:00Z"),
+    ] {
+        insert_indexed_session(
+            &connection,
+            IndexedSessionFixture::new("repo-a", SourceKind::Codex, session_id, "/tmp/repo-a"),
+        )?;
+        let steps_json = format!(
+            r#"[{{"type":"tool_call","timestamp":"{started_at}","call_id":"call-{session_id}","name":"Read","arguments":"{{\"file_path\":\"src/shared.rs\"}}"}}]"#
+        );
+        insert_indexed_turn(
+            &connection,
+            IndexedTurnFixture {
+                step_count: 1,
+                tool_call_count: 1,
+                duration_ms: 3_000,
+                ..IndexedTurnFixture::new(
+                    "repo-a",
+                    SourceKind::Codex,
+                    session_id,
+                    1,
+                    started_at,
+                    "completed",
+                    &steps_json,
+                )
+            },
+        )?;
+    }
+    connection.execute(
+        "
+        INSERT INTO users (user_id, display_name, email, public_key, source, updated_at)
+        VALUES (?1, ?2, ?3, ?4, 'test', '2026-05-15T12:00:00Z')
+        ",
+        rusqlite::params![
+            "usr-teammate",
+            "Team Mate",
+            "teammate@example.invalid",
+            "age1synthetic"
+        ],
+    )?;
+    connection.execute(
+        "
+        UPDATE sessions
+        SET origin_kind = 'shared',
+            origin_user_id = 'usr-teammate',
+            origin_remote = 'origin',
+            imported_at = '2026-05-15T12:00:00Z'
+        WHERE project_id = 'repo-a' AND session_id = ?1
+        ",
+        rusqlite::params![shared_session],
+    )?;
+
+    let shared_page = query_project_sessions(
+        &index_path,
+        SessionsQueryRequest {
+            project_id: "repo-a",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            provider: None,
+            since: None,
+            until: None,
+            touched_path: Some("src/shared.rs"),
+            origin_scope: SessionOriginScope::Shared,
+            author: Some("teammate@example.invalid"),
+            view: SessionsView::Full,
+            limit: 1,
+            offset: 0,
+        },
+    )?;
+
+    assert!(!shared_page.has_more);
+    assert_eq!(
+        shared_page
+            .sessions
+            .iter()
+            .map(|session| session.session_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![shared_session]
+    );
 
     fs::remove_dir_all(
         index_path

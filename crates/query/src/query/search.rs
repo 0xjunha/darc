@@ -8,7 +8,7 @@ use rusqlite::{Connection, params, params_from_iter, types::Value};
 
 use super::{
     DEFAULT_SEARCH_MATCH_LIMIT, SearchEvidenceField, SearchMode, SearchTurnHit, SearchTurnMatch,
-    SearchTurnsQueryData, SearchTurnsRequest, apply_matched_path_limit,
+    SearchTurnsQueryData, SearchTurnsRequest, SessionOriginScope, apply_matched_path_limit,
     open_existing_index_database, parse_provider, parse_turn_status, preview_text,
     sql_count_to_u64,
 };
@@ -31,17 +31,25 @@ const KEYWORD_SEARCH_SQL: &str = "
     FROM turn_search_fts
     CROSS JOIN turn_search
     CROSS JOIN turns
+    CROSS JOIN sessions
+    LEFT JOIN users
+        ON users.user_id = sessions.origin_user_id
     WHERE turn_search_fts MATCH ?6
         AND turn_search.rowid = turn_search_fts.rowid
         AND turns.project_id = turn_search.project_id
         AND turns.provider = turn_search.provider
         AND turns.session_id = turn_search.session_id
         AND turns.turn_ordinal = turn_search.turn_ordinal
+        AND sessions.project_id = turn_search.project_id
+        AND sessions.provider = turn_search.provider
+        AND sessions.session_id = turn_search.session_id
         AND turn_search.project_id = ?1
         AND (?2 IS NULL OR turn_search.provider = ?2)
         AND (?3 IS NULL OR turn_search.session_id = ?3)
         AND (?4 IS NULL OR julianday(turns.started_at) >= julianday(?4))
         AND (?5 IS NULL OR julianday(turns.started_at) < julianday(?5))
+        AND (?9 = 'all' OR sessions.origin_kind = ?9)
+        AND (?10 IS NULL OR sessions.origin_user_id = ?10 OR users.user_id = ?10 OR users.email = ?10 OR users.display_name = ?10)
     ORDER BY
         bm25(turn_search_fts) ASC,
         turns.started_at DESC,
@@ -150,6 +158,8 @@ struct SearchScope<'a> {
     since: Option<&'a str>,
     until: Option<&'a str>,
     project_root: Option<&'a Path>,
+    origin_scope: SessionOriginScope,
+    author: Option<&'a str>,
 }
 
 /// Stores one keyword search request after CLI/project resolution.
@@ -339,6 +349,8 @@ fn build_search_turns(
         since,
         until,
         project_root: request.project_root,
+        origin_scope: request.origin_scope,
+        author: request.author,
     };
 
     let hits = match mode {
@@ -368,6 +380,8 @@ fn build_search_turns(
                 session_id: session_id.map(str::to_owned),
                 since: since.map(str::to_owned),
                 until: until.map(str::to_owned),
+                origin_scope: request.origin_scope,
+                author: request.author.map(str::to_owned),
                 limit: u64::try_from(limit).context("search limit exceeds u64 range")?,
                 offset: u64::try_from(offset).context("search offset exceeds u64 range")?,
                 has_more,
@@ -453,6 +467,8 @@ fn build_search_turns(
         session_id: session_id.map(str::to_owned),
         since: since.map(str::to_owned),
         until: until.map(str::to_owned),
+        origin_scope: request.origin_scope,
+        author: request.author.map(str::to_owned),
         limit: u64::try_from(limit).context("search limit exceeds u64 range")?,
         offset: u64::try_from(offset).context("search offset exceeds u64 range")?,
         has_more,
@@ -623,35 +639,43 @@ fn evidence_search_turns_sql(fields: &EvidenceFieldSelection, literal: bool) -> 
     format!(
         "
     SELECT
-        provider,
-        session_id,
-        turn_ordinal,
-        started_at,
-        completed_at,
-        status,
-        user_message,
-        final_answer_text
+        turns.provider,
+        turns.session_id,
+        turns.turn_ordinal,
+        turns.started_at,
+        turns.completed_at,
+        turns.status,
+        turns.user_message,
+        turns.final_answer_text
     FROM turns
-    WHERE project_id = ?
-        AND (? IS NULL OR provider = ?)
-        AND (? IS NULL OR session_id = ?)
-        AND (? IS NULL OR julianday(started_at) >= julianday(?))
-        AND (? IS NULL OR julianday(started_at) < julianday(?))
+    INNER JOIN sessions
+        ON sessions.project_id = turns.project_id
+        AND sessions.provider = turns.provider
+        AND sessions.session_id = turns.session_id
+    LEFT JOIN users
+        ON users.user_id = sessions.origin_user_id
+    WHERE turns.project_id = ?
+        AND (? = 'all' OR sessions.origin_kind = ?)
+        AND (? IS NULL OR sessions.origin_user_id = ? OR users.user_id = ? OR users.email = ? OR users.display_name = ?)
+        AND (? IS NULL OR turns.provider = ?)
+        AND (? IS NULL OR turns.session_id = ?)
+        AND (? IS NULL OR julianday(turns.started_at) >= julianday(?))
+        AND (? IS NULL OR julianday(turns.started_at) < julianday(?))
         AND (
             ? IS NULL
-            OR started_at < ?
+            OR turns.started_at < ?
             OR (
-                started_at = ?
+                turns.started_at = ?
                 AND (
-                    provider > ?
+                    turns.provider > ?
                     OR (
-                        provider = ?
-                        AND session_id > ?
+                        turns.provider = ?
+                        AND turns.session_id > ?
                     )
                     OR (
-                        provider = ?
-                        AND session_id = ?
-                        AND turn_ordinal > ?
+                        turns.provider = ?
+                        AND turns.session_id = ?
+                        AND turns.turn_ordinal > ?
                     )
                 )
             )
@@ -666,10 +690,10 @@ fn evidence_search_turns_sql(fields: &EvidenceFieldSelection, literal: bool) -> 
                 AND {field_predicate}{text_predicate}
         )
     ORDER BY
-        started_at DESC,
-        provider ASC,
-        session_id ASC,
-        turn_ordinal ASC
+        turns.started_at DESC,
+        turns.provider ASC,
+        turns.session_id ASC,
+        turns.turn_ordinal ASC
     LIMIT ?
 "
     )
@@ -733,7 +757,9 @@ fn query_keyword_hits(
                 scope.until,
                 fts_query,
                 limit,
-                offset
+                offset,
+                scope.origin_scope.sql_filter_value(),
+                scope.author
             ],
             |row| {
                 Ok((
@@ -1004,6 +1030,13 @@ fn build_evidence_turn_batch_params(
     let cursor_turn_ordinal = cursor.map(|value| value.turn_ordinal);
     let mut params = vec![
         Value::Text(scope.project_id.to_owned()),
+        Value::Text(scope.origin_scope.sql_filter_value().to_owned()),
+        Value::Text(scope.origin_scope.sql_filter_value().to_owned()),
+        optional_text_value(scope.author),
+        optional_text_value(scope.author),
+        optional_text_value(scope.author),
+        optional_text_value(scope.author),
+        optional_text_value(scope.author),
         optional_text_value(scope.provider),
         optional_text_value(scope.provider),
         optional_text_value(scope.session_id),
@@ -1424,6 +1457,8 @@ fn query_file_path_glob_turn_batch(
         optional_text_value(scope.until),
         Value::Integer(limit),
         Value::Integer(offset),
+        Value::Text(scope.origin_scope.sql_filter_value().to_owned()),
+        optional_text_value(scope.author),
     ];
     if matches!(
         path_selector,
@@ -1618,7 +1653,7 @@ fn build_file_path_glob_turn_batch_sql(path_selector: &PathQuerySelector) -> Str
         PathQuerySelector::Exact { .. } | PathQuerySelector::Prefix { .. } => {
             format!(
                 "\n                AND {}",
-                path_selector.sql_predicate(8, 9)
+                path_selector.sql_predicate(10, 11)
             )
         }
         PathQuerySelector::Unbounded => String::new(),
@@ -1626,7 +1661,7 @@ fn build_file_path_glob_turn_batch_sql(path_selector: &PathQuerySelector) -> Str
     };
     let final_path_filter = match path_selector {
         PathQuerySelector::Exact { .. } | PathQuerySelector::Prefix { .. } => {
-            format!("\n            AND {}", path_selector.sql_predicate(8, 9))
+            format!("\n            AND {}", path_selector.sql_predicate(10, 11))
         }
         PathQuerySelector::Unbounded => String::new(),
         PathQuerySelector::Impossible => unreachable!("impossible selector is handled by caller"),
@@ -1647,11 +1682,19 @@ fn build_file_path_glob_turn_batch_sql(path_selector: &PathQuerySelector) -> Str
                 AND turns.provider = file_accesses.provider
                 AND turns.session_id = file_accesses.session_id
                 AND turns.turn_ordinal = file_accesses.turn_ordinal
+            INNER JOIN sessions
+                ON sessions.project_id = turns.project_id
+                AND sessions.provider = turns.provider
+                AND sessions.session_id = turns.session_id
+            LEFT JOIN users
+                ON users.user_id = sessions.origin_user_id
             WHERE file_accesses.project_id = ?1
                 AND (?2 IS NULL OR file_accesses.provider = ?2)
                 AND (?3 IS NULL OR file_accesses.session_id = ?3)
                 AND (?4 IS NULL OR julianday(turns.started_at) >= julianday(?4))
                 AND (?5 IS NULL OR julianday(turns.started_at) < julianday(?5))
+                AND (?8 = 'all' OR sessions.origin_kind = ?8)
+                AND (?9 IS NULL OR sessions.origin_user_id = ?9 OR users.user_id = ?9 OR users.email = ?9 OR users.display_name = ?9)
                 AND NULLIF(TRIM(file_accesses.path), '') IS NOT NULL{path_filter}
             GROUP BY
                 file_accesses.provider,
@@ -1787,7 +1830,9 @@ fn query_file_hits_stage(
                 pattern,
                 scope.since,
                 scope.until,
-                limit
+                limit,
+                scope.origin_scope.sql_filter_value(),
+                scope.author
             ],
             |row| {
                 Ok((
@@ -1962,6 +2007,12 @@ fn build_file_search_stage_sql(kind: FileSearchKind, stage: FileSearchStage) -> 
                 AND turns.provider = file_accesses.provider
                 AND turns.session_id = file_accesses.session_id
                 AND turns.turn_ordinal = file_accesses.turn_ordinal
+            INNER JOIN sessions
+                ON sessions.project_id = turns.project_id
+                AND sessions.provider = turns.provider
+                AND sessions.session_id = turns.session_id
+            LEFT JOIN users
+                ON users.user_id = sessions.origin_user_id
             WHERE file_accesses.project_id = ?1
                 AND (?2 IS NULL OR file_accesses.provider = ?2)
                 AND (?3 IS NULL OR file_accesses.session_id = ?3)
@@ -1969,6 +2020,8 @@ fn build_file_search_stage_sql(kind: FileSearchKind, stage: FileSearchStage) -> 
                 AND {predicate}
                 AND (?5 IS NULL OR julianday(turns.started_at) >= julianday(?5))
                 AND (?6 IS NULL OR julianday(turns.started_at) < julianday(?6))
+                AND (?8 = 'all' OR sessions.origin_kind = ?8)
+                AND (?9 IS NULL OR sessions.origin_user_id = ?9 OR users.user_id = ?9 OR users.email = ?9 OR users.display_name = ?9)
             GROUP BY
                 turns.provider,
                 turns.session_id,

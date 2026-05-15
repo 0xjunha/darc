@@ -12,9 +12,9 @@ use rusqlite::{Connection, params_from_iter, types::Value};
 
 use super::{
     FilePivotSummary, FileSessionSummary, FilesQueryData, FilesQueryMode, FilesQueryRequest,
-    SessionFileSummary, SessionFilesQueryData, SessionFilesQueryRequest, SessionSummary,
-    apply_matched_path_limit, open_existing_index_database, paginate_ranked_rows, parse_provider,
-    sql_count_to_u64,
+    SessionFileSummary, SessionFilesQueryData, SessionFilesQueryRequest, SessionOriginScope,
+    SessionSummary, apply_matched_path_limit, open_existing_index_database, paginate_ranked_rows,
+    parse_provider, sql_count_to_u64,
 };
 
 const MAX_SESSION_KEYS_PER_QUERY: usize = 250;
@@ -41,6 +41,8 @@ pub(crate) struct TouchedSessionPageRequest<'a> {
     pub(crate) provider: Option<SourceKind>,
     pub(crate) since: Option<&'a str>,
     pub(crate) until: Option<&'a str>,
+    pub(crate) origin_scope: SessionOriginScope,
+    pub(crate) author: Option<&'a str>,
     pub(crate) touched_path: &'a str,
     pub(crate) limit: usize,
     pub(crate) offset: usize,
@@ -301,6 +303,8 @@ fn query_exact_touched_session_keys(
         optional_text_value(provider),
         optional_text_value(request.since),
         optional_text_value(request.until),
+        Value::Text(request.origin_scope.sql_filter_value().to_owned()),
+        optional_text_value(request.author),
     ];
     params.extend(path_selector.params());
     params.push(Value::Integer(
@@ -331,7 +335,7 @@ fn query_exact_touched_session_keys(
 
 /// Builds the SQL for one exact touched-path session page.
 fn build_exact_touched_session_page_sql(path_selector: &PathQuerySelector) -> String {
-    let path_filter = path_selector.sql_predicate(5, 6);
+    let path_filter = path_selector.sql_predicate(7, 8);
     format!(
         "
     WITH touched_sessions AS (
@@ -339,8 +343,16 @@ fn build_exact_touched_session_page_sql(path_selector: &PathQuerySelector) -> St
             file_accesses.provider,
             file_accesses.session_id
         FROM file_accesses
+        INNER JOIN sessions
+            ON sessions.project_id = file_accesses.project_id
+            AND sessions.provider = file_accesses.provider
+            AND sessions.session_id = file_accesses.session_id
+        LEFT JOIN users
+            ON users.user_id = sessions.origin_user_id
         WHERE file_accesses.project_id = ?1
             AND (?2 IS NULL OR file_accesses.provider = ?2)
+            AND (?5 = 'all' OR sessions.origin_kind = ?5)
+            AND (?6 IS NULL OR sessions.origin_user_id = ?6 OR users.user_id = ?6 OR users.email = ?6 OR users.display_name = ?6)
             AND file_accesses.access_type IN ('read', 'write', 'edit')
             AND NULLIF(TRIM(file_accesses.path), '') IS NOT NULL
             AND {path_filter}
@@ -371,7 +383,7 @@ fn build_exact_touched_session_page_sql(path_selector: &PathQuerySelector) -> St
         latest_session_turns.latest_turn_at DESC,
         touched_sessions.provider ASC,
         touched_sessions.session_id DESC
-    LIMIT ?7 OFFSET ?8
+    LIMIT ?9 OFFSET ?10
 "
     )
 }
