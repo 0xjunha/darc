@@ -203,6 +203,43 @@ darc resolve session <SESSION_PREFIX> --pick-one
 darc show session <SESSION_ID> --turn-limit 5 --step-limit 10
 ```
 
+### Share an Encrypted Team Index
+
+Darc can share selected, redacted index rows through Git without a Darc-hosted cloud. Shared payload objects are
+encrypted with age recipients and pushed to Git branches named `darc/<name>`.
+
+```sh
+# Each teammate shares their public recipient.
+darc share key
+darc share recipient add age1...
+
+# Choose what this project exports.
+darc share include <SESSION_ID>
+darc share include --all
+darc share exclude <SESSION_ID>
+
+# Push, fetch, and import through Git-like commands.
+darc push team
+darc pull team
+```
+
+By default, `darc push team` uses the active project's Git upstream or `origin`. For a separate index-only repository:
+
+```sh
+darc remote add team-index git@github.com:example/darc-index.git
+darc push team --remote team-index
+darc pull team --remote team-index
+```
+
+Read commands stay local-only unless you explicitly ask for shared sessions:
+
+```sh
+darc search "migration decision" --shared
+darc list sessions --scope all
+darc show session <session-id> --shared
+darc search "auth fallback" --author teammate@example.com
+```
+
 ## Why Not Just `rg` the Raw Logs?
 
 You can. For simple text search, raw `rg` is often enough.

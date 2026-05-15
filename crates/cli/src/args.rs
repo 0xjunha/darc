@@ -88,6 +88,36 @@ pub(crate) enum Commands {
     )]
     Project(ProjectArgs),
     #[command(
+        about = "Manage Git-backed Darc share remotes",
+        long_about = "Manage Git-backed Darc share remotes stored in Darc config.toml.\n\nDarc share remotes point to Git repositories or project origins that store encrypted shared index artifacts on darc/* branches."
+    )]
+    Remote(RemoteArgs),
+    #[command(
+        about = "Manage encrypted shared index selection and recipients",
+        long_about = "Manage encrypted shared index selection and recipients for the active project.\n\nUse `darc share include` or `darc share exclude` to choose which local sessions are exported. Use recipient subcommands to manage age public-key recipients in Darc config.toml."
+    )]
+    Share(ShareArgs),
+    #[command(
+        about = "Export selected shared sessions and push a darc/* branch",
+        long_about = "Export selected shared sessions for the active project, encrypt the redacted index data for configured recipients, commit it into the local share cache, and push it to the Git branch darc/<branch>."
+    )]
+    Push(ShareBranchArgs),
+    #[command(
+        about = "Fetch a darc/* shared index branch",
+        long_about = "Fetch the Git branch darc/<branch> into Darc's local share cache without importing it."
+    )]
+    Fetch(ShareBranchArgs),
+    #[command(
+        about = "Import a fetched darc/* shared index branch",
+        long_about = "Import already fetched encrypted shared index artifacts from Darc's local share cache into the local SQLite index."
+    )]
+    Merge(ShareBranchArgs),
+    #[command(
+        about = "Fetch and import a darc/* shared index branch",
+        long_about = "Fetch darc/<branch> from Git and import its encrypted shared index artifacts into the local SQLite index."
+    )]
+    Pull(ShareBranchArgs),
+    #[command(
         about = "Check for or apply newer Darc releases",
         long_about = "Check for or apply newer Darc releases.\n\n`darc upgrade --check` compares the current CLI version with the latest GitHub Release.\n`darc upgrade` uses the release-installer updater when this installation includes one, and otherwise prints the manual installer command."
     )]
@@ -629,6 +659,29 @@ pub(crate) struct SearchArgs {
 
     #[arg(
         long,
+        conflicts_with = "scope",
+        help_heading = "Scope",
+        help = "Search only imported shared sessions"
+    )]
+    pub(crate) shared: bool,
+
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Scope",
+        help = "Choose local, shared, or all sessions"
+    )]
+    pub(crate) scope: Option<SessionScopeArg>,
+
+    #[arg(
+        long,
+        help_heading = "Scope",
+        help = "Restrict shared-session results to this author user id, email, or display name"
+    )]
+    pub(crate) author: Option<String>,
+
+    #[arg(
+        long,
         help_heading = "Evidence",
         help = "Include tool output evidence in literal and regex search"
     )]
@@ -825,6 +878,156 @@ pub(crate) enum ProjectCommands {
     RenameFrom(RenameArgs),
 }
 
+/// Manages Git-backed Darc share remotes.
+#[derive(Debug, Args)]
+pub(crate) struct RemoteArgs {
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        global = true,
+        help_heading = "Workspace",
+        help = "Use this Darc root instead of the default"
+    )]
+    pub(crate) root: PathBuf,
+
+    #[command(subcommand)]
+    pub(crate) command: RemoteCommands,
+}
+
+/// Represents supported Darc share remote commands.
+#[derive(Debug, Subcommand)]
+pub(crate) enum RemoteCommands {
+    /// Add or update one named Darc share remote.
+    Add(RemoteAddArgs),
+    /// List configured Darc share remotes.
+    List,
+}
+
+/// Adds or updates one named Darc share remote.
+#[derive(Debug, Args)]
+pub(crate) struct RemoteAddArgs {
+    #[arg(help = "Remote name, for example team")]
+    pub(crate) name: String,
+    #[arg(help = "Git remote URL that stores encrypted shared indexes")]
+    pub(crate) url: String,
+}
+
+/// Manages encrypted shared index selection and recipients.
+#[derive(Debug, Args)]
+pub(crate) struct ShareArgs {
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        global = true,
+        help_heading = "Workspace",
+        help = "Use this Darc root instead of the default"
+    )]
+    pub(crate) root: PathBuf,
+
+    #[command(subcommand)]
+    pub(crate) command: ShareCommands,
+}
+
+/// Represents supported Darc share management commands.
+#[derive(Debug, Subcommand)]
+pub(crate) enum ShareCommands {
+    /// Show share selection status for the active project.
+    Status,
+    /// Show or create the local age share key.
+    Key,
+    /// Show the local share author identity.
+    Identity,
+    /// Set the active project's default share policy.
+    Policy(SharePolicyArgs),
+    /// Include one session or every local session in sharing.
+    Include(ShareSessionSelectionArgs),
+    /// Exclude one session or every local session from sharing.
+    Exclude(ShareSessionSelectionArgs),
+    /// Manage configured age recipients.
+    Recipient(ShareRecipientArgs),
+}
+
+/// Sets the active project's default share policy.
+#[derive(Debug, Args)]
+pub(crate) struct SharePolicyArgs {
+    #[arg(value_enum, help = "Project sharing policy")]
+    pub(crate) policy: SharePolicyArg,
+}
+
+/// Selects one session or all sessions for sharing changes.
+#[derive(Debug, Args)]
+pub(crate) struct ShareSessionSelectionArgs {
+    #[arg(
+        help = "Session id or unambiguous UUID prefix",
+        required_unless_present = "all"
+    )]
+    pub(crate) session_id: Option<String>,
+
+    #[arg(
+        long,
+        help_heading = "Selection",
+        conflicts_with = "session_id",
+        help = "Apply to every local session in the active project"
+    )]
+    pub(crate) all: bool,
+
+    #[arg(
+        long,
+        value_enum,
+        requires = "session_id",
+        help_heading = "Selection",
+        help = "Disambiguate a session id or UUID prefix by provider"
+    )]
+    pub(crate) provider: Option<ProviderArg>,
+}
+
+/// Manages configured age recipients.
+#[derive(Debug, Args)]
+pub(crate) struct ShareRecipientArgs {
+    #[command(subcommand)]
+    pub(crate) command: ShareRecipientCommands,
+}
+
+/// Represents supported age recipient commands.
+#[derive(Debug, Subcommand)]
+pub(crate) enum ShareRecipientCommands {
+    /// Add one age public-key recipient.
+    Add(ShareRecipientValueArgs),
+    /// Remove one age public-key recipient.
+    Remove(ShareRecipientValueArgs),
+    /// List configured age public-key recipients.
+    List,
+}
+
+/// Stores one age recipient argument.
+#[derive(Debug, Args)]
+pub(crate) struct ShareRecipientValueArgs {
+    #[arg(help = "age X25519 public recipient, for example age1...")]
+    pub(crate) recipient: String,
+}
+
+/// Operates on one Darc shared index branch.
+#[derive(Debug, Args)]
+pub(crate) struct ShareBranchArgs {
+    #[arg(help = "Darc share branch shorthand. `team` maps to git branch `darc/team`")]
+    pub(crate) branch: String,
+
+    #[arg(
+        long,
+        help_heading = "Remote",
+        help = "Use a configured Darc share remote instead of the project origin"
+    )]
+    pub(crate) remote: Option<String>,
+
+    #[arg(
+        long,
+        default_value_os_t = default_root_path(),
+        help_heading = "Workspace",
+        help = "Use this Darc root instead of the default"
+    )]
+    pub(crate) root: PathBuf,
+}
+
 /// Queries the workspace/sidebar payload for one darc root.
 #[derive(Debug, Args)]
 pub(crate) struct QueryWorkspaceArgs {
@@ -915,6 +1118,29 @@ pub(crate) struct QuerySessionsArgs {
 
     #[arg(
         long,
+        conflicts_with = "scope",
+        help_heading = "Scope",
+        help = "List only imported shared sessions"
+    )]
+    pub(crate) shared: bool,
+
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Scope",
+        help = "Choose local, shared, or all sessions"
+    )]
+    pub(crate) scope: Option<SessionScopeArg>,
+
+    #[arg(
+        long,
+        help_heading = "Scope",
+        help = "Restrict shared-session results to this author user id, email, or display name"
+    )]
+    pub(crate) author: Option<String>,
+
+    #[arg(
+        long,
         default_value_t = DEFAULT_QUERY_PAGE_LIMIT,
         help_heading = "Result Size",
         help = "Maximum sessions to return"
@@ -989,6 +1215,29 @@ pub(crate) struct ListSessionsArgs {
 
     #[arg(
         long,
+        conflicts_with = "scope",
+        help_heading = "Scope",
+        help = "List only imported shared sessions"
+    )]
+    pub(crate) shared: bool,
+
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Scope",
+        help = "Choose local, shared, or all sessions"
+    )]
+    pub(crate) scope: Option<SessionScopeArg>,
+
+    #[arg(
+        long,
+        help_heading = "Scope",
+        help = "Restrict shared-session results to this author user id, email, or display name"
+    )]
+    pub(crate) author: Option<String>,
+
+    #[arg(
+        long,
         default_value_t = DEFAULT_QUERY_PAGE_LIMIT,
         help_heading = "Result Size",
         help = "Maximum sessions to return"
@@ -1038,6 +1287,22 @@ pub(crate) struct QueryTurnsArgs {
         help = "Disambiguate a session id or UUID prefix by provider"
     )]
     pub(crate) provider: Option<ProviderArg>,
+
+    #[arg(
+        long,
+        conflicts_with = "scope",
+        help_heading = "Scope",
+        help = "Query an imported shared session"
+    )]
+    pub(crate) shared: bool,
+
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Scope",
+        help = "Choose local, shared, or all sessions"
+    )]
+    pub(crate) scope: Option<SessionScopeArg>,
 
     #[arg(
         value_name = "SESSION_ID",
@@ -1313,6 +1578,22 @@ pub(crate) struct QuerySessionFilesArgs {
     pub(crate) provider: Option<ProviderArg>,
 
     #[arg(
+        long,
+        conflicts_with = "scope",
+        help_heading = "Scope",
+        help = "Query an imported shared session"
+    )]
+    pub(crate) shared: bool,
+
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Scope",
+        help = "Choose local, shared, or all sessions"
+    )]
+    pub(crate) scope: Option<SessionScopeArg>,
+
+    #[arg(
         value_name = "SESSION_ID",
         help = "Query this session id or unambiguous UUID prefix; required unless --session-id is set"
     )]
@@ -1368,6 +1649,22 @@ pub(crate) struct QuerySessionBundleArgs {
         help = "Disambiguate a session id or UUID prefix by provider"
     )]
     pub(crate) provider: Option<ProviderArg>,
+
+    #[arg(
+        long,
+        conflicts_with = "scope",
+        help_heading = "Scope",
+        help = "Query an imported shared session"
+    )]
+    pub(crate) shared: bool,
+
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Scope",
+        help = "Choose local, shared, or all sessions"
+    )]
+    pub(crate) scope: Option<SessionScopeArg>,
 
     #[arg(
         value_name = "SESSION_ID",
@@ -1459,6 +1756,22 @@ pub(crate) struct QueryTurnArgs {
         help = "Disambiguate a session id or UUID prefix by provider"
     )]
     pub(crate) provider: Option<ProviderArg>,
+
+    #[arg(
+        long,
+        conflicts_with = "scope",
+        help_heading = "Scope",
+        help = "Query an imported shared session"
+    )]
+    pub(crate) shared: bool,
+
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Scope",
+        help = "Choose local, shared, or all sessions"
+    )]
+    pub(crate) scope: Option<SessionScopeArg>,
 
     #[arg(
         value_name = "SESSION_ID",
@@ -1584,6 +1897,29 @@ pub(crate) struct QuerySearchTurnsArgs {
         help = "Restrict search to this session id or unambiguous UUID prefix"
     )]
     pub(crate) session_id: Option<String>,
+
+    #[arg(
+        long,
+        conflicts_with = "scope",
+        help_heading = "Scope",
+        help = "Search only imported shared sessions"
+    )]
+    pub(crate) shared: bool,
+
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Scope",
+        help = "Choose local, shared, or all sessions"
+    )]
+    pub(crate) scope: Option<SessionScopeArg>,
+
+    #[arg(
+        long,
+        help_heading = "Scope",
+        help = "Restrict shared-session results to this author user id, email, or display name"
+    )]
+    pub(crate) author: Option<String>,
 
     #[arg(
         long,
@@ -1763,6 +2099,22 @@ pub(crate) struct QueryTurnInsightsArgs {
         help = "Disambiguate a session id or UUID prefix by provider"
     )]
     pub(crate) provider: Option<ProviderArg>,
+
+    #[arg(
+        long,
+        conflicts_with = "scope",
+        help_heading = "Scope",
+        help = "Query an imported shared session"
+    )]
+    pub(crate) shared: bool,
+
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Scope",
+        help = "Choose local, shared, or all sessions"
+    )]
+    pub(crate) scope: Option<SessionScopeArg>,
 
     #[arg(
         value_name = "SESSION_ID",

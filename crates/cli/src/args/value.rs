@@ -44,6 +44,21 @@ pub(crate) enum SessionListViewArg {
     Full,
 }
 
+/// Represents the supported local/shared session query scopes.
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+pub(crate) enum SessionScopeArg {
+    Local,
+    Shared,
+    All,
+}
+
+/// Represents the supported project sharing policies.
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+pub(crate) enum SharePolicyArg {
+    Manual,
+    All,
+}
+
 /// Represents the supported turn-list projections for machine-readable turn queries.
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
 pub(crate) enum TurnListViewArg {
