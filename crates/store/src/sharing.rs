@@ -641,27 +641,31 @@ fn existing_session_origin(
     value.as_deref().map(parse_origin_kind).transpose()
 }
 
-/// Deletes imported shared sessions missing from the latest manifest for one remote branch.
-pub fn prune_shared_sessions(
+/// Deletes imported shared turns missing from the latest authenticated sync payload.
+pub fn prune_shared_turns(
     connection: &Connection,
     project_id: &str,
     origin_remote: &str,
     origin_user_id: &str,
-    keep_sessions: &BTreeSet<(SourceKind, String)>,
+    keep_turns: &BTreeSet<(SourceKind, String, i64)>,
 ) -> Result<usize> {
     let mut statement = connection
         .prepare(
             "
-            SELECT provider, session_id
-            FROM sessions
-            WHERE project_id = ?1
-                AND origin_kind = 'shared'
-                AND origin_remote = ?2
-                AND origin_user_id = ?3
+            SELECT turns.provider, turns.session_id, turns.turn_ordinal
+            FROM turns
+            JOIN sessions
+                ON sessions.project_id = turns.project_id
+                AND sessions.provider = turns.provider
+                AND sessions.session_id = turns.session_id
+            WHERE sessions.project_id = ?1
+                AND sessions.origin_kind = 'shared'
+                AND sessions.origin_remote = ?2
+                AND sessions.origin_user_id = ?3
             ",
         )
         .with_context(|| {
-            format!("failed to prepare shared session prune query for project `{project_id}`")
+            format!("failed to prepare shared turn prune query for project `{project_id}`")
         })?;
     let rows = statement
         .query_map(params![project_id, origin_remote, origin_user_id], |row| {
@@ -677,42 +681,62 @@ pub fn prune_shared_sessions(
                     ));
                 }
             };
-            Ok((provider, row.get::<_, String>(1)?))
+            Ok((provider, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
         })
         .with_context(|| {
-            format!("failed to query shared sessions to prune for project `{project_id}`")
+            format!("failed to query shared turns to prune for project `{project_id}`")
         })?;
     let mut prune_targets = Vec::new();
     for row in rows {
-        let session_key = row.context("failed to read shared session prune row")?;
-        if !keep_sessions.contains(&session_key) {
-            prune_targets.push(session_key);
+        let turn_key = row.context("failed to read shared turn prune row")?;
+        if !keep_turns.contains(&turn_key) {
+            prune_targets.push(turn_key);
         }
     }
 
     let mut pruned = 0usize;
-    for (provider, session_id) in prune_targets {
+    for (provider, session_id, turn_ordinal) in prune_targets {
         pruned += connection
             .execute(
                 "
-                DELETE FROM sessions
+                DELETE FROM turns
                 WHERE project_id = ?1
                     AND provider = ?2
                     AND session_id = ?3
-                    AND origin_kind = 'shared'
-                    AND origin_remote = ?4
-                    AND origin_user_id = ?5
+                    AND turn_ordinal = ?4
                 ",
                 params![
                     project_id,
                     provider.directory_name(),
                     session_id,
-                    origin_remote,
-                    origin_user_id,
+                    turn_ordinal,
                 ],
             )
-            .with_context(|| format!("failed to prune shared session `{session_id}`"))?;
+            .with_context(|| {
+                format!("failed to prune shared turn {turn_ordinal} for session `{session_id}`")
+            })?;
     }
+    connection
+        .execute(
+            "
+            DELETE FROM sessions
+            WHERE project_id = ?1
+                AND origin_kind = 'shared'
+                AND origin_remote = ?2
+                AND origin_user_id = ?3
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM turns
+                    WHERE turns.project_id = sessions.project_id
+                        AND turns.provider = sessions.provider
+                        AND turns.session_id = sessions.session_id
+                )
+            ",
+            params![project_id, origin_remote, origin_user_id],
+        )
+        .with_context(|| {
+            format!("failed to prune empty shared sessions for project `{project_id}`")
+        })?;
     Ok(pruned)
 }
 

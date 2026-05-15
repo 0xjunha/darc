@@ -21,7 +21,7 @@ pub use sharing::{
     OriginKind, SessionProvenance, SharePolicy, ShareSessionExport, ShareState, ShareStatus,
     ShareTurnExport, ShareTurnImport, ShareUserRecord, clear_project_share_states,
     import_shared_turn, parse_origin_kind, parse_share_policy, parse_share_state,
-    project_share_policy, prune_shared_sessions, query_share_export_turns, query_share_status,
+    project_share_policy, prune_shared_turns, query_share_export_turns, query_share_status,
     set_project_share_policy, set_session_share_state, upsert_share_user,
     validate_shared_session_kind, validate_shared_turn_status,
 };

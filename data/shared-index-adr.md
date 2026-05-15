@@ -74,7 +74,8 @@ Each share branch stores only Darc share artifacts:
 ```text
 darc-share/v1/project.json
 darc-share/v1/manifest.json
-darc-share/v1/objects/<sha256>.age
+darc-share/v1/objects/<recipient-fingerprint>-<payload-sha256>.age
+darc-share/v1/objects/sync-<recipient-fingerprint>-<payload-sha256>.age
 ```
 
 `project.json` is visible and contains only routing metadata:
@@ -92,11 +93,12 @@ darc-share/v1/objects/<sha256>.age
 - branch name
 - exporter user id, display name, and email from Git config
 - exporter public age recipient
-- session provider, session id, turn ordinal ranges, content hashes, and object paths
+- session provider, session id, turn ordinal ranges, content hashes, object paths, and encrypted sync object path
 - export timestamp
 
 Encrypted object files contain the sensitive payload:
 
+- an encrypted sync payload containing the exporter identity and latest turn keep set for authenticated pruning
 - redacted session metadata
 - redacted turn rows and `steps_json`
 - model metadata
@@ -113,6 +115,9 @@ Darc local `project_id` remains host-local. Shared artifacts use a canonical pro
 
 1. Prefer the normalized Git upstream URL from Darc project config.
 2. Fall back to `origin` URL read from the active Git repository.
+
+URL normalization strips HTTPS/SSH userinfo before any visible artifact is written, lowercases only the host, and
+preserves repository path case for case-sensitive Git hosts.
 3. If no Git URL exists, fail sharing setup with a clear message.
 
 The key is `git:<normalized-url>`. Normalization removes trailing `.git`, lowercases GitHub-style hostnames, trims
@@ -163,8 +168,8 @@ darc share recipient list
 darc share recipient remove <age-recipient>
 ```
 
-`include --all` sets the policy to `all`. `exclude --all` sets the policy to `manual` and clears explicit includes for
-the project.
+`include --all` sets the policy to `all` and clears session-level overrides so previous exclusions do not survive.
+`exclude --all` sets the policy to `manual` and clears explicit includes for the project.
 
 ### Encryption And Keys
 
@@ -181,17 +186,20 @@ recipient. V1 encrypts every payload object to:
 - every configured recipient in Darc config
 
 V1 revocation is intentionally simple: removing a recipient prevents future objects from being encrypted to that
-recipient. It does not revoke access to objects that were already pushed or pulled. Deleting old access requires normal
-Git history rewriting and remote retention controls.
+recipient, and the next share commit removes old payload objects from the branch tip. It does not revoke access to
+objects that remain in older Git history or were already pulled. Deleting old historical access requires normal Git
+history rewriting and remote retention controls.
 
 ### Import And Conflict Model
 
 Fetch downloads the `darc/<name>` branch into the local Darc share cache. Merge imports fetched artifacts into the local
 SQLite index. Pull is fetch plus merge.
 
-Malformed, mismatched, undecryptable, or schema-incompatible objects are skipped with warnings. Valid objects continue to
-import. This keeps one bad teammate chunk from blocking the whole team index while preserving rigorous warning and test
-coverage.
+Merge decrypts and validates the encrypted sync payload before destructive pruning. It prunes stale imported turns only
+for the exporter identity contained in that decrypted payload, and then removes empty imported sessions for that
+exporter. Malformed, mismatched, undecryptable, or schema-incompatible turn objects are skipped with warnings. Valid
+objects continue to import. This keeps one bad teammate chunk from blocking the whole team index while preserving
+rigorous warning and test coverage.
 
 Writes are isolated by content-addressed objects and manifest entries. Concurrent pushes may still have Git-level
 non-fast-forward failures. V1 reports those failures and asks users to pull first, matching Git expectations.
