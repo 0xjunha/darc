@@ -433,6 +433,7 @@ pub fn import_shared_turn(
     upsert_share_user(&transaction, import.user)?;
     validate_shared_session_kind(&import.turn.session.session_kind)?;
     validate_shared_turn_status(&import.turn.status)?;
+    validate_shared_turn_numbers(import.turn)?;
     if !upsert_shared_session(&transaction, import)? {
         transaction
             .commit()
@@ -444,6 +445,60 @@ pub fn import_shared_turn(
         .commit()
         .context("failed to commit shared turn import")?;
     Ok(true)
+}
+
+/// Validates imported shared numeric fields before they enter canonical tables.
+fn validate_shared_turn_numbers(turn: &ShareTurnExport) -> Result<()> {
+    validate_non_negative("turn_ordinal", turn.turn_ordinal)?;
+    validate_optional_non_negative("session.source_size", turn.session.source_size)?;
+    validate_optional_non_negative("session.source_mtime_ms", turn.session.source_mtime_ms)?;
+    validate_non_negative("step_count", turn.step_count)?;
+    validate_non_negative("tool_call_count", turn.tool_call_count)?;
+    validate_non_negative("tool_output_count", turn.tool_output_count)?;
+    validate_non_negative("attachment_count", turn.attachment_count)?;
+    validate_non_negative("delegation_count", turn.delegation_count)?;
+    validate_non_negative("hook_summary_count", turn.hook_summary_count)?;
+    if !matches!(turn.has_final_answer, 0 | 1) {
+        bail!("shared turn has_final_answer must be 0 or 1");
+    }
+    validate_optional_non_negative("duration_ms", turn.duration_ms)?;
+    validate_optional_non_negative(
+        "effective_agent_runtime_ms",
+        turn.effective_agent_runtime_ms,
+    )?;
+    validate_optional_non_negative(
+        "provider_total_token_count",
+        turn.provider_total_token_count,
+    )?;
+    validate_optional_non_negative(
+        "input_uncached_token_count",
+        turn.input_uncached_token_count,
+    )?;
+    validate_optional_non_negative("cache_read_token_count", turn.cache_read_token_count)?;
+    validate_optional_non_negative("cache_write_token_count", turn.cache_write_token_count)?;
+    validate_optional_non_negative("output_token_count", turn.output_token_count)?;
+    validate_optional_non_negative("reasoning_token_count", turn.reasoning_token_count)?;
+    validate_optional_non_negative("total_token_count", turn.total_token_count)?;
+    validate_non_negative("changed_file_count", turn.changed_file_count)?;
+    validate_non_negative("added_line_count", turn.added_line_count)?;
+    validate_non_negative("removed_line_count", turn.removed_line_count)?;
+    Ok(())
+}
+
+/// Validates one required non-negative shared integer.
+fn validate_non_negative(field: &str, value: i64) -> Result<()> {
+    if value < 0 {
+        bail!("shared turn {field} must be non-negative");
+    }
+    Ok(())
+}
+
+/// Validates one optional non-negative shared integer.
+fn validate_optional_non_negative(field: &str, value: Option<i64>) -> Result<()> {
+    if let Some(value) = value {
+        validate_non_negative(field, value)?;
+    }
+    Ok(())
 }
 
 /// Upserts one imported shared session unless a local session already owns the identity.
@@ -821,5 +876,82 @@ pub fn validate_shared_turn_status(value: &str) -> Result<NormalizedTurnStatus> 
         "aborted" => Ok(NormalizedTurnStatus::Aborted),
         "incomplete" => Ok(NormalizedTurnStatus::Incomplete),
         other => bail!("unsupported shared turn status `{other}`"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Builds one valid synthetic shared turn export for validation tests.
+    fn synthetic_share_turn() -> ShareTurnExport {
+        ShareTurnExport {
+            session: ShareSessionExport {
+                project_id: "source-repo".to_owned(),
+                provider: SourceKind::Codex,
+                session_id: "00000000-0000-4000-8000-000000000001".to_owned(),
+                parent_session_id: None,
+                session_kind: "primary".to_owned(),
+                archive_path: "synthetic.jsonl".to_owned(),
+                cwd: "/tmp/synthetic-repo".to_owned(),
+                cli_version: Some("0.1.0".to_owned()),
+                schema_id: Some("codex:test".to_owned()),
+                determinism: Some("exact".to_owned()),
+                source_size: Some(1),
+                source_mtime_ms: Some(1),
+            },
+            turn_ordinal: 0,
+            turn_id: Some("turn-0".to_owned()),
+            started_at: "2026-05-15T00:00:00Z".to_owned(),
+            completed_at: Some("2026-05-15T00:00:01Z".to_owned()),
+            status: "completed".to_owned(),
+            user_message: "synthetic prompt".to_owned(),
+            final_answer_at: Some("2026-05-15T00:00:01Z".to_owned()),
+            final_answer_text: Some("synthetic answer".to_owned()),
+            steps_json: "[]".to_owned(),
+            step_count: 0,
+            tool_call_count: 0,
+            tool_output_count: 0,
+            attachment_count: 0,
+            delegation_count: 0,
+            hook_summary_count: 0,
+            has_final_answer: 1,
+            duration_ms: Some(1),
+            effective_agent_runtime_ms: Some(1),
+            provider_total_token_count: Some(1),
+            input_uncached_token_count: Some(1),
+            cache_read_token_count: Some(0),
+            cache_write_token_count: Some(0),
+            output_token_count: Some(1),
+            reasoning_token_count: Some(0),
+            total_token_count: Some(1),
+            primary_model: Some("synthetic-model".to_owned()),
+            changed_file_count: 0,
+            added_line_count: 0,
+            removed_line_count: 0,
+        }
+    }
+
+    #[test]
+    fn rejects_negative_shared_import_numbers() {
+        let mut turn = synthetic_share_turn();
+        turn.step_count = -1;
+        assert!(validate_shared_turn_numbers(&turn).is_err());
+
+        let mut turn = synthetic_share_turn();
+        turn.turn_ordinal = -1;
+        assert!(validate_shared_turn_numbers(&turn).is_err());
+
+        let mut turn = synthetic_share_turn();
+        turn.total_token_count = Some(-1);
+        assert!(validate_shared_turn_numbers(&turn).is_err());
+    }
+
+    #[test]
+    fn rejects_non_boolean_shared_final_answer_flag() {
+        let mut turn = synthetic_share_turn();
+        turn.has_final_answer = 2;
+
+        assert!(validate_shared_turn_numbers(&turn).is_err());
     }
 }
