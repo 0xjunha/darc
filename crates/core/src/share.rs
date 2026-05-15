@@ -11,7 +11,8 @@ pub use darc_store::{SharePolicy, ShareState, ShareStatus};
 use crate::{
     active_project::load_active_project,
     config::{ShareConfig, ShareRecipientConfig, ShareRemoteConfig, SharedConfig},
-    project::write_shared_config,
+    constants::CONFIG_FILE_NAME,
+    project::{load_normalized_shared_config, write_shared_config},
     query::{resolve_query_project, resolve_query_session_for_project},
 };
 
@@ -19,7 +20,6 @@ use crate::{
 #[derive(Debug, Clone)]
 struct ResolvedShareProject {
     config: SharedConfig,
-    config_path: PathBuf,
     context: ShareProjectContext,
 }
 
@@ -28,6 +28,12 @@ struct ResolvedShareProject {
 pub struct ShareConfigReport {
     pub remotes: Vec<ShareRemoteConfig>,
     pub recipients: Vec<ShareRecipientConfig>,
+}
+
+/// Stores the workspace config needed by share config commands.
+struct ResolvedShareConfig {
+    config: SharedConfig,
+    config_path: PathBuf,
 }
 
 /// Returns the sharing status for the active project.
@@ -86,7 +92,7 @@ pub fn set_session_share_state(
 
 /// Lists the configured share remotes and recipients.
 pub fn share_config(root: Option<PathBuf>) -> Result<ShareConfigReport> {
-    let resolved = resolve_share_project(root)?;
+    let resolved = resolve_share_config(root)?;
     Ok(ShareConfigReport {
         remotes: resolved.config.share.remotes,
         recipients: resolved.config.share.recipients,
@@ -101,7 +107,7 @@ pub fn add_share_remote(root: Option<PathBuf>, name: String, url: String) -> Res
     if url.trim().is_empty() {
         bail!("remote URL must not be empty");
     }
-    let mut resolved = resolve_share_project(root)?;
+    let mut resolved = resolve_share_config(root)?;
     let mut settings = share_settings_from_config(&resolved.config.share);
     darc_share::upsert_remote(
         &mut settings,
@@ -116,15 +122,17 @@ pub fn add_share_remote(root: Option<PathBuf>, name: String, url: String) -> Res
 
 /// Adds one age recipient to config.toml.
 pub fn add_share_recipient(root: Option<PathBuf>, recipient: String) -> Result<()> {
-    if recipient.trim().is_empty() {
+    let recipient = recipient.trim();
+    if recipient.is_empty() {
         bail!("recipient must not be empty");
     }
-    let mut resolved = resolve_share_project(root)?;
+    darc_share::validate_share_recipient(recipient)?;
+    let mut resolved = resolve_share_config(root)?;
     let mut settings = share_settings_from_config(&resolved.config.share);
     darc_share::add_recipient(
         &mut settings,
         ShareRecipient {
-            recipient: recipient.trim().to_owned(),
+            recipient: recipient.to_owned(),
         },
     );
     resolved.config.share = share_config_from_settings(settings);
@@ -133,7 +141,7 @@ pub fn add_share_recipient(root: Option<PathBuf>, recipient: String) -> Result<(
 
 /// Removes one age recipient from config.toml.
 pub fn remove_share_recipient(root: Option<PathBuf>, recipient: &str) -> Result<bool> {
-    let mut resolved = resolve_share_project(root)?;
+    let mut resolved = resolve_share_config(root)?;
     let mut settings = share_settings_from_config(&resolved.config.share);
     let removed = darc_share::remove_recipient(&mut settings, recipient);
     resolved.config.share = share_config_from_settings(settings);
@@ -194,7 +202,6 @@ fn resolve_share_project(root: Option<PathBuf>) -> Result<ResolvedShareProject> 
     let active = load_active_project(&current_dir, &resolved_root)?;
     Ok(ResolvedShareProject {
         config: active.config,
-        config_path: active.config_path,
         context: ShareProjectContext {
             root: resolved_root.clone(),
             index_db_path: resolved_root.join(darc_store::INDEX_DB_FILE_NAME),
@@ -203,6 +210,24 @@ fn resolve_share_project(root: Option<PathBuf>) -> Result<ResolvedShareProject> 
             local_path: active.project.local_path,
             git_upstream: active.project.git_upstream,
         },
+    })
+}
+
+/// Resolves the workspace config without requiring an active project.
+fn resolve_share_config(root: Option<PathBuf>) -> Result<ResolvedShareConfig> {
+    let requested_root = root.unwrap_or_else(crate::default_root_path);
+    let resolved_root = resolve_root_path(requested_root);
+    let config_path = resolved_root.join(CONFIG_FILE_NAME);
+    if !config_path.exists() {
+        bail!(
+            "shared config not found at {}\nrun `darc init --root {}` from a project root first",
+            config_path.display(),
+            resolved_root.display()
+        );
+    }
+    Ok(ResolvedShareConfig {
+        config: load_normalized_shared_config(&config_path)?,
+        config_path,
     })
 }
 
@@ -258,4 +283,71 @@ fn resolve_root_path(path: PathBuf) -> PathBuf {
         .map(|current_dir| current_dir.join(&path))
         .unwrap_or(path);
     fs::canonicalize(&joined).unwrap_or(joined)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::*;
+    use crate::config::SourcesConfig;
+
+    /// Creates one unique temporary Darc root for share config tests.
+    fn unique_test_root(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after Unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("darc-core-{label}-{}-{nanos}", std::process::id()))
+    }
+
+    /// Writes a minimal workspace config with no registered projects.
+    fn write_empty_config(root: &std::path::Path) -> Result<()> {
+        fs::create_dir_all(root)?;
+        write_shared_config(
+            &root.join(CONFIG_FILE_NAME),
+            &SharedConfig::new(root.to_path_buf(), Vec::new(), SourcesConfig::default()),
+        )
+    }
+
+    #[test]
+    fn workspace_share_config_commands_do_not_require_active_project() -> Result<()> {
+        let root = unique_test_root("share-config-no-active-project");
+        write_empty_config(&root)?;
+        let recipient = darc_share::ensure_share_key(&root)?.public_key;
+
+        add_share_remote(
+            Some(root.clone()),
+            "team".to_owned(),
+            "https://example.invalid/team/darc-share.git".to_owned(),
+        )?;
+        add_share_recipient(Some(root.clone()), recipient.clone())?;
+        let report = share_config(Some(root.clone()))?;
+        let removed = remove_share_recipient(Some(root.clone()), &recipient)?;
+
+        assert_eq!(report.remotes.len(), 1);
+        assert_eq!(report.remotes[0].name, "team");
+        assert_eq!(report.recipients.len(), 1);
+        assert_eq!(report.recipients[0].recipient, recipient);
+        assert!(removed);
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn add_share_recipient_rejects_invalid_age_recipient() -> Result<()> {
+        let root = unique_test_root("share-config-invalid-recipient");
+        write_empty_config(&root)?;
+
+        let error = add_share_recipient(Some(root.clone()), "not-an-age-recipient".to_owned())
+            .expect_err("invalid recipient should be rejected");
+        let report = share_config(Some(root.clone()))?;
+
+        assert!(error.to_string().contains("invalid"));
+        assert!(report.recipients.is_empty());
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
 }
