@@ -868,6 +868,17 @@ fn index_project_rewrites_existing_indexed_turns() -> Result<()> {
         ),
     )?;
     index_project_codex_turns_from(&project_root, darc_root.clone())?;
+    let connection = Connection::open(darc_root.join(INDEX_DB_FILE_NAME))?;
+    connection.execute(
+        "
+        UPDATE sessions
+        SET share_state = 'excluded'
+        WHERE project_id = 'repo-abc123'
+            AND provider = 'codex'
+            AND session_id = '22222222-2222-4222-8222-22222222223f'
+        ",
+        [],
+    )?;
 
     write_file(
         &rollout_path,
@@ -886,22 +897,29 @@ fn index_project_rewrites_existing_indexed_turns() -> Result<()> {
     )?;
 
     let report = index_project_codex_turns_from(&project_root, darc_root.clone())?;
-    let connection = Connection::open(darc_root.join(INDEX_DB_FILE_NAME))?;
     let indexed_turns = indexed_codex_turn_count(&connection, "repo-abc123")?;
-    let first_turn: (String, String) = connection.query_row(
+    let first_turn: (String, String, String) = connection.query_row(
         "
-        SELECT user_message, final_answer_text
+        SELECT turns.user_message, turns.final_answer_text, sessions.share_state
         FROM turns
-        WHERE project_id = ?1 AND provider = 'codex' AND session_id = ?2 AND turn_ordinal = 0
+        JOIN sessions
+            ON sessions.project_id = turns.project_id
+            AND sessions.provider = turns.provider
+            AND sessions.session_id = turns.session_id
+        WHERE turns.project_id = ?1
+            AND turns.provider = 'codex'
+            AND turns.session_id = ?2
+            AND turns.turn_ordinal = 0
         ",
         ["repo-abc123", "22222222-2222-4222-8222-22222222223f"],
-        |row| Ok((row.get(0)?, row.get(1)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )?;
 
     assert_eq!(report.turns_currently_indexed, 2);
     assert_eq!(indexed_turns, 2);
     assert_eq!(first_turn.0, "Updated task");
     assert_eq!(first_turn.1, "Updated reply");
+    assert_eq!(first_turn.2, "excluded");
     assert!(report.skipped_rollouts.is_empty());
 
     Ok(())

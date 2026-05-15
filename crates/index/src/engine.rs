@@ -31,7 +31,7 @@ use darc_store::{
     StoredSessionKind, StoredSessionRecord, StoredTurnRecord, insert_session_record,
     insert_turn_record, open_index_database,
 };
-use rusqlite::{Connection, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use thiserror::Error;
 use walkdir::WalkDir;
 
@@ -1084,6 +1084,12 @@ fn index_archived_rollout_candidate(
     project_id: &str,
     archived: &ArchivedRolloutCandidate,
 ) -> std::result::Result<(), CandidateIndexError> {
+    let share_state = local_session_share_state(
+        connection,
+        project_id,
+        archived.provider,
+        &archived.session_id,
+    )?;
     delete_indexed_session(
         connection,
         project_id,
@@ -1103,6 +1109,69 @@ fn index_archived_rollout_candidate(
             writer.write_rollout(rollout)?;
         }
     }
+    if let Some(share_state) = share_state {
+        restore_local_session_share_state(
+            connection,
+            project_id,
+            archived.provider,
+            &archived.session_id,
+            &share_state,
+        )?;
+    }
+    Ok(())
+}
+
+/// Reads an explicit local share state before replacing one indexed session.
+fn local_session_share_state(
+    connection: &Connection,
+    project_id: &str,
+    provider: SourceKind,
+    session_id: &str,
+) -> Result<Option<String>> {
+    connection
+        .query_row(
+            "
+            SELECT share_state
+            FROM sessions
+            WHERE project_id = ?1
+                AND provider = ?2
+                AND session_id = ?3
+                AND origin_kind = 'local'
+                AND share_state <> 'unset'
+            ",
+            params![project_id, provider.directory_name(), session_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .context("failed to read existing session share state")
+}
+
+/// Restores an explicit local share state after replacing one indexed session.
+fn restore_local_session_share_state(
+    connection: &Connection,
+    project_id: &str,
+    provider: SourceKind,
+    session_id: &str,
+    share_state: &str,
+) -> Result<()> {
+    connection
+        .execute(
+            "
+            UPDATE sessions
+            SET share_state = ?1
+            WHERE project_id = ?2
+                AND provider = ?3
+                AND session_id = ?4
+                AND origin_kind = 'local'
+            ",
+            params![
+                share_state,
+                project_id,
+                provider.directory_name(),
+                session_id
+            ],
+        )
+        .context("failed to restore session share state")?;
     Ok(())
 }
 
