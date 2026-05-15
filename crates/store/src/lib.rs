@@ -4,6 +4,7 @@ mod derived_data;
 pub mod evidence;
 mod index_db;
 pub mod policy;
+mod redaction;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 mod turn_metrics;

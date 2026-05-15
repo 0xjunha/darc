@@ -189,6 +189,14 @@ pub fn extract_tool_call_records(
 
 /// Derives normalized file-access records from normalized tool-call records.
 pub fn derive_file_access_records(tool_calls: &[ToolCallRecord]) -> Vec<FileAccessRecord> {
+    derive_file_access_records_with_session_cwd(tool_calls, None)
+}
+
+/// Derives normalized file-access records using a redacted session cwd when available.
+pub fn derive_file_access_records_with_session_cwd(
+    tool_calls: &[ToolCallRecord],
+    session_cwd: Option<&str>,
+) -> Vec<FileAccessRecord> {
     let mut records = Vec::new();
 
     for tool_call in tool_calls {
@@ -204,6 +212,7 @@ pub fn derive_file_access_records(tool_calls: &[ToolCallRecord]) -> Vec<FileAcce
             let mut shell_records = build_file_access_records(
                 tool_call,
                 tool_name,
+                session_cwd,
                 AccessPathSource::Shell,
                 &shell_accesses,
             );
@@ -211,6 +220,7 @@ pub fn derive_file_access_records(tool_calls: &[ToolCallRecord]) -> Vec<FileAcce
             shell_records.extend(build_file_access_records(
                 tool_call,
                 tool_name,
+                session_cwd,
                 AccessPathSource::Structured,
                 &patch_accesses,
             ));
@@ -231,7 +241,11 @@ pub fn derive_file_access_records(tool_calls: &[ToolCallRecord]) -> Vec<FileAcce
         };
 
         records.extend(build_file_access_records(
-            tool_call, tool_name, source, &accesses,
+            tool_call,
+            tool_name,
+            session_cwd,
+            source,
+            &accesses,
         ));
     }
 
@@ -399,6 +413,7 @@ pub(super) fn path_looks_directory_like(path: &str) -> bool {
 fn build_file_access_records(
     tool_call: &ToolCallRecord,
     tool_name: &str,
+    session_cwd: Option<&str>,
     source: AccessPathSource,
     accesses: &[(ToolAccessKind, String)],
 ) -> Vec<FileAccessRecord> {
@@ -420,7 +435,7 @@ fn build_file_access_records(
             call_id: tool_call.call_id.clone(),
             timestamp: tool_call.timestamp.clone(),
             tool_name: tool_name.to_owned(),
-            repo_relative_path: repo_relative_path(&path),
+            repo_relative_path: repo_relative_path(&path, session_cwd),
             file_name: path_file_name(&path),
             access_type,
             path,
@@ -620,9 +635,34 @@ fn is_error_status(status: &str) -> bool {
         || normalized.contains("denied")
 }
 
-/// Returns the repo-relative path when the extracted path is already relative.
-fn repo_relative_path(path: &str) -> Option<String> {
+/// Returns the repo-relative path when one can be inferred without leaking local roots.
+fn repo_relative_path(path: &str, session_cwd: Option<&str>) -> Option<String> {
+    if let Some(relative_path) = session_cwd.and_then(|cwd| strip_access_root(path, cwd)) {
+        return Some(relative_path);
+    }
     Path::new(path).is_relative().then(|| path.to_owned())
+}
+
+/// Strips a redacted session root from one normalized access path.
+fn strip_access_root(path: &str, root: &str) -> Option<String> {
+    let path = normalize_access_root_path(path);
+    let root = normalize_access_root_path(root);
+    if root.is_empty() || path == root {
+        return None;
+    }
+    let prefix = format!("{root}/");
+    path.strip_prefix(&prefix)
+        .filter(|relative| !relative.is_empty())
+        .map(str::to_owned)
+}
+
+/// Normalizes one access-root comparison path to slash separators.
+fn normalize_access_root_path(path: &str) -> String {
+    let mut normalized = path.trim().replace('\\', "/");
+    while normalized.len() > 1 && normalized.ends_with('/') {
+        normalized.pop();
+    }
+    normalized
 }
 
 /// Returns the basename for one normalized access path when it is valid UTF-8.

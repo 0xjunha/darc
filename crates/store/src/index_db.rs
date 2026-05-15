@@ -17,6 +17,7 @@ use self::{
     migrations::{
         compat_backfill_missing_derived_analytics, ensure_legacy_compat_columns, has_table,
         index_db_schema_version, migrate_index_db_schema_version, migrate_legacy_codex_tables,
+        redact_current_index_content,
     },
     schema::{
         DERIVED_ANALYTICS_TABLES, SchemaTable, initialize_base_schema,
@@ -28,7 +29,7 @@ use self::{
 pub const INDEX_DB_FILE_NAME: &str = "index.sqlite";
 
 /// Tracks one-shot SQLite migrations for normalized index tables.
-const INDEX_DB_SCHEMA_VERSION: i32 = 13;
+const INDEX_DB_SCHEMA_VERSION: i32 = 14;
 
 /// Describes an existing index database that should be rebuilt from archived sessions.
 #[derive(Debug)]
@@ -289,14 +290,17 @@ fn table_has_provider_rows(
 
 /// Creates the supported SQLite schema when missing.
 fn initialize_index_database(connection: &mut Connection) -> Result<()> {
-    let needs_derived_analytics_compat_backfill = index_db_schema_version(connection)?
-        >= INDEX_DB_SCHEMA_VERSION
+    let current_schema_version = index_db_schema_version(connection)?;
+    let needs_derived_analytics_compat_backfill = current_schema_version >= INDEX_DB_SCHEMA_VERSION
         && managed_tables_are_missing(connection, DERIVED_ANALYTICS_TABLES)?;
     initialize_base_schema(connection)?;
     ensure_legacy_compat_columns(connection)?;
     initialize_supplemental_schema(connection)?;
-    migrate_legacy_codex_tables(connection)?;
+    let imported_legacy_codex_rows = migrate_legacy_codex_tables(connection)?;
     migrate_index_db_schema_version(connection, INDEX_DB_SCHEMA_VERSION)?;
+    if imported_legacy_codex_rows && current_schema_version >= INDEX_DB_SCHEMA_VERSION {
+        redact_current_index_content(connection)?;
+    }
     compat_backfill_missing_derived_analytics(connection, needs_derived_analytics_compat_backfill)?;
     Ok(())
 }
@@ -432,6 +436,10 @@ mod tests {
 
     use anyhow::Result;
     use darc_paths::SourceKind;
+    use darc_rollout::{
+        ParseDeterminism,
+        model::{NormalizedTurn, NormalizedTurnMessage, NormalizedTurnStatus, NormalizedTurnStep},
+    };
     use rusqlite::Connection;
 
     use super::{
@@ -443,6 +451,10 @@ mod tests {
         IndexedSessionFixture, IndexedTurnFixture, create_pre_analytics_index_schema,
         insert_indexed_session, insert_indexed_turn, insert_pre_analytics_turn,
         seed_legacy_codex_index,
+    };
+    use crate::{
+        StoredSessionKind, StoredSessionRecord, StoredTurnRecord, insert_session_record,
+        insert_turn_record,
     };
 
     fn unique_db_path(prefix: &str) -> PathBuf {
@@ -474,6 +486,158 @@ mod tests {
             |row| row.get(0),
         )?;
         Ok(object_count > 0)
+    }
+
+    /// Concatenates indexed text surfaces that could otherwise leak sensitive values.
+    fn indexed_text_dump(connection: &Connection) -> Result<String> {
+        let text: Option<String> = connection.query_row(
+            "
+            SELECT group_concat(text, char(10))
+            FROM (
+                SELECT cwd AS text FROM sessions
+                UNION ALL SELECT user_message FROM turns
+                UNION ALL SELECT COALESCE(final_answer_text, '') FROM turns
+                UNION ALL SELECT steps_json FROM turns
+                UNION ALL SELECT COALESCE(arguments_text, '') FROM tool_calls
+                UNION ALL SELECT COALESCE(output_text, '') FROM tool_calls
+                UNION ALL SELECT path FROM file_accesses
+                UNION ALL SELECT COALESCE(repo_relative_path, '') FROM file_accesses
+                UNION ALL SELECT text FROM turn_evidence
+                UNION ALL SELECT user_message_text FROM turn_search
+                UNION ALL SELECT final_answer_text FROM turn_search
+                UNION ALL SELECT tool_text FROM turn_search
+            )
+            ",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(text.unwrap_or_default())
+    }
+
+    /// Asserts that sensitive terms cannot be found through the FTS index.
+    fn assert_no_fts_matches(connection: &Connection, terms: &[&str]) -> Result<()> {
+        for term in terms {
+            let count: i64 = connection.query_row(
+                "SELECT COUNT(*) FROM turn_search_fts WHERE turn_search_fts MATCH ?1",
+                [term],
+                |row| row.get(0),
+            )?;
+            assert_eq!(count, 0, "FTS should not match sensitive term {term}");
+        }
+        Ok(())
+    }
+
+    /// Asserts that redacted absolute file paths still produce project-relative identities.
+    fn assert_redacted_project_file_access(connection: &Connection) -> Result<()> {
+        let (path, repo_relative_path): (String, Option<String>) = connection.query_row(
+            "
+            SELECT path, repo_relative_path
+            FROM file_accesses
+            WHERE path LIKE '/Users/%/.env'
+            ORDER BY path ASC
+            LIMIT 1
+            ",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(path, "/Users/[REDACTED_HOME]/project/.env");
+        assert_eq!(repo_relative_path.as_deref(), Some(".env"));
+        Ok(())
+    }
+
+    /// Builds a synthetic turn containing sensitive values across indexed text fields.
+    fn sensitive_turn() -> NormalizedTurn {
+        NormalizedTurn {
+            turn_id: Some("turn-1".to_owned()),
+            user_message: "Please use TOKEN=secretvalue".to_owned(),
+            final_answer: Some(NormalizedTurnMessage {
+                timestamp: "2026-04-01T00:00:05Z".to_owned(),
+                text: "The key was sk-proj-abcdefghijklmnop".to_owned(),
+            }),
+            started_at: "2026-04-01T00:00:00Z".to_owned(),
+            completed_at: Some("2026-04-01T00:00:05Z".to_owned()),
+            status: NormalizedTurnStatus::Completed,
+            primary_model: Some("model".to_owned()),
+            token_usage: None,
+            steps: vec![
+                NormalizedTurnStep::Reasoning {
+                    timestamp: "2026-04-01T00:00:00Z".to_owned(),
+                    summary: vec!["clientSecret=reasoningsecret".to_owned()],
+                    encrypted: false,
+                },
+                NormalizedTurnStep::Commentary {
+                    timestamp: "2026-04-01T00:00:01Z".to_owned(),
+                    text: "Reading /Users/alice/project/.env".to_owned(),
+                },
+                NormalizedTurnStep::ToolCall {
+                    timestamp: "2026-04-01T00:00:02Z".to_owned(),
+                    call_id: "sk-proj-toolcallidsecret".to_owned(),
+                    name: "exec_command".to_owned(),
+                    arguments: r#"{"cmd":"cat /Users/alice/project/.env --token topsecret","file_path":"/Users/alice/project/.env"}"#.to_owned(),
+                },
+                NormalizedTurnStep::ToolCallOutput {
+                    timestamp: "2026-04-01T00:00:03Z".to_owned(),
+                    call_id: "sk-proj-toolcallidsecret".to_owned(),
+                    output: r#"{"stdout":"password=hunter2"}"#.to_owned(),
+                },
+                NormalizedTurnStep::Attachment {
+                    timestamp: "2026-04-01T00:00:04Z".to_owned(),
+                    attachment_type: "image".to_owned(),
+                    payload_json: r#"{"image_url":"data:image/png;base64,abcdef"}"#.to_owned(),
+                },
+                NormalizedTurnStep::Delegation {
+                    timestamp: "2026-04-01T00:00:05Z".to_owned(),
+                    call_id: Some("sk-proj-delegationcallsecret".to_owned()),
+                    task_id: Some("task-1".to_owned()),
+                    event: "token=eventsecret".to_owned(),
+                    agent_id: Some("sk-ant-delegationagentsecret".to_owned()),
+                    agent_type: Some("worker".to_owned()),
+                    status: Some("completed".to_owned()),
+                    summary: Some("accessToken=delegationsecret".to_owned()),
+                    payload_json: r#"{"clientSecret":"delegationpayloadsecret"}"#.to_owned(),
+                },
+                NormalizedTurnStep::HookSummary {
+                    timestamp: "2026-04-01T00:00:06Z".to_owned(),
+                    call_id: Some("github_token=hookidsecret".to_owned()),
+                    hook_count: 1,
+                    prevented_continuation: false,
+                    has_output: true,
+                    level: Some("token=hooklevelsecret".to_owned()),
+                    payload_json: r#"{"privateKey":"hookpayloadsecret"}"#.to_owned(),
+                },
+                NormalizedTurnStep::ProviderResponseItem {
+                    timestamp: "2026-04-01T00:00:07Z".to_owned(),
+                    item_type: "secret=providersecret".to_owned(),
+                    payload_json: r#"{"id":"sk-proj-provideridsecret","name":"clientSecret=providerpayloadsecret","action":{"type":"token=actionsecret"}}"#.to_owned(),
+                },
+            ],
+        }
+    }
+
+    /// Rewrites the synthetic legacy Codex fixture with sensitive indexed content.
+    fn rewrite_legacy_codex_with_sensitive_content(connection: &Connection) -> Result<()> {
+        let turn = sensitive_turn();
+        let steps_json =
+            serde_json::to_string(&turn.steps).expect("sensitive steps should serialize");
+        connection.execute(
+            "UPDATE codex_sessions SET cwd = ?1 WHERE project_id = 'project' AND session_id = 'session'",
+            ["/Users/alice/project"],
+        )?;
+        connection.execute(
+            "
+            UPDATE codex_turns
+            SET user_message = ?1,
+                final_answer_text = ?2,
+                steps_json = ?3
+            WHERE project_id = 'project' AND session_id = 'session' AND turn_ordinal = 0
+            ",
+            (
+                "Please use TOKEN=secretvalue",
+                "The key was sk-proj-abcdefghijklmnop",
+                steps_json,
+            ),
+        )?;
+        Ok(())
     }
 
     /// Drops every managed secondary schema object so reopen must recreate them.
@@ -559,6 +723,173 @@ mod tests {
         let migrated = open_index_database(&path)?;
         schema::smoke_test_sql(&migrated)?;
         migrations::smoke_test_sql(&migrated, INDEX_DB_SCHEMA_VERSION)?;
+        Ok(())
+    }
+
+    #[test]
+    fn insert_records_redacts_canonical_and_derived_index_content() -> Result<()> {
+        let path = unique_db_path("index-db-redacts-inserted-content");
+        let connection = open_index_database(&path)?;
+        insert_session_record(
+            &connection,
+            &StoredSessionRecord {
+                project_id: "project",
+                provider: SourceKind::Codex,
+                session_id: "session",
+                parent_session_id: None,
+                session_kind: StoredSessionKind::Primary,
+                archive_path: "codex/session.jsonl",
+                cwd: std::path::Path::new("/Users/alice/project"),
+                cli_version: Some("0.118.0"),
+                schema_id: "fixture",
+                determinism: ParseDeterminism::Exact,
+                source_size: 1,
+                source_mtime_ms: 1,
+            },
+        )?;
+        insert_turn_record(
+            &connection,
+            StoredTurnRecord {
+                project_id: "project",
+                provider: SourceKind::Codex,
+                session_id: "session",
+                turn_ordinal: 0,
+                turn: sensitive_turn(),
+            },
+        )?;
+
+        let dump = indexed_text_dump(&connection)?;
+
+        assert!(!dump.contains("secretvalue"));
+        assert!(!dump.contains("sk-proj-abcdefghijklmnop"));
+        assert!(!dump.contains("alice"));
+        assert!(!dump.contains("topsecret"));
+        assert!(!dump.contains("hunter2"));
+        assert!(!dump.contains("toolcallidsecret"));
+        assert!(!dump.contains("data:image/png"));
+        assert!(!dump.contains("reasoningsecret"));
+        assert!(!dump.contains("delegationsecret"));
+        assert!(!dump.contains("hookpayloadsecret"));
+        assert!(!dump.contains("providerpayloadsecret"));
+        assert!(dump.contains("[REDACTED_SECRET]"));
+        assert!(dump.contains("[REDACTED_HOME]"));
+        assert!(dump.contains("[REDACTED_BLOB]"));
+        assert_redacted_project_file_access(&connection)?;
+        assert_no_fts_matches(
+            &connection,
+            &["secretvalue", "abcdefghijklmnop", "delegationsecret"],
+        )?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn open_index_database_redacts_existing_v13_index_content() -> Result<()> {
+        let path = unique_db_path("index-db-redacts-v13-content");
+        let connection = open_index_database(&path)?;
+        insert_indexed_session(
+            &connection,
+            IndexedSessionFixture::new(
+                "project",
+                SourceKind::Codex,
+                "session",
+                "/Users/alice/project",
+            ),
+        )?;
+        let turn = sensitive_turn();
+        let step_count = turn.steps.len();
+        let steps_json =
+            serde_json::to_string(&turn.steps).expect("sensitive steps should serialize");
+        insert_indexed_turn(
+            &connection,
+            IndexedTurnFixture {
+                turn_id: Some("turn-1"),
+                completed_at: Some("2026-04-01T00:00:05Z"),
+                status: "completed",
+                user_message: "Please use TOKEN=secretvalue",
+                final_answer_at: Some("2026-04-01T00:00:05Z"),
+                final_answer_text: Some("The key was sk-proj-abcdefghijklmnop"),
+                step_count: i64::try_from(step_count).expect("fixture step count should fit i64"),
+                tool_call_count: 1,
+                tool_output_count: 1,
+                attachment_count: 1,
+                delegation_count: 1,
+                hook_summary_count: 1,
+                has_final_answer: true,
+                duration_ms: 5_000,
+                ..IndexedTurnFixture::new(
+                    "project",
+                    SourceKind::Codex,
+                    "session",
+                    0,
+                    "2026-04-01T00:00:00Z",
+                    "completed",
+                    &steps_json,
+                )
+            },
+        )?;
+        connection.execute_batch("PRAGMA user_version = 13;")?;
+        drop(connection);
+
+        let reopened = open_index_database(&path)?;
+        let dump = indexed_text_dump(&reopened)?;
+        let user_version: i32 = reopened.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+
+        assert!(!dump.contains("secretvalue"));
+        assert!(!dump.contains("sk-proj-abcdefghijklmnop"));
+        assert!(!dump.contains("alice"));
+        assert!(!dump.contains("topsecret"));
+        assert!(!dump.contains("hunter2"));
+        assert!(!dump.contains("toolcallidsecret"));
+        assert!(!dump.contains("data:image/png"));
+        assert!(!dump.contains("reasoningsecret"));
+        assert!(!dump.contains("delegationsecret"));
+        assert!(!dump.contains("hookpayloadsecret"));
+        assert!(!dump.contains("providerpayloadsecret"));
+        assert!(dump.contains("[REDACTED_SECRET]"));
+        assert!(dump.contains("[REDACTED_HOME]"));
+        assert!(dump.contains("[REDACTED_BLOB]"));
+        assert_redacted_project_file_access(&reopened)?;
+        assert_no_fts_matches(
+            &reopened,
+            &["secretvalue", "abcdefghijklmnop", "delegationsecret"],
+        )?;
+        assert_eq!(user_version, INDEX_DB_SCHEMA_VERSION);
+
+        Ok(())
+    }
+
+    #[test]
+    fn open_index_database_redacts_imported_legacy_codex_content() -> Result<()> {
+        let path = unique_db_path("index-db-redacts-legacy-codex-content");
+        let connection = Connection::open(&path)?;
+        seed_legacy_codex_index(&connection)?;
+        rewrite_legacy_codex_with_sensitive_content(&connection)?;
+        drop(connection);
+
+        let reopened = open_index_database(&path)?;
+        let dump = indexed_text_dump(&reopened)?;
+
+        assert!(!dump.contains("secretvalue"));
+        assert!(!dump.contains("sk-proj-abcdefghijklmnop"));
+        assert!(!dump.contains("alice"));
+        assert!(!dump.contains("topsecret"));
+        assert!(!dump.contains("hunter2"));
+        assert!(!dump.contains("toolcallidsecret"));
+        assert!(!dump.contains("data:image/png"));
+        assert!(!dump.contains("reasoningsecret"));
+        assert!(!dump.contains("delegationsecret"));
+        assert!(!dump.contains("hookpayloadsecret"));
+        assert!(!dump.contains("providerpayloadsecret"));
+        assert!(dump.contains("[REDACTED_SECRET]"));
+        assert!(dump.contains("[REDACTED_HOME]"));
+        assert!(dump.contains("[REDACTED_BLOB]"));
+        assert_redacted_project_file_access(&reopened)?;
+        assert_no_fts_matches(
+            &reopened,
+            &["secretvalue", "abcdefghijklmnop", "delegationsecret"],
+        )?;
+
         Ok(())
     }
 
@@ -792,9 +1123,11 @@ mod tests {
 
         let legacy = Connection::open(&path)?;
         seed_legacy_codex_index(&legacy)?;
+        rewrite_legacy_codex_with_sensitive_content(&legacy)?;
         drop(legacy);
 
         let reopened = open_index_database(&path)?;
+        let dump = indexed_text_dump(&reopened)?;
         let codex_count: i64 = reopened.query_row(
             "SELECT COUNT(*) FROM sessions WHERE provider = 'codex' AND session_id = 'session'",
             [],
@@ -808,6 +1141,15 @@ mod tests {
 
         assert_eq!(codex_count, 1);
         assert_eq!(codex_turn_count, 1);
+        assert!(!dump.contains("secretvalue"));
+        assert!(!dump.contains("sk-proj-abcdefghijklmnop"));
+        assert!(!dump.contains("alice"));
+        assert!(!dump.contains("toolcallidsecret"));
+        assert_redacted_project_file_access(&reopened)?;
+        assert_no_fts_matches(
+            &reopened,
+            &["secretvalue", "abcdefghijklmnop", "toolcallidsecret"],
+        )?;
         assert!(!sqlite_table_exists(&reopened, "codex_sessions")?);
         assert!(!sqlite_table_exists(&reopened, "codex_turns")?);
 
@@ -965,10 +1307,7 @@ mod tests {
             ",
             [],
         )?;
-        connection.execute_batch(&format!(
-            "PRAGMA user_version = {}",
-            INDEX_DB_SCHEMA_VERSION - 1
-        ))?;
+        connection.execute_batch("PRAGMA user_version = 12;")?;
         drop(connection);
 
         let reopened = open_index_database(&path)?;

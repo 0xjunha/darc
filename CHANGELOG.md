@@ -4,6 +4,9 @@ All notable Darc release changes should be summarized here.
 
 ## Unreleased
 
+- Redact common secrets, credential material, local home paths, and bulky data blobs before storing or migrating indexed session data.
+- Reduce false-positive redaction of indexed examples, CLI help text, boolean config values, search patterns, and comparison code.
+
 ## [0.1.6] - 2026-05-13
 
 - Add `darc index --rebuild` to recreate the shared SQLite index from every configured project's archived sessions, and point users to it when the local index cannot be opened or migrated.

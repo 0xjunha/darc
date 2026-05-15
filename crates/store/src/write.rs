@@ -3,13 +3,20 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use darc_paths::SourceKind;
 use darc_rollout::{ParseDeterminism, model::NormalizedTurn};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::{
     derived_data::{TurnDerivedContext, insert_turn_derived_records},
     index_db::schema::{INSERT_SESSION_SQL, INSERT_TURN_SQL},
+    redaction::{redact_normalized_turn, redact_text},
     turn_metrics::summarize_turn_metrics,
 };
+
+const SELECT_SESSION_CWD_SQL: &str = "
+    SELECT cwd
+    FROM sessions
+    WHERE project_id = ?1 AND provider = ?2 AND session_id = ?3
+";
 
 /// Identifies the normalized session shape stored in SQLite.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +69,7 @@ pub fn insert_session_record(
         i64::try_from(record.source_size).context("source_size exceeds SQLite INTEGER range")?;
     let source_mtime_ms = i64::try_from(record.source_mtime_ms)
         .context("source_mtime_ms exceeds SQLite INTEGER range")?;
+    let cwd = redact_text(&record.cwd.to_string_lossy());
 
     connection
         .execute(
@@ -73,7 +81,7 @@ pub fn insert_session_record(
                 record.parent_session_id,
                 record.session_kind.as_sql_text(),
                 record.archive_path,
-                record.cwd.to_string_lossy(),
+                cwd,
                 record.cli_version,
                 record.schema_id,
                 record.determinism.as_sql_text(),
@@ -92,9 +100,11 @@ pub fn insert_session_record(
 }
 
 /// Inserts one normalized turn row plus its derived analytics rows into SQLite.
-pub fn insert_turn_record(connection: &Connection, record: StoredTurnRecord<'_>) -> Result<()> {
+pub fn insert_turn_record(connection: &Connection, mut record: StoredTurnRecord<'_>) -> Result<()> {
     u64::try_from(record.turn_ordinal).context("turn ordinal is negative while inserting turn")?;
     let metrics = summarize_turn_metrics(&record.turn);
+    let session_cwd = indexed_session_cwd(connection, &record)?;
+    redact_normalized_turn(&mut record.turn);
     let NormalizedTurn {
         turn_id,
         user_message,
@@ -164,6 +174,7 @@ pub fn insert_turn_record(connection: &Connection, record: StoredTurnRecord<'_>)
             provider: record.provider,
             session_id: record.session_id,
             turn_ordinal: record.turn_ordinal,
+            session_cwd: session_cwd.as_deref(),
             user_message: &user_message,
             final_answer_text: final_answer_text.map(String::as_str),
         },
@@ -179,4 +190,29 @@ pub fn insert_turn_record(connection: &Connection, record: StoredTurnRecord<'_>)
     })?;
 
     Ok(())
+}
+
+/// Reads the redacted session cwd used to preserve project-relative file analytics.
+fn indexed_session_cwd(
+    connection: &Connection,
+    record: &StoredTurnRecord<'_>,
+) -> Result<Option<String>> {
+    connection
+        .query_row(
+            SELECT_SESSION_CWD_SQL,
+            params![
+                record.project_id,
+                record.provider.directory_name(),
+                record.session_id
+            ],
+            |row| row.get(0),
+        )
+        .optional()
+        .with_context(|| {
+            format!(
+                "failed to read indexed cwd for {} session {}",
+                record.provider.title(),
+                record.session_id
+            )
+        })
 }

@@ -688,15 +688,20 @@ pub(crate) const DELETE_DERIVED_ANALYTICS_SQL: &str = "
 /// Stores the turn scan query used while rebuilding derived analytics tables.
 pub(crate) const SELECT_DERIVED_ANALYTICS_REBUILD_ROWS_SQL: &str = "
     SELECT
-        project_id,
-        provider,
-        session_id,
-        turn_ordinal,
-        steps_json,
-        user_message,
-        final_answer_text
+        turns.project_id,
+        turns.provider,
+        turns.session_id,
+        turns.turn_ordinal,
+        turns.steps_json,
+        turns.user_message,
+        turns.final_answer_text,
+        sessions.cwd
     FROM turns
-    ORDER BY project_id ASC, provider ASC, session_id ASC, turn_ordinal ASC
+    LEFT JOIN sessions
+        ON sessions.project_id = turns.project_id
+        AND sessions.provider = turns.provider
+        AND sessions.session_id = turns.session_id
+    ORDER BY turns.project_id ASC, turns.provider ASC, turns.session_id ASC, turns.turn_ordinal ASC
 ";
 
 /// Creates the normalized base tables when they are missing.

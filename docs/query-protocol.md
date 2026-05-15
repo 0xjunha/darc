@@ -242,6 +242,11 @@ path when Darc can resolve the project root. Out-of-project accesses are not exp
 and raw payload blobs. Use `--view full` for full normalized steps, and `--include-raw` only when raw debug fields are
 needed.
 
+Indexed session data is best-effort redacted before storage. Redaction targets common secret formats, credential-like
+JSON fields, authorization headers, signed URL parameters, local home-directory prefixes, and bulky encoded blobs. Raw
+provider session archives and raw SQLite index files remain local implementation data; future sharing flows should export
+fresh redacted indexed projections rather than copying migrated cache files.
+
 Insights payloads use host-local civil days for daily aggregates. Timestamp fields such as `started_at` and
 `latest_turn_at` remain UTC ISO 8601 strings.
 
