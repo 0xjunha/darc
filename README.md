@@ -2,7 +2,7 @@
 
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![CI](https://github.com/0xjunha/darc/actions/workflows/ci.yml/badge.svg)](https://github.com/0xjunha/darc/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/github/0xjunha/darc/graph/badge.svg?token=J5ZVVBJ3U9)](https://codecov.io/github/0xjunha/darc)
+[![codecov](https://codecov.io/github/0xjunha/darc/graph/badge.svg)](https://codecov.io/github/0xjunha/darc)
 
 > Darc indexes your agent sessions so you can grep them like code, then open exact evidence from prior work.
 
