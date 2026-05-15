@@ -252,6 +252,7 @@ fn parses_canonical_list_show_search_stats_and_resolve_commands() {
         "11111111",
         "--provider",
         "codex",
+        "--shared",
     ])
     .unwrap();
     assert!(matches!(
@@ -260,11 +261,13 @@ fn parses_canonical_list_show_search_stats_and_resolve_commands() {
             command: super::ListCommands::Files(super::ListFilesArgs {
                 session,
                 provider,
+                shared,
                 ..
             }),
             ..
         }) if session.as_deref() == Some("11111111")
             && matches!(provider, Some(super::ProviderArg::Codex))
+            && shared
     ));
 
     let path_files = Cli::try_parse_from([

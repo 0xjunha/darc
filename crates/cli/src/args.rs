@@ -1499,6 +1499,22 @@ pub(crate) struct ListFilesArgs {
     pub(crate) session: Option<String>,
 
     #[arg(
+        long,
+        conflicts_with = "scope",
+        help_heading = "Scope",
+        help = "Allow --session to resolve an imported shared session"
+    )]
+    pub(crate) shared: bool,
+
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Scope",
+        help = "Choose local, shared, or all sessions for --session resolution"
+    )]
+    pub(crate) scope: Option<SessionScopeArg>,
+
+    #[arg(
         long = "co-touched-with",
         help_heading = "Selection",
         help = "Return files touched in the same sessions as this seed path instead of most-touched files"

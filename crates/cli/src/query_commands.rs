@@ -137,8 +137,8 @@ pub(crate) fn run_list_files(output: &QueryOutput, args: ListFilesArgs) -> Resul
                 root: args.root,
                 project_id: args.project_id,
                 provider: args.provider,
-                shared: false,
-                scope: None,
+                shared: args.shared,
+                scope: args.scope,
                 session_id_arg: None,
                 session_id: Some(session_id),
                 limit: args.limit.unwrap_or(DEFAULT_QUERY_PAGE_LIMIT),
@@ -148,6 +148,9 @@ pub(crate) fn run_list_files(output: &QueryOutput, args: ListFilesArgs) -> Resul
     }
     if path.is_none() && (args.matched_path_limit.is_some() || args.include_all_matched_paths) {
         bail!("list files matched-path controls require PATH or --path");
+    }
+    if args.shared || args.scope.is_some() {
+        bail!("list files shared scope controls require --session");
     }
     run_query_files(
         output,
