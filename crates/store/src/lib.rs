@@ -5,6 +5,7 @@ pub mod evidence;
 mod index_db;
 pub mod policy;
 mod redaction;
+mod sharing;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 mod turn_metrics;
@@ -15,6 +16,14 @@ pub use index_db::{
     ensure_index_database, open_existing_index_database, open_index_database,
     open_index_database_read_only, open_index_database_writer, remove_index_database,
     replace_index_database,
+};
+pub use sharing::{
+    OriginKind, SessionProvenance, SharePolicy, ShareSessionExport, ShareState, ShareStatus,
+    ShareTurnExport, ShareTurnImport, ShareUserRecord, clear_project_share_states,
+    import_shared_turn, parse_origin_kind, parse_share_policy, parse_share_state,
+    project_share_policy, prune_shared_sessions, query_share_export_turns, query_share_status,
+    set_project_share_policy, set_session_share_state, upsert_share_user,
+    validate_shared_session_kind, validate_shared_turn_status,
 };
 pub use write::{
     StoredSessionKind, StoredSessionRecord, StoredTurnRecord, insert_session_record,

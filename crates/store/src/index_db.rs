@@ -29,7 +29,7 @@ use self::{
 pub const INDEX_DB_FILE_NAME: &str = "index.sqlite";
 
 /// Tracks one-shot SQLite migrations for normalized index tables.
-const INDEX_DB_SCHEMA_VERSION: i32 = 14;
+const INDEX_DB_SCHEMA_VERSION: i32 = 15;
 
 /// Describes an existing index database that should be rebuilt from archived sessions.
 #[derive(Debug)]

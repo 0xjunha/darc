@@ -1249,6 +1249,7 @@ fn load_indexed_session_snapshots(
             SELECT provider, session_id, archive_path, determinism, source_size, source_mtime_ms
             FROM sessions
             WHERE project_id = ?1
+                AND origin_kind = 'local'
             ",
         )
         .context("failed to prepare indexed session snapshot query")?;
@@ -1308,7 +1309,10 @@ fn delete_indexed_session(
         .execute(
             "
             DELETE FROM sessions
-            WHERE project_id = ?1 AND provider = ?2 AND session_id = ?3
+            WHERE project_id = ?1
+                AND provider = ?2
+                AND session_id = ?3
+                AND origin_kind = 'local'
             ",
             params![project_id, provider.directory_name(), session_id],
         )
@@ -1335,7 +1339,9 @@ fn project_session_count(
                 "
                 SELECT COUNT(*)
                 FROM sessions
-                WHERE project_id = ?1 AND provider = ?2
+                WHERE project_id = ?1
+                    AND provider = ?2
+                    AND origin_kind = 'local'
                 ",
                 params![project_id, provider.directory_name()],
                 |row| row.get(0),
@@ -1360,7 +1366,13 @@ fn project_turn_count(
                 "
                 SELECT COUNT(*)
                 FROM turns
-                WHERE project_id = ?1 AND provider = ?2
+                JOIN sessions
+                    ON sessions.project_id = turns.project_id
+                    AND sessions.provider = turns.provider
+                    AND sessions.session_id = turns.session_id
+                WHERE turns.project_id = ?1
+                    AND turns.provider = ?2
+                    AND sessions.origin_kind = 'local'
                 ",
                 params![project_id, provider.directory_name()],
                 |row| row.get(0),
