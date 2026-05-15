@@ -25,13 +25,15 @@ use serde_json::to_value;
 use crate::query::{
     DEFAULT_MATCHED_PATH_LIMIT, DEFAULT_SEARCH_MATCH_LIMIT, DEFAULT_TURN_STEP_LIMIT,
     DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT, FilesQueryMode, FilesQueryRequest, LocalDate,
-    ProjectInsights, SearchMode, SearchTurnsRequest, SessionBundleQueryRequest, SessionBundleView,
-    SessionFilesQueryRequest, SessionKind, SessionOriginScope, SessionsQueryRequest, SessionsView,
-    TurnDetailOptions, TurnInsights, TurnsQueryRequest, TurnsView, build_project_insights,
-    build_turn_insights, build_workspace_insights, open_existing_index_database,
+    ProjectInsights, ResolveSessionQueryRequest, SearchMode, SearchTurnsRequest,
+    SessionBundleQueryRequest, SessionBundleView, SessionFilesQueryRequest, SessionKind,
+    SessionOriginScope, SessionsQueryRequest, SessionsView, TurnDetailOptions, TurnInsights,
+    TurnsQueryRequest, TurnsView, build_project_insights, build_turn_insights,
+    build_workspace_insights, list_project_index_aggregates, open_existing_index_database,
     parse_session_kind, query_project_files, query_project_session_bundle,
-    query_project_session_files, query_project_sessions, query_project_turns, query_search_turns,
-    query_session_turn_details, query_turn_detail, query_turn_exists, smoke_test_sql,
+    query_project_session_files, query_project_sessions, query_project_turns,
+    query_resolve_sessions, query_search_turns, query_session_turn_details, query_turn_detail,
+    query_turn_exists, smoke_test_sql,
 };
 
 /// Builds one temporary SQLite index path for query tests.
@@ -2083,6 +2085,16 @@ fn project_wide_file_and_insight_queries_default_to_local_sessions() -> Result<(
         None,
         10,
     )?;
+    let aggregates = list_project_index_aggregates(&index_path)?;
+    let resolved = query_resolve_sessions(
+        &index_path,
+        ResolveSessionQueryRequest {
+            project_id: Some("repo-a"),
+            provider: Some(SourceKind::Codex),
+            query: "00000000-0000-4000-8000-00000000050",
+            limit: 10,
+        },
+    )?;
 
     assert_eq!(
         top.files
@@ -2096,6 +2108,17 @@ fn project_wide_file_and_insight_queries_default_to_local_sessions() -> Result<(
     assert_eq!(workspace.recent_sessions.len(), 1);
     assert_eq!(workspace.recent_sessions[0].session_id, local_session);
     assert_eq!(project.inspected_turn_count, 1);
+    assert_eq!(
+        aggregates,
+        vec![crate::query::ProjectIndexAggregate {
+            project_id: "repo-a".to_owned(),
+            session_count: 1,
+            turn_count: 1,
+            last_activity_at: Some("2026-05-15T10:00:00Z".to_owned()),
+        }]
+    );
+    assert_eq!(resolved.total, 1);
+    assert_eq!(resolved.matches[0].session_id, local_session);
     assert_eq!(
         project
             .most_read_files

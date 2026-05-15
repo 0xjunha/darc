@@ -24,15 +24,21 @@ const PROJECT_INDEX_AGGREGATES_SQL: &str = "
             project_id,
             COUNT(*) AS session_count
         FROM sessions
+        WHERE origin_kind = 'local'
         GROUP BY project_id
     ),
     turn_counts AS (
         SELECT
-            project_id,
+            turns.project_id,
             COUNT(*) AS turn_count,
-            MAX(started_at) AS last_activity_at
+            MAX(turns.started_at) AS last_activity_at
         FROM turns
-        GROUP BY project_id
+        JOIN sessions
+            ON sessions.project_id = turns.project_id
+            AND sessions.provider = turns.provider
+            AND sessions.session_id = turns.session_id
+        WHERE sessions.origin_kind = 'local'
+        GROUP BY turns.project_id
     )
     SELECT
         session_counts.project_id,
@@ -285,6 +291,7 @@ const RESOLVE_SESSIONS_SQL: &str = "
     WHERE (?1 IS NULL OR project_id = ?1)
         AND (?2 IS NULL OR provider = ?2)
         AND session_id LIKE ?3 || '%' COLLATE NOCASE
+        AND origin_kind = 'local'
     ORDER BY
         project_id ASC,
         provider ASC,
@@ -303,6 +310,7 @@ const RESOLVE_SESSIONS_COUNT_SQL: &str = "
         WHERE (?1 IS NULL OR project_id = ?1)
             AND (?2 IS NULL OR provider = ?2)
             AND session_id LIKE ?3 || '%' COLLATE NOCASE
+            AND origin_kind = 'local'
     )
 ";
 
