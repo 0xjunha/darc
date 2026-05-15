@@ -210,6 +210,7 @@ fn build_config_preserves_existing_update_check_opt_out() -> Result<()> {
         ExistingConfig {
             projects: Vec::new(),
             check_for_update_on_startup: false,
+            ..ExistingConfig::default()
         },
         project,
         &[],
@@ -238,6 +239,7 @@ fn build_config_preserves_existing_update_check_opt_in() -> Result<()> {
         ExistingConfig {
             projects: Vec::new(),
             check_for_update_on_startup: true,
+            ..ExistingConfig::default()
         },
         project,
         &[],

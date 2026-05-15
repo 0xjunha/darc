@@ -7,7 +7,8 @@ use anyhow::{Context, Result};
 
 use super::{project_config::normalize_project_config, types::DetectedRolloutSource};
 use crate::config::{
-    ClaudeSourceConfig, CodexSourceConfig, ProjectConfig, SharedConfig, SourcesConfig, load_config,
+    ClaudeSourceConfig, CodexSourceConfig, ProjectConfig, ShareConfig, SharedConfig, SourcesConfig,
+    WatchConfig, load_config,
 };
 
 /// Stores existing shared config fields that init must preserve.
@@ -15,6 +16,8 @@ use crate::config::{
 pub(super) struct ExistingConfig {
     pub(super) projects: Vec<ProjectConfig>,
     pub(super) check_for_update_on_startup: bool,
+    pub(super) watch: WatchConfig,
+    pub(super) share: ShareConfig,
 }
 
 /// Merges the current project into the shared config model before serialization.
@@ -27,6 +30,8 @@ pub(super) fn build_config(
     let ExistingConfig {
         projects: existing_projects,
         check_for_update_on_startup,
+        watch,
+        share,
     } = existing;
     let mut projects: Vec<_> = existing_projects
         .into_iter()
@@ -63,6 +68,8 @@ pub(super) fn build_config(
         },
     );
     config.check_for_update_on_startup = check_for_update_on_startup;
+    config.watch = watch;
+    config.share = share;
     config
 }
 
@@ -74,6 +81,8 @@ pub(super) fn load_existing_config(config_path: &Path) -> Result<ExistingConfig>
 
     let config = load_config(config_path)?;
     let check_for_update_on_startup = config.check_for_update_on_startup;
+    let watch = config.watch;
+    let share = config.share;
     let projects = config
         .projects
         .into_iter()
@@ -82,6 +91,8 @@ pub(super) fn load_existing_config(config_path: &Path) -> Result<ExistingConfig>
     Ok(ExistingConfig {
         projects,
         check_for_update_on_startup,
+        watch,
+        share,
     })
 }
 
