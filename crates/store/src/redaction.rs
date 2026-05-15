@@ -56,7 +56,7 @@ static SECRET_ASSIGNMENT_SINGLE_QUOTED_REGEX: LazyLock<Regex> = LazyLock::new(||
 });
 static SECRET_ASSIGNMENT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     compile_regex(&format!(
-        r#"\b({SECRET_KEY_REGEX_FRAGMENT})\b(\s*[:=]\s*)([^\s"',;}}{{]{{4,}})"#
+        r#"\b({SECRET_KEY_REGEX_FRAGMENT})\b(\s*[:=]\s*)([^\s"',;`}}{{]{{4,}})"#
     ))
 });
 static SECRET_FLAG_EQUALS_DOUBLE_QUOTED_REGEX: LazyLock<Regex> = LazyLock::new(|| {
@@ -71,22 +71,22 @@ static SECRET_FLAG_EQUALS_SINGLE_QUOTED_REGEX: LazyLock<Regex> = LazyLock::new(|
 });
 static SECRET_FLAG_EQUALS_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     compile_regex(&format!(
-        r#"(--{SECRET_FLAG_REGEX_FRAGMENT}=)([^\s"',;}}{{]+)"#
+        r#"(--{SECRET_FLAG_REGEX_FRAGMENT}=)([^\s"',;`}}{{]+)"#
     ))
 });
 static SECRET_FLAG_VALUE_DOUBLE_QUOTED_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     compile_regex(&format!(
-        r#"(--{SECRET_FLAG_REGEX_FRAGMENT}\s+)"([^"\r\n]{{4,}})""#
+        r#"(--{SECRET_FLAG_REGEX_FRAGMENT}[ \t]+)"([^"\r\n]{{4,}})""#
     ))
 });
 static SECRET_FLAG_VALUE_SINGLE_QUOTED_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     compile_regex(&format!(
-        r#"(--{SECRET_FLAG_REGEX_FRAGMENT}\s+)'([^'\r\n]{{4,}})'"#
+        r#"(--{SECRET_FLAG_REGEX_FRAGMENT}[ \t]+)'([^'\r\n]{{4,}})'"#
     ))
 });
 static SECRET_FLAG_VALUE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     compile_regex(&format!(
-        r#"(--{SECRET_FLAG_REGEX_FRAGMENT}\s+)([^\s"',;}}{{]+)"#
+        r#"(--{SECRET_FLAG_REGEX_FRAGMENT}[ \t]+)([^\s"',;`}}{{]+)"#
     ))
 });
 static URL_CREDENTIALS_REGEX: LazyLock<Regex> =
@@ -200,11 +200,24 @@ fn redact_secret_assignment(input: &str, regex: &Regex, replacement_value: &str)
             if is_embedded_long_flag_assignment(input, full_match.start()) {
                 return captures[0].to_owned();
             }
+            if is_comparison_operator_assignment(input, separator, value) {
+                return captures[0].to_owned();
+            }
             if is_authorization_scheme_assignment(
                 secret_key.as_str(),
                 separator.as_str(),
                 value.as_str(),
             ) {
+                return captures[0].to_owned();
+            }
+            if is_authorization_search_pattern_assignment(
+                secret_key.as_str(),
+                separator.as_str(),
+                value.as_str(),
+            ) {
+                return captures[0].to_owned();
+            }
+            if is_non_secret_literal_assignment_value(value.as_str()) {
                 return captures[0].to_owned();
             }
             format!(
@@ -224,17 +237,76 @@ fn is_embedded_long_flag_assignment(input: &str, match_start: usize) -> bool {
         && bytes.get(match_start - 2).is_some_and(|byte| *byte == b'-')
 }
 
+/// Returns whether an assignment match is part of comparison or arrow syntax.
+fn is_comparison_operator_assignment(
+    input: &str,
+    separator: regex::Match<'_>,
+    value: regex::Match<'_>,
+) -> bool {
+    let Some((relative_operator_index, operator)) = separator
+        .as_str()
+        .bytes()
+        .enumerate()
+        .find(|(_, byte)| matches!(byte, b':' | b'='))
+    else {
+        return false;
+    };
+    if operator != b'=' {
+        return false;
+    }
+
+    let operator_index = separator.start() + relative_operator_index;
+    let bytes = input.as_bytes();
+    value.as_str().starts_with('=')
+        || matches!(bytes.get(operator_index + 1), Some(b'=') | Some(b'>'))
+        || operator_index
+            .checked_sub(1)
+            .and_then(|index| bytes.get(index))
+            .is_some_and(|byte| matches!(byte, b'<' | b'>' | b'!'))
+}
+
+/// Returns whether one secret-like key names an Authorization header.
+fn is_authorization_key(key: &str) -> bool {
+    let parts = secret_key_parts(key);
+    matches!(parts.as_slice(), [part] if part == "authorization")
+        || matches!(parts.as_slice(), [first, second] if first == "proxy" && second == "authorization")
+}
+
 /// Returns whether an Authorization header match only captured the auth scheme.
 fn is_authorization_scheme_assignment(key: &str, separator: &str, value: &str) -> bool {
     separator.contains(':')
-        && matches!(
-            key.to_ascii_lowercase().as_str(),
-            "authorization" | "proxy-authorization" | "proxy_authorization"
-        )
+        && is_authorization_key(key)
         && matches!(
             value.to_ascii_lowercase().as_str(),
             "basic" | "bearer" | "digest" | "negotiate" | "ntlm" | "token"
         )
+}
+
+/// Returns whether an Authorization match is a search pattern rather than a header.
+fn is_authorization_search_pattern_assignment(key: &str, separator: &str, value: &str) -> bool {
+    separator.contains(':')
+        && is_authorization_key(key)
+        && matches!(value.trim_start(), value if value.starts_with('|') || value.starts_with(r"\|"))
+}
+
+/// Returns whether a generic assignment value is a non-secret literal.
+fn is_non_secret_literal_assignment_value(value: &str) -> bool {
+    matches!(
+        value
+            .trim_matches(|ch: char| matches!(ch, '"' | '\'' | '`'))
+            .to_ascii_lowercase()
+            .as_str(),
+        "true" | "false" | "null" | "none" | "nil"
+    )
+}
+
+/// Returns whether one JSON value is a non-secret placeholder literal.
+fn is_non_secret_json_literal(value: &Value) -> bool {
+    match value {
+        Value::Null | Value::Bool(_) => true,
+        Value::String(text) => is_non_secret_literal_assignment_value(text),
+        Value::Array(_) | Value::Number(_) | Value::Object(_) => false,
+    }
 }
 
 /// Redacts quoted CLI secret flag values while leaving wildcard-only examples intact.
@@ -456,6 +528,9 @@ fn redact_optional_text(value: &mut Option<String>) {
 /// Recursively redacts secret-like JSON values.
 fn redact_json_value(key: Option<&str>, value: &mut Value) {
     if key.is_some_and(secret_like_key) {
+        if is_non_secret_json_literal(value) {
+            return;
+        }
         *value = Value::String(REDACTED_SECRET.to_owned());
         return;
     }
@@ -702,7 +777,14 @@ mod tests {
             "codex_app_server_protocol::protocol::common::FuzzyFileSearchParamsSuperset ",
             "query LIKE '%--token=%' ",
             "rg -n -S 'token=' ",
-            "--token=**** --token=%%%% --token=\"****\" --token '%%%%'"
+            "--token=**** --token=%%%% --token=\"****\" --token '%%%%' ",
+            "rg -n -S 'Bearer |Authorization:|PRIVATE KEY' ",
+            r#"rg -n -S 'Bearer \|Authorization:\|PRIVATE KEY' "#,
+            r#"rg -n -S 'proxyAuthorization:\|PRIVATE KEY' "#,
+            "--with-api-key\n          Read the API key from stdin ",
+            "persist-credentials: false token: null password=none secret=true ",
+            "`persist-credentials: false`... ",
+            r#"if token == \"fmt\" { continue; } if token=> \"fmt\" { continue; }"#
         );
 
         assert_eq!(redact_text(input), input);
@@ -714,8 +796,10 @@ mod tests {
             "TOKEN=secretvalue API_TOKEN=supersecret SLACK_BOT_TOKEN=xoxb-secret \
              STRIPE_SECRET_KEY=stripe-secret AUTHORIZATION=opaque-secret \
              Authorization:\"Token abcdef\" password=\"quoted secret\" \
+             TOKEN:=make-secret \
              --password=p%40ssword --token abc%2Fdef --token flagsecret \
-             --github-token=github-secret --openai-api-key=\"openai-secret\" \
+             --github-token=github-secret --with-api-key stdin-secret \
+             --openai-api-key=\"openai-secret\" \
              --session-token=session%2Fsecret --passwd='passwd-secret'",
         );
 
@@ -726,12 +810,14 @@ mod tests {
         assert!(!redacted.contains("opaque-secret"));
         assert!(!redacted.contains("Token abcdef"));
         assert!(!redacted.contains("quoted secret"));
+        assert!(!redacted.contains("make-secret"));
         assert!(!redacted.contains("p%40ssword"));
         assert!(!redacted.contains("abc%2Fdef"));
         assert!(!redacted.contains("%40ssword"));
         assert!(!redacted.contains("%2Fdef"));
         assert!(!redacted.contains("flagsecret"));
         assert!(!redacted.contains("github-secret"));
+        assert!(!redacted.contains("stdin-secret"));
         assert!(!redacted.contains("openai-secret"));
         assert!(!redacted.contains("session%2Fsecret"));
         assert!(!redacted.contains("passwd-secret"));
@@ -753,6 +839,9 @@ mod tests {
                 "Authorization": "Bearer abcdefghijklmnop",
                 "refreshToken": "refresh-secret",
                 "tokenSource": "env",
+                "optionalToken": null,
+                "persist-credentials": false,
+                "password": "none",
                 "image_url": "data:image/png;base64,abcdef"
             },
             "path": "/Users/alice/project/src/lib.rs",
@@ -771,6 +860,9 @@ mod tests {
         assert_eq!(value["nested"]["Authorization"], REDACTED_SECRET);
         assert_eq!(value["nested"]["refreshToken"], REDACTED_SECRET);
         assert_eq!(value["nested"]["tokenSource"], "env");
+        assert!(value["nested"]["optionalToken"].is_null());
+        assert_eq!(value["nested"]["persist-credentials"], false);
+        assert_eq!(value["nested"]["password"], "none");
         assert_eq!(value["nested"]["image_url"], REDACTED_BLOB);
         assert_eq!(value["path"], "/Users/[REDACTED_HOME]/project/src/lib.rs");
         let serialized = serde_json::to_string(&value).expect("redacted JSON should serialize");

@@ -5,6 +5,7 @@ All notable Darc release changes should be summarized here.
 ## Unreleased
 
 - Redact common secrets, credential material, local home paths, and bulky data blobs before storing or migrating indexed session data.
+- Reduce false-positive redaction of indexed examples, CLI help text, boolean config values, search patterns, and comparison code.
 
 ## [0.1.6] - 2026-05-13
 
