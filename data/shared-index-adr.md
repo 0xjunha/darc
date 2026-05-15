@@ -73,7 +73,7 @@ Each share branch stores only Darc share artifacts:
 
 ```text
 darc-share/v1/project.json
-darc-share/v1/manifest.json
+darc-share/v1/exporters/<exporter-fingerprint>/manifest.json
 darc-share/v1/objects/<recipient-fingerprint>-<payload-sha256>.age
 darc-share/v1/objects/sync-<recipient-fingerprint>-<payload-sha256>.age
 ```
@@ -86,7 +86,7 @@ darc-share/v1/objects/sync-<recipient-fingerprint>-<payload-sha256>.age
 - source Git URL fingerprint or normalized URL
 - created/updated timestamps
 
-`manifest.json` is visible and contains only sync metadata:
+Each exporter manifest is visible and contains only sync metadata:
 
 - artifact schema id and version
 - project key
@@ -95,6 +95,10 @@ darc-share/v1/objects/sync-<recipient-fingerprint>-<payload-sha256>.age
 - exporter public age recipient
 - session provider, session id, turn ordinal ranges, content hashes, object paths, and encrypted sync object path
 - export timestamp
+
+The branch tip preserves one manifest namespace per exporter. A push replaces only the current exporter's manifest and
+objects that are no longer referenced by another exporter. This keeps a team branch usable for fresh pullers: the latest
+tree can expose every teammate's current export instead of only the most recent pusher.
 
 Encrypted object files contain the sensitive payload:
 
@@ -116,13 +120,13 @@ Darc local `project_id` remains host-local. Shared artifacts use a canonical pro
 1. Prefer the normalized Git upstream URL from Darc project config.
 2. Fall back to `origin` URL read from the active Git repository.
 
-URL normalization strips HTTPS/SSH userinfo before any visible artifact is written, lowercases only the host, and
-preserves repository path case for case-sensitive Git hosts.
 3. If no Git URL exists, fail sharing setup with a clear message.
 
 The key is `git:<normalized-url>`. Normalization removes trailing `.git`, lowercases GitHub-style hostnames, trims
-trailing slashes, and normalizes common SSH/HTTPS forms where safe. Darc imports a share artifact only when the canonical
-project key matches the active project's key.
+trailing slashes, normalizes common SSH/HTTPS forms where safe, strips URL userinfo, lowercases only the host, and
+preserves repository path case for case-sensitive Git hosts. Unsupported or local remotes such as `file://` URLs and
+filesystem paths are rejected for project keys because the key is visible in share artifacts. Darc imports a share
+artifact only when the canonical project key matches the active project's key.
 
 ### Identity And Provenance
 
@@ -192,8 +196,8 @@ history rewriting and remote retention controls.
 
 ### Import And Conflict Model
 
-Fetch downloads the `darc/<name>` branch into the local Darc share cache. Merge imports fetched artifacts into the local
-SQLite index. Pull is fetch plus merge.
+Fetch downloads the `darc/<name>` branch into the local Darc share cache. Merge imports all current exporter manifests
+from the fetched tree into the local SQLite index. Pull is fetch plus merge.
 
 Merge decrypts and validates the encrypted sync payload before destructive pruning. It prunes stale imported turns only
 for the exporter identity contained in that decrypted payload, and then removes empty imported sessions for that

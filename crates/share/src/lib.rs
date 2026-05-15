@@ -23,8 +23,8 @@ use darc_store::{
     set_session_share_state,
 };
 use git2::{
-    BranchType, Cred, FetchOptions, IndexAddOption, PushOptions, RemoteCallbacks, Repository,
-    ResetType,
+    BranchType, Cred, FetchOptions, FetchPrune, IndexAddOption, PushOptions, RemoteCallbacks,
+    Repository, ResetType,
 };
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -35,6 +35,9 @@ const PROJECT_SCHEMA: &str = "darc.share.project.v1";
 const MANIFEST_SCHEMA: &str = "darc.share.manifest.v1";
 const TURN_PAYLOAD_SCHEMA: &str = "darc.share.turn.v1";
 const SYNC_PAYLOAD_SCHEMA: &str = "darc.share.sync.v1";
+const LEGACY_MANIFEST_FILE: &str = "manifest.json";
+const PROJECT_FILE: &str = "project.json";
+const EXPORTERS_DIR: &str = "exporters";
 const KEY_FILE_NAME: &str = "share.agekey";
 const SHARE_CACHE_DIR: &str = "share-cache";
 const DEFAULT_REMOTE_NAME: &str = "origin";
@@ -329,8 +332,8 @@ pub fn push_share_branch(
     let repository = prepare_cache_repository(&cache_path, &remote.url, &identity)?;
     fetch_branch_if_exists(&repository, &remote.url, &git_branch)?;
     checkout_share_branch(&repository, &git_branch)?;
+    let cached_manifests = read_cached_manifests(&cache_path)?;
     let existing_objects = read_existing_objects(&cache_path)?;
-    clear_cache_workdir(&cache_path)?;
     let artifact = build_export_artifact(ExportBuildRequest {
         context,
         settings,
@@ -341,6 +344,7 @@ pub fn push_share_branch(
         turns,
         existing_objects,
     })?;
+    remove_replaced_exporter_artifacts(&cache_path, &identity, &cached_manifests, &artifact)?;
     write_export_artifact(&cache_path, &artifact)?;
     let commit_id = commit_cache_repository(&repository, &identity, &git_branch)?;
     push_branch(&repository, &remote.url, &git_branch)?;
@@ -348,7 +352,7 @@ pub fn push_share_branch(
         branch: branch.to_owned(),
         git_branch,
         remote_name: remote.name,
-        remote_url: remote.url,
+        remote_url: remote.display_url,
         project_key,
         exported_turn_count: artifact.exported_turn_count,
         exported_session_count: artifact.exported_session_count,
@@ -376,7 +380,7 @@ pub fn fetch_share_branch(
         branch: branch.to_owned(),
         git_branch,
         remote_name: remote.name,
-        remote_url: remote.url,
+        remote_url: remote.display_url,
         fetched: true,
     })
 }
@@ -448,6 +452,13 @@ pub fn remove_recipient(settings: &mut ShareSettings, recipient: &str) -> bool {
     settings.recipients.len() != old_len
 }
 
+/// Validates one age recipient string before it is stored in config.
+pub fn validate_share_recipient(recipient: &str) -> Result<()> {
+    Recipient::from_str(recipient.trim())
+        .map(|_| ())
+        .map_err(|error| anyhow::anyhow!("{error}"))
+}
+
 /// Stores one in-memory export artifact before writing to disk.
 struct BuiltExportArtifact {
     project: ProjectArtifact,
@@ -463,6 +474,13 @@ struct BuiltExportArtifact {
 struct ResolvedRemote {
     name: String,
     url: String,
+    display_url: String,
+}
+
+/// Stores one manifest found in the local share cache.
+struct CachedManifest {
+    relative_path: String,
+    manifest: ManifestArtifact,
 }
 
 /// Stores the inputs needed to build one share export artifact.
@@ -586,11 +604,11 @@ fn build_export_artifact(request: ExportBuildRequest<'_>) -> Result<BuiltExportA
 /// Writes all share artifacts into a cache repository workdir.
 fn write_export_artifact(path: &Path, artifact: &BuiltExportArtifact) -> Result<()> {
     write_json_file(
-        &path.join(ARTIFACT_ROOT).join("project.json"),
+        &path.join(ARTIFACT_ROOT).join(PROJECT_FILE),
         &artifact.project,
     )?;
     write_json_file(
-        &path.join(ARTIFACT_ROOT).join("manifest.json"),
+        &path.join(exporter_manifest_relative_path(&artifact.manifest.exporter)),
         &artifact.manifest,
     )?;
     for (relative, content) in &artifact.objects {
@@ -606,6 +624,91 @@ fn write_export_artifact(path: &Path, artifact: &BuiltExportArtifact) -> Result<
     Ok(())
 }
 
+/// Reads all visible manifests from one cache workdir.
+fn read_cached_manifests(cache_path: &Path) -> Result<Vec<CachedManifest>> {
+    let mut manifests = Vec::new();
+    let exporter_root = cache_path.join(ARTIFACT_ROOT).join(EXPORTERS_DIR);
+    if exporter_root.exists() {
+        for entry in fs::read_dir(&exporter_root)
+            .with_context(|| format!("failed to read {}", exporter_root.display()))?
+        {
+            let entry =
+                entry.with_context(|| format!("failed to read {}", exporter_root.display()))?;
+            let file_type = entry
+                .file_type()
+                .with_context(|| format!("failed to inspect {}", entry.path().display()))?;
+            if !file_type.is_dir() {
+                continue;
+            }
+            let Some(exporter_dir) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            let relative_path =
+                format!("{ARTIFACT_ROOT}/{EXPORTERS_DIR}/{exporter_dir}/{LEGACY_MANIFEST_FILE}");
+            let manifest_path = cache_path.join(&relative_path);
+            if manifest_path.exists() {
+                manifests.push(CachedManifest {
+                    manifest: read_json_file(&manifest_path)?,
+                    relative_path,
+                });
+            }
+        }
+    }
+    manifests.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    let legacy_relative_path = format!("{ARTIFACT_ROOT}/{LEGACY_MANIFEST_FILE}");
+    let legacy_path = cache_path.join(&legacy_relative_path);
+    if legacy_path.exists() {
+        manifests.push(CachedManifest {
+            manifest: read_json_file(&legacy_path)?,
+            relative_path: legacy_relative_path,
+        });
+    }
+    Ok(manifests)
+}
+
+/// Removes stale files owned by the exporter being replaced.
+fn remove_replaced_exporter_artifacts(
+    cache_path: &Path,
+    identity: &ShareIdentity,
+    cached_manifests: &[CachedManifest],
+    artifact: &BuiltExportArtifact,
+) -> Result<()> {
+    let current_exporter_id = exporter_manifest_id(identity);
+    let current_object_paths = artifact.objects.keys().cloned().collect::<BTreeSet<_>>();
+    let retained_object_paths = cached_manifests
+        .iter()
+        .filter(|cached| exporter_manifest_id(&cached.manifest.exporter) != current_exporter_id)
+        .flat_map(|cached| manifest_object_paths(&cached.manifest))
+        .collect::<BTreeSet<_>>();
+    let stale_object_paths = cached_manifests
+        .iter()
+        .filter(|cached| exporter_manifest_id(&cached.manifest.exporter) == current_exporter_id)
+        .flat_map(|cached| manifest_object_paths(&cached.manifest))
+        .filter(|path| {
+            !current_object_paths.contains(path) && !retained_object_paths.contains(path)
+        })
+        .collect::<BTreeSet<_>>();
+
+    for cached in cached_manifests
+        .iter()
+        .filter(|cached| exporter_manifest_id(&cached.manifest.exporter) == current_exporter_id)
+    {
+        remove_relative_file(cache_path, &cached.relative_path)?;
+    }
+    for object_path in stale_object_paths {
+        remove_artifact_object(cache_path, &object_path)?;
+    }
+    Ok(())
+}
+
+/// Returns all encrypted object paths referenced by one manifest.
+fn manifest_object_paths(manifest: &ManifestArtifact) -> BTreeSet<String> {
+    let mut paths = BTreeSet::new();
+    paths.insert(manifest.sync.object_path.clone());
+    paths.extend(manifest.turns.iter().map(|turn| turn.object_path.clone()));
+    paths
+}
+
 /// Imports all valid encrypted payloads from one cache workdir.
 fn import_from_cache(
     context: &ShareProjectContext,
@@ -615,50 +718,56 @@ fn import_from_cache(
     expected_project_key: &str,
     cache_path: &Path,
 ) -> Result<ShareMergeReport> {
-    let manifest_path = cache_path.join(ARTIFACT_ROOT).join("manifest.json");
-    let manifest = read_json_file::<ManifestArtifact>(&manifest_path)?;
     let mut warnings = Vec::new();
-    if manifest.schema != MANIFEST_SCHEMA {
+    let manifests = read_cached_manifests(cache_path)?;
+    if manifests.is_empty() {
         bail!(
-            "unsupported Darc share manifest schema `{}`",
-            manifest.schema
-        );
-    }
-    if manifest.project_key != expected_project_key {
-        bail!(
-            "share branch project key `{}` does not match active project key `{}`",
-            manifest.project_key,
-            expected_project_key
+            "share branch does not contain a Darc manifest at {}/{} or {}/{}/<exporter>/{}",
+            ARTIFACT_ROOT,
+            LEGACY_MANIFEST_FILE,
+            ARTIFACT_ROOT,
+            EXPORTERS_DIR,
+            LEGACY_MANIFEST_FILE
         );
     }
     let identity_key = ensure_share_key(&context.root)?;
     let identity = read_share_identity_key(&identity_key.key_path)?;
-    let sync_payload = read_sync_payload(cache_path, &manifest, expected_project_key, &identity)?;
     let mut connection = open_index_database_writer(&context.index_db_path)?;
     let origin_remote = share_origin_remote(remote_name, git_branch);
-    let keep_turns = sync_payload
-        .turns
-        .iter()
-        .map(|entry| (entry.provider, entry.session_id.clone(), entry.turn_ordinal))
-        .collect::<BTreeSet<_>>();
-    let authenticated_turns = sync_payload.turns.iter().cloned().collect::<BTreeSet<_>>();
+    let mut imported_exporters = BTreeSet::new();
     let mut imported_turn_count = 0_u64;
     let mut skipped_turn_count = 0_u64;
-    for entry in &manifest.turns {
-        if !authenticated_turns.contains(&SyncTurnEntry {
-            provider: entry.provider,
-            session_id: entry.session_id.clone(),
-            turn_ordinal: entry.turn_ordinal,
-        }) {
-            skipped_turn_count += 1;
+    for cached in manifests {
+        let manifest = cached.manifest;
+        if manifest.schema != MANIFEST_SCHEMA {
+            bail!(
+                "unsupported Darc share manifest schema `{}`",
+                manifest.schema
+            );
+        }
+        if manifest.project_key != expected_project_key {
+            bail!(
+                "share branch project key `{}` does not match active project key `{}`",
+                manifest.project_key,
+                expected_project_key
+            );
+        }
+        let exporter_id = exporter_manifest_id(&manifest.exporter);
+        if !imported_exporters.insert(exporter_id) {
             warnings.push(format!(
-                "skipped {} session {} turn {}: share manifest entry is not authenticated by sync payload",
-                entry.provider.directory_name(),
-                entry.session_id,
-                entry.turn_ordinal
+                "skipped duplicate share manifest {} for exporter {}",
+                cached.relative_path, manifest.exporter.user_id
             ));
             continue;
         }
+        let sync_payload =
+            read_sync_payload(cache_path, &manifest, expected_project_key, &identity)?;
+        let keep_turns = sync_payload
+            .turns
+            .iter()
+            .map(|entry| (entry.provider, entry.session_id.clone(), entry.turn_ordinal))
+            .collect::<BTreeSet<_>>();
+        let authenticated_turns = sync_payload.turns.iter().cloned().collect::<BTreeSet<_>>();
         let import_context = ImportEntryContext {
             expected_project_key,
             project_id: &context.project_id,
@@ -667,27 +776,43 @@ fn import_from_cache(
             identity: &identity,
             cache_path,
         };
-        match import_manifest_entry(&mut connection, &import_context, entry) {
-            Ok(true) => imported_turn_count += 1,
-            Ok(false) => skipped_turn_count += 1,
-            Err(error) => {
+        for entry in &manifest.turns {
+            if !authenticated_turns.contains(&SyncTurnEntry {
+                provider: entry.provider,
+                session_id: entry.session_id.clone(),
+                turn_ordinal: entry.turn_ordinal,
+            }) {
                 skipped_turn_count += 1;
                 warnings.push(format!(
-                    "skipped {} session {} turn {}: {error:#}",
+                    "skipped {} session {} turn {}: share manifest entry is not authenticated by sync payload",
                     entry.provider.directory_name(),
                     entry.session_id,
                     entry.turn_ordinal
                 ));
+                continue;
+            }
+            match import_manifest_entry(&mut connection, &import_context, entry) {
+                Ok(true) => imported_turn_count += 1,
+                Ok(false) => skipped_turn_count += 1,
+                Err(error) => {
+                    skipped_turn_count += 1;
+                    warnings.push(format!(
+                        "skipped {} session {} turn {}: {error:#}",
+                        entry.provider.directory_name(),
+                        entry.session_id,
+                        entry.turn_ordinal
+                    ));
+                }
             }
         }
+        prune_shared_turns(
+            &connection,
+            &context.project_id,
+            &origin_remote,
+            &sync_payload.exporter.user_id,
+            &keep_turns,
+        )?;
     }
-    prune_shared_turns(
-        &connection,
-        &context.project_id,
-        &origin_remote,
-        &sync_payload.exporter.user_id,
-        &keep_turns,
-    )?;
     Ok(ShareMergeReport {
         branch: branch.to_owned(),
         git_branch: git_branch.to_owned(),
@@ -792,12 +917,14 @@ fn resolve_remote(
             .with_context(|| format!("Darc share remote `{remote_name}` is not configured"))?;
         return Ok(ResolvedRemote {
             name: remote.name.clone(),
+            display_url: sanitize_git_url_for_display(&remote.url),
             url: remote.url.clone(),
         });
     }
     if let Some(url) = context.git_upstream.clone() {
         return Ok(ResolvedRemote {
             name: DEFAULT_REMOTE_NAME.to_owned(),
+            display_url: sanitize_git_url_for_display(&url),
             url,
         });
     }
@@ -816,6 +943,7 @@ fn resolve_remote(
         .to_owned();
     Ok(ResolvedRemote {
         name: DEFAULT_REMOTE_NAME.to_owned(),
+        display_url: sanitize_git_url_for_display(&url),
         url,
     })
 }
@@ -839,25 +967,28 @@ fn project_key(context: &ShareProjectContext) -> Result<String> {
             .context("origin remote URL is not valid UTF-8")?
             .to_owned()
     };
-    Ok(format!("git:{}", normalize_git_url(&url)))
+    Ok(format!("git:{}", normalize_git_url(&url)?))
 }
 
 /// Normalizes one Git URL enough for Darc project matching.
-fn normalize_git_url(url: &str) -> String {
+fn normalize_git_url(url: &str) -> Result<String> {
     let trimmed = url.trim().trim_end_matches('/').trim_end_matches(".git");
     if let Some(normalized) = normalize_scp_like_git_url(trimmed) {
-        return normalized;
+        return Ok(normalized);
     }
     if let Some(normalized) = normalize_scheme_git_url(trimmed, "ssh://", "https") {
-        return normalized;
+        return Ok(normalized);
     }
     if let Some(normalized) = normalize_scheme_git_url(trimmed, "https://", "https") {
-        return normalized;
+        return Ok(normalized);
     }
     if let Some(normalized) = normalize_scheme_git_url(trimmed, "http://", "http") {
-        return normalized;
+        return Ok(normalized);
     }
-    trimmed.to_owned()
+    bail!(
+        "Darc share project keys require an ssh, https, or http Git remote; refusing to publish unsupported or local remote `{}` in visible share metadata",
+        sanitize_git_url_for_display(trimmed)
+    )
 }
 
 /// Normalizes one SSH scp-like Git URL.
@@ -886,6 +1017,26 @@ fn normalize_scheme_git_url(url: &str, input_scheme: &str, output_scheme: &str) 
         "{output_scheme}://{host}/{}",
         path.trim_start_matches('/')
     ))
+}
+
+/// Returns a remote URL suitable for terminal output.
+fn sanitize_git_url_for_display(url: &str) -> String {
+    let trimmed = url.trim();
+    if let Some((scheme, rest)) = trimmed.split_once("://")
+        && let Some((authority, path)) = rest.split_once('/')
+    {
+        let host = authority
+            .rsplit_once('@')
+            .map_or(authority, |(_, host)| host);
+        return format!("{scheme}://{host}/{path}");
+    }
+    if let Some((user_host, path)) = trimmed.split_once(':')
+        && !trimmed.contains("://")
+        && let Some((user, host)) = user_host.rsplit_once('@')
+    {
+        return format!("{user}@{host}:{path}");
+    }
+    trimmed.to_owned()
 }
 
 /// Reads and parses one age identity file.
@@ -1065,7 +1216,13 @@ fn fetch_branch_if_exists(
     git_branch: &str,
 ) -> Result<()> {
     match fetch_branch(repository, remote_url, git_branch) {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            let remote_ref = format!("refs/remotes/{DEFAULT_REMOTE_NAME}/{git_branch}");
+            if repository.find_reference(&remote_ref).is_err() {
+                clear_share_branch_refs(repository, git_branch)?;
+            }
+            Ok(())
+        }
         Err(error)
             if error
                 .root_cause()
@@ -1109,6 +1266,7 @@ fn fetch_branch(repository: &Repository, remote_url: &str, git_branch: &str) -> 
     let callbacks = remote_callbacks(repository)?;
     let mut fetch_options = FetchOptions::new();
     fetch_options.remote_callbacks(callbacks);
+    fetch_options.prune(FetchPrune::On);
     remote
         .fetch(&[refspec.as_str()], Some(&mut fetch_options), None)
         .with_context(|| format!("failed to fetch share branch `{git_branch}`"))?;
@@ -1292,24 +1450,6 @@ fn read_existing_objects(cache_path: &Path) -> Result<BTreeMap<String, Vec<u8>>>
     Ok(objects)
 }
 
-/// Clears every non-Git entry in one cache workdir.
-fn clear_cache_workdir(path: &Path) -> Result<()> {
-    for entry in fs::read_dir(path).with_context(|| format!("failed to read {}", path.display()))? {
-        let entry = entry.with_context(|| format!("failed to read {}", path.display()))?;
-        if entry.file_name() == ".git" {
-            continue;
-        }
-        let entry_path = entry.path();
-        if entry_path.is_dir() {
-            fs::remove_dir_all(&entry_path)
-        } else {
-            fs::remove_file(&entry_path)
-        }
-        .with_context(|| format!("failed to remove {}", entry_path.display()))?;
-    }
-    Ok(())
-}
-
 /// Returns one cache repository path for a remote URL and branch.
 fn cache_repo_path(root: &Path, remote_url: &str, git_branch: &str) -> PathBuf {
     root.join(SHARE_CACHE_DIR)
@@ -1321,9 +1461,52 @@ fn share_origin_remote(remote_name: &str, git_branch: &str) -> String {
     format!("{remote_name}:{git_branch}")
 }
 
+/// Returns the per-exporter visible manifest path.
+fn exporter_manifest_relative_path(identity: &ShareIdentity) -> String {
+    format!(
+        "{ARTIFACT_ROOT}/{EXPORTERS_DIR}/{}/{}",
+        exporter_manifest_id(identity),
+        LEGACY_MANIFEST_FILE
+    )
+}
+
+/// Returns one stable non-secret exporter path component.
+fn exporter_manifest_id(identity: &ShareIdentity) -> String {
+    sha256_hex(format!("{}\n{}", identity.user_id, identity.public_key).as_bytes())[..16].to_owned()
+}
+
 /// Resolves and validates one manifest object path below the cache workdir.
 fn manifest_object_path(cache_path: &Path, entry: &TurnManifestEntry) -> Result<PathBuf> {
     manifest_artifact_path(cache_path, &entry.object_path)
+}
+
+/// Removes one encrypted object path from the cache workdir if it exists.
+fn remove_artifact_object(cache_path: &Path, object_path: &str) -> Result<()> {
+    let path = manifest_artifact_path(cache_path, object_path)?;
+    remove_file_if_exists(&path)
+}
+
+/// Removes one relative manifest file from the cache workdir if it exists.
+fn remove_relative_file(cache_path: &Path, relative_path: &str) -> Result<()> {
+    let relative = Path::new(relative_path);
+    if relative.is_absolute() {
+        bail!("share artifact path must be relative");
+    }
+    for component in relative.components() {
+        if !matches!(component, Component::Normal(_)) {
+            bail!("share artifact path contains unsafe path components");
+        }
+    }
+    remove_file_if_exists(&cache_path.join(relative))
+}
+
+/// Removes one file, ignoring already-missing paths.
+fn remove_file_if_exists(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("failed to remove {}", path.display())),
+    }
 }
 
 /// Resolves and validates one encrypted object path below the cache workdir.
@@ -1449,20 +1632,26 @@ mod tests {
     #[test]
     fn normalizes_common_git_urls() {
         assert_eq!(
-            normalize_git_url("git@github.com:Example/Darc.git"),
+            normalize_git_url("git@github.com:Example/Darc.git").unwrap(),
             "https://github.com/Example/Darc"
         );
         assert_eq!(
-            normalize_git_url("https://github.com/Example/Darc.git/"),
+            normalize_git_url("https://github.com/Example/Darc.git/").unwrap(),
             "https://github.com/Example/Darc"
         );
         assert_eq!(
-            normalize_git_url("https://user:token@github.com/Example/Darc.git/"),
+            normalize_git_url("https://user:token@github.com/Example/Darc.git/").unwrap(),
             "https://github.com/Example/Darc"
         );
         assert_eq!(
-            normalize_git_url("ssh://deploy@github.com/Team/App.git"),
+            normalize_git_url("ssh://deploy@github.com/Team/App.git").unwrap(),
             "https://github.com/Team/App"
+        );
+        assert!(normalize_git_url("file:///Users/alice/repo.git").is_err());
+        assert!(normalize_git_url("/Users/alice/repo.git").is_err());
+        assert_eq!(
+            sanitize_git_url_for_display("https://user:token@github.com/Example/Darc.git"),
+            "https://github.com/Example/Darc.git"
         );
     }
 
@@ -1613,6 +1802,34 @@ mod tests {
         assert_ne!(second.objects[&object_path], b"not an age payload");
         let plaintext = decrypt_payload(&second.objects[&object_path], &age_identity).unwrap();
         assert_eq!(sha256_hex(&plaintext), first.manifest.turns[0].payload_hash);
+    }
+
+    #[test]
+    fn resolve_remote_sanitizes_credentialed_display_url() {
+        let workspace = unique_test_dir("share-sanitized-remote-report");
+        let context = ShareProjectContext {
+            root: workspace.clone(),
+            index_db_path: workspace.join("index.sqlite"),
+            project_id: "repo".to_owned(),
+            project_name: "repo".to_owned(),
+            local_path: workspace.join("repo"),
+            git_upstream: Some("https://example.invalid/team/repo.git".to_owned()),
+        };
+        let settings = ShareSettings {
+            remotes: vec![ShareRemote {
+                name: "team".to_owned(),
+                url: "https://user:token@example.invalid/team/share.git".to_owned(),
+            }],
+            recipients: Vec::new(),
+        };
+
+        let remote = resolve_remote(&context, &settings, Some("team")).unwrap();
+
+        assert_eq!(
+            remote.url,
+            "https://user:token@example.invalid/team/share.git"
+        );
+        assert_eq!(remote.display_url, "https://example.invalid/team/share.git");
     }
 
     #[test]
@@ -1843,13 +2060,14 @@ mod tests {
         init_test_git_repo(&target_repo);
         let target_key = ensure_share_key(&target_root).unwrap();
         let remote_url = remote_path.to_string_lossy().into_owned();
+        let project_upstream = "https://example.invalid/team/repo.git".to_owned();
         let source_context = ShareProjectContext {
             root: source_root.clone(),
             index_db_path: source_root.join("index.sqlite"),
             project_id: "source-repo".to_owned(),
             project_name: "source-repo".to_owned(),
             local_path: source_repo,
-            git_upstream: Some(remote_url.clone()),
+            git_upstream: Some(project_upstream.clone()),
         };
         let target_context = ShareProjectContext {
             root: target_root.clone(),
@@ -1857,7 +2075,7 @@ mod tests {
             project_id: "target-repo".to_owned(),
             project_name: "target-repo".to_owned(),
             local_path: target_repo,
-            git_upstream: Some(remote_url.clone()),
+            git_upstream: Some(project_upstream),
         };
         seed_share_export_session(
             &source_context.index_db_path,
@@ -1866,18 +2084,20 @@ mod tests {
         );
         update_share_policy(&source_context, SharePolicy::All).unwrap();
         let settings = ShareSettings {
-            remotes: Vec::new(),
+            remotes: vec![ShareRemote {
+                name: "share".to_owned(),
+                url: remote_url,
+            }],
             recipients: vec![ShareRecipient {
                 recipient: target_key.public_key,
             }],
         };
 
-        let push = push_share_branch(&source_context, &settings, "team", None).unwrap();
+        let push = push_share_branch(&source_context, &settings, "team", Some("share")).unwrap();
         assert_eq!(push.exported_session_count, 1);
         assert_eq!(push.exported_turn_count, 1);
 
-        let pull =
-            pull_share_branch(&target_context, &ShareSettings::default(), "team", None).unwrap();
+        let pull = pull_share_branch(&target_context, &settings, "team", Some("share")).unwrap();
         assert_eq!(pull.merge.imported_turn_count, 1);
         assert_eq!(pull.merge.skipped_turn_count, 0);
         let target = open_index_database_writer(&target_context.index_db_path).unwrap();
@@ -1900,10 +2120,11 @@ mod tests {
             "source-repo",
             "00000000-0000-4000-8000-000000000304",
         );
-        let second_push = push_share_branch(&source_context, &settings, "team", None).unwrap();
+        let second_push =
+            push_share_branch(&source_context, &settings, "team", Some("share")).unwrap();
         assert_eq!(second_push.exported_session_count, 2);
         let second_pull =
-            pull_share_branch(&target_context, &ShareSettings::default(), "team", None).unwrap();
+            pull_share_branch(&target_context, &settings, "team", Some("share")).unwrap();
         assert_eq!(second_pull.merge.warning_count, 0);
         let target_session_count: i64 = target
             .query_row(
@@ -1920,10 +2141,11 @@ mod tests {
         assert_eq!(target_session_count, 2);
 
         exclude_all_sessions(&source_context).unwrap();
-        let empty_push = push_share_branch(&source_context, &settings, "team", None).unwrap();
+        let empty_push =
+            push_share_branch(&source_context, &settings, "team", Some("share")).unwrap();
         assert_eq!(empty_push.exported_turn_count, 0);
         let empty_pull =
-            pull_share_branch(&target_context, &ShareSettings::default(), "team", None).unwrap();
+            pull_share_branch(&target_context, &settings, "team", Some("share")).unwrap();
         assert_eq!(empty_pull.merge.warning_count, 0);
         let target_session_count: i64 = target
             .query_row(
@@ -1944,6 +2166,108 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(object_paths.len(), 1);
         assert!(object_paths[0].contains("/sync-"));
+    }
+
+    #[test]
+    fn push_preserves_other_exporters_at_branch_tip() {
+        let workspace = unique_test_dir("share-multi-author-tip");
+        let remote_path = workspace.join("share.git");
+        Repository::init_bare(&remote_path).unwrap();
+        let first_root = workspace.join("first-root");
+        let first_repo = workspace.join("first-repo");
+        let second_root = workspace.join("second-root");
+        let second_repo = workspace.join("second-repo");
+        let target_root = workspace.join("target-root");
+        let target_repo = workspace.join("target-repo");
+        fs::create_dir_all(&first_root).unwrap();
+        fs::create_dir_all(&second_root).unwrap();
+        fs::create_dir_all(&target_root).unwrap();
+        init_test_git_repo(&first_repo);
+        init_test_git_repo(&second_repo);
+        init_test_git_repo(&target_repo);
+        let second_repository = Repository::open(&second_repo).unwrap();
+        let mut second_config = second_repository.config().unwrap();
+        second_config.set_str("user.name", "Second User").unwrap();
+        second_config
+            .set_str("user.email", "second@example.invalid")
+            .unwrap();
+        let target_key = ensure_share_key(&target_root).unwrap();
+        let remote_url = remote_path.to_string_lossy().into_owned();
+        let project_upstream = "https://example.invalid/team/repo.git".to_owned();
+        let first_context = ShareProjectContext {
+            root: first_root.clone(),
+            index_db_path: first_root.join("index.sqlite"),
+            project_id: "first-repo".to_owned(),
+            project_name: "first-repo".to_owned(),
+            local_path: first_repo,
+            git_upstream: Some(project_upstream.clone()),
+        };
+        let second_context = ShareProjectContext {
+            root: second_root.clone(),
+            index_db_path: second_root.join("index.sqlite"),
+            project_id: "second-repo".to_owned(),
+            project_name: "second-repo".to_owned(),
+            local_path: second_repo,
+            git_upstream: Some(project_upstream.clone()),
+        };
+        let target_context = ShareProjectContext {
+            root: target_root.clone(),
+            index_db_path: target_root.join("index.sqlite"),
+            project_id: "target-repo".to_owned(),
+            project_name: "target-repo".to_owned(),
+            local_path: target_repo,
+            git_upstream: Some(project_upstream),
+        };
+        seed_share_export_session(
+            &first_context.index_db_path,
+            "first-repo",
+            "00000000-0000-4000-8000-000000000301",
+        );
+        seed_share_export_session(
+            &second_context.index_db_path,
+            "second-repo",
+            "00000000-0000-4000-8000-000000000302",
+        );
+        update_share_policy(&first_context, SharePolicy::All).unwrap();
+        update_share_policy(&second_context, SharePolicy::All).unwrap();
+        let settings = ShareSettings {
+            remotes: vec![ShareRemote {
+                name: "share".to_owned(),
+                url: remote_url,
+            }],
+            recipients: vec![ShareRecipient {
+                recipient: target_key.public_key,
+            }],
+        };
+
+        push_share_branch(&first_context, &settings, "team", Some("share")).unwrap();
+        push_share_branch(&second_context, &settings, "team", Some("share")).unwrap();
+        let pull = pull_share_branch(&target_context, &settings, "team", Some("share")).unwrap();
+        let manifest_paths = remote_tip_blob_paths(&remote_path, "darc/team")
+            .into_iter()
+            .filter(|path| {
+                path.starts_with(&format!("{ARTIFACT_ROOT}/{EXPORTERS_DIR}/"))
+                    && path.ends_with(LEGACY_MANIFEST_FILE)
+            })
+            .collect::<Vec<_>>();
+        let target = open_index_database_writer(&target_context.index_db_path).unwrap();
+        let imported_sessions: i64 = target
+            .query_row(
+                "
+                SELECT COUNT(*)
+                FROM sessions
+                WHERE project_id = 'target-repo'
+                    AND origin_kind = 'shared'
+                ",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(manifest_paths.len(), 2);
+        assert_eq!(pull.merge.imported_turn_count, 2);
+        assert_eq!(pull.merge.warning_count, 0);
+        assert_eq!(imported_sessions, 2);
     }
 
     #[test]
@@ -1993,7 +2317,7 @@ mod tests {
             project_id: "source-repo".to_owned(),
             project_name: "source-repo".to_owned(),
             local_path: source_repo,
-            git_upstream: Some(remote_url),
+            git_upstream: Some("https://example.invalid/team/repo.git".to_owned()),
         };
         seed_share_export_session(
             &source_context.index_db_path,
@@ -2002,14 +2326,22 @@ mod tests {
         );
         update_share_policy(&source_context, SharePolicy::All).unwrap();
 
-        push_share_branch(&source_context, &ShareSettings::default(), "team", None).unwrap();
+        let settings = ShareSettings {
+            remotes: vec![ShareRemote {
+                name: "share".to_owned(),
+                url: remote_url,
+            }],
+            recipients: Vec::new(),
+        };
+
+        push_share_branch(&source_context, &settings, "team", Some("share")).unwrap();
         let remote = Repository::open_bare(&remote_path).unwrap();
         remote
             .find_reference("refs/heads/darc/team")
             .unwrap()
             .delete()
             .unwrap();
-        push_share_branch(&source_context, &ShareSettings::default(), "team", None).unwrap();
+        push_share_branch(&source_context, &settings, "team", Some("share")).unwrap();
 
         assert_eq!(remote_tip_parent_count(&remote_path, "darc/team"), 0);
     }
@@ -2076,12 +2408,11 @@ mod tests {
             &cache,
         )
         .unwrap();
-        let mut manifest =
-            read_json_file::<ManifestArtifact>(&cache.join(ARTIFACT_ROOT).join("manifest.json"))
-                .unwrap();
+        let manifest_path = cache.join(exporter_manifest_relative_path(&source_identity));
+        let mut manifest = read_json_file::<ManifestArtifact>(&manifest_path).unwrap();
         manifest.exporter.user_id = "usr-attacker".to_owned();
         manifest.turns.clear();
-        write_json_file(&cache.join(ARTIFACT_ROOT).join("manifest.json"), &manifest).unwrap();
+        write_json_file(&manifest_path, &manifest).unwrap();
 
         let error = import_from_cache(
             &target_context,
