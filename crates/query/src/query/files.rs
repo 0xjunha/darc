@@ -123,6 +123,7 @@ struct SessionFileQueryFilters<'a> {
     session_id: Option<&'a str>,
     since: Option<&'a str>,
     until: Option<&'a str>,
+    origin_scope: SessionOriginScope,
     path_selector: Option<&'a PathQuerySelector>,
 }
 
@@ -669,6 +670,7 @@ pub(crate) fn build_session_files_query(
             session_id: Some(request.session_id),
             since: None,
             until: None,
+            origin_scope: SessionOriginScope::All,
             path_selector: None,
         },
     )?;
@@ -712,6 +714,7 @@ fn query_top_touched_files(
             session_id: None,
             since: request.since,
             until: request.until,
+            origin_scope: SessionOriginScope::Local,
             path_selector: None,
         },
         |row| {
@@ -825,6 +828,7 @@ fn query_file_session_matches(
             session_id: None,
             since,
             until,
+            origin_scope: SessionOriginScope::Local,
             path_selector: Some(&path_selector),
         },
     )?;
@@ -1023,8 +1027,13 @@ fn build_co_touched_file_page_sql(seed_selector: &PathQuerySelector) -> String {
             AND seed_turns.provider = file_accesses.provider
             AND seed_turns.session_id = file_accesses.session_id
             AND seed_turns.turn_ordinal = file_accesses.turn_ordinal
+        INNER JOIN sessions
+            ON sessions.project_id = file_accesses.project_id
+            AND sessions.provider = file_accesses.provider
+            AND sessions.session_id = file_accesses.session_id
         WHERE file_accesses.project_id = ?1
             AND (?2 IS NULL OR file_accesses.provider = ?2)
+            AND sessions.origin_kind = 'local'
             AND (?3 IS NULL OR seed_turns.started_at >= ?3)
             AND (?4 IS NULL OR seed_turns.started_at < ?4)
             AND file_accesses.access_type IN ('read', 'write', 'edit')
@@ -1408,7 +1417,7 @@ fn build_session_file_rows_sql(path_selector: Option<&PathQuerySelector>) -> Str
                 "\n        AND {}",
                 path_selector
                     .expect("selector should exist")
-                    .sql_predicate(6, 7)
+                    .sql_predicate(7, 8)
             )
         }
         Some(PathQuerySelector::Unbounded) | Some(PathQuerySelector::Impossible) | None => {
@@ -1434,11 +1443,16 @@ fn build_session_file_rows_sql(path_selector: Option<&PathQuerySelector>) -> Str
         AND turns.provider = file_accesses.provider
         AND turns.session_id = file_accesses.session_id
         AND turns.turn_ordinal = file_accesses.turn_ordinal
+    INNER JOIN sessions
+        ON sessions.project_id = file_accesses.project_id
+        AND sessions.provider = file_accesses.provider
+        AND sessions.session_id = file_accesses.session_id
     WHERE file_accesses.project_id = ?1
         AND (?2 IS NULL OR file_accesses.provider = ?2)
         AND (?3 IS NULL OR file_accesses.session_id = ?3)
         AND (?4 IS NULL OR turns.started_at >= ?4)
         AND (?5 IS NULL OR turns.started_at < ?5)
+        AND (?6 = 'all' OR sessions.origin_kind = ?6)
         AND file_accesses.access_type IN ('read', 'write', 'edit')
         AND NULLIF(TRIM(file_accesses.path), '') IS NOT NULL{path_filter}
     GROUP BY
@@ -1474,6 +1488,7 @@ fn build_session_file_rows_params(
         filters
             .until
             .map_or(Value::Null, |value| Value::Text(value.to_owned())),
+        Value::Text(filters.origin_scope.sql_filter_value().to_owned()),
     ];
     if let Some(path_selector) = filters.path_selector {
         params.extend(path_selector.params());

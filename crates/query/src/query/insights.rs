@@ -17,35 +17,54 @@ use super::{
 };
 use crate::query::files::display_path_for_access;
 
-const LATEST_LOCAL_DATE_SQL: &str = "SELECT MAX(DATE(started_at, 'localtime')) FROM turns";
+const LATEST_LOCAL_DATE_SQL: &str = "
+    SELECT MAX(DATE(turns.started_at, 'localtime'))
+    FROM turns
+    INNER JOIN sessions
+        ON sessions.project_id = turns.project_id
+        AND sessions.provider = turns.provider
+        AND sessions.session_id = turns.session_id
+    WHERE sessions.origin_kind = 'local'
+";
 const LOCAL_TODAY_SQL: &str = "SELECT DATE('now', 'localtime')";
 const WORKSPACE_INSIGHT_ROWS_SQL: &str = "
     SELECT
-        project_id,
-        provider,
-        session_id,
-        started_at,
-        DATE(started_at, 'localtime'),
-        status,
-        COALESCE(duration_ms, 0)
+        turns.project_id,
+        turns.provider,
+        turns.session_id,
+        turns.started_at,
+        DATE(turns.started_at, 'localtime'),
+        turns.status,
+        COALESCE(turns.duration_ms, 0)
     FROM turns
-    WHERE DATE(started_at, 'localtime') >= ?1 AND DATE(started_at, 'localtime') < ?2
-    ORDER BY started_at ASC, project_id ASC, provider ASC, session_id ASC, turn_ordinal ASC
+    INNER JOIN sessions
+        ON sessions.project_id = turns.project_id
+        AND sessions.provider = turns.provider
+        AND sessions.session_id = turns.session_id
+    WHERE sessions.origin_kind = 'local'
+        AND DATE(turns.started_at, 'localtime') >= ?1
+        AND DATE(turns.started_at, 'localtime') < ?2
+    ORDER BY turns.started_at ASC, turns.project_id ASC, turns.provider ASC, turns.session_id ASC, turns.turn_ordinal ASC
 ";
 
 const PROJECT_INSIGHT_ROWS_SQL: &str = "
     SELECT
-        project_id,
-        provider,
-        session_id,
-        turn_ordinal,
-        DATE(started_at, 'localtime'),
-        status,
-        COALESCE(duration_ms, 0)
+        turns.project_id,
+        turns.provider,
+        turns.session_id,
+        turns.turn_ordinal,
+        DATE(turns.started_at, 'localtime'),
+        turns.status,
+        COALESCE(turns.duration_ms, 0)
     FROM turns
-    WHERE project_id = ?1
-        AND (?2 IS NULL OR provider = ?2)
-    ORDER BY started_at DESC, provider ASC, session_id ASC, turn_ordinal ASC
+    INNER JOIN sessions
+        ON sessions.project_id = turns.project_id
+        AND sessions.provider = turns.provider
+        AND sessions.session_id = turns.session_id
+    WHERE turns.project_id = ?1
+        AND sessions.origin_kind = 'local'
+        AND (?2 IS NULL OR turns.provider = ?2)
+    ORDER BY turns.started_at DESC, turns.provider ASC, turns.session_id ASC, turns.turn_ordinal ASC
     LIMIT ?3
 ";
 
@@ -62,11 +81,16 @@ const TURN_TOOL_USAGE_SQL: &str = "
 
 const RECENT_PROJECT_TOOL_USAGE_SQL: &str = "
     WITH recent_turns AS (
-        SELECT project_id, provider, session_id, turn_ordinal
+        SELECT turns.project_id, turns.provider, turns.session_id, turns.turn_ordinal
         FROM turns
-        WHERE project_id = ?1
-            AND (?2 IS NULL OR provider = ?2)
-        ORDER BY started_at DESC, provider ASC, session_id ASC, turn_ordinal ASC
+        INNER JOIN sessions
+            ON sessions.project_id = turns.project_id
+            AND sessions.provider = turns.provider
+            AND sessions.session_id = turns.session_id
+        WHERE turns.project_id = ?1
+            AND sessions.origin_kind = 'local'
+            AND (?2 IS NULL OR turns.provider = ?2)
+        ORDER BY turns.started_at DESC, turns.provider ASC, turns.session_id ASC, turns.turn_ordinal ASC
         LIMIT ?3
     )
     SELECT tool_calls.tool_name, COUNT(*) AS call_count
@@ -97,11 +121,16 @@ const TURN_FILE_USAGE_SQL: &str = "
 
 const RECENT_PROJECT_FILE_USAGE_SQL: &str = "
     WITH recent_turns AS (
-        SELECT project_id, provider, session_id, turn_ordinal
+        SELECT turns.project_id, turns.provider, turns.session_id, turns.turn_ordinal
         FROM turns
-        WHERE project_id = ?1
-            AND (?2 IS NULL OR provider = ?2)
-        ORDER BY started_at DESC, provider ASC, session_id ASC, turn_ordinal ASC
+        INNER JOIN sessions
+            ON sessions.project_id = turns.project_id
+            AND sessions.provider = turns.provider
+            AND sessions.session_id = turns.session_id
+        WHERE turns.project_id = ?1
+            AND sessions.origin_kind = 'local'
+            AND (?2 IS NULL OR turns.provider = ?2)
+        ORDER BY turns.started_at DESC, turns.provider ASC, turns.session_id ASC, turns.turn_ordinal ASC
         LIMIT ?3
     )
     SELECT

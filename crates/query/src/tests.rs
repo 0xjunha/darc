@@ -102,6 +102,33 @@ fn sqlite_local_date(connection: &rusqlite::Connection, timestamp: &str) -> Resu
         .context("failed to derive SQLite local date")
 }
 
+/// Marks one synthetic test session as imported shared provenance.
+fn mark_session_shared(
+    connection: &rusqlite::Connection,
+    project_id: &str,
+    session_id: &str,
+) -> Result<()> {
+    connection.execute(
+        "
+        INSERT OR IGNORE INTO users (user_id, display_name, email, public_key, source, updated_at)
+        VALUES ('usr-teammate', 'Team Mate', 'teammate@example.invalid', 'age1synthetic', 'test', '2026-05-15T12:00:00Z')
+        ",
+        [],
+    )?;
+    connection.execute(
+        "
+        UPDATE sessions
+        SET origin_kind = 'shared',
+            origin_user_id = 'usr-teammate',
+            origin_remote = 'origin',
+            imported_at = '2026-05-15T12:00:00Z'
+        WHERE project_id = ?1 AND session_id = ?2
+        ",
+        rusqlite::params![project_id, session_id],
+    )?;
+    Ok(())
+}
+
 #[test]
 fn parses_session_kinds() -> Result<()> {
     assert_eq!(parse_session_kind("primary")?, SessionKind::Primary);
@@ -787,7 +814,7 @@ fn session_summaries_leave_partial_token_and_runtime_totals_null() -> Result<()>
     insert_indexed_turn(
         &connection,
         IndexedTurnFixture {
-            duration_ms: 1_000,
+            duration_ms: 3_000,
             ..IndexedTurnFixture::new(
                 "repo-a",
                 SourceKind::Codex,
@@ -1939,6 +1966,144 @@ fn query_files_path_mode_ranks_sessions_and_respects_time_bounds() -> Result<()>
     assert_eq!(glob.limit, 50);
     assert_eq!(glob.offset, 0);
     assert!(!glob.has_more);
+
+    fs::remove_dir_all(
+        index_path
+            .parent()
+            .expect("index path should have a parent"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn project_wide_file_and_insight_queries_default_to_local_sessions() -> Result<()> {
+    let index_path = test_index_path("query-project-wide-local-default");
+    let connection = open_index_database(&index_path)?;
+    let local_session = "00000000-0000-4000-8000-000000000501";
+    let shared_session = "00000000-0000-4000-8000-000000000502";
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, local_session, "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            step_count: 1,
+            tool_call_count: 1,
+            duration_ms: 3_000,
+            has_final_answer: true,
+            final_answer_text: Some("local answer"),
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                local_session,
+                1,
+                "2026-05-15T10:00:00Z",
+                "completed",
+                r##"[{"type":"tool_call","timestamp":"2026-05-15T10:00:01Z","call_id":"call-local","name":"Read","arguments":"{\"file_path\":\"src/local.rs\"}"}]"##,
+            )
+        },
+    )?;
+    insert_indexed_session(
+        &connection,
+        IndexedSessionFixture::new("repo-a", SourceKind::Codex, shared_session, "/tmp/repo-a"),
+    )?;
+    insert_indexed_turn(
+        &connection,
+        IndexedTurnFixture {
+            step_count: 1,
+            tool_call_count: 1,
+            duration_ms: 3_000,
+            has_final_answer: true,
+            final_answer_text: Some("shared answer"),
+            ..IndexedTurnFixture::new(
+                "repo-a",
+                SourceKind::Codex,
+                shared_session,
+                1,
+                "2026-05-15T11:00:00Z",
+                "completed",
+                r##"[{"type":"tool_call","timestamp":"2026-05-15T11:00:01Z","call_id":"call-shared","name":"Read","arguments":"{\"file_path\":\"src/shared.rs\"}"}]"##,
+            )
+        },
+    )?;
+    mark_session_shared(&connection, "repo-a", shared_session)?;
+
+    let top = query_project_files(
+        &index_path,
+        FilesQueryRequest {
+            project_id: "repo-a",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            provider: None,
+            path: None,
+            co_touched_with: None,
+            since: None,
+            until: None,
+            limit: 10,
+            offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
+        },
+    )?;
+    let shared_path = query_project_files(
+        &index_path,
+        FilesQueryRequest {
+            project_id: "repo-a",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            provider: None,
+            path: Some("src/shared.rs"),
+            co_touched_with: None,
+            since: None,
+            until: None,
+            limit: 10,
+            offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
+        },
+    )?;
+    let shared_co_touch = query_project_files(
+        &index_path,
+        FilesQueryRequest {
+            project_id: "repo-a",
+            project_root: Some(Path::new("/tmp/repo-a")),
+            provider: None,
+            path: None,
+            co_touched_with: Some("src/shared.rs"),
+            since: None,
+            until: None,
+            limit: 10,
+            offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
+        },
+    )?;
+    let workspace =
+        build_workspace_insights(&connection, 7, DEFAULT_WORKSPACE_RECENT_SESSION_LIMIT, 0)?;
+    let project = build_project_insights(
+        &connection,
+        "repo-a",
+        Some(Path::new("/tmp/repo-a")),
+        None,
+        10,
+    )?;
+
+    assert_eq!(
+        top.files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["src/local.rs"]
+    );
+    assert!(shared_path.sessions.is_empty());
+    assert!(shared_co_touch.files.is_empty());
+    assert_eq!(workspace.recent_sessions.len(), 1);
+    assert_eq!(workspace.recent_sessions[0].session_id, local_session);
+    assert_eq!(project.inspected_turn_count, 1);
+    assert_eq!(
+        project
+            .most_read_files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["src/local.rs"]
+    );
 
     fs::remove_dir_all(
         index_path
@@ -5315,29 +5480,7 @@ fn session_and_search_queries_respect_shared_scope_and_author() -> Result<()> {
             )
         },
     )?;
-    connection.execute(
-        "
-        INSERT INTO users (user_id, display_name, email, public_key, source, updated_at)
-        VALUES (?1, ?2, ?3, ?4, 'test', '2026-05-15T12:00:00Z')
-        ",
-        rusqlite::params![
-            "usr-teammate",
-            "Team Mate",
-            "teammate@example.invalid",
-            "age1synthetic"
-        ],
-    )?;
-    connection.execute(
-        "
-        UPDATE sessions
-        SET origin_kind = 'shared',
-            origin_user_id = 'usr-teammate',
-            origin_remote = 'origin',
-            imported_at = '2026-05-15T12:00:00Z'
-        WHERE project_id = 'repo-a' AND session_id = ?1
-        ",
-        rusqlite::params![shared_session],
-    )?;
+    mark_session_shared(&connection, "repo-a", shared_session)?;
 
     let local_sessions = query_project_sessions(
         &index_path,
@@ -5474,29 +5617,7 @@ fn exact_touched_path_sessions_apply_shared_scope_before_pagination() -> Result<
             },
         )?;
     }
-    connection.execute(
-        "
-        INSERT INTO users (user_id, display_name, email, public_key, source, updated_at)
-        VALUES (?1, ?2, ?3, ?4, 'test', '2026-05-15T12:00:00Z')
-        ",
-        rusqlite::params![
-            "usr-teammate",
-            "Team Mate",
-            "teammate@example.invalid",
-            "age1synthetic"
-        ],
-    )?;
-    connection.execute(
-        "
-        UPDATE sessions
-        SET origin_kind = 'shared',
-            origin_user_id = 'usr-teammate',
-            origin_remote = 'origin',
-            imported_at = '2026-05-15T12:00:00Z'
-        WHERE project_id = 'repo-a' AND session_id = ?1
-        ",
-        rusqlite::params![shared_session],
-    )?;
+    mark_session_shared(&connection, "repo-a", shared_session)?;
 
     let shared_page = query_project_sessions(
         &index_path,
