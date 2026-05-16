@@ -51,6 +51,8 @@ The encryption choices were:
 - Git hosting authorization only: rejected because remote hosts would still store plaintext session content.
 - `age` X25519 recipients: accepted. The age Rust crate supports generated X25519 identities, public recipients, and
   multi-recipient encryption. Darc will use native age recipients rather than SSH recipient compatibility in V1.
+- Ed25519 payload signatures: accepted. `age` recipient encryption is anonymous, so Darc signs encrypted sync and turn
+  plaintext with a persistent local signing key before encryption and verifies signatures before import or pruning.
 
 ## Decision
 
@@ -93,6 +95,7 @@ Each exporter manifest is visible and contains only sync metadata:
 - branch name
 - exporter user id, display name, and email from Git config
 - exporter public age recipient
+- exporter public signing key
 - session provider, session id, turn ordinal ranges, content hashes, object paths, and encrypted sync object path
 - export timestamp
 
@@ -130,12 +133,12 @@ artifact only when the canonical project key matches the active project's key.
 
 ### Identity And Provenance
 
-Darc uses Git config for user identity:
+Darc uses a persistent local signing identity for provenance and Git config for display metadata:
 
 - `user.name` becomes display name.
 - `user.email` becomes email.
-- `user_id` is a stable SHA-256-derived id from lowercased email when present, otherwise from display name plus public
-  age recipient.
+- `user_id` is a stable SHA-256-derived id from the Ed25519 signing public key, so same-email exporters remain distinct
+  and age-recipient key rotation does not change the exporter identity.
 
 SQLite adds a `users` table plus provenance columns on `sessions`:
 
@@ -183,6 +186,12 @@ Darc auto-generates an age X25519 identity on first sharing command that needs a
 <darc-root>/keys/share.agekey
 ```
 
+It also auto-generates a persistent Ed25519 signing key under:
+
+```text
+<darc-root>/keys/share.signingkey
+```
+
 The public recipient is shown by `darc share key` and included in visible manifests so teammates can add it as a
 recipient. V1 encrypts every payload object to:
 
@@ -199,11 +208,11 @@ history rewriting and remote retention controls.
 Fetch downloads the `darc/<name>` branch into the local Darc share cache. Merge imports all current exporter manifests
 from the fetched tree into the local SQLite index. Pull is fetch plus merge.
 
-Merge decrypts and validates the encrypted sync payload before destructive pruning. It prunes stale imported turns only
-for the exporter identity contained in that decrypted payload, and then removes empty imported sessions for that
-exporter. Malformed, mismatched, undecryptable, or schema-incompatible turn objects are skipped with warnings. Valid
-objects continue to import. This keeps one bad teammate chunk from blocking the whole team index while preserving
-rigorous warning and test coverage.
+Merge decrypts and validates the encrypted sync payload signature before destructive pruning. It prunes stale imported
+turns only for the authenticated exporter identity contained in that decrypted payload, and then removes empty imported
+sessions for that exporter. Malformed, mismatched, undecryptable, unauthenticated, or schema-incompatible exporter
+sync payloads and turn objects are skipped with warnings. Valid objects continue to import. This keeps one bad teammate
+chunk from blocking the whole team index while preserving rigorous warning and test coverage.
 
 Writes are isolated by content-addressed objects and manifest entries. Concurrent pushes may still have Git-level
 non-fast-forward failures. V1 reports those failures and asks users to pull first, matching Git expectations.
