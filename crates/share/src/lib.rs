@@ -390,11 +390,9 @@ pub fn push_share_branch(
         settings,
         project_key: &project_key,
         identity: &identity,
-        decryption_identity: &decryption_identity,
         signing_key: &signing_key,
         branch,
         turns,
-        cache_path: &cache_path,
     })?;
     remove_replaced_exporter_artifacts(
         &cache_path,
@@ -559,11 +557,9 @@ struct ExportBuildRequest<'a> {
     settings: &'a ShareSettings,
     project_key: &'a str,
     identity: &'a ShareIdentity,
-    decryption_identity: &'a Identity,
     signing_key: &'a SigningKey,
     branch: &'a str,
     turns: Vec<ShareTurnExport>,
-    cache_path: &'a Path,
 }
 
 /// Stores immutable context used while importing one manifest entry.
@@ -602,12 +598,7 @@ fn build_export_artifact(request: ExportBuildRequest<'_>) -> Result<BuiltExportA
         let payload_hash = sha256_hex(&plaintext);
         let object_path =
             format!("{ARTIFACT_ROOT}/objects/{recipient_fingerprint}-{payload_hash}.age");
-        let encrypted = reusable_existing_object(
-            read_existing_object(request.cache_path, &object_path)?.as_ref(),
-            request.decryption_identity,
-            &plaintext,
-            &recipients,
-        )?;
+        let encrypted = encrypt_payload(&plaintext, &recipients)?;
         insert_export_object(
             &mut objects,
             &mut total_object_bytes,
@@ -644,12 +635,7 @@ fn build_export_artifact(request: ExportBuildRequest<'_>) -> Result<BuiltExportA
     let sync_payload_hash = sha256_hex(&sync_plaintext);
     let sync_object_path =
         format!("{ARTIFACT_ROOT}/objects/sync-{recipient_fingerprint}-{sync_payload_hash}.age");
-    let sync_encrypted = reusable_existing_object(
-        read_existing_object(request.cache_path, &sync_object_path)?.as_ref(),
-        request.decryption_identity,
-        &sync_plaintext,
-        &recipients,
-    )?;
+    let sync_encrypted = encrypt_payload(&sync_plaintext, &recipients)?;
     insert_export_object(
         &mut objects,
         &mut total_object_bytes,
@@ -1591,21 +1577,6 @@ fn signing_public_key_hex(signing_key: &SigningKey) -> String {
     hex_encode(&signing_key.verifying_key().to_bytes())
 }
 
-/// Reuses existing ciphertext only when it decrypts to the expected plaintext.
-fn reusable_existing_object(
-    existing: Option<&Vec<u8>>,
-    identity: &Identity,
-    plaintext: &[u8],
-    recipients: &[Recipient],
-) -> Result<Vec<u8>> {
-    if let Some(existing) = existing
-        && decrypt_payload(existing, identity).is_ok_and(|decrypted| decrypted == plaintext)
-    {
-        return Ok(existing.clone());
-    }
-    encrypt_payload(plaintext, recipients)
-}
-
 /// Prepares one local Git cache repository.
 fn prepare_cache_repository(
     path: &Path,
@@ -2186,16 +2157,6 @@ fn remote_callbacks(repository: &Repository) -> Result<RemoteCallbacks<'_>> {
     Ok(callbacks)
 }
 
-/// Reads one existing encrypted object that can be reused by content hash.
-fn read_existing_object(cache_path: &Path, object_path: &str) -> Result<Option<Vec<u8>>> {
-    let path = manifest_artifact_path(cache_path, object_path)?;
-    match fs::symlink_metadata(&path) {
-        Ok(_) => read_regular_file(&path, MAX_SHARE_OBJECT_BYTES).map(Some),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error).with_context(|| format!("failed to inspect {}", path.display())),
-    }
-}
-
 /// Returns whether a path is an existing non-symlink directory.
 fn is_regular_directory(path: &Path) -> Result<bool> {
     match fs::symlink_metadata(path) {
@@ -2669,7 +2630,6 @@ mod tests {
     #[test]
     fn recipient_set_changes_encrypt_to_a_new_object_path() {
         let workspace = unique_test_dir("share-recipient-fingerprint");
-        let cache = workspace.join("cache");
         let index_db_path = workspace.join("index.sqlite");
         let context = ShareProjectContext {
             root: workspace.clone(),
@@ -2695,17 +2655,16 @@ mod tests {
             settings: &ShareSettings::default(),
             project_key: "git:https://example.invalid/team/repo",
             identity: &identity,
-            decryption_identity: &age_identity,
             signing_key: &signing_key,
             branch: "team",
             turns: turns.clone(),
-            cache_path: &cache,
         })
         .unwrap();
+        let extra_identity = Identity::generate();
         let settings = ShareSettings {
             remotes: Vec::new(),
             recipients: vec![ShareRecipient {
-                recipient: Identity::generate().to_public().to_string(),
+                recipient: extra_identity.to_public().to_string(),
             }],
         };
         let second = build_export_artifact(ExportBuildRequest {
@@ -2713,11 +2672,9 @@ mod tests {
             settings: &settings,
             project_key: "git:https://example.invalid/team/repo",
             identity: &identity,
-            decryption_identity: &age_identity,
             signing_key: &signing_key,
             branch: "team",
             turns,
-            cache_path: &cache,
         })
         .unwrap();
 
@@ -2729,6 +2686,15 @@ mod tests {
             !first
                 .objects
                 .contains_key(&second.manifest.turns[0].object_path)
+        );
+        let plaintext = decrypt_payload(
+            &second.objects[&second.manifest.turns[0].object_path],
+            &extra_identity,
+        )
+        .unwrap();
+        assert_eq!(
+            sha256_hex(&plaintext),
+            second.manifest.turns[0].payload_hash
         );
     }
 
@@ -2761,11 +2727,9 @@ mod tests {
             settings: &ShareSettings::default(),
             project_key: "git:https://example.invalid/team/repo",
             identity: &identity,
-            decryption_identity: &age_identity,
             signing_key: &signing_key,
             branch: "team",
             turns: turns.clone(),
-            cache_path: &cache,
         })
         .unwrap();
         let object_path = first.manifest.turns[0].object_path.clone();
@@ -2778,11 +2742,9 @@ mod tests {
             settings: &ShareSettings::default(),
             project_key: "git:https://example.invalid/team/repo",
             identity: &identity,
-            decryption_identity: &age_identity,
             signing_key: &signing_key,
             branch: "team",
             turns,
-            cache_path: &cache,
         })
         .unwrap();
 
@@ -2940,11 +2902,9 @@ mod tests {
             },
             project_key: "git:https://example.invalid/team/repo",
             identity: &source_identity,
-            decryption_identity: &source_age_identity,
             signing_key: &source_signing_key,
             branch: "team",
             turns,
-            cache_path: &cache,
         })
         .unwrap();
         write_export_artifact(&cache, &artifact).unwrap();
@@ -3038,11 +2998,9 @@ mod tests {
             },
             project_key: "git:https://example.invalid/team/repo",
             identity: &source_identity,
-            decryption_identity: &source_age_identity,
             signing_key: &source_signing_key,
             branch: "team",
             turns,
-            cache_path: &cache,
         })
         .unwrap();
         write_export_artifact(&cache, &artifact).unwrap();
@@ -3190,11 +3148,9 @@ mod tests {
             },
             project_key: "git:https://example.invalid/team/repo",
             identity: &source_identity,
-            decryption_identity: &source_age_identity,
             signing_key: &source_signing_key,
             branch: "team",
             turns,
-            cache_path: &cache,
         })
         .unwrap();
         write_export_artifact(&cache, &artifact).unwrap();
@@ -3274,11 +3230,9 @@ mod tests {
             },
             project_key: "git:https://example.invalid/team/repo",
             identity: &source_identity,
-            decryption_identity: &source_age_identity,
             signing_key: &source_signing_key,
             branch: "team",
             turns,
-            cache_path: &cache,
         })
         .unwrap();
         write_export_artifact(&cache, &artifact).unwrap();
@@ -3388,11 +3342,9 @@ mod tests {
             },
             project_key: "git:https://example.invalid/team/repo",
             identity: &source_identity,
-            decryption_identity: &source_age_identity,
             signing_key: &source_signing_key,
             branch: "team",
             turns,
-            cache_path: &cache,
         })
         .unwrap();
         write_export_artifact(&cache, &artifact).unwrap();
@@ -3940,11 +3892,9 @@ mod tests {
             settings: &ShareSettings::default(),
             project_key: "git:https://example.invalid/team/repo",
             identity: &identity,
-            decryption_identity: &age_identity,
             signing_key: &signing_key,
             branch: "team",
             turns,
-            cache_path: &cache,
         })
         .unwrap();
 
@@ -4553,11 +4503,9 @@ mod tests {
             settings: &settings,
             project_key: "git:https://example.invalid/team/repo",
             identity: &source_identity,
-            decryption_identity: &source_age_identity,
             signing_key: &source_signing_key,
             branch: "team",
             turns,
-            cache_path: &cache,
         })
         .unwrap();
         write_export_artifact(&cache, &artifact).unwrap();
@@ -4662,11 +4610,9 @@ mod tests {
             settings: &settings,
             project_key: "git:https://example.invalid/team/repo",
             identity: &source_identity,
-            decryption_identity: &source_age_identity,
             signing_key: &source_signing_key,
             branch: "team",
             turns: turns.clone(),
-            cache_path: &cache,
         })
         .unwrap();
         write_export_artifact(&cache, &full).unwrap();
@@ -4685,11 +4631,9 @@ mod tests {
             settings: &settings,
             project_key: "git:https://example.invalid/team/repo",
             identity: &source_identity,
-            decryption_identity: &source_age_identity,
             signing_key: &source_signing_key,
             branch: "team",
             turns: turns.into_iter().take(1).collect(),
-            cache_path: &cache,
         })
         .unwrap();
         write_export_artifact(&cache, &shortened).unwrap();
@@ -4781,11 +4725,9 @@ mod tests {
             },
             project_key: "git:https://example.invalid/team/repo",
             identity: &source_identity,
-            decryption_identity: &source_age_identity,
             signing_key: &source_signing_key,
             branch: "team",
             turns,
-            cache_path: &cache,
         })
         .unwrap();
         TestShareArtifact {
