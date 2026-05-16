@@ -218,6 +218,334 @@ pub fn replace_index_database(replacement: &Path, destination: &Path) -> Result<
     Ok(())
 }
 
+/// Copies SQLite-only sharing state from an existing index into a rebuilt index.
+pub fn preserve_index_sharing_state(source: &Path, destination: &Path) -> Result<bool> {
+    if !source.exists() {
+        return Ok(false);
+    }
+    let source_connection =
+        match Connection::open_with_flags(source, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+            Ok(connection) => connection,
+            Err(_) => return Ok(false),
+        };
+    let source_has_tables = source_has_sharing_state_tables(&source_connection).unwrap_or(false);
+    if !source_has_tables {
+        return Ok(false);
+    }
+    drop(source_connection);
+
+    let mut destination_connection = Connection::open(destination)
+        .with_context(|| format!("failed to open rebuilt index {}", destination.display()))?;
+    if !source_has_sharing_state_tables(&destination_connection)? {
+        return Ok(false);
+    }
+    let source_path = source.to_string_lossy();
+    destination_connection
+        .execute(
+            "ATTACH DATABASE ?1 AS old_index",
+            params![source_path.as_ref()],
+        )
+        .with_context(|| format!("failed to attach old index {}", source.display()))?;
+    let transaction = destination_connection
+        .transaction()
+        .context("failed to begin sharing state preservation transaction")?;
+    transaction
+        .execute_batch(PRESERVE_SHARING_STATE_SQL)
+        .context("failed to preserve sharing state during index rebuild")?;
+    transaction
+        .commit()
+        .context("failed to commit sharing state preservation")?;
+    destination_connection
+        .execute_batch("DETACH DATABASE old_index;")
+        .context("failed to detach old index after preserving sharing state")?;
+    Ok(true)
+}
+
+/// Returns whether one SQLite database has every current sharing-state table.
+fn source_has_sharing_state_tables(connection: &Connection) -> Result<bool> {
+    for table in [
+        "users",
+        "project_share_policies",
+        "sessions",
+        "turns",
+        "tool_calls",
+        "file_accesses",
+        "turn_evidence",
+        "turn_search",
+    ] {
+        if !sqlite_table_exists(connection, table)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Returns whether one SQLite table exists.
+fn sqlite_table_exists(connection: &Connection, table: &str) -> Result<bool> {
+    let count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [table],
+            |row| row.get(0),
+        )
+        .with_context(|| format!("failed to inspect SQLite table `{table}`"))?;
+    Ok(count > 0)
+}
+
+const PRESERVE_SHARING_STATE_SQL: &str = "
+    INSERT OR REPLACE INTO users (
+        user_id,
+        display_name,
+        email,
+        public_key,
+        source,
+        updated_at
+    )
+    SELECT
+        user_id,
+        display_name,
+        email,
+        public_key,
+        source,
+        updated_at
+    FROM old_index.users;
+
+    INSERT OR REPLACE INTO project_share_policies (
+        project_id,
+        default_policy,
+        updated_at
+    )
+    SELECT
+        project_id,
+        default_policy,
+        updated_at
+    FROM old_index.project_share_policies;
+
+    UPDATE sessions
+    SET share_state = (
+        SELECT old_sessions.share_state
+        FROM old_index.sessions AS old_sessions
+        WHERE old_sessions.project_id = sessions.project_id
+            AND old_sessions.provider = sessions.provider
+            AND old_sessions.session_id = sessions.session_id
+            AND old_sessions.origin_kind = 'local'
+    )
+    WHERE sessions.origin_kind = 'local'
+        AND EXISTS (
+            SELECT 1
+            FROM old_index.sessions AS old_sessions
+            WHERE old_sessions.project_id = sessions.project_id
+                AND old_sessions.provider = sessions.provider
+                AND old_sessions.session_id = sessions.session_id
+                AND old_sessions.origin_kind = 'local'
+        );
+
+    INSERT OR IGNORE INTO sessions (
+        project_id,
+        provider,
+        session_id,
+        parent_session_id,
+        session_kind,
+        archive_path,
+        cwd,
+        cli_version,
+        schema_id,
+        determinism,
+        source_size,
+        source_mtime_ms,
+        origin_kind,
+        origin_user_id,
+        origin_remote,
+        imported_at,
+        share_state
+    )
+    SELECT
+        project_id,
+        provider,
+        session_id,
+        parent_session_id,
+        session_kind,
+        archive_path,
+        cwd,
+        cli_version,
+        schema_id,
+        determinism,
+        source_size,
+        source_mtime_ms,
+        origin_kind,
+        origin_user_id,
+        origin_remote,
+        imported_at,
+        share_state
+    FROM old_index.sessions
+    WHERE origin_kind = 'shared';
+
+    INSERT OR IGNORE INTO turns (
+        project_id,
+        provider,
+        session_id,
+        turn_ordinal,
+        turn_id,
+        started_at,
+        completed_at,
+        status,
+        user_message,
+        final_answer_at,
+        final_answer_text,
+        steps_json,
+        step_count,
+        tool_call_count,
+        tool_output_count,
+        attachment_count,
+        delegation_count,
+        hook_summary_count,
+        has_final_answer,
+        duration_ms,
+        effective_agent_runtime_ms,
+        provider_total_token_count,
+        input_uncached_token_count,
+        cache_read_token_count,
+        cache_write_token_count,
+        output_token_count,
+        reasoning_token_count,
+        total_token_count,
+        primary_model,
+        changed_file_count,
+        added_line_count,
+        removed_line_count
+    )
+    SELECT
+        turns.project_id,
+        turns.provider,
+        turns.session_id,
+        turns.turn_ordinal,
+        turns.turn_id,
+        turns.started_at,
+        turns.completed_at,
+        turns.status,
+        turns.user_message,
+        turns.final_answer_at,
+        turns.final_answer_text,
+        turns.steps_json,
+        turns.step_count,
+        turns.tool_call_count,
+        turns.tool_output_count,
+        turns.attachment_count,
+        turns.delegation_count,
+        turns.hook_summary_count,
+        turns.has_final_answer,
+        turns.duration_ms,
+        turns.effective_agent_runtime_ms,
+        turns.provider_total_token_count,
+        turns.input_uncached_token_count,
+        turns.cache_read_token_count,
+        turns.cache_write_token_count,
+        turns.output_token_count,
+        turns.reasoning_token_count,
+        turns.total_token_count,
+        turns.primary_model,
+        turns.changed_file_count,
+        turns.added_line_count,
+        turns.removed_line_count
+    FROM old_index.turns AS turns
+    JOIN old_index.sessions AS sessions
+        ON sessions.project_id = turns.project_id
+        AND sessions.provider = turns.provider
+        AND sessions.session_id = turns.session_id
+    WHERE sessions.origin_kind = 'shared'
+        AND EXISTS (
+            SELECT 1
+            FROM sessions AS target_sessions
+            WHERE target_sessions.project_id = turns.project_id
+                AND target_sessions.provider = turns.provider
+                AND target_sessions.session_id = turns.session_id
+                AND target_sessions.origin_kind = 'shared'
+        );
+
+    INSERT OR IGNORE INTO tool_calls
+    SELECT tool_calls.*
+    FROM old_index.tool_calls AS tool_calls
+    JOIN old_index.sessions AS sessions
+        ON sessions.project_id = tool_calls.project_id
+        AND sessions.provider = tool_calls.provider
+        AND sessions.session_id = tool_calls.session_id
+    WHERE sessions.origin_kind = 'shared'
+        AND EXISTS (
+            SELECT 1
+            FROM sessions AS target_sessions
+            WHERE target_sessions.project_id = tool_calls.project_id
+                AND target_sessions.provider = tool_calls.provider
+                AND target_sessions.session_id = tool_calls.session_id
+                AND target_sessions.origin_kind = 'shared'
+        );
+
+    INSERT OR IGNORE INTO file_accesses
+    SELECT file_accesses.*
+    FROM old_index.file_accesses AS file_accesses
+    JOIN old_index.sessions AS sessions
+        ON sessions.project_id = file_accesses.project_id
+        AND sessions.provider = file_accesses.provider
+        AND sessions.session_id = file_accesses.session_id
+    WHERE sessions.origin_kind = 'shared'
+        AND EXISTS (
+            SELECT 1
+            FROM sessions AS target_sessions
+            WHERE target_sessions.project_id = file_accesses.project_id
+                AND target_sessions.provider = file_accesses.provider
+                AND target_sessions.session_id = file_accesses.session_id
+                AND target_sessions.origin_kind = 'shared'
+        );
+
+    INSERT OR IGNORE INTO turn_evidence
+    SELECT turn_evidence.*
+    FROM old_index.turn_evidence AS turn_evidence
+    JOIN old_index.sessions AS sessions
+        ON sessions.project_id = turn_evidence.project_id
+        AND sessions.provider = turn_evidence.provider
+        AND sessions.session_id = turn_evidence.session_id
+    WHERE sessions.origin_kind = 'shared'
+        AND EXISTS (
+            SELECT 1
+            FROM sessions AS target_sessions
+            WHERE target_sessions.project_id = turn_evidence.project_id
+                AND target_sessions.provider = turn_evidence.provider
+                AND target_sessions.session_id = turn_evidence.session_id
+                AND target_sessions.origin_kind = 'shared'
+        );
+
+    INSERT OR IGNORE INTO turn_search (
+        project_id,
+        provider,
+        session_id,
+        turn_ordinal,
+        user_message_text,
+        final_answer_text,
+        tool_text
+    )
+    SELECT
+        turn_search.project_id,
+        turn_search.provider,
+        turn_search.session_id,
+        turn_search.turn_ordinal,
+        turn_search.user_message_text,
+        turn_search.final_answer_text,
+        turn_search.tool_text
+    FROM old_index.turn_search AS turn_search
+    JOIN old_index.sessions AS sessions
+        ON sessions.project_id = turn_search.project_id
+        AND sessions.provider = turn_search.provider
+        AND sessions.session_id = turn_search.session_id
+    WHERE sessions.origin_kind = 'shared'
+        AND EXISTS (
+            SELECT 1
+            FROM sessions AS target_sessions
+            WHERE target_sessions.project_id = turn_search.project_id
+                AND target_sessions.provider = turn_search.provider
+                AND target_sessions.session_id = turn_search.session_id
+                AND target_sessions.origin_kind = 'shared'
+        );
+";
+
 /// Replaces one SQLite database file after the replacement has been fully built.
 fn replace_index_database_file(replacement: &Path, destination: &Path) -> Result<()> {
     fs::rename(replacement, destination).with_context(|| {

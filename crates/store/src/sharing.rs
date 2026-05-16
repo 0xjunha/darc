@@ -460,6 +460,7 @@ pub fn import_shared_turn(
         .transaction()
         .context("failed to begin shared turn import transaction")?;
     upsert_share_user(&transaction, import.user)?;
+    validate_shared_session_id(&import.turn.session.session_id)?;
     validate_shared_session_kind(&import.turn.session.session_kind)?;
     validate_shared_turn_status(&import.turn.status)?;
     validate_shared_turn_numbers(import.turn)?;
@@ -921,6 +922,22 @@ pub fn validate_shared_session_kind(value: &str) -> Result<()> {
     }
 }
 
+/// Validates that an imported shared session id is addressable by query commands.
+pub fn validate_shared_session_id(value: &str) -> Result<()> {
+    if value.len() != 36 {
+        bail!("shared session id must be a canonical UUID");
+    }
+    for (index, ch) in value.chars().enumerate() {
+        match index {
+            8 | 13 | 18 | 23 if ch == '-' => {}
+            8 | 13 | 18 | 23 => bail!("shared session id must be a canonical UUID"),
+            _ if ch.is_ascii_hexdigit() => {}
+            _ => bail!("shared session id must be a canonical UUID"),
+        }
+    }
+    Ok(())
+}
+
 /// Returns whether one status string is supported by stored normalized turns.
 pub fn validate_shared_turn_status(value: &str) -> Result<NormalizedTurnStatus> {
     match value {
@@ -1028,6 +1045,37 @@ mod tests {
         turn.has_final_answer = 2;
 
         assert!(validate_shared_turn_numbers(&turn).is_err());
+    }
+
+    #[test]
+    fn shared_import_rejects_unaddressable_session_ids() -> Result<()> {
+        let mut connection = open_index_database_writer(&test_db_path("invalid-session-id"))?;
+        let user = ShareUserRecord {
+            user_id: "usr-remote".to_owned(),
+            display_name: Some("Remote User".to_owned()),
+            email: Some("remote@example.invalid".to_owned()),
+            public_key: Some("age1remote".to_owned()),
+            source: "test".to_owned(),
+            updated_at: "2026-05-15T00:00:00Z".to_owned(),
+        };
+        let mut turn = synthetic_share_turn();
+        turn.session.session_id = "not-a-uuid".to_owned();
+
+        let error = import_shared_turn(
+            &mut connection,
+            ShareTurnImport {
+                project_id: "target-repo",
+                user: &user,
+                remote_name: "origin:darc/team",
+                imported_at: "2026-05-15T00:00:00Z",
+                turn: &turn,
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("canonical UUID"));
+
+        Ok(())
     }
 
     #[test]

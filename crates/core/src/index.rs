@@ -10,7 +10,9 @@ use anyhow::{Context, Result};
 pub use darc_index::{IndexReport, SkippedCodexRollout, SkippedRollout};
 use darc_index::{ProjectIndexRequest, index_project_archived_sessions};
 use darc_paths::SourceKind;
-use darc_store::{INDEX_DB_FILE_NAME, remove_index_database, replace_index_database};
+use darc_store::{
+    INDEX_DB_FILE_NAME, preserve_index_sharing_state, remove_index_database, replace_index_database,
+};
 
 use crate::{
     active_project::{ActiveProject, load_active_project},
@@ -102,6 +104,7 @@ pub fn rebuild_workspace_index(root: Option<PathBuf>) -> Result<WorkspaceIndexRe
         }
     };
 
+    preserve_index_sharing_state(&index_db_path, &temp_index_db_path)?;
     replace_index_database(&temp_index_db_path, &index_db_path)?;
     for report in &mut reports {
         report.index_db_path.clone_from(&index_db_path);
@@ -226,6 +229,12 @@ mod tests {
     };
 
     use anyhow::Result;
+    use darc_paths::SourceKind;
+    use darc_store::{
+        SharePolicy, ShareSessionExport, ShareState, ShareTurnExport, ShareTurnImport,
+        ShareUserRecord, import_shared_turn, open_index_database_writer, set_project_share_policy,
+        set_session_share_state,
+    };
     use rusqlite::Connection;
 
     use super::rebuild_workspace_index;
@@ -283,6 +292,55 @@ mod tests {
                 assistant_reply = assistant_reply,
             ),
         )
+    }
+
+    /// Builds one synthetic shared turn fixture for rebuild preservation tests.
+    fn synthetic_shared_turn(session_id: &str) -> ShareTurnExport {
+        ShareTurnExport {
+            session: ShareSessionExport {
+                project_id: "source-repo".to_owned(),
+                provider: SourceKind::Codex,
+                session_id: session_id.to_owned(),
+                parent_session_id: None,
+                session_kind: "primary".to_owned(),
+                archive_path: "shared.jsonl".to_owned(),
+                cwd: "/tmp/shared-repo".to_owned(),
+                cli_version: Some("0.1.0".to_owned()),
+                schema_id: Some("codex:test".to_owned()),
+                determinism: Some("exact".to_owned()),
+                source_size: Some(1),
+                source_mtime_ms: Some(1),
+            },
+            turn_ordinal: 0,
+            turn_id: Some("turn-0".to_owned()),
+            started_at: "2026-05-15T00:00:00Z".to_owned(),
+            completed_at: Some("2026-05-15T00:00:01Z".to_owned()),
+            status: "completed".to_owned(),
+            user_message: "shared prompt".to_owned(),
+            final_answer_at: Some("2026-05-15T00:00:01Z".to_owned()),
+            final_answer_text: Some("shared answer".to_owned()),
+            steps_json: "[]".to_owned(),
+            step_count: 0,
+            tool_call_count: 0,
+            tool_output_count: 0,
+            attachment_count: 0,
+            delegation_count: 0,
+            hook_summary_count: 0,
+            has_final_answer: 1,
+            duration_ms: Some(1),
+            effective_agent_runtime_ms: Some(1),
+            provider_total_token_count: Some(1),
+            input_uncached_token_count: Some(1),
+            cache_read_token_count: Some(0),
+            cache_write_token_count: Some(0),
+            output_token_count: Some(1),
+            reasoning_token_count: Some(0),
+            total_token_count: Some(1),
+            primary_model: Some("synthetic-model".to_owned()),
+            changed_file_count: 0,
+            added_line_count: 0,
+            removed_line_count: 0,
+        }
     }
 
     #[test]
@@ -376,6 +434,121 @@ mod tests {
                 ),
             ]
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn rebuild_workspace_index_preserves_sharing_state() -> Result<()> {
+        let root = unique_test_dir("workspace-rebuild-share-state");
+        let project_root = root.join("repo-one");
+        let sessions_root = root.join("projects/repo-one-123/sessions");
+        fs::create_dir_all(&project_root)?;
+        let local_session_id = "22222222-2222-4222-8222-22222222223f";
+        write_archived_codex_rollout(
+            &sessions_root,
+            &project_root,
+            local_session_id,
+            "Index project",
+            "Indexed",
+        )?;
+        let config = SharedConfig::new(
+            root.clone(),
+            vec![ProjectConfig {
+                id: "repo-one-123".into(),
+                name: "repo-one".into(),
+                local_path: project_root,
+                git_upstream: None,
+                sessions_root,
+                known_paths: Vec::new(),
+            }],
+            SourcesConfig::default(),
+        );
+        fs::write(
+            root.join(CONFIG_FILE_NAME),
+            toml::to_string_pretty(&config)?,
+        )?;
+        let index_db_path = root.join(darc_store::INDEX_DB_FILE_NAME);
+        rebuild_workspace_index(Some(root.clone()))?;
+
+        let mut connection = open_index_database_writer(&index_db_path)?;
+        set_project_share_policy(
+            &connection,
+            "repo-one-123",
+            SharePolicy::All,
+            "2026-05-15T00:00:00Z",
+        )?;
+        set_session_share_state(
+            &connection,
+            "repo-one-123",
+            SourceKind::Codex,
+            local_session_id,
+            ShareState::Included,
+        )?;
+        let user = ShareUserRecord {
+            user_id: "usr-remote".to_owned(),
+            display_name: Some("Remote User".to_owned()),
+            email: Some("remote@example.invalid".to_owned()),
+            public_key: Some("age1remote".to_owned()),
+            source: "test".to_owned(),
+            updated_at: "2026-05-15T00:00:00Z".to_owned(),
+        };
+        let shared_turn = synthetic_shared_turn("55555555-5555-4555-8555-55555555555f");
+        import_shared_turn(
+            &mut connection,
+            ShareTurnImport {
+                project_id: "repo-one-123",
+                user: &user,
+                remote_name: "remote:abcdef:darc/team",
+                imported_at: "2026-05-15T00:00:00Z",
+                turn: &shared_turn,
+            },
+        )?;
+        drop(connection);
+
+        rebuild_workspace_index(Some(root.clone()))?;
+
+        let connection = Connection::open(&index_db_path)?;
+        let policy: String = connection.query_row(
+            "SELECT default_policy FROM project_share_policies WHERE project_id = 'repo-one-123'",
+            [],
+            |row| row.get(0),
+        )?;
+        let share_state: String = connection.query_row(
+            "
+            SELECT share_state
+            FROM sessions
+            WHERE project_id = 'repo-one-123'
+                AND provider = 'codex'
+                AND session_id = ?1
+            ",
+            [local_session_id],
+            |row| row.get(0),
+        )?;
+        let shared: (i64, String) = connection.query_row(
+            "
+            SELECT COUNT(*), MIN(turn_search.user_message_text)
+            FROM sessions
+            JOIN turn_search
+                ON turn_search.project_id = sessions.project_id
+                AND turn_search.provider = sessions.provider
+                AND turn_search.session_id = sessions.session_id
+            WHERE sessions.project_id = 'repo-one-123'
+                AND sessions.origin_kind = 'shared'
+            ",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let user_count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM users WHERE user_id = 'usr-remote'",
+            [],
+            |row| row.get(0),
+        )?;
+
+        assert_eq!(policy, "all");
+        assert_eq!(share_state, "included");
+        assert_eq!(shared, (1, "shared prompt".to_owned()));
+        assert_eq!(user_count, 1);
 
         Ok(())
     }

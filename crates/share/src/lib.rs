@@ -926,6 +926,7 @@ fn authenticated_retained_manifests(
         .iter()
         .filter(|cached| exporter_manifest_id(&cached.manifest.exporter) != current_exporter_id)
         .filter(|cached| cached.manifest.schema == MANIFEST_SCHEMA)
+        .filter(|cached| cached.manifest.version == 1)
         .filter(|cached| cached.manifest.project_key == expected_project_key)
         .filter_map(|cached| {
             let sync_payload = read_sync_payload(
@@ -1375,13 +1376,17 @@ fn normalize_scheme_git_url(url: &str, input_scheme: &str, output_scheme: &str) 
 /// Returns a remote URL suitable for terminal output.
 pub fn sanitize_git_url_for_display(url: &str) -> String {
     let trimmed = strip_url_query_fragment(url.trim());
-    if let Some((scheme, rest)) = trimmed.split_once("://")
-        && let Some((authority, path)) = rest.split_once('/')
-    {
+    if let Some((scheme, rest)) = trimmed.split_once("://") {
+        let (authority, path) = rest
+            .split_once('/')
+            .map_or((rest, None), |(authority, path)| (authority, Some(path)));
         let host = authority
             .rsplit_once('@')
             .map_or(authority, |(_, host)| host);
-        return format!("{scheme}://{host}/{path}");
+        return path.map_or_else(
+            || format!("{scheme}://{host}"),
+            |path| format!("{scheme}://{host}/{path}"),
+        );
     }
     if let Some((user_host, path)) = trimmed.split_once(':')
         && !trimmed.contains("://")
@@ -2647,6 +2652,10 @@ mod tests {
             "https://github.com/Example/Darc.git"
         );
         assert_eq!(
+            sanitize_git_url_for_display("https://user:token@example.invalid?access_token=secret"),
+            "https://example.invalid"
+        );
+        assert_eq!(
             cache_repo_path(
                 Path::new("/tmp/darc-root"),
                 "git@github.com:Example/Darc.git",
@@ -3873,6 +3882,34 @@ mod tests {
             report.warnings
         );
         assert_eq!(imported_sessions, 1);
+    }
+
+    #[test]
+    fn retention_skips_unsupported_visible_manifest_versions() {
+        let TestShareArtifact {
+            cache,
+            target_identity,
+            source_identity,
+            artifact,
+            ..
+        } = build_single_turn_test_artifact("share-retain-visible-version");
+        write_export_artifact(&cache, &artifact).unwrap();
+        let manifest_path = cache.join(exporter_manifest_relative_path(&source_identity));
+        let mut manifest = read_json_file::<ManifestArtifact>(&manifest_path).unwrap();
+        manifest.version = 2;
+        write_json_file(&manifest_path, &manifest).unwrap();
+
+        let cached = read_cached_manifests(&cache).unwrap();
+        let next_exporter = test_share_identity(&Identity::generate());
+        let retained = authenticated_retained_manifests(
+            &cache,
+            &cached.manifests,
+            "git:https://example.invalid/team/repo",
+            &next_exporter,
+            &target_identity,
+        );
+
+        assert!(retained.is_empty());
     }
 
     #[test]

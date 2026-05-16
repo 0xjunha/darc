@@ -14,6 +14,7 @@ All notable Darc release changes should be summarized here.
 - Keep shared imports tied to fetched branch tips, normalize common share remote URL aliases for provenance, and re-encrypt exports for the current recipient set.
 - Reject symlinked share artifact ancestors before manifest or payload reads and prevent invalid duplicate manifests from masking a valid exporter import.
 - Strip query and fragment secrets from Git URLs, reset tracked cache changes before merge, and defensively redact share exports.
+- Preserve shared index state across rebuilds, reject unaddressable imported session ids, and redact credentialed pathless remotes.
 - Redact common secrets, credential material, local home paths, and bulky data blobs before storing or migrating indexed session data.
 - Reduce false-positive redaction of indexed examples, CLI help text, boolean config values, search patterns, and comparison code.
 
