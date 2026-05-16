@@ -1601,7 +1601,7 @@ fn prepare_cache_repository(
     remote_url: &str,
     identity: &ShareIdentity,
 ) -> Result<Repository> {
-    fs::create_dir_all(path).with_context(|| format!("failed to create {}", path.display()))?;
+    create_safe_cache_repository_dir(path)?;
     let repository = if path.join(".git").exists() {
         Repository::open(path).with_context(|| format!("failed to open {}", path.display()))?
     } else {
@@ -1609,6 +1609,85 @@ fn prepare_cache_repository(
     };
     configure_cache_repository(&repository, remote_url, identity)?;
     Ok(repository)
+}
+
+/// Creates one cache repository root without following symlinked ancestors.
+fn create_safe_cache_repository_dir(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        create_safe_ancestor_dir_all(parent)?;
+    }
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            let file_type = metadata.file_type();
+            if file_type.is_symlink() {
+                bail!("share cache path is a symlink: {}", path.display());
+            }
+            if !file_type.is_dir() {
+                bail!("share cache path is not a directory: {}", path.display());
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir(path).with_context(|| format!("failed to create {}", path.display()))
+        }
+        Err(error) => Err(error).with_context(|| format!("failed to inspect {}", path.display())),
+    }
+}
+
+/// Creates parent directories while rejecting symlinked existing ancestors.
+fn create_safe_ancestor_dir_all(path: &Path) -> Result<()> {
+    let mut missing = Vec::new();
+    let mut current = path;
+    loop {
+        match fs::symlink_metadata(current) {
+            Ok(metadata) => {
+                let file_type = metadata.file_type();
+                if file_type.is_symlink() {
+                    bail!("share cache ancestor is a symlink: {}", current.display());
+                }
+                if !file_type.is_dir() {
+                    bail!(
+                        "share cache ancestor is not a directory: {}",
+                        current.display()
+                    );
+                }
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                missing.push(current.to_path_buf());
+                current = current
+                    .parent()
+                    .context("share cache path is missing an existing ancestor")?;
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("failed to inspect {}", current.display()));
+            }
+        }
+    }
+    for directory in missing.iter().rev() {
+        fs::create_dir(directory)
+            .with_context(|| format!("failed to create {}", directory.display()))?;
+    }
+    Ok(())
+}
+
+/// Verifies one existing cache root is a real directory, not a symlink.
+fn ensure_safe_existing_cache_dir(path: &Path) -> Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            let file_type = metadata.file_type();
+            if file_type.is_symlink() {
+                bail!("share cache path is a symlink: {}", path.display());
+            }
+            if !file_type.is_dir() {
+                bail!("share cache path is not a directory: {}", path.display());
+            }
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error).with_context(|| format!("failed to inspect {}", path.display())),
+    }
 }
 
 /// Configures remote and author identity for one cache repository.
@@ -1700,7 +1779,7 @@ fn clear_share_branch_refs(repository: &Repository, git_branch: &str) -> Result<
 
 /// Removes every non-Git file from one share cache worktree.
 fn clear_cache_worktree(path: &Path) -> Result<()> {
-    if !path.exists() {
+    if !ensure_safe_existing_cache_dir(path)? {
         return Ok(());
     }
     for entry in fs::read_dir(path).with_context(|| format!("failed to read {}", path.display()))? {
@@ -1754,7 +1833,7 @@ fn insert_allowed_share_cache_path(paths: &mut BTreeSet<String>, relative: &str)
 
 /// Removes files outside the authenticated share artifact publish set.
 fn clean_unexpected_share_cache_files(path: &Path, allowed_paths: &BTreeSet<String>) -> Result<()> {
-    if !path.exists() {
+    if !ensure_safe_existing_cache_dir(path)? {
         return Ok(());
     }
     for entry in fs::read_dir(path).with_context(|| format!("failed to read {}", path.display()))? {
@@ -3555,6 +3634,42 @@ mod tests {
             "error should reject symlinked artifact parent: {error:#}"
         );
         assert!(!outside.join("v1").join(PROJECT_FILE).exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cache_cleanup_rejects_symlinked_cache_root() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = unique_test_dir("share-cache-root-symlink");
+        let cache_parent = workspace.join(SHARE_CACHE_DIR);
+        let cache = cache_parent.join("cache-repo");
+        let outside = workspace.join("outside");
+        fs::create_dir_all(&cache_parent).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("keep.txt"), b"keep").unwrap();
+        symlink(&outside, &cache).unwrap();
+        let identity = test_share_identity(&Identity::generate());
+
+        let prepare_error = match prepare_cache_repository(
+            &cache,
+            "https://example.invalid/share.git",
+            &identity,
+        ) {
+            Ok(_) => panic!("prepare should reject symlinked cache root"),
+            Err(error) => error,
+        };
+        let cleanup_error = clear_cache_worktree(&cache).unwrap_err();
+
+        assert!(
+            prepare_error.to_string().contains("symlink"),
+            "prepare should reject symlinked cache root: {prepare_error:#}"
+        );
+        assert!(
+            cleanup_error.to_string().contains("symlink"),
+            "cleanup should reject symlinked cache root: {cleanup_error:#}"
+        );
+        assert!(outside.join("keep.txt").exists());
     }
 
     #[test]
