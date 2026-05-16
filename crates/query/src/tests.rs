@@ -5701,6 +5701,8 @@ fn session_and_search_queries_respect_shared_scope_and_author() -> Result<()> {
         (SearchMode::Literal, "shared marker"),
         (SearchMode::Regex, "shared marker [a-z]+"),
         (SearchMode::FilePath, "src/shared-scope.rs"),
+        (SearchMode::FileName, "shared-scope.rs"),
+        (SearchMode::PathFragment, "src/shared"),
     ] {
         let result = query_search_turns(
             &index_path,
