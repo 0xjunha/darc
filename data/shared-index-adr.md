@@ -80,6 +80,8 @@ darc-share/v1/objects/<recipient-fingerprint>-<payload-sha256>.age
 darc-share/v1/objects/sync-<recipient-fingerprint>-<payload-sha256>.age
 ```
 
+Object paths are direct files under `darc-share/v1/objects/`; nested object directories are not valid V1 artifacts.
+
 `project.json` is visible and contains only routing metadata:
 
 - artifact schema id and version
@@ -103,8 +105,9 @@ The branch tip preserves one manifest namespace per exporter. A push replaces on
 objects that are no longer referenced by another exporter. This keeps a team branch usable for fresh pullers: the latest
 tree can expose every teammate's current export instead of only the most recent pusher.
 
-Merge bounds visible manifest discovery by exporter count and aggregate manifest bytes, and v1 import rejects artifacts
-whose visible manifest, encrypted sync payload, or encrypted turn payload version is not exactly `1`.
+Merge bounds visible manifest discovery by exporter directory count and aggregate manifest bytes. V1 import rejects
+artifacts whose visible manifest or encrypted turn payload version is not exactly `1`, and whose encrypted sync payload
+version is not exactly `2`.
 
 After checking out a fetched share branch, Darc removes untracked and ignored files from the cache worktree so merge and
 push scan only artifacts from the fetched branch tip. Before committing a share cache update, Darc removes paths outside
@@ -115,7 +118,8 @@ exporter identity.
 
 Encrypted object files contain the sensitive payload:
 
-- an encrypted sync payload containing the exporter identity and latest turn keep set for authenticated pruning
+- an encrypted sync payload containing the exporter identity, latest turn keep set, and signed object metadata for
+  authenticated pruning and replay resistance
 - redacted session metadata
 - redacted turn rows and `steps_json`
 - model metadata

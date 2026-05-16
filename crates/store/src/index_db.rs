@@ -246,6 +246,12 @@ pub fn preserve_index_sharing_state(source: &Path, destination: &Path) -> Result
             params![source_path.as_ref()],
         )
         .with_context(|| format!("failed to attach old index {}", source.display()))?;
+    if !sharing_state_table_columns_match(&destination_connection)? {
+        destination_connection
+            .execute_batch("DETACH DATABASE old_index;")
+            .context("failed to detach old index after schema mismatch")?;
+        return Ok(false);
+    }
     let transaction = destination_connection
         .transaction()
         .context("failed to begin sharing state preservation transaction")?;
@@ -290,6 +296,40 @@ fn sqlite_table_exists(connection: &Connection, table: &str) -> Result<bool> {
         )
         .with_context(|| format!("failed to inspect SQLite table `{table}`"))?;
     Ok(count > 0)
+}
+
+/// Returns whether old and rebuilt sharing-state tables have matching column shapes.
+fn sharing_state_table_columns_match(connection: &Connection) -> Result<bool> {
+    for table in [
+        "users",
+        "project_share_policies",
+        "sessions",
+        "turns",
+        "tool_calls",
+        "file_accesses",
+        "turn_evidence",
+        "turn_search",
+    ] {
+        if sqlite_table_columns(connection, "main", table)?
+            != sqlite_table_columns(connection, "old_index", table)?
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Returns ordered SQLite column names for one trusted table.
+fn sqlite_table_columns(connection: &Connection, schema: &str, table: &str) -> Result<Vec<String>> {
+    let sql = format!("PRAGMA {schema}.table_info({table})");
+    let mut statement = connection
+        .prepare(&sql)
+        .with_context(|| format!("failed to inspect SQLite table `{schema}.{table}`"))?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .with_context(|| format!("failed to read SQLite table info for `{schema}.{table}`"))?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .with_context(|| format!("failed to read SQLite columns for `{schema}.{table}`"))
 }
 
 const PRESERVE_SHARING_STATE_SQL: &str = "
@@ -462,8 +502,33 @@ const PRESERVE_SHARING_STATE_SQL: &str = "
                 AND target_sessions.origin_kind = 'shared'
         );
 
-    INSERT OR IGNORE INTO tool_calls
-    SELECT tool_calls.*
+    INSERT OR IGNORE INTO tool_calls (
+        project_id,
+        provider,
+        session_id,
+        turn_ordinal,
+        call_ordinal,
+        call_id,
+        timestamp,
+        tool_name,
+        arguments_text,
+        output_text,
+        status,
+        is_error
+    )
+    SELECT
+        tool_calls.project_id,
+        tool_calls.provider,
+        tool_calls.session_id,
+        tool_calls.turn_ordinal,
+        tool_calls.call_ordinal,
+        tool_calls.call_id,
+        tool_calls.timestamp,
+        tool_calls.tool_name,
+        tool_calls.arguments_text,
+        tool_calls.output_text,
+        tool_calls.status,
+        tool_calls.is_error
     FROM old_index.tool_calls AS tool_calls
     JOIN old_index.sessions AS sessions
         ON sessions.project_id = tool_calls.project_id
@@ -479,8 +544,33 @@ const PRESERVE_SHARING_STATE_SQL: &str = "
                 AND target_sessions.origin_kind = 'shared'
         );
 
-    INSERT OR IGNORE INTO file_accesses
-    SELECT file_accesses.*
+    INSERT OR IGNORE INTO file_accesses (
+        project_id,
+        provider,
+        session_id,
+        turn_ordinal,
+        call_ordinal,
+        call_id,
+        timestamp,
+        tool_name,
+        access_type,
+        path,
+        repo_relative_path,
+        file_name
+    )
+    SELECT
+        file_accesses.project_id,
+        file_accesses.provider,
+        file_accesses.session_id,
+        file_accesses.turn_ordinal,
+        file_accesses.call_ordinal,
+        file_accesses.call_id,
+        file_accesses.timestamp,
+        file_accesses.tool_name,
+        file_accesses.access_type,
+        file_accesses.path,
+        file_accesses.repo_relative_path,
+        file_accesses.file_name
     FROM old_index.file_accesses AS file_accesses
     JOIN old_index.sessions AS sessions
         ON sessions.project_id = file_accesses.project_id
@@ -496,8 +586,23 @@ const PRESERVE_SHARING_STATE_SQL: &str = "
                 AND target_sessions.origin_kind = 'shared'
         );
 
-    INSERT OR IGNORE INTO turn_evidence
-    SELECT turn_evidence.*
+    INSERT OR IGNORE INTO turn_evidence (
+        project_id,
+        provider,
+        session_id,
+        turn_ordinal,
+        evidence_ordinal,
+        field,
+        text
+    )
+    SELECT
+        turn_evidence.project_id,
+        turn_evidence.provider,
+        turn_evidence.session_id,
+        turn_evidence.turn_ordinal,
+        turn_evidence.evidence_ordinal,
+        turn_evidence.field,
+        turn_evidence.text
     FROM old_index.turn_evidence AS turn_evidence
     JOIN old_index.sessions AS sessions
         ON sessions.project_id = turn_evidence.project_id

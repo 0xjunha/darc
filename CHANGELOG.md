@@ -16,6 +16,7 @@ All notable Darc release changes should be summarized here.
 - Strip query and fragment secrets from Git URLs, reset tracked cache changes before merge, and defensively redact share exports.
 - Preserve shared index state across rebuilds, reject unaddressable imported session ids, and redact credentialed pathless remotes.
 - Reuse trusted encrypted share objects for unchanged exports and keep unaddressable provider child sessions local.
+- Authenticate shared manifest object metadata in sync payloads and bound exporter-directory scans.
 - Redact common secrets, credential material, local home paths, and bulky data blobs before storing or migrating indexed session data.
 - Reduce false-positive redaction of indexed examples, CLI help text, boolean config values, search patterns, and comparison code.
 
