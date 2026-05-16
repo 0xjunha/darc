@@ -105,7 +105,8 @@ tree can expose every teammate's current export instead of only the most recent 
 
 Before committing a share cache update, Darc removes paths outside this artifact layout and stages only
 `darc-share/v1`. Unexpected plaintext files, symlinks, orphan files, and unsupported artifact paths from a fetched
-branch are not republished.
+branch are not republished. Existing exporter namespaces are retained only when their encrypted sync payload and turn
+objects can be decrypted and their exporter signatures verify against the visible exporter identity.
 
 Encrypted object files contain the sensitive payload:
 

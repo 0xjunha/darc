@@ -369,6 +369,13 @@ pub fn push_share_branch(
     }
     checkout_share_branch(&repository, &git_branch)?;
     let cached_manifest_read = read_cached_manifests(&cache_path)?;
+    let retained_manifests = authenticated_retained_manifests(
+        &cache_path,
+        &cached_manifest_read.manifests,
+        &project_key,
+        &identity,
+        &decryption_identity,
+    );
     let artifact = build_export_artifact(ExportBuildRequest {
         context,
         settings,
@@ -384,10 +391,12 @@ pub fn push_share_branch(
         &cache_path,
         &identity,
         &cached_manifest_read.manifests,
+        &retained_manifests,
         &artifact,
     )?;
     write_export_artifact(&cache_path, &artifact)?;
-    clean_unexpected_share_cache_files(&cache_path)?;
+    let allowed_paths = allowed_share_cache_paths(&artifact, &retained_manifests);
+    clean_unexpected_share_cache_files(&cache_path, &allowed_paths)?;
     let commit_id = commit_cache_repository(&repository, &identity, &git_branch)?;
     push_branch(&repository, &remote.url, &git_branch)?;
     Ok(SharePushReport {
@@ -520,6 +529,7 @@ struct ResolvedRemote {
 }
 
 /// Stores one manifest found in the local share cache.
+#[derive(Clone)]
 struct CachedManifest {
     relative_path: String,
     manifest: ManifestArtifact,
@@ -708,28 +718,41 @@ fn read_cached_manifests(cache_path: &Path) -> Result<CachedManifestRead> {
     let mut manifests = Vec::new();
     let mut warnings = Vec::new();
     let exporter_root = cache_path.join(ARTIFACT_ROOT).join(EXPORTERS_DIR);
-    if is_regular_directory(&exporter_root)? {
-        for entry in fs::read_dir(&exporter_root)
-            .with_context(|| format!("failed to read {}", exporter_root.display()))?
-        {
-            let entry =
-                entry.with_context(|| format!("failed to read {}", exporter_root.display()))?;
-            let file_type = entry
-                .file_type()
-                .with_context(|| format!("failed to inspect {}", entry.path().display()))?;
-            if !file_type.is_dir() {
-                continue;
-            }
-            let Some(exporter_dir) = entry.file_name().to_str().map(str::to_owned) else {
-                continue;
-            };
-            let relative_path =
-                format!("{ARTIFACT_ROOT}/{EXPORTERS_DIR}/{exporter_dir}/{LEGACY_MANIFEST_FILE}");
-            let manifest_path = cache_path.join(&relative_path);
-            if manifest_path.exists() {
-                read_cached_manifest(&mut manifests, &mut warnings, relative_path, &manifest_path);
+    match is_regular_directory(&exporter_root) {
+        Ok(true) => {
+            for entry in fs::read_dir(&exporter_root)
+                .with_context(|| format!("failed to read {}", exporter_root.display()))?
+            {
+                let entry =
+                    entry.with_context(|| format!("failed to read {}", exporter_root.display()))?;
+                let file_type = entry
+                    .file_type()
+                    .with_context(|| format!("failed to inspect {}", entry.path().display()))?;
+                if !file_type.is_dir() {
+                    continue;
+                }
+                let Some(exporter_dir) = entry.file_name().to_str().map(str::to_owned) else {
+                    continue;
+                };
+                let relative_path = format!(
+                    "{ARTIFACT_ROOT}/{EXPORTERS_DIR}/{exporter_dir}/{LEGACY_MANIFEST_FILE}"
+                );
+                let manifest_path = cache_path.join(&relative_path);
+                if manifest_path.exists() {
+                    read_cached_manifest(
+                        &mut manifests,
+                        &mut warnings,
+                        relative_path,
+                        &manifest_path,
+                    );
+                }
             }
         }
+        Ok(false) => {}
+        Err(error) => warnings.push(format!(
+            "skipped share exporter root {}: {error:#}",
+            exporter_root.display()
+        )),
     }
     manifests.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
     let legacy_relative_path = format!("{ARTIFACT_ROOT}/{LEGACY_MANIFEST_FILE}");
@@ -769,13 +792,13 @@ fn remove_replaced_exporter_artifacts(
     cache_path: &Path,
     identity: &ShareIdentity,
     cached_manifests: &[CachedManifest],
+    retained_manifests: &[CachedManifest],
     artifact: &BuiltExportArtifact,
 ) -> Result<()> {
     let current_exporter_id = exporter_manifest_id(identity);
     let current_object_paths = artifact.objects.keys().cloned().collect::<BTreeSet<_>>();
-    let retained_object_paths = cached_manifests
+    let retained_object_paths = retained_manifests
         .iter()
-        .filter(|cached| exporter_manifest_id(&cached.manifest.exporter) != current_exporter_id)
         .flat_map(|cached| manifest_object_paths(&cached.manifest))
         .collect::<BTreeSet<_>>();
     let stale_object_paths = cached_manifests
@@ -805,6 +828,85 @@ fn manifest_object_paths(manifest: &ManifestArtifact) -> BTreeSet<String> {
     paths.insert(manifest.sync.object_path.clone());
     paths.extend(manifest.turns.iter().map(|turn| turn.object_path.clone()));
     paths
+}
+
+/// Returns cached manifests whose encrypted payloads authenticate for retention.
+fn authenticated_retained_manifests(
+    cache_path: &Path,
+    cached_manifests: &[CachedManifest],
+    expected_project_key: &str,
+    identity: &ShareIdentity,
+    decryption_identity: &Identity,
+) -> Vec<CachedManifest> {
+    let current_exporter_id = exporter_manifest_id(identity);
+    cached_manifests
+        .iter()
+        .filter(|cached| exporter_manifest_id(&cached.manifest.exporter) != current_exporter_id)
+        .filter(|cached| cached.manifest.schema == MANIFEST_SCHEMA)
+        .filter(|cached| cached.manifest.project_key == expected_project_key)
+        .filter_map(|cached| {
+            let sync_payload = read_sync_payload(
+                cache_path,
+                &cached.manifest,
+                expected_project_key,
+                decryption_identity,
+            )
+            .ok()?;
+            let authenticated_turns = sync_payload.turns.iter().cloned().collect::<BTreeSet<_>>();
+            let turns_are_authenticated = cached.manifest.turns.iter().all(|entry| {
+                authenticated_turns.contains(&SyncTurnEntry {
+                    provider: entry.provider,
+                    session_id: entry.session_id.clone(),
+                    turn_ordinal: entry.turn_ordinal,
+                }) && verify_cached_turn_payload(
+                    cache_path,
+                    &cached.manifest,
+                    expected_project_key,
+                    decryption_identity,
+                    entry,
+                )
+                .is_ok()
+            });
+            turns_are_authenticated.then(|| cached.clone())
+        })
+        .collect()
+}
+
+/// Verifies one cached turn object without importing it into SQLite.
+fn verify_cached_turn_payload(
+    cache_path: &Path,
+    manifest: &ManifestArtifact,
+    expected_project_key: &str,
+    identity: &Identity,
+    entry: &TurnManifestEntry,
+) -> Result<()> {
+    let object_path = manifest_object_path(cache_path, entry)?;
+    let ciphertext = read_regular_file(&object_path, MAX_SHARE_OBJECT_BYTES)?;
+    let plaintext =
+        decrypt_payload(&ciphertext, identity).context("failed to decrypt share object")?;
+    if sha256_hex(&plaintext) != entry.payload_hash {
+        bail!("share payload hash mismatch");
+    }
+    let payload: EncryptedTurnPayload =
+        serde_json::from_slice(&plaintext).context("failed to parse share payload JSON")?;
+    if payload.schema != TURN_PAYLOAD_SCHEMA {
+        bail!("unsupported share payload schema `{}`", payload.schema);
+    }
+    if payload.project_key != expected_project_key {
+        bail!("share payload project key does not match active project");
+    }
+    if payload.exporter != manifest.exporter {
+        bail!("share payload exporter does not match manifest exporter");
+    }
+    verify_turn_payload_signature(&payload)?;
+    if payload.turn.session.provider != entry.provider
+        || payload.turn.session.session_id != entry.session_id
+        || payload.turn.turn_ordinal != entry.turn_ordinal
+        || payload.turn.started_at != entry.started_at
+    {
+        bail!("share payload identity does not match manifest entry");
+    }
+    Ok(())
 }
 
 /// Imports all valid encrypted payloads from one cache workdir.
@@ -1529,8 +1631,38 @@ fn clear_cache_worktree(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Removes files outside Darc's documented share artifact layout.
-fn clean_unexpected_share_cache_files(path: &Path) -> Result<()> {
+/// Builds the exact cache-relative file set that may be published.
+fn allowed_share_cache_paths(
+    artifact: &BuiltExportArtifact,
+    retained_manifests: &[CachedManifest],
+) -> BTreeSet<String> {
+    let mut paths = BTreeSet::new();
+    insert_allowed_share_cache_path(&mut paths, &format!("{ARTIFACT_ROOT}/{PROJECT_FILE}"));
+    insert_allowed_share_cache_path(
+        &mut paths,
+        &exporter_manifest_relative_path(&artifact.manifest.exporter),
+    );
+    for object_path in artifact.objects.keys() {
+        insert_allowed_share_cache_path(&mut paths, object_path);
+    }
+    for cached in retained_manifests {
+        insert_allowed_share_cache_path(&mut paths, &cached.relative_path);
+        for object_path in manifest_object_paths(&cached.manifest) {
+            insert_allowed_share_cache_path(&mut paths, &object_path);
+        }
+    }
+    paths
+}
+
+/// Adds one validated cache-relative artifact path to a publish allowlist.
+fn insert_allowed_share_cache_path(paths: &mut BTreeSet<String>, relative: &str) {
+    if allowed_share_cache_file(Path::new(relative)) {
+        paths.insert(relative.to_owned());
+    }
+}
+
+/// Removes files outside the authenticated share artifact publish set.
+fn clean_unexpected_share_cache_files(path: &Path, allowed_paths: &BTreeSet<String>) -> Result<()> {
     if !path.exists() {
         return Ok(());
     }
@@ -1539,13 +1671,17 @@ fn clean_unexpected_share_cache_files(path: &Path) -> Result<()> {
         if entry.file_name() == ".git" {
             continue;
         }
-        clean_unexpected_share_cache_entry(path, &entry.path())?;
+        clean_unexpected_share_cache_entry(path, &entry.path(), allowed_paths)?;
     }
     Ok(())
 }
 
 /// Removes one unexpected cache entry and prunes empty directories.
-fn clean_unexpected_share_cache_entry(cache_path: &Path, path: &Path) -> Result<()> {
+fn clean_unexpected_share_cache_entry(
+    cache_path: &Path,
+    path: &Path,
+    allowed_paths: &BTreeSet<String>,
+) -> Result<()> {
     let metadata = fs::symlink_metadata(path)
         .with_context(|| format!("failed to inspect {}", path.display()))?;
     let file_type = metadata.file_type();
@@ -1557,7 +1693,7 @@ fn clean_unexpected_share_cache_entry(cache_path: &Path, path: &Path) -> Result<
             fs::read_dir(path).with_context(|| format!("failed to read {}", path.display()))?
         {
             let entry = entry.with_context(|| format!("failed to read {}", path.display()))?;
-            clean_unexpected_share_cache_entry(cache_path, &entry.path())?;
+            clean_unexpected_share_cache_entry(cache_path, &entry.path(), allowed_paths)?;
         }
         if fs::read_dir(path)
             .with_context(|| format!("failed to read {}", path.display()))?
@@ -1575,7 +1711,10 @@ fn clean_unexpected_share_cache_entry(cache_path: &Path, path: &Path) -> Result<
             cache_path.display()
         )
     })?;
-    if allowed_share_cache_file(relative) {
+    if cache_relative_path_key(relative)
+        .as_ref()
+        .is_some_and(|relative| allowed_paths.contains(relative))
+    {
         Ok(())
     } else {
         remove_file_if_exists(path)
@@ -1584,14 +1723,7 @@ fn clean_unexpected_share_cache_entry(cache_path: &Path, path: &Path) -> Result<
 
 /// Returns whether one cache-relative file belongs to the share artifact layout.
 fn allowed_share_cache_file(relative: &Path) -> bool {
-    let components = relative
-        .components()
-        .map(|component| match component {
-            Component::Normal(value) => value.to_str(),
-            _ => None,
-        })
-        .collect::<Option<Vec<_>>>();
-    let Some(components) = components else {
+    let Some(components) = cache_relative_path_components(relative) else {
         return false;
     };
     match components.as_slice() {
@@ -1606,6 +1738,22 @@ fn allowed_share_cache_file(relative: &Path) -> bool {
         ] => !exporter.is_empty(),
         _ => false,
     }
+}
+
+/// Returns normalized string components for one safe cache-relative path.
+fn cache_relative_path_components(relative: &Path) -> Option<Vec<&str>> {
+    relative
+        .components()
+        .map(|component| match component {
+            Component::Normal(value) => value.to_str(),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Returns one slash-separated key for a cache-relative path.
+fn cache_relative_path_key(relative: &Path) -> Option<String> {
+    cache_relative_path_components(relative).map(|components| components.join("/"))
 }
 
 /// Fetches one remote share branch into the cache repository.
@@ -2647,6 +2795,88 @@ mod tests {
     }
 
     #[test]
+    fn merge_skips_malformed_exporter_root_and_imports_legacy_manifest() {
+        let workspace = unique_test_dir("share-bad-exporter-root-continue");
+        let cache = workspace.join("cache");
+        let source_root = workspace.join("source-root");
+        let target_root = workspace.join("target-root");
+        fs::create_dir_all(&source_root).unwrap();
+        fs::create_dir_all(&target_root).unwrap();
+        let target_key = ensure_share_key(&target_root).unwrap();
+        let source_context = ShareProjectContext {
+            root: source_root.clone(),
+            index_db_path: source_root.join("index.sqlite"),
+            project_id: "source-repo".to_owned(),
+            project_name: "source-repo".to_owned(),
+            local_path: source_root.join("repo"),
+            git_upstream: Some("https://example.invalid/team/repo.git".to_owned()),
+        };
+        let target_context = ShareProjectContext {
+            root: target_root.clone(),
+            index_db_path: target_root.join("index.sqlite"),
+            project_id: "target-repo".to_owned(),
+            project_name: "target-repo".to_owned(),
+            local_path: target_root.join("repo"),
+            git_upstream: Some("https://example.invalid/team/repo.git".to_owned()),
+        };
+        seed_share_export_session(
+            &source_context.index_db_path,
+            "source-repo",
+            "00000000-0000-4000-8000-000000000303",
+        );
+        update_share_policy(&source_context, SharePolicy::All).unwrap();
+        let source_age_identity = Identity::generate();
+        let source_signing_key = test_signing_key(&source_age_identity);
+        let source_identity = test_share_identity(&source_age_identity);
+        let source = open_index_database_writer(&source_context.index_db_path).unwrap();
+        let turns = query_share_export_turns(&source, "source-repo").unwrap();
+        let artifact = build_export_artifact(ExportBuildRequest {
+            context: &source_context,
+            settings: &ShareSettings {
+                remotes: Vec::new(),
+                recipients: vec![ShareRecipient {
+                    recipient: target_key.public_key,
+                }],
+            },
+            project_key: "git:https://example.invalid/team/repo",
+            identity: &source_identity,
+            decryption_identity: &source_age_identity,
+            signing_key: &source_signing_key,
+            branch: "team",
+            turns,
+            cache_path: &cache,
+        })
+        .unwrap();
+        write_export_artifact(&cache, &artifact).unwrap();
+        write_json_file(
+            &cache.join(ARTIFACT_ROOT).join(LEGACY_MANIFEST_FILE),
+            &artifact.manifest,
+        )
+        .unwrap();
+        let exporter_root = cache.join(ARTIFACT_ROOT).join(EXPORTERS_DIR);
+        fs::remove_dir_all(&exporter_root).unwrap();
+        fs::write(&exporter_root, b"not a directory").unwrap();
+
+        let report = import_from_cache(
+            &target_context,
+            "team",
+            "darc/team",
+            "origin",
+            "git:https://example.invalid/team/repo",
+            &cache,
+        )
+        .unwrap();
+
+        assert_eq!(report.imported_turn_count, 1);
+        assert_eq!(report.warning_count, 1);
+        assert!(
+            report.warnings[0].contains("exporter root"),
+            "warning should mention malformed exporter root: {:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
     fn merge_skips_forged_sync_signature() {
         let workspace = unique_test_dir("share-forged-sync-signature");
         let cache = workspace.join("cache");
@@ -2755,6 +2985,105 @@ mod tests {
         assert!(
             report.warnings[0].contains("signature"),
             "warning should reject forged signature: {:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn merge_skips_forged_turn_signature() {
+        let workspace = unique_test_dir("share-forged-turn-signature");
+        let cache = workspace.join("cache");
+        let source_root = workspace.join("source-root");
+        let target_root = workspace.join("target-root");
+        fs::create_dir_all(&source_root).unwrap();
+        fs::create_dir_all(&target_root).unwrap();
+        let target_key = ensure_share_key(&target_root).unwrap();
+        let target_identity = read_share_identity_key(&target_key.key_path).unwrap();
+        let source_context = ShareProjectContext {
+            root: source_root.clone(),
+            index_db_path: source_root.join("index.sqlite"),
+            project_id: "source-repo".to_owned(),
+            project_name: "source-repo".to_owned(),
+            local_path: source_root.join("repo"),
+            git_upstream: Some("https://example.invalid/team/repo.git".to_owned()),
+        };
+        let target_context = ShareProjectContext {
+            root: target_root.clone(),
+            index_db_path: target_root.join("index.sqlite"),
+            project_id: "target-repo".to_owned(),
+            project_name: "target-repo".to_owned(),
+            local_path: target_root.join("repo"),
+            git_upstream: Some("https://example.invalid/team/repo.git".to_owned()),
+        };
+        seed_share_export_session(
+            &source_context.index_db_path,
+            "source-repo",
+            "00000000-0000-4000-8000-000000000303",
+        );
+        update_share_policy(&source_context, SharePolicy::All).unwrap();
+        let source_age_identity = Identity::generate();
+        let source_signing_key = test_signing_key(&source_age_identity);
+        let source_identity = test_share_identity(&source_age_identity);
+        let source = open_index_database_writer(&source_context.index_db_path).unwrap();
+        let turns = query_share_export_turns(&source, "source-repo").unwrap();
+        let artifact = build_export_artifact(ExportBuildRequest {
+            context: &source_context,
+            settings: &ShareSettings {
+                remotes: Vec::new(),
+                recipients: vec![ShareRecipient {
+                    recipient: target_key.public_key,
+                }],
+            },
+            project_key: "git:https://example.invalid/team/repo",
+            identity: &source_identity,
+            decryption_identity: &source_age_identity,
+            signing_key: &source_signing_key,
+            branch: "team",
+            turns,
+            cache_path: &cache,
+        })
+        .unwrap();
+        write_export_artifact(&cache, &artifact).unwrap();
+        let manifest_path = cache.join(exporter_manifest_relative_path(&source_identity));
+        let mut manifest = read_json_file::<ManifestArtifact>(&manifest_path).unwrap();
+        let original_object_path = manifest.turns[0].object_path.clone();
+        let original_ciphertext = fs::read(cache.join(&original_object_path)).unwrap();
+        let original_plaintext = decrypt_payload(&original_ciphertext, &target_identity).unwrap();
+        let mut forged_payload: EncryptedTurnPayload =
+            serde_json::from_slice(&original_plaintext).unwrap();
+        forged_payload.turn.user_message = "forged task".to_owned();
+        let forged_plaintext = serde_json::to_vec(&forged_payload).unwrap();
+        let forged_object_path = format!(
+            "{ARTIFACT_ROOT}/objects/forged-turn-{}.age",
+            &sha256_hex(&forged_plaintext)[..16]
+        );
+        let forged_target = cache.join(&forged_object_path);
+        fs::create_dir_all(forged_target.parent().unwrap()).unwrap();
+        fs::write(
+            &forged_target,
+            encrypt_payload(&forged_plaintext, &[target_identity.to_public()]).unwrap(),
+        )
+        .unwrap();
+        manifest.turns[0].payload_hash = sha256_hex(&forged_plaintext);
+        manifest.turns[0].object_path = forged_object_path;
+        write_json_file(&manifest_path, &manifest).unwrap();
+
+        let report = import_from_cache(
+            &target_context,
+            "team",
+            "darc/team",
+            "origin",
+            "git:https://example.invalid/team/repo",
+            &cache,
+        )
+        .unwrap();
+
+        assert_eq!(report.imported_turn_count, 0);
+        assert_eq!(report.skipped_turn_count, 1);
+        assert_eq!(report.warning_count, 1);
+        assert!(
+            report.warnings[0].contains("signature"),
+            "warning should reject forged turn signature: {:?}",
             report.warnings
         );
     }
@@ -3138,6 +3467,15 @@ mod tests {
             .join("file.txt");
         fs::create_dir_all(rogue_nested.parent().unwrap()).unwrap();
         fs::write(&rogue_nested, b"do not publish").unwrap();
+        let rogue_age_object = cache.join(ARTIFACT_ROOT).join("objects").join("orphan.age");
+        fs::write(&rogue_age_object, b"do not publish").unwrap();
+        let rogue_manifest = cache
+            .join(ARTIFACT_ROOT)
+            .join(EXPORTERS_DIR)
+            .join("orphan")
+            .join(LEGACY_MANIFEST_FILE);
+        fs::create_dir_all(rogue_manifest.parent().unwrap()).unwrap();
+        fs::write(&rogue_manifest, b"not json").unwrap();
 
         push_share_branch(&source_context, &settings, "team", Some("share")).unwrap();
 
@@ -3150,6 +3488,7 @@ mod tests {
         );
         assert!(!paths.iter().any(|path| path.contains("plaintext")));
         assert!(!paths.iter().any(|path| path.contains("unexpected")));
+        assert!(!paths.iter().any(|path| path.contains("orphan")));
     }
 
     #[test]
@@ -3169,6 +3508,8 @@ mod tests {
         init_test_git_repo(&first_repo);
         init_test_git_repo(&second_repo);
         init_test_git_repo(&target_repo);
+        let first_key = ensure_share_key(&first_root).unwrap();
+        let second_key = ensure_share_key(&second_root).unwrap();
         let target_key = ensure_share_key(&target_root).unwrap();
         let remote_url = remote_path.to_string_lossy().into_owned();
         let project_upstream = "https://example.invalid/team/repo.git".to_owned();
@@ -3213,9 +3554,17 @@ mod tests {
                 name: "share".to_owned(),
                 url: remote_url,
             }],
-            recipients: vec![ShareRecipient {
-                recipient: target_key.public_key,
-            }],
+            recipients: vec![
+                ShareRecipient {
+                    recipient: first_key.public_key,
+                },
+                ShareRecipient {
+                    recipient: second_key.public_key,
+                },
+                ShareRecipient {
+                    recipient: target_key.public_key,
+                },
+            ],
         };
 
         push_share_branch(&first_context, &settings, "team", Some("share")).unwrap();
