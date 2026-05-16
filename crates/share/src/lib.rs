@@ -25,7 +25,7 @@ use darc_store::{
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use git2::{
     BranchType, Cred, FetchOptions, FetchPrune, IndexAddOption, PushOptions, RemoteCallbacks,
-    Repository, ResetType,
+    Repository, ResetType, Status, StatusOptions,
 };
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -376,6 +376,7 @@ pub fn push_share_branch(
         clear_cache_worktree(&cache_path)?;
     }
     checkout_share_branch(&repository, &git_branch)?;
+    clean_untracked_cache_worktree(&repository, &cache_path)?;
     let cached_manifest_read = read_cached_manifests(&cache_path)?;
     let retained_manifests = authenticated_retained_manifests(
         &cache_path,
@@ -435,6 +436,7 @@ pub fn fetch_share_branch(
     let repository = prepare_cache_repository(&cache_path, &remote.url, &identity)?;
     fetch_branch(&repository, &remote.url, &git_branch)?;
     checkout_share_branch(&repository, &git_branch)?;
+    clean_untracked_cache_worktree(&repository, &cache_path)?;
     Ok(ShareFetchReport {
         branch: branch.to_owned(),
         git_branch,
@@ -455,6 +457,7 @@ pub fn merge_share_branch(
     let remote = resolve_remote(context, settings, remote_name)?;
     let project_key = project_key(context)?;
     let cache_path = cache_repo_path(&context.root, &remote.url, &git_branch);
+    clean_cached_checkout(&cache_path)?;
     import_from_cache(
         context,
         branch,
@@ -724,6 +727,12 @@ fn write_export_artifact(path: &Path, artifact: &BuiltExportArtifact) -> Result<
 
 /// Reads all visible manifests from one cache workdir.
 fn read_cached_manifests(cache_path: &Path) -> Result<CachedManifestRead> {
+    if !ensure_safe_existing_cache_dir(cache_path)? {
+        return Ok(CachedManifestRead {
+            manifests: Vec::new(),
+            warnings: Vec::new(),
+        });
+    }
     let mut manifests = Vec::new();
     let mut warnings = Vec::new();
     let mut manifest_count = 0_usize;
@@ -1801,6 +1810,89 @@ fn clear_cache_worktree(path: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Removes untracked and ignored files from one fetched share cache checkout.
+fn clean_cached_checkout(path: &Path) -> Result<()> {
+    if !ensure_safe_existing_cache_dir(path)? {
+        return Ok(());
+    }
+    let repository = Repository::open(path)
+        .with_context(|| format!("failed to open share cache repository {}", path.display()))?;
+    clean_untracked_cache_worktree(&repository, path)
+}
+
+/// Removes worktree files that are not present in the checked-out Git tree.
+fn clean_untracked_cache_worktree(repository: &Repository, cache_path: &Path) -> Result<()> {
+    if !ensure_safe_existing_cache_dir(cache_path)? {
+        return Ok(());
+    }
+    let mut options = StatusOptions::new();
+    options
+        .include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_ignored(true);
+    let statuses = repository
+        .statuses(Some(&mut options))
+        .context("failed to read share cache status")?;
+    let mut paths = statuses
+        .iter()
+        .filter_map(|entry| {
+            let status = entry.status();
+            if !(status.intersects(Status::WT_NEW) || status.intersects(Status::IGNORED)) {
+                return None;
+            }
+            let path = entry.path()?;
+            if path == ".git" || path.starts_with(".git/") {
+                return None;
+            }
+            Some(PathBuf::from(path))
+        })
+        .collect::<Vec<_>>();
+    paths.sort_by(|left, right| {
+        right
+            .components()
+            .count()
+            .cmp(&left.components().count())
+            .then_with(|| left.cmp(right))
+    });
+    for relative in paths {
+        let target = cache_path.join(&relative);
+        let checked = target.strip_prefix(cache_path).with_context(|| {
+            format!(
+                "share cache path {} is outside cache {}",
+                target.display(),
+                cache_path.display()
+            )
+        })?;
+        if cache_relative_path_components(checked).is_none() {
+            bail!(
+                "share cache untracked path is not a safe relative path: {}",
+                checked.display()
+            );
+        }
+        remove_cache_worktree_entry(&target)?;
+    }
+    Ok(())
+}
+
+/// Removes one cache worktree entry without following symlinks.
+fn remove_cache_worktree_entry(path: &Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            let file_type = metadata.file_type();
+            if file_type.is_dir() && !file_type.is_symlink() {
+                fs::remove_dir_all(path)
+                    .with_context(|| format!("failed to remove {}", path.display()))?;
+            } else {
+                fs::remove_file(path)
+                    .with_context(|| format!("failed to remove {}", path.display()))?;
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("failed to inspect {}", path.display())),
+    }
 }
 
 /// Builds the exact cache-relative file set that may be published.
@@ -3900,6 +3992,47 @@ mod tests {
         assert!(outside.join("keep.txt").exists());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn merge_rejects_symlinked_cache_root() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = unique_test_dir("share-merge-cache-root-symlink");
+        let target_root = workspace.join("target-root");
+        let outside = workspace.join("outside");
+        let cache = workspace.join(SHARE_CACHE_DIR).join("cache-repo");
+        fs::create_dir_all(&target_root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::create_dir_all(cache.parent().unwrap()).unwrap();
+        fs::write(outside.join("keep.txt"), b"keep").unwrap();
+        symlink(&outside, &cache).unwrap();
+        let context = ShareProjectContext {
+            root: target_root,
+            index_db_path: workspace.join("index.sqlite"),
+            project_id: "target-repo".to_owned(),
+            project_name: "target-repo".to_owned(),
+            local_path: workspace.join("target-repo"),
+            git_upstream: Some("https://example.invalid/team/repo.git".to_owned()),
+        };
+
+        let error = import_from_cache(
+            &context,
+            "team",
+            "darc/team",
+            "share",
+            "https://example.invalid/team/share.git",
+            "git:https://example.invalid/team/repo",
+            &cache,
+        )
+        .unwrap_err();
+
+        assert!(
+            error.to_string().contains("symlink"),
+            "merge should reject symlinked cache root: {error:#}"
+        );
+        assert!(outside.join("keep.txt").exists());
+    }
+
     #[test]
     fn push_and_pull_round_trip_rebinds_refreshes_and_prunes_sessions() {
         let workspace = unique_test_dir("share-round-trip");
@@ -4031,6 +4164,81 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(object_paths.len(), 1);
         assert!(object_paths[0].contains("/sync-"));
+    }
+
+    #[test]
+    fn fetch_cleans_untracked_cache_artifacts_before_merge() {
+        let workspace = unique_test_dir("share-fetch-cleans-untracked");
+        let remote_path = workspace.join("share.git");
+        Repository::init_bare(&remote_path).unwrap();
+        let source_root = workspace.join("source-root");
+        let source_repo = workspace.join("source-repo");
+        let target_root = workspace.join("target-root");
+        let target_repo = workspace.join("target-repo");
+        fs::create_dir_all(&source_root).unwrap();
+        fs::create_dir_all(&target_root).unwrap();
+        init_test_git_repo(&source_repo);
+        init_test_git_repo(&target_repo);
+        let target_key = ensure_share_key(&target_root).unwrap();
+        let remote_url = remote_path.to_string_lossy().into_owned();
+        let project_upstream = "https://example.invalid/team/repo.git".to_owned();
+        let source_context = ShareProjectContext {
+            root: source_root.clone(),
+            index_db_path: source_root.join("index.sqlite"),
+            project_id: "source-repo".to_owned(),
+            project_name: "source-repo".to_owned(),
+            local_path: source_repo,
+            git_upstream: Some(project_upstream.clone()),
+        };
+        let target_context = ShareProjectContext {
+            root: target_root.clone(),
+            index_db_path: target_root.join("index.sqlite"),
+            project_id: "target-repo".to_owned(),
+            project_name: "target-repo".to_owned(),
+            local_path: target_repo,
+            git_upstream: Some(project_upstream),
+        };
+        seed_share_export_session(
+            &source_context.index_db_path,
+            "source-repo",
+            "00000000-0000-4000-8000-000000000303",
+        );
+        update_share_policy(&source_context, SharePolicy::All).unwrap();
+        let settings = ShareSettings {
+            remotes: vec![ShareRemote {
+                name: "share".to_owned(),
+                url: remote_url.clone(),
+            }],
+            recipients: vec![ShareRecipient {
+                recipient: target_key.public_key,
+            }],
+        };
+
+        push_share_branch(&source_context, &settings, "team", Some("share")).unwrap();
+        fetch_share_branch(&target_context, &settings, "team", Some("share")).unwrap();
+        let cache = cache_repo_path(&target_root, &remote_url, "darc/team");
+        let injected_manifest = cache
+            .join(ARTIFACT_ROOT)
+            .join(EXPORTERS_DIR)
+            .join("injected")
+            .join(LEGACY_MANIFEST_FILE);
+        fs::create_dir_all(injected_manifest.parent().unwrap()).unwrap();
+        fs::write(&injected_manifest, b"not json").unwrap();
+        let injected_object = cache
+            .join(ARTIFACT_ROOT)
+            .join("objects")
+            .join("injected.age");
+        fs::write(&injected_object, b"not an age payload").unwrap();
+        assert!(injected_manifest.exists());
+        assert!(injected_object.exists());
+
+        fetch_share_branch(&target_context, &settings, "team", Some("share")).unwrap();
+
+        assert!(!injected_manifest.exists());
+        assert!(!injected_object.exists());
+        let merge = merge_share_branch(&target_context, &settings, "team", Some("share")).unwrap();
+        assert_eq!(merge.imported_turn_count, 1);
+        assert_eq!(merge.warning_count, 0);
     }
 
     #[test]
