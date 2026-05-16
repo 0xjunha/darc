@@ -2225,8 +2225,9 @@ fn cache_repo_path(root: &Path, remote_url: &str, git_branch: &str) -> PathBuf {
 
 /// Builds the stored provenance key for one imported remote branch.
 fn share_origin_remote(remote_url: &str, git_branch: &str) -> String {
-    let sanitized_url = sanitize_git_url_for_display(remote_url);
-    let identity = sha256_hex(format!("{sanitized_url}\n{git_branch}").as_bytes());
+    let canonical_url =
+        normalize_git_url(remote_url).unwrap_or_else(|_| sanitize_git_url_for_display(remote_url));
+    let identity = sha256_hex(format!("{canonical_url}\n{git_branch}").as_bytes());
     format!("remote:{}:{git_branch}", &identity[..16])
 }
 
@@ -3549,7 +3550,7 @@ mod tests {
             ..
         } = build_single_turn_test_artifact("share-canonical-remote-alias");
         write_export_artifact(&cache, &artifact).unwrap();
-        let first_remote = "https://alice:token@example.invalid/team/share.git";
+        let first_remote = "git@example.invalid:team/share.git";
         let second_remote = "https://bob:token@example.invalid/team/share.git";
 
         let first = import_from_cache(
