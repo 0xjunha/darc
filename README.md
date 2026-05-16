@@ -237,8 +237,11 @@ Read commands stay local-only unless you explicitly ask for shared sessions:
 darc search "migration decision" --shared
 darc list sessions --scope all
 darc show session <session-id> --shared
-darc search "auth fallback" --author teammate@example.com
+darc search "auth fallback" --author usr-0123456789abcdef
 ```
+
+Author filters accept the stable Darc share user id. Recorded email and display-name labels are also searchable for
+ergonomics, but they come from each exporter's local Git config and are not authenticated identity.
 
 ## Why Not Just `rg` the Raw Logs?
 

@@ -42,6 +42,7 @@ const EXPORTERS_DIR: &str = "exporters";
 const KEY_FILE_NAME: &str = "share.agekey";
 const SIGNING_KEY_FILE_NAME: &str = "share.signingkey";
 const SHARE_CACHE_DIR: &str = "share-cache";
+const TRUSTED_OBJECT_CACHE_DIR: &str = "darc-object-cache";
 const DEFAULT_REMOTE_NAME: &str = "origin";
 const MAX_SHARE_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
 #[cfg(not(test))]
@@ -378,6 +379,14 @@ pub fn push_share_branch(
     checkout_share_branch(&repository, &git_branch)?;
     clean_untracked_cache_worktree(&repository, &cache_path)?;
     let cached_manifest_read = read_cached_manifests(&cache_path)?;
+    let previous_project = read_cached_project_artifact(&cache_path).ok().flatten();
+    let previous_manifest = cached_manifest_read
+        .manifests
+        .iter()
+        .find(|cached| {
+            exporter_manifest_id(&cached.manifest.exporter) == exporter_manifest_id(&identity)
+        })
+        .map(|cached| cached.manifest.clone());
     let retained_manifests = authenticated_retained_manifests(
         &cache_path,
         &cached_manifest_read.manifests,
@@ -385,15 +394,24 @@ pub fn push_share_branch(
         &identity,
         &decryption_identity,
     );
-    let artifact = build_export_artifact(ExportBuildRequest {
-        context,
-        settings,
-        project_key: &project_key,
-        identity: &identity,
-        signing_key: &signing_key,
-        branch,
-        turns,
-    })?;
+    let trusted_object_cache_path = trusted_object_cache_path(&repository);
+    let artifact = build_export_artifact_with_reuse(
+        ExportBuildRequest {
+            context,
+            settings,
+            project_key: &project_key,
+            identity: &identity,
+            signing_key: &signing_key,
+            branch,
+            turns,
+        },
+        ExportReuseContext {
+            trusted_object_cache_path: Some(&trusted_object_cache_path),
+            decryption_identity: Some(&decryption_identity),
+            previous_project: previous_project.as_ref(),
+            previous_manifest: previous_manifest.as_ref(),
+        },
+    )?;
     remove_replaced_exporter_artifacts(
         &cache_path,
         &identity,
@@ -562,6 +580,15 @@ struct ExportBuildRequest<'a> {
     turns: Vec<ShareTurnExport>,
 }
 
+/// Stores trusted local reuse inputs for stable encrypted export objects.
+#[derive(Clone, Copy, Default)]
+struct ExportReuseContext<'a> {
+    trusted_object_cache_path: Option<&'a Path>,
+    decryption_identity: Option<&'a Identity>,
+    previous_project: Option<&'a ProjectArtifact>,
+    previous_manifest: Option<&'a ManifestArtifact>,
+}
+
 /// Stores immutable context used while importing one manifest entry.
 struct ImportEntryContext<'a> {
     expected_project_key: &'a str,
@@ -573,7 +600,16 @@ struct ImportEntryContext<'a> {
 }
 
 /// Builds all share artifacts for the current export.
+#[cfg(test)]
 fn build_export_artifact(request: ExportBuildRequest<'_>) -> Result<BuiltExportArtifact> {
+    build_export_artifact_with_reuse(request, ExportReuseContext::default())
+}
+
+/// Builds share artifacts while reusing trusted local ciphertext when possible.
+fn build_export_artifact_with_reuse(
+    request: ExportBuildRequest<'_>,
+    reuse: ExportReuseContext<'_>,
+) -> Result<BuiltExportArtifact> {
     let timestamp = current_utc_timestamp();
     let recipient_strings = encryption_recipient_strings(request.identity, request.settings);
     let recipient_fingerprint = encryption_recipient_fingerprint(&recipient_strings);
@@ -598,7 +634,7 @@ fn build_export_artifact(request: ExportBuildRequest<'_>) -> Result<BuiltExportA
         let payload_hash = sha256_hex(&plaintext);
         let object_path =
             format!("{ARTIFACT_ROOT}/objects/{recipient_fingerprint}-{payload_hash}.age");
-        let encrypted = encrypt_payload(&plaintext, &recipients)?;
+        let encrypted = encrypted_export_object(&reuse, &object_path, &plaintext, &recipients)?;
         insert_export_object(
             &mut objects,
             &mut total_object_bytes,
@@ -635,7 +671,8 @@ fn build_export_artifact(request: ExportBuildRequest<'_>) -> Result<BuiltExportA
     let sync_payload_hash = sha256_hex(&sync_plaintext);
     let sync_object_path =
         format!("{ARTIFACT_ROOT}/objects/sync-{recipient_fingerprint}-{sync_payload_hash}.age");
-    let sync_encrypted = encrypt_payload(&sync_plaintext, &recipients)?;
+    let sync_encrypted =
+        encrypted_export_object(&reuse, &sync_object_path, &sync_plaintext, &recipients)?;
     insert_export_object(
         &mut objects,
         &mut total_object_bytes,
@@ -644,33 +681,183 @@ fn build_export_artifact(request: ExportBuildRequest<'_>) -> Result<BuiltExportA
     )?;
     let exported_turn_count =
         u64::try_from(manifest_turns.len()).context("turn count exceeds u64 range")?;
+    let mut project = ProjectArtifact {
+        schema: PROJECT_SCHEMA.to_owned(),
+        version: 1,
+        project_key: request.project_key.to_owned(),
+        project_name: request.context.project_name.clone(),
+        updated_at: timestamp.clone(),
+    };
+    let mut manifest = ManifestArtifact {
+        schema: MANIFEST_SCHEMA.to_owned(),
+        version: 1,
+        project_key: request.project_key.to_owned(),
+        branch: request.branch.to_owned(),
+        exported_at: timestamp,
+        exporter: request.identity.clone(),
+        sync: SyncManifestEntry {
+            payload_hash: sync_payload_hash,
+            object_path: sync_object_path,
+        },
+        turns: manifest_turns,
+    };
+    if let Some(previous_project) = reuse.previous_project
+        && previous_project.schema == project.schema
+        && previous_project.version == project.version
+        && previous_project.project_key == project.project_key
+        && previous_project.project_name == project.project_name
+    {
+        project.updated_at.clone_from(&previous_project.updated_at);
+    }
+    if let Some(previous_manifest) = reuse.previous_manifest
+        && manifest_matches_without_timestamp(previous_manifest, &manifest)
+    {
+        manifest
+            .exported_at
+            .clone_from(&previous_manifest.exported_at);
+    }
     Ok(BuiltExportArtifact {
-        project: ProjectArtifact {
-            schema: PROJECT_SCHEMA.to_owned(),
-            version: 1,
-            project_key: request.project_key.to_owned(),
-            project_name: request.context.project_name.clone(),
-            updated_at: timestamp.clone(),
-        },
-        manifest: ManifestArtifact {
-            schema: MANIFEST_SCHEMA.to_owned(),
-            version: 1,
-            project_key: request.project_key.to_owned(),
-            branch: request.branch.to_owned(),
-            exported_at: timestamp,
-            exporter: request.identity.clone(),
-            sync: SyncManifestEntry {
-                payload_hash: sync_payload_hash,
-                object_path: sync_object_path,
-            },
-            turns: manifest_turns,
-        },
+        project,
+        manifest,
         exported_turn_count,
         exported_session_count: u64::try_from(session_ids.len())
             .context("session count exceeds u64 range")?,
         object_count: u64::try_from(objects.len()).context("object count exceeds u64 range")?,
         objects,
     })
+}
+
+/// Returns whether two manifests differ only by export timestamp.
+fn manifest_matches_without_timestamp(left: &ManifestArtifact, right: &ManifestArtifact) -> bool {
+    left.schema == right.schema
+        && left.version == right.version
+        && left.project_key == right.project_key
+        && left.branch == right.branch
+        && left.exporter == right.exporter
+        && left.sync == right.sync
+        && left.turns == right.turns
+}
+
+/// Returns encrypted bytes for one export object, reusing trusted local bytes when valid.
+fn encrypted_export_object(
+    reuse: &ExportReuseContext<'_>,
+    object_path: &str,
+    plaintext: &[u8],
+    recipients: &[Recipient],
+) -> Result<Vec<u8>> {
+    if let (Some(cache_path), Some(identity)) =
+        (reuse.trusted_object_cache_path, reuse.decryption_identity)
+        && let Some(ciphertext) =
+            read_trusted_export_object(cache_path, object_path, plaintext, identity)?
+    {
+        return Ok(ciphertext);
+    }
+
+    let encrypted = encrypt_payload(plaintext, recipients)?;
+    if let Some(cache_path) = reuse.trusted_object_cache_path {
+        write_trusted_export_object(cache_path, object_path, &encrypted)?;
+    }
+    Ok(encrypted)
+}
+
+/// Reads one trusted local object cache entry if it decrypts to the expected plaintext.
+fn read_trusted_export_object(
+    cache_path: &Path,
+    object_path: &str,
+    expected_plaintext: &[u8],
+    identity: &Identity,
+) -> Result<Option<Vec<u8>>> {
+    let path = trusted_export_object_path(cache_path, object_path);
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                bail!(
+                    "trusted share object cache path is a symlink: {}",
+                    path.display()
+                );
+            }
+            if !metadata.file_type().is_file() {
+                return Ok(None);
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to inspect {}", path.display()));
+        }
+    }
+    let ciphertext = read_regular_file(&path, MAX_SHARE_OBJECT_BYTES)?;
+    let Ok(plaintext) = decrypt_payload(&ciphertext, identity) else {
+        return Ok(None);
+    };
+    if plaintext == expected_plaintext {
+        Ok(Some(ciphertext))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Writes one encrypted object to the trusted local object cache.
+fn write_trusted_export_object(cache_path: &Path, object_path: &str, content: &[u8]) -> Result<()> {
+    ensure_safe_trusted_object_cache_dir(cache_path)?;
+    let target = trusted_export_object_path(cache_path, object_path);
+    if let Ok(metadata) = fs::symlink_metadata(&target)
+        && metadata.file_type().is_symlink()
+    {
+        bail!(
+            "trusted share object cache path is a symlink: {}",
+            target.display()
+        );
+    }
+    let temporary = target.with_extension(format!("tmp-{}", &sha256_hex(content)[..16]));
+    remove_file_if_exists(&temporary)?;
+    fs::write(&temporary, content)
+        .with_context(|| format!("failed to write {}", target.display()))?;
+    fs::rename(&temporary, &target)
+        .with_context(|| format!("failed to replace {}", target.display()))?;
+    Ok(())
+}
+
+/// Ensures the trusted local object cache directory exists without following symlinks.
+fn ensure_safe_trusted_object_cache_dir(path: &Path) -> Result<()> {
+    let parent = path
+        .parent()
+        .context("trusted share object cache path is missing a parent")?;
+    let parent_metadata = fs::symlink_metadata(parent)
+        .with_context(|| format!("failed to inspect {}", parent.display()))?;
+    if parent_metadata.file_type().is_symlink() || !parent_metadata.file_type().is_dir() {
+        bail!(
+            "trusted share object cache parent is not a real directory: {}",
+            parent.display()
+        );
+    }
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                bail!(
+                    "trusted share object cache path is a symlink: {}",
+                    path.display()
+                );
+            }
+            if !metadata.file_type().is_dir() {
+                bail!(
+                    "trusted share object cache path is not a directory: {}",
+                    path.display()
+                );
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir(path).with_context(|| format!("failed to create {}", path.display()))?;
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to inspect {}", path.display()));
+        }
+    }
+    Ok(())
+}
+
+/// Returns the trusted local cache path for one export object path.
+fn trusted_export_object_path(cache_path: &Path, object_path: &str) -> PathBuf {
+    cache_path.join(format!("{}.age", sha256_hex(object_path.as_bytes())))
 }
 
 /// Inserts one encrypted export object while enforcing in-memory export caps.
@@ -709,6 +896,18 @@ fn write_export_artifact(path: &Path, artifact: &BuiltExportArtifact) -> Result<
         write_artifact_file(path, relative, content)?;
     }
     Ok(())
+}
+
+/// Reads the visible project artifact from one cache workdir when it exists.
+fn read_cached_project_artifact(cache_path: &Path) -> Result<Option<ProjectArtifact>> {
+    let relative_path = format!("{ARTIFACT_ROOT}/{PROJECT_FILE}");
+    let relative = Path::new(&relative_path);
+    ensure_safe_artifact_ancestors(cache_path, relative)?;
+    let path = cache_path.join(relative);
+    if !path.exists() {
+        return Ok(None);
+    }
+    read_json_file(&path).map(Some)
 }
 
 /// Reads all visible manifests from one cache workdir.
@@ -2241,6 +2440,11 @@ fn cache_repo_path(root: &Path, remote_url: &str, git_branch: &str) -> PathBuf {
     ))
 }
 
+/// Returns the trusted local object cache path for one cache repository.
+fn trusted_object_cache_path(repository: &Repository) -> PathBuf {
+    repository.path().join(TRUSTED_OBJECT_CACHE_DIR)
+}
+
 /// Builds the stored provenance key for one imported remote branch.
 fn share_origin_remote(remote_url: &str, git_branch: &str) -> String {
     let canonical_url = canonical_share_remote_url(remote_url);
@@ -2818,9 +3022,9 @@ mod tests {
     }
 
     #[test]
-    fn corrupted_cached_object_is_not_reused() {
-        let workspace = unique_test_dir("share-corrupted-cache");
-        let cache = workspace.join("cache");
+    fn trusted_object_cache_reuses_unchanged_export_bytes() {
+        let workspace = unique_test_dir("share-object-cache-reuse");
+        let trusted_cache = workspace.join("trusted-cache");
         let index_db_path = workspace.join("index.sqlite");
         let context = ShareProjectContext {
             root: workspace.clone(),
@@ -2841,30 +3045,113 @@ mod tests {
         let age_identity = Identity::generate();
         let signing_key = test_signing_key(&age_identity);
         let identity = test_share_identity(&age_identity);
-        let first = build_export_artifact(ExportBuildRequest {
-            context: &context,
-            settings: &ShareSettings::default(),
-            project_key: "git:https://example.invalid/team/repo",
-            identity: &identity,
-            signing_key: &signing_key,
-            branch: "team",
-            turns: turns.clone(),
-        })
+        let first = build_export_artifact_with_reuse(
+            ExportBuildRequest {
+                context: &context,
+                settings: &ShareSettings::default(),
+                project_key: "git:https://example.invalid/team/repo",
+                identity: &identity,
+                signing_key: &signing_key,
+                branch: "team",
+                turns: turns.clone(),
+            },
+            ExportReuseContext {
+                trusted_object_cache_path: Some(&trusted_cache),
+                decryption_identity: Some(&age_identity),
+                previous_project: None,
+                previous_manifest: None,
+            },
+        )
+        .unwrap();
+
+        let second = build_export_artifact_with_reuse(
+            ExportBuildRequest {
+                context: &context,
+                settings: &ShareSettings::default(),
+                project_key: "git:https://example.invalid/team/repo",
+                identity: &identity,
+                signing_key: &signing_key,
+                branch: "team",
+                turns,
+            },
+            ExportReuseContext {
+                trusted_object_cache_path: Some(&trusted_cache),
+                decryption_identity: Some(&age_identity),
+                previous_project: Some(&first.project),
+                previous_manifest: Some(&first.manifest),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(first.objects, second.objects);
+        assert_eq!(first.project, second.project);
+        assert_eq!(first.manifest, second.manifest);
+    }
+
+    #[test]
+    fn corrupted_cached_object_is_not_reused() {
+        let workspace = unique_test_dir("share-corrupted-cache");
+        let trusted_cache = workspace.join("trusted-cache");
+        let index_db_path = workspace.join("index.sqlite");
+        let context = ShareProjectContext {
+            root: workspace.clone(),
+            index_db_path: index_db_path.clone(),
+            project_id: "repo".to_owned(),
+            project_name: "repo".to_owned(),
+            local_path: workspace.join("repo"),
+            git_upstream: Some("https://example.invalid/team/repo.git".to_owned()),
+        };
+        seed_share_export_session(
+            &index_db_path,
+            "repo",
+            "00000000-0000-4000-8000-000000000303",
+        );
+        update_share_policy(&context, SharePolicy::All).unwrap();
+        let connection = open_index_database_writer(&index_db_path).unwrap();
+        let turns = query_share_export_turns(&connection, "repo").unwrap();
+        let age_identity = Identity::generate();
+        let signing_key = test_signing_key(&age_identity);
+        let identity = test_share_identity(&age_identity);
+        let first = build_export_artifact_with_reuse(
+            ExportBuildRequest {
+                context: &context,
+                settings: &ShareSettings::default(),
+                project_key: "git:https://example.invalid/team/repo",
+                identity: &identity,
+                signing_key: &signing_key,
+                branch: "team",
+                turns: turns.clone(),
+            },
+            ExportReuseContext {
+                trusted_object_cache_path: Some(&trusted_cache),
+                decryption_identity: Some(&age_identity),
+                previous_project: None,
+                previous_manifest: None,
+            },
+        )
         .unwrap();
         let object_path = first.manifest.turns[0].object_path.clone();
-        let target = cache.join(&object_path);
+        let target = trusted_export_object_path(&trusted_cache, &object_path);
         fs::create_dir_all(target.parent().unwrap()).unwrap();
         fs::write(&target, b"not an age payload").unwrap();
 
-        let second = build_export_artifact(ExportBuildRequest {
-            context: &context,
-            settings: &ShareSettings::default(),
-            project_key: "git:https://example.invalid/team/repo",
-            identity: &identity,
-            signing_key: &signing_key,
-            branch: "team",
-            turns,
-        })
+        let second = build_export_artifact_with_reuse(
+            ExportBuildRequest {
+                context: &context,
+                settings: &ShareSettings::default(),
+                project_key: "git:https://example.invalid/team/repo",
+                identity: &identity,
+                signing_key: &signing_key,
+                branch: "team",
+                turns,
+            },
+            ExportReuseContext {
+                trusted_object_cache_path: Some(&trusted_cache),
+                decryption_identity: Some(&age_identity),
+                previous_project: Some(&first.project),
+                previous_manifest: Some(&first.manifest),
+            },
+        )
         .unwrap();
 
         assert_ne!(second.objects[&object_path], b"not an age payload");

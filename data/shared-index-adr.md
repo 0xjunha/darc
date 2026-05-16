@@ -124,8 +124,10 @@ Encrypted object files contain the sensitive payload:
 
 V1 exports one encrypted object per turn. Each object repeats the parent session metadata needed to import that turn.
 This keeps incremental updates smooth when a session receives new turns: already-pushed turn objects remain unchanged and
-only new or changed turn objects are added. Push always encrypts the current plaintext to the current recipient set and
-applies explicit object-count and aggregate encrypted-byte caps while building the export.
+only new or changed turn objects are added. Push reuses only locally trusted ciphertext that decrypts to the current
+plaintext; otherwise it encrypts the current plaintext to the current recipient set and applies explicit object-count and
+aggregate encrypted-byte caps while building the export. V1 share export only publishes canonical UUID session ids,
+leaving provider-specific child session ids local until shared read commands can address them.
 
 ### Project Identity
 
@@ -250,13 +252,16 @@ V1 adds shared scope filters:
 
 ```text
 --shared
---author <email-or-user-id>
+--author <user-id-or-label>
 --scope local|shared|all
 ```
 
 `--shared` is shorthand for `--scope shared`. `--author` implies shared/all imported content unless `--scope` is more
 specific. This can later be flipped to make `all` the default and require `--local` if the product wants shared context
 to feel fully integrated.
+
+The author filter's stable identity is the Darc `user_id` derived from the export signing key. Email and display-name
+matches are ergonomic labels imported from each exporter's Git config and must not be treated as authenticated identity.
 
 Project-level file pivots and aggregate stats need a separate aggregate scoping pass because they mix sessions before
 returning a result. V1 keeps the explicit shared contract on session list/search and session-resolved read commands,

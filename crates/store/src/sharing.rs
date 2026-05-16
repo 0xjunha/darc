@@ -429,6 +429,7 @@ pub fn query_share_export_turns(
     let mut turns = rows
         .map(|row| row.context("failed to read share export row"))
         .collect::<Result<Vec<_>>>()?;
+    turns.retain(|turn| validate_shared_session_id(&turn.session.session_id).is_ok());
     for turn in &mut turns {
         redact_share_turn_export(turn)?;
     }
@@ -1154,6 +1155,50 @@ mod tests {
         }
         assert!(serialized.contains("[REDACTED"));
 
+        Ok(())
+    }
+
+    #[test]
+    fn share_export_skips_unaddressable_session_ids() -> Result<()> {
+        let connection = open_index_database_writer(&test_db_path("export-skips-invalid-id"))?;
+        let valid_session_id = "00000000-0000-4000-8000-000000000902";
+        let invalid_session_id = "00000000-0000-4000-8000-000000000903/subagents/000000000904";
+        for (session_id, message) in [
+            (valid_session_id, "valid prompt"),
+            (invalid_session_id, "invalid prompt"),
+        ] {
+            insert_indexed_session(
+                &connection,
+                IndexedSessionFixture::new("repo", SourceKind::Claude, session_id, "/tmp/repo"),
+            )?;
+            insert_indexed_turn(
+                &connection,
+                IndexedTurnFixture {
+                    user_message: message,
+                    ..IndexedTurnFixture::new(
+                        "repo",
+                        SourceKind::Claude,
+                        session_id,
+                        1,
+                        "2026-05-15T00:00:00Z",
+                        "completed",
+                        "[]",
+                    )
+                },
+            )?;
+        }
+        set_project_share_policy(
+            &connection,
+            "repo",
+            SharePolicy::All,
+            "2026-05-15T00:00:00Z",
+        )?;
+
+        let turns = query_share_export_turns(&connection, "repo")?;
+
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].session.session_id, valid_session_id);
+        assert_eq!(turns[0].user_message, "valid prompt");
         Ok(())
     }
 

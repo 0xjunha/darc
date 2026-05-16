@@ -676,7 +676,7 @@ pub(crate) struct SearchArgs {
     #[arg(
         long,
         help_heading = "Scope",
-        help = "Restrict shared-session results to this author user id, email, or display name"
+        help = "Restrict shared-session results to this author user id or recorded label"
     )]
     pub(crate) author: Option<String>,
 
@@ -1135,7 +1135,7 @@ pub(crate) struct QuerySessionsArgs {
     #[arg(
         long,
         help_heading = "Scope",
-        help = "Restrict shared-session results to this author user id, email, or display name"
+        help = "Restrict shared-session results to this author user id or recorded label"
     )]
     pub(crate) author: Option<String>,
 
@@ -1232,7 +1232,7 @@ pub(crate) struct ListSessionsArgs {
     #[arg(
         long,
         help_heading = "Scope",
-        help = "Restrict shared-session results to this author user id, email, or display name"
+        help = "Restrict shared-session results to this author user id or recorded label"
     )]
     pub(crate) author: Option<String>,
 
@@ -1933,7 +1933,7 @@ pub(crate) struct QuerySearchTurnsArgs {
     #[arg(
         long,
         help_heading = "Scope",
-        help = "Restrict shared-session results to this author user id, email, or display name"
+        help = "Restrict shared-session results to this author user id or recorded label"
     )]
     pub(crate) author: Option<String>,
 

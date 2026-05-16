@@ -173,7 +173,9 @@ Shared-index scope:
 - `--shared` is shorthand for `--scope shared` where supported.
 - `--scope local|shared|all` chooses local sessions, imported shared sessions, or both.
 - `--author <user-id|email|display-name>` restricts imported shared sessions by their recorded provenance author and
-  implies shared scope when no explicit `--scope` is supplied.
+  implies shared scope when no explicit `--scope` is supplied. The stable `user_id` is derived from the export signing
+  key; recorded emails and display names are convenience labels from the exporter's Git config, not authenticated
+  identity.
 - Project-wide file pivots and workspace/project stats are aggregate surfaces and do not yet expose shared scope flags.
 
 Field conventions:
