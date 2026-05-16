@@ -5484,7 +5484,7 @@ fn session_and_search_queries_respect_shared_scope_and_author() -> Result<()> {
                 1,
                 "2026-05-15T10:00:00Z",
                 "completed",
-                "[]",
+                r#"[{"type":"tool_call","timestamp":"2026-05-15T10:00:01Z","call_id":"call-local-scope","name":"Read","arguments":"{\"file_path\":\"src/local-scope.rs\"}"}]"#,
             )
         },
     )?;
@@ -5499,7 +5499,7 @@ fn session_and_search_queries_respect_shared_scope_and_author() -> Result<()> {
                 1,
                 "2026-05-15T11:00:00Z",
                 "completed",
-                "[]",
+                r#"[{"type":"tool_call","timestamp":"2026-05-15T11:00:01Z","call_id":"call-shared-scope","name":"Read","arguments":"{\"file_path\":\"src/shared-scope.rs\"}"}]"#,
             )
         },
     )?;
@@ -5696,6 +5696,41 @@ fn session_and_search_queries_respect_shared_scope_and_author() -> Result<()> {
     )?;
     assert_eq!(all_author_search.hits.len(), 1);
     assert_eq!(all_author_search.hits[0].session_id, shared_session);
+
+    for (mode, query) in [
+        (SearchMode::Literal, "shared marker"),
+        (SearchMode::Regex, "shared marker [a-z]+"),
+        (SearchMode::FilePath, "src/shared-scope.rs"),
+    ] {
+        let result = query_search_turns(
+            &index_path,
+            SearchTurnsRequest {
+                project_id: "repo-a",
+                project_root: None,
+                mode,
+                query,
+                include_tool_output: false,
+                fields: &[],
+                excluded_fields: &[],
+                provider: None,
+                session_id: None,
+                since: None,
+                until: None,
+                origin_scope: SessionOriginScope::Shared,
+                author: Some("teammate@example.invalid"),
+                limit: 10,
+                offset: 0,
+                matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
+                match_limit: if matches!(mode, SearchMode::Literal | SearchMode::Regex) {
+                    Some(10)
+                } else {
+                    None
+                },
+            },
+        )?;
+        assert_eq!(result.hits.len(), 1, "{mode:?} should find one shared hit");
+        assert_eq!(result.hits[0].session_id, shared_session);
+    }
 
     fs::remove_dir_all(
         index_path
