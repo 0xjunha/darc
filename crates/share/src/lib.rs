@@ -44,6 +44,14 @@ const SIGNING_KEY_FILE_NAME: &str = "share.signingkey";
 const SHARE_CACHE_DIR: &str = "share-cache";
 const DEFAULT_REMOTE_NAME: &str = "origin";
 const MAX_SHARE_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
+#[cfg(not(test))]
+const MAX_CACHED_SHARE_MANIFESTS: usize = 1024;
+#[cfg(test)]
+const MAX_CACHED_SHARE_MANIFESTS: usize = 8;
+#[cfg(not(test))]
+const MAX_CACHED_SHARE_MANIFEST_BYTES: u64 = 128 * 1024 * 1024;
+#[cfg(test)]
+const MAX_CACHED_SHARE_MANIFEST_BYTES: u64 = 16 * 1024;
 const MAX_SHARE_OBJECT_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_SHARE_EXPORT_OBJECTS: usize = 100_000;
 const MAX_SHARE_EXPORT_BYTES: usize = 512 * 1024 * 1024;
@@ -717,6 +725,8 @@ fn write_export_artifact(path: &Path, artifact: &BuiltExportArtifact) -> Result<
 fn read_cached_manifests(cache_path: &Path) -> Result<CachedManifestRead> {
     let mut manifests = Vec::new();
     let mut warnings = Vec::new();
+    let mut manifest_count = 0_usize;
+    let mut manifest_bytes = 0_u64;
     let exporter_root = cache_path.join(ARTIFACT_ROOT).join(EXPORTERS_DIR);
     match is_regular_directory(&exporter_root) {
         Ok(true) => {
@@ -738,13 +748,17 @@ fn read_cached_manifests(cache_path: &Path) -> Result<CachedManifestRead> {
                     "{ARTIFACT_ROOT}/{EXPORTERS_DIR}/{exporter_dir}/{LEGACY_MANIFEST_FILE}"
                 );
                 let manifest_path = cache_path.join(&relative_path);
-                if manifest_path.exists() {
-                    read_cached_manifest(
+                if manifest_path.exists()
+                    && !read_cached_manifest(
                         &mut manifests,
                         &mut warnings,
+                        &mut manifest_count,
+                        &mut manifest_bytes,
                         relative_path,
                         &manifest_path,
-                    );
+                    )
+                {
+                    break;
                 }
             }
         }
@@ -761,6 +775,8 @@ fn read_cached_manifests(cache_path: &Path) -> Result<CachedManifestRead> {
         read_cached_manifest(
             &mut manifests,
             &mut warnings,
+            &mut manifest_count,
+            &mut manifest_bytes,
             legacy_relative_path,
             &legacy_path,
         );
@@ -775,9 +791,36 @@ fn read_cached_manifests(cache_path: &Path) -> Result<CachedManifestRead> {
 fn read_cached_manifest(
     manifests: &mut Vec<CachedManifest>,
     warnings: &mut Vec<String>,
+    manifest_count: &mut usize,
+    manifest_bytes: &mut u64,
     relative_path: String,
     manifest_path: &Path,
-) {
+) -> bool {
+    if *manifest_count >= MAX_CACHED_SHARE_MANIFESTS {
+        warnings.push(format!(
+            "skipped share manifest {relative_path}: cached manifest count exceeds {MAX_CACHED_SHARE_MANIFESTS}"
+        ));
+        return false;
+    }
+    let manifest_size = match checked_cached_manifest_size(manifest_path) {
+        Ok(size) => size,
+        Err(error) => {
+            warnings.push(format!("skipped share manifest {relative_path}: {error:#}"));
+            return true;
+        }
+    };
+    match manifest_bytes.checked_add(manifest_size) {
+        Some(total) if total <= MAX_CACHED_SHARE_MANIFEST_BYTES => {
+            *manifest_count += 1;
+            *manifest_bytes = total;
+        }
+        _ => {
+            warnings.push(format!(
+                "skipped share manifest {relative_path}: cached manifest bytes exceed {MAX_CACHED_SHARE_MANIFEST_BYTES}"
+            ));
+            return false;
+        }
+    }
     match read_json_file(manifest_path) {
         Ok(manifest) => manifests.push(CachedManifest {
             relative_path,
@@ -785,6 +828,31 @@ fn read_cached_manifest(
         }),
         Err(error) => warnings.push(format!("skipped share manifest {relative_path}: {error:#}")),
     }
+    true
+}
+
+/// Returns one candidate manifest size after regular-file validation.
+fn checked_cached_manifest_size(path: &Path) -> Result<u64> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("failed to inspect {}", path.display()))?;
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() {
+        bail!("share artifact path is a symlink: {}", path.display());
+    }
+    if !file_type.is_file() {
+        bail!(
+            "share artifact path is not a regular file: {}",
+            path.display()
+        );
+    }
+    if metadata.len() > MAX_SHARE_MANIFEST_BYTES {
+        bail!(
+            "share artifact {} exceeds maximum supported size of {} bytes",
+            path.display(),
+            MAX_SHARE_MANIFEST_BYTES
+        );
+    }
+    Ok(metadata.len())
 }
 
 /// Removes stale files owned by the exporter being replaced.
@@ -892,6 +960,9 @@ fn verify_cached_turn_payload(
     if payload.schema != TURN_PAYLOAD_SCHEMA {
         bail!("unsupported share payload schema `{}`", payload.schema);
     }
+    if payload.version != 1 {
+        bail!("unsupported share payload version `{}`", payload.version);
+    }
     if payload.project_key != expected_project_key {
         bail!("share payload project key does not match active project");
     }
@@ -962,6 +1033,17 @@ fn import_from_cache(
                 cached.relative_path,
                 manifest.exporter.user_id,
                 manifest.schema
+            ));
+            continue;
+        }
+        if manifest.version != 1 {
+            skipped_turn_count += u64::try_from(manifest.turns.len())
+                .context("skipped turn count exceeds u64 range")?;
+            warnings.push(format!(
+                "skipped share manifest {} for exporter {}: unsupported Darc share manifest version `{}`",
+                cached.relative_path,
+                manifest.exporter.user_id,
+                manifest.version
             ));
             continue;
         }
@@ -1080,6 +1162,12 @@ fn read_sync_payload(
     if payload.schema != SYNC_PAYLOAD_SCHEMA {
         bail!("unsupported share sync payload schema `{}`", payload.schema);
     }
+    if payload.version != 1 {
+        bail!(
+            "unsupported share sync payload version `{}`",
+            payload.version
+        );
+    }
     if payload.project_key != expected_project_key {
         bail!("share sync payload project key does not match active project");
     }
@@ -1107,6 +1195,9 @@ fn import_manifest_entry(
         serde_json::from_slice(&plaintext).context("failed to parse share payload JSON")?;
     if payload.schema != TURN_PAYLOAD_SCHEMA {
         bail!("unsupported share payload schema `{}`", payload.schema);
+    }
+    if payload.version != 1 {
+        bail!("unsupported share payload version `{}`", payload.version);
     }
     if payload.project_key != context.expected_project_key {
         bail!("share payload project key does not match active project");
@@ -2203,8 +2294,17 @@ fn validate_share_branch_name(branch: &str) -> Result<()> {
     if branch.starts_with('/') || branch.ends_with('/') || branch.contains("//") {
         bail!("share branch name must not start, end, or repeat `/`");
     }
-    if branch.contains("..") || branch.contains("@{") || branch.ends_with(".lock") {
+    if branch.contains("..") || branch.contains("@{") {
         bail!("share branch name is not a safe Git branch component");
+    }
+    for component in branch.split('/') {
+        if component.is_empty()
+            || component.starts_with('.')
+            || component.ends_with('.')
+            || component.ends_with(".lock")
+        {
+            bail!("share branch name is not a safe Git branch component");
+        }
     }
     if !branch
         .bytes()
@@ -2279,6 +2379,12 @@ mod tests {
         assert_eq!(share_git_branch("team/a").unwrap(), "darc/team/a");
         assert!(share_git_branch("bad:name").is_err());
         assert!(share_git_branch("../bad").is_err());
+        assert!(share_git_branch("team.lock/foo").is_err());
+        assert!(share_git_branch("team/leaf.lock").is_err());
+        assert!(share_git_branch(".team").is_err());
+        assert!(share_git_branch("team.").is_err());
+        assert!(share_git_branch("team/.leaf").is_err());
+        assert!(share_git_branch("team/leaf.").is_err());
     }
 
     #[test]
@@ -2321,6 +2427,55 @@ mod tests {
         let encrypted = encrypt_payload(b"payload", &[recipient]).unwrap();
         let decrypted = decrypt_payload(&encrypted, &identity).unwrap();
         assert_eq!(decrypted, b"payload");
+    }
+
+    #[test]
+    fn cached_manifest_reads_stop_at_count_cap() {
+        let root = unique_test_dir("share-manifest-count-cap");
+        let exporter_root = root.join(ARTIFACT_ROOT).join(EXPORTERS_DIR);
+        for index in 0..(MAX_CACHED_SHARE_MANIFESTS + 2) {
+            let manifest = exporter_root
+                .join(format!("exporter-{index:02}"))
+                .join(LEGACY_MANIFEST_FILE);
+            fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+            fs::write(manifest, b"{}").unwrap();
+        }
+
+        let read = read_cached_manifests(&root).unwrap();
+
+        assert!(read.manifests.is_empty());
+        assert!(
+            read.warnings
+                .iter()
+                .any(|warning| warning.contains("cached manifest count exceeds")),
+            "warnings should mention count cap: {:?}",
+            read.warnings
+        );
+        assert!(read.warnings.len() <= MAX_CACHED_SHARE_MANIFESTS + 1);
+    }
+
+    #[test]
+    fn cached_manifest_reads_stop_at_aggregate_byte_cap() {
+        let root = unique_test_dir("share-manifest-byte-cap");
+        let exporter_root = root.join(ARTIFACT_ROOT).join(EXPORTERS_DIR);
+        for index in 0..3 {
+            let manifest = exporter_root
+                .join(format!("exporter-{index:02}"))
+                .join(LEGACY_MANIFEST_FILE);
+            fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+            fs::write(manifest, " ".repeat(10_000)).unwrap();
+        }
+
+        let read = read_cached_manifests(&root).unwrap();
+
+        assert!(read.manifests.is_empty());
+        assert!(
+            read.warnings
+                .iter()
+                .any(|warning| warning.contains("cached manifest bytes exceed")),
+            "warnings should mention aggregate byte cap: {:?}",
+            read.warnings
+        );
     }
 
     #[cfg(unix)]
@@ -2720,15 +2875,23 @@ mod tests {
             .join(LEGACY_MANIFEST_FILE);
         fs::create_dir_all(bad_json_path.parent().unwrap()).unwrap();
         fs::write(&bad_json_path, b"not json").unwrap();
-        for (exporter_dir, schema, project_key) in [
+        for (exporter_dir, schema, version, project_key) in [
             (
                 "future-schema",
                 "darc.share.manifest.v999",
+                1,
+                "git:https://example.invalid/team/repo",
+            ),
+            (
+                "future-version",
+                MANIFEST_SCHEMA,
+                2,
                 "git:https://example.invalid/team/repo",
             ),
             (
                 "foreign-project",
                 MANIFEST_SCHEMA,
+                1,
                 "git:https://example.invalid/other/repo",
             ),
         ] {
@@ -2741,7 +2904,7 @@ mod tests {
                     .join(LEGACY_MANIFEST_FILE),
                 &ManifestArtifact {
                     schema: schema.to_owned(),
-                    version: 1,
+                    version,
                     project_key: project_key.to_owned(),
                     branch: "team".to_owned(),
                     exported_at: "2026-05-15T00:00:00Z".to_owned(),
@@ -2767,7 +2930,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(report.imported_turn_count, 1);
-        assert_eq!(report.warning_count, 3);
+        assert_eq!(report.warning_count, 4);
         assert!(
             report
                 .warnings
@@ -2782,6 +2945,14 @@ mod tests {
                 .iter()
                 .any(|warning| warning.contains("future-schema")),
             "warnings should mention future schema manifest: {:?}",
+            report.warnings
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("future-version")),
+            "warnings should mention future version manifest: {:?}",
             report.warnings
         );
         assert!(
@@ -3084,6 +3255,103 @@ mod tests {
         assert!(
             report.warnings[0].contains("signature"),
             "warning should reject forged turn signature: {:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn merge_skips_unsupported_payload_versions() {
+        let TestShareArtifact {
+            cache,
+            target_context,
+            target_identity,
+            source_identity,
+            artifact,
+        } = build_single_turn_test_artifact("share-unsupported-payload-version");
+        write_export_artifact(&cache, &artifact).unwrap();
+        let manifest_path = cache.join(exporter_manifest_relative_path(&source_identity));
+        let mut manifest = read_json_file::<ManifestArtifact>(&manifest_path).unwrap();
+        let sync_ciphertext = fs::read(cache.join(&manifest.sync.object_path)).unwrap();
+        let sync_plaintext = decrypt_payload(&sync_ciphertext, &target_identity).unwrap();
+        let mut sync_payload: EncryptedSyncPayload =
+            serde_json::from_slice(&sync_plaintext).unwrap();
+        sync_payload.version = 2;
+        let sync_plaintext = serde_json::to_vec(&sync_payload).unwrap();
+        let sync_object_path = format!(
+            "{ARTIFACT_ROOT}/objects/sync-v2-{}.age",
+            &sha256_hex(&sync_plaintext)[..16]
+        );
+        let sync_target = cache.join(&sync_object_path);
+        fs::create_dir_all(sync_target.parent().unwrap()).unwrap();
+        fs::write(
+            &sync_target,
+            encrypt_payload(&sync_plaintext, &[target_identity.to_public()]).unwrap(),
+        )
+        .unwrap();
+        manifest.sync = SyncManifestEntry {
+            payload_hash: sha256_hex(&sync_plaintext),
+            object_path: sync_object_path,
+        };
+        write_json_file(&manifest_path, &manifest).unwrap();
+
+        let report = import_from_cache(
+            &target_context,
+            "team",
+            "darc/team",
+            "origin",
+            "git:https://example.invalid/team/repo",
+            &cache,
+        )
+        .unwrap();
+
+        assert_eq!(report.imported_turn_count, 0);
+        assert_eq!(report.skipped_turn_count, 1);
+        assert_eq!(report.warning_count, 1);
+        assert!(
+            report.warnings[0].contains("sync payload version"),
+            "warning should reject unsupported sync payload version: {:?}",
+            report.warnings
+        );
+
+        write_export_artifact(&cache, &artifact).unwrap();
+        let mut manifest = read_json_file::<ManifestArtifact>(&manifest_path).unwrap();
+        let turn_ciphertext = fs::read(cache.join(&manifest.turns[0].object_path)).unwrap();
+        let turn_plaintext = decrypt_payload(&turn_ciphertext, &target_identity).unwrap();
+        let mut turn_payload: EncryptedTurnPayload =
+            serde_json::from_slice(&turn_plaintext).unwrap();
+        turn_payload.version = 2;
+        let turn_plaintext = serde_json::to_vec(&turn_payload).unwrap();
+        let turn_object_path = format!(
+            "{ARTIFACT_ROOT}/objects/turn-v2-{}.age",
+            &sha256_hex(&turn_plaintext)[..16]
+        );
+        let turn_target = cache.join(&turn_object_path);
+        fs::create_dir_all(turn_target.parent().unwrap()).unwrap();
+        fs::write(
+            &turn_target,
+            encrypt_payload(&turn_plaintext, &[target_identity.to_public()]).unwrap(),
+        )
+        .unwrap();
+        manifest.turns[0].payload_hash = sha256_hex(&turn_plaintext);
+        manifest.turns[0].object_path = turn_object_path;
+        write_json_file(&manifest_path, &manifest).unwrap();
+
+        let report = import_from_cache(
+            &target_context,
+            "team",
+            "darc/team",
+            "origin",
+            "git:https://example.invalid/team/repo",
+            &cache,
+        )
+        .unwrap();
+
+        assert_eq!(report.imported_turn_count, 0);
+        assert_eq!(report.skipped_turn_count, 1);
+        assert_eq!(report.warning_count, 1);
+        assert!(
+            report.warnings[0].contains("share payload version"),
+            "warning should reject unsupported turn payload version: {:?}",
             report.warnings
         );
     }
@@ -3898,6 +4166,78 @@ mod tests {
             )
             .unwrap();
         assert_eq!(turn_count, 1);
+    }
+
+    /// Carries one synthetic one-turn export plus the target import context.
+    struct TestShareArtifact {
+        cache: PathBuf,
+        target_context: ShareProjectContext,
+        target_identity: Identity,
+        source_identity: ShareIdentity,
+        artifact: BuiltExportArtifact,
+    }
+
+    /// Builds one encrypted one-turn artifact for share import tests.
+    fn build_single_turn_test_artifact(prefix: &str) -> TestShareArtifact {
+        let workspace = unique_test_dir(prefix);
+        let cache = workspace.join("cache");
+        let source_root = workspace.join("source-root");
+        let target_root = workspace.join("target-root");
+        fs::create_dir_all(&source_root).unwrap();
+        fs::create_dir_all(&target_root).unwrap();
+        let target_key = ensure_share_key(&target_root).unwrap();
+        let target_identity = read_share_identity_key(&target_key.key_path).unwrap();
+        let source_context = ShareProjectContext {
+            root: source_root.clone(),
+            index_db_path: source_root.join("index.sqlite"),
+            project_id: "source-repo".to_owned(),
+            project_name: "source-repo".to_owned(),
+            local_path: source_root.join("repo"),
+            git_upstream: Some("https://example.invalid/team/repo.git".to_owned()),
+        };
+        let target_context = ShareProjectContext {
+            root: target_root.clone(),
+            index_db_path: target_root.join("index.sqlite"),
+            project_id: "target-repo".to_owned(),
+            project_name: "target-repo".to_owned(),
+            local_path: target_root.join("repo"),
+            git_upstream: Some("https://example.invalid/team/repo.git".to_owned()),
+        };
+        seed_share_export_session(
+            &source_context.index_db_path,
+            "source-repo",
+            "00000000-0000-4000-8000-000000000303",
+        );
+        update_share_policy(&source_context, SharePolicy::All).unwrap();
+        let source_age_identity = Identity::generate();
+        let source_signing_key = test_signing_key(&source_age_identity);
+        let source_identity = test_share_identity(&source_age_identity);
+        let source = open_index_database_writer(&source_context.index_db_path).unwrap();
+        let turns = query_share_export_turns(&source, "source-repo").unwrap();
+        let artifact = build_export_artifact(ExportBuildRequest {
+            context: &source_context,
+            settings: &ShareSettings {
+                remotes: Vec::new(),
+                recipients: vec![ShareRecipient {
+                    recipient: target_key.public_key,
+                }],
+            },
+            project_key: "git:https://example.invalid/team/repo",
+            identity: &source_identity,
+            decryption_identity: &source_age_identity,
+            signing_key: &source_signing_key,
+            branch: "team",
+            turns,
+            cache_path: &cache,
+        })
+        .unwrap();
+        TestShareArtifact {
+            cache,
+            target_context,
+            target_identity,
+            source_identity,
+            artifact,
+        }
     }
 
     fn init_test_git_repo(path: &Path) {
