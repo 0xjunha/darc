@@ -3,7 +3,7 @@ use darc_core::{
     SharePolicy, ShareState, add_share_recipient, add_share_remote, exclude_all_sessions,
     fetch_share_branch, include_all_sessions, merge_share_branch, pull_share_branch,
     push_share_branch, remove_share_recipient, set_session_share_state, set_share_policy,
-    share_config, share_identity, share_key, share_status,
+    share_config, share_identity, share_key, share_remote_display_url, share_status,
 };
 
 use crate::args::{
@@ -17,7 +17,11 @@ pub(crate) fn run_remote(args: RemoteArgs) -> Result<()> {
     match args.command {
         RemoteCommands::Add(add) => {
             add_share_remote(Some(args.root), add.name.clone(), add.url.clone())?;
-            println!("Added Darc share remote `{}` -> {}", add.name, add.url);
+            println!(
+                "Added Darc share remote `{}` -> {}",
+                add.name,
+                share_remote_display_url(&add.url)
+            );
         }
         RemoteCommands::List => {
             let config = share_config(Some(args.root))?;
@@ -25,7 +29,7 @@ pub(crate) fn run_remote(args: RemoteArgs) -> Result<()> {
                 println!("No Darc share remotes configured.");
             } else {
                 for remote in config.remotes {
-                    println!("{}\t{}", remote.name, remote.url);
+                    println!("{}\t{}", remote.name, share_remote_display_url(&remote.url));
                 }
             }
         }

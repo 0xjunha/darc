@@ -99,6 +99,11 @@ pub fn share_config(root: Option<PathBuf>) -> Result<ShareConfigReport> {
     })
 }
 
+/// Returns one share remote URL suitable for terminal display.
+pub fn share_remote_display_url(url: &str) -> String {
+    darc_share::sanitize_git_url_for_display(url)
+}
+
 /// Adds or updates one named Darc share remote in config.toml.
 pub fn add_share_remote(root: Option<PathBuf>, name: String, url: String) -> Result<()> {
     if name.trim().is_empty() {

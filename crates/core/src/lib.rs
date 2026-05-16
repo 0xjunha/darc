@@ -31,7 +31,7 @@ pub use share::{
     add_share_remote, exclude_all_sessions, fetch_share_branch, include_all_sessions,
     merge_share_branch, pull_share_branch, push_share_branch, remove_share_recipient,
     set_session_share_state, set_share_policy, share_config, share_identity, share_key,
-    share_status,
+    share_remote_display_url, share_status,
 };
 pub use status::{
     ProjectStatusReport, StatusProject, StatusSource, StatusSyncCheck, StatusSyncFailure,
