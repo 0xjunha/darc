@@ -9,7 +9,7 @@ use darc_core::query::{
     TurnDetailOptions, TurnsView, query_project_insight_report_for_project, query_resolve_sessions,
     query_session_files_for_project, query_turn_for_project, query_turn_insight_report_for_project,
     query_workspace, query_workspace_insight_report, resolve_query_project,
-    resolve_query_search_session_id_for_project_with_scope,
+    resolve_query_search_session_id_for_project_with_scope_and_author,
     resolve_query_session_for_project_with_scope,
 };
 use darc_paths::resolve_query_time_bound as resolve_shared_query_time_bound;
@@ -456,11 +456,12 @@ pub(crate) fn run_query_search_turns(
         .session_id
         .as_deref()
         .map(|session_id| {
-            resolve_query_search_session_id_for_project_with_scope(
+            resolve_query_search_session_id_for_project_with_scope_and_author(
                 &project,
                 args.provider.map(provider_arg_to_source_kind),
                 session_id,
                 origin_scope,
+                args.author.as_deref(),
             )
         })
         .transpose()?;

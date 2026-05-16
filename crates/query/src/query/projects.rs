@@ -330,18 +330,27 @@ const PROJECT_SESSION_ID_SQL: &str = "
 
 const PROJECT_SESSION_MATCHES_SQL: &str = "
     SELECT DISTINCT
-        project_id,
-        provider,
-        session_id
+        sessions.project_id,
+        sessions.provider,
+        sessions.session_id
     FROM sessions
-    WHERE project_id = ?1
-        AND (?2 IS NULL OR provider = ?2)
-        AND session_id LIKE ?3 || '%' COLLATE NOCASE
-        AND (?4 = 'all' OR origin_kind = ?4)
+    LEFT JOIN users
+        ON users.user_id = sessions.origin_user_id
+    WHERE sessions.project_id = ?1
+        AND (?2 IS NULL OR sessions.provider = ?2)
+        AND sessions.session_id LIKE ?3 || '%' COLLATE NOCASE
+        AND (?4 = 'all' OR sessions.origin_kind = ?4)
+        AND (
+            ?5 IS NULL
+            OR sessions.origin_user_id = ?5
+            OR users.user_id = ?5
+            OR users.email = ?5
+            OR users.display_name = ?5
+        )
     ORDER BY
-        provider ASC,
-        session_id ASC
-    LIMIT ?5
+        sessions.provider ASC,
+        sessions.session_id ASC
+    LIMIT ?6
 ";
 
 /// Collects the filters for one low-level session-summary SQL query.
@@ -1308,6 +1317,7 @@ pub fn lookup_project_session_matches(
     provider: Option<SourceKind>,
     session_id: &str,
     origin_scope: SessionOriginScope,
+    author: Option<&str>,
     limit: usize,
 ) -> Result<Vec<ResolvedSessionMatch>> {
     let connection = open_existing_index_database(index_db_path)?;
@@ -1317,6 +1327,7 @@ pub fn lookup_project_session_matches(
         provider,
         session_id,
         origin_scope,
+        author,
         limit,
     )
 }
@@ -1328,6 +1339,7 @@ fn query_project_session_matches(
     provider: Option<SourceKind>,
     session_id: &str,
     origin_scope: SessionOriginScope,
+    author: Option<&str>,
     limit: usize,
 ) -> Result<Vec<ResolvedSessionMatch>> {
     let provider = provider.map(SourceKind::directory_name);
@@ -1342,6 +1354,7 @@ fn query_project_session_matches(
                 provider,
                 session_id,
                 origin_scope.sql_filter_value(),
+                author,
                 limit
             ],
             |row| {
