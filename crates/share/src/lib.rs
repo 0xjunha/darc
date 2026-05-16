@@ -1056,14 +1056,6 @@ fn import_from_cache(
             ));
             continue;
         }
-        let exporter_id = exporter_manifest_id(&manifest.exporter);
-        if !imported_exporters.insert(exporter_id) {
-            warnings.push(format!(
-                "skipped duplicate share manifest {} for exporter {}",
-                cached.relative_path, manifest.exporter.user_id
-            ));
-            continue;
-        }
         let sync_payload =
             match read_sync_payload(cache_path, &manifest, expected_project_key, &identity) {
                 Ok(payload) => payload,
@@ -1077,6 +1069,14 @@ fn import_from_cache(
                     continue;
                 }
             };
+        let exporter_id = exporter_manifest_id(&sync_payload.exporter);
+        if !imported_exporters.insert(exporter_id) {
+            warnings.push(format!(
+                "skipped duplicate share manifest {} for exporter {}",
+                cached.relative_path, sync_payload.exporter.user_id
+            ));
+            continue;
+        }
         let keep_turns = sync_payload
             .turns
             .iter()
@@ -2219,15 +2219,8 @@ fn remove_artifact_object(cache_path: &Path, object_path: &str) -> Result<()> {
 
 /// Removes one relative manifest file from the cache workdir if it exists.
 fn remove_relative_file(cache_path: &Path, relative_path: &str) -> Result<()> {
-    let relative = Path::new(relative_path);
-    if relative.is_absolute() {
-        bail!("share artifact path must be relative");
-    }
-    for component in relative.components() {
-        if !matches!(component, Component::Normal(_)) {
-            bail!("share artifact path contains unsafe path components");
-        }
-    }
+    let relative = validate_relative_artifact_path(relative_path)?;
+    ensure_safe_artifact_ancestors(cache_path, relative)?;
     remove_file_if_exists(&cache_path.join(relative))
 }
 
@@ -2255,6 +2248,7 @@ fn manifest_artifact_path(cache_path: &Path, object_path: &str) -> Result<PathBu
             bail!("share object path contains unsafe path components");
         }
     }
+    ensure_safe_artifact_ancestors(cache_path, relative)?;
     Ok(cache_path.join(relative))
 }
 
@@ -2382,6 +2376,45 @@ fn validate_relative_artifact_path(relative_path: &str) -> Result<&Path> {
         }
     }
     Ok(relative)
+}
+
+/// Rejects symlinked existing parent directories for one cache artifact path.
+fn ensure_safe_artifact_ancestors(cache_path: &Path, relative_path: &Path) -> Result<()> {
+    if !ensure_safe_existing_cache_dir(cache_path)? {
+        return Ok(());
+    }
+    let mut current = cache_path.to_path_buf();
+    if let Some(parent) = relative_path.parent() {
+        for component in parent.components() {
+            let Component::Normal(name) = component else {
+                bail!("share artifact path contains unsafe path components");
+            };
+            current.push(name);
+            match fs::symlink_metadata(&current) {
+                Ok(metadata) => {
+                    let file_type = metadata.file_type();
+                    if file_type.is_symlink() {
+                        bail!(
+                            "share artifact ancestor is a symlink: {}",
+                            current.display()
+                        );
+                    }
+                    if !file_type.is_dir() {
+                        bail!(
+                            "share artifact ancestor is not a directory: {}",
+                            current.display()
+                        );
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("failed to inspect {}", current.display()));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Writes one pretty JSON file.
@@ -3704,6 +3737,132 @@ mod tests {
             report.warnings
         );
         assert_eq!(turn_count, 1);
+    }
+
+    #[test]
+    fn merge_authenticates_duplicate_exporter_before_deduping() {
+        let TestShareArtifact {
+            cache,
+            target_context,
+            source_identity,
+            artifact,
+            ..
+        } = build_single_turn_test_artifact("share-duplicate-exporter-auth");
+        write_export_artifact(&cache, &artifact).unwrap();
+        let mut bogus_manifest = artifact.manifest.clone();
+        bogus_manifest.sync = SyncManifestEntry {
+            payload_hash: "missing-sync-payload".to_owned(),
+            object_path: format!("{ARTIFACT_ROOT}/objects/missing-sync.age"),
+        };
+        let bogus_manifest_path = cache
+            .join(ARTIFACT_ROOT)
+            .join(EXPORTERS_DIR)
+            .join("0000-bogus")
+            .join(LEGACY_MANIFEST_FILE);
+        fs::create_dir_all(bogus_manifest_path.parent().unwrap()).unwrap();
+        write_json_file(&bogus_manifest_path, &bogus_manifest).unwrap();
+
+        let report = import_from_cache(
+            &target_context,
+            "team",
+            "darc/team",
+            "origin",
+            "https://example.invalid/team/share.git",
+            "git:https://example.invalid/team/repo",
+            &cache,
+        )
+        .unwrap();
+
+        let target = open_index_database_writer(&target_context.index_db_path).unwrap();
+        let imported_sessions: i64 = target
+            .query_row(
+                "
+                SELECT COUNT(*)
+                FROM sessions
+                WHERE project_id = 'target-repo'
+                    AND origin_kind = 'shared'
+                    AND origin_user_id = ?1
+                ",
+                [&source_identity.user_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(report.imported_turn_count, 1);
+        assert_eq!(report.warning_count, 1);
+        assert!(
+            report.warnings[0].contains("missing-sync"),
+            "warning should describe bogus duplicate sync failure: {:?}",
+            report.warnings
+        );
+        assert_eq!(imported_sessions, 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn merge_rejects_symlinked_object_ancestors() {
+        use std::os::unix::fs::symlink;
+
+        let TestShareArtifact {
+            cache,
+            target_context,
+            artifact,
+            ..
+        } = build_single_turn_test_artifact("share-symlink-object-ancestor");
+        write_export_artifact(&cache, &artifact).unwrap();
+        let outside = cache
+            .parent()
+            .expect("cache should have parent")
+            .join("outside-objects");
+        let object_root = cache.join(ARTIFACT_ROOT).join("objects");
+        fs::remove_dir_all(&object_root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("outside.age"), b"outside").unwrap();
+        symlink(&outside, &object_root).unwrap();
+
+        let report = import_from_cache(
+            &target_context,
+            "team",
+            "darc/team",
+            "origin",
+            "https://example.invalid/team/share.git",
+            "git:https://example.invalid/team/repo",
+            &cache,
+        )
+        .unwrap();
+
+        assert_eq!(report.imported_turn_count, 0);
+        assert_eq!(report.warning_count, 1);
+        assert!(
+            report.warnings[0].contains("ancestor is a symlink"),
+            "warning should reject symlinked object ancestor: {:?}",
+            report.warnings
+        );
+        assert!(outside.join("outside.age").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn object_removal_rejects_symlinked_artifact_ancestors() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = unique_test_dir("share-remove-symlink-object-ancestor");
+        let cache = workspace.join("cache");
+        let outside = workspace.join("outside-objects");
+        let object_root = cache.join(ARTIFACT_ROOT).join("objects");
+        fs::create_dir_all(object_root.parent().unwrap()).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("orphan.age"), b"outside").unwrap();
+        symlink(&outside, &object_root).unwrap();
+
+        let error = remove_artifact_object(&cache, &format!("{ARTIFACT_ROOT}/objects/orphan.age"))
+            .unwrap_err();
+
+        assert!(
+            error.to_string().contains("ancestor is a symlink"),
+            "removal should reject symlinked object ancestor: {error:#}"
+        );
+        assert!(outside.join("orphan.age").exists());
     }
 
     #[test]
