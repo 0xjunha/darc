@@ -8,6 +8,7 @@ All notable Darc release changes should be summarized here.
 - Harden shared indexes so branch tips retain all exporters, visible metadata avoids credential/local-path leaks, and explicit share selections survive re-indexing.
 - Authenticate shared index payloads, isolate bad exporter artifacts during pull, and redact share remote URLs in CLI output.
 - Keep shared index pulls and pushes isolated from malformed manifests, unauthenticated branch artifacts, unexpected branch files, and oversized cached exports.
+- Bound shared-index manifest discovery, reject unsupported artifact versions and invalid share branch names, and apply author filters when resolving search session prefixes.
 - Prevent imported shared sessions from replacing another exporter's session with the same id.
 - Redact common secrets, credential material, local home paths, and bulky data blobs before storing or migrating indexed session data.
 - Reduce false-positive redaction of indexed examples, CLI help text, boolean config values, search patterns, and comparison code.

@@ -103,6 +103,9 @@ The branch tip preserves one manifest namespace per exporter. A push replaces on
 objects that are no longer referenced by another exporter. This keeps a team branch usable for fresh pullers: the latest
 tree can expose every teammate's current export instead of only the most recent pusher.
 
+Merge bounds visible manifest discovery by exporter count and aggregate manifest bytes, and v1 import rejects artifacts
+whose visible manifest, encrypted sync payload, or encrypted turn payload version is not exactly `1`.
+
 Before committing a share cache update, Darc removes paths outside this artifact layout and stages only
 `darc-share/v1`. Unexpected plaintext files, symlinks, orphan files, and unsupported artifact paths from a fetched
 branch are not republished. Existing exporter namespaces are retained only when their encrypted sync payload and turn
