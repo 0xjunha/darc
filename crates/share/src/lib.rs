@@ -256,11 +256,7 @@ pub fn share_git_branch(branch: &str) -> Result<String> {
 pub fn ensure_share_key(root: &Path) -> Result<ShareKeyInfo> {
     let key_path = root.join("keys").join(KEY_FILE_NAME);
     if !key_path.exists() {
-        let parent = key_path
-            .parent()
-            .context("share key path is missing a parent directory")?;
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
+        ensure_private_key_directory(root)?;
         let identity = Identity::generate();
         let secret_key = identity.to_string();
         write_share_identity_key(&key_path, secret_key.expose_secret())?;
@@ -277,17 +273,36 @@ pub fn ensure_share_key(root: &Path) -> Result<ShareKeyInfo> {
 fn ensure_share_signing_key(root: &Path) -> Result<SigningKey> {
     let key_path = root.join("keys").join(SIGNING_KEY_FILE_NAME);
     if !key_path.exists() {
-        let parent = key_path
-            .parent()
-            .context("share signing key path is missing a parent directory")?;
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
+        ensure_private_key_directory(root)?;
         let entropy = Identity::generate().to_string();
         let seed = Sha256::digest(entropy.expose_secret().as_bytes());
         write_share_private_key(&key_path, &hex_encode(&seed))?;
     }
     harden_private_key_permissions(&key_path)?;
     read_share_signing_key(&key_path)
+}
+
+/// Ensures the share key directory exists under the Darc root without following symlinks.
+fn ensure_private_key_directory(root: &Path) -> Result<PathBuf> {
+    match fs::symlink_metadata(root) {
+        Ok(metadata) => {
+            let file_type = metadata.file_type();
+            if file_type.is_symlink() {
+                bail!("share root path is a symlink: {}", root.display());
+            }
+            if !file_type.is_dir() {
+                bail!("share root path is not a directory: {}", root.display());
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir_all(root)
+                .with_context(|| format!("failed to create {}", root.display()))?;
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to inspect {}", root.display()));
+        }
+    }
+    ensure_safe_private_key_directory(root, &root.join("keys"))
 }
 
 /// Builds the local share identity from Git config and the Darc public key.
@@ -1171,16 +1186,8 @@ fn authenticated_retained_manifests(
             if !manifest_path_matches_exporter(&cached.relative_path, &exporter_id) {
                 return None;
             }
-            let authenticated_turns = sync_payload.turns.iter().cloned().collect::<BTreeSet<_>>();
-            let manifest_turns = cached
-                .manifest
-                .turns
-                .iter()
-                .map(sync_entry_from_manifest)
-                .collect::<BTreeSet<_>>();
-            if authenticated_turns != manifest_turns {
-                return None;
-            }
+            let authenticated_turns =
+                authenticated_manifest_turns(&cached.manifest, &sync_payload).ok()?;
             let turns_are_authenticated = cached.manifest.turns.iter().all(|entry| {
                 authenticated_turns.contains(&sync_entry_from_manifest(entry))
                     && verify_cached_turn_payload(
@@ -1195,6 +1202,23 @@ fn authenticated_retained_manifests(
             turns_are_authenticated.then(|| cached.clone())
         })
         .collect()
+}
+
+/// Returns the exact authenticated turn set shared by one manifest and sync payload.
+fn authenticated_manifest_turns(
+    manifest: &ManifestArtifact,
+    sync_payload: &EncryptedSyncPayload,
+) -> Result<BTreeSet<SyncTurnEntry>> {
+    let authenticated_turns = sync_payload.turns.iter().cloned().collect::<BTreeSet<_>>();
+    let manifest_turns = manifest
+        .turns
+        .iter()
+        .map(sync_entry_from_manifest)
+        .collect::<BTreeSet<_>>();
+    if authenticated_turns != manifest_turns {
+        bail!("signed sync entries do not match visible manifest entries");
+    }
+    Ok(authenticated_turns)
 }
 
 /// Verifies one cached turn object without importing it into SQLite.
@@ -1347,21 +1371,18 @@ fn import_from_cache(
             ));
             continue;
         }
-        let manifest_turns = manifest
-            .turns
-            .iter()
-            .map(sync_entry_from_manifest)
-            .collect::<BTreeSet<_>>();
-        let authenticated_turns = sync_payload.turns.iter().cloned().collect::<BTreeSet<_>>();
-        if authenticated_turns != manifest_turns {
-            skipped_turn_count += u64::try_from(manifest.turns.len())
-                .context("skipped turn count exceeds u64 range")?;
-            warnings.push(format!(
-                "skipped share manifest {} for exporter {}: signed sync entries do not match visible manifest entries",
-                cached.relative_path, sync_payload.exporter.user_id
-            ));
-            continue;
-        }
+        let authenticated_turns = match authenticated_manifest_turns(&manifest, &sync_payload) {
+            Ok(turns) => turns,
+            Err(error) => {
+                skipped_turn_count += u64::try_from(manifest.turns.len())
+                    .context("skipped turn count exceeds u64 range")?;
+                warnings.push(format!(
+                    "skipped share manifest {} for exporter {}: {error:#}",
+                    cached.relative_path, sync_payload.exporter.user_id
+                ));
+                continue;
+            }
+        };
         let keep_turns = sync_payload
             .turns
             .iter()
@@ -1730,6 +1751,50 @@ fn ensure_regular_private_key_file(path: &Path) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Creates and validates a private-key directory without following symlinked ancestors.
+fn ensure_safe_private_key_directory(root: &Path, directory: &Path) -> Result<PathBuf> {
+    let relative = directory.strip_prefix(root).with_context(|| {
+        format!(
+            "share private key directory {} is outside root {}",
+            directory.display(),
+            root.display()
+        )
+    })?;
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            bail!("share private key directory contains unsafe path components");
+        };
+        current.push(name);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) => {
+                let file_type = metadata.file_type();
+                if file_type.is_symlink() {
+                    bail!(
+                        "share private key directory is a symlink: {}",
+                        current.display()
+                    );
+                }
+                if !file_type.is_dir() {
+                    bail!(
+                        "share private key directory path is not a directory: {}",
+                        current.display()
+                    );
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir(&current)
+                    .with_context(|| format!("failed to create {}", current.display()))?;
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("failed to inspect {}", current.display()));
+            }
+        }
+    }
+    Ok(directory.to_path_buf())
 }
 
 /// Restricts one age identity file to the current user on Unix.
@@ -3103,6 +3168,44 @@ mod tests {
             error.to_string().contains("symlink"),
             "error should reject symlinked signing key: {error:#}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn share_key_creation_rejects_symlinked_key_directory_for_age_key() {
+        use std::os::unix::fs::symlink;
+
+        let root = unique_test_dir("share-key-dir-symlink-age");
+        let outside = root.join("outside-keys");
+        fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, root.join("keys")).unwrap();
+
+        let error = ensure_share_key(&root).unwrap_err();
+
+        assert!(
+            error.to_string().contains("symlink"),
+            "error should reject symlinked key directory: {error:#}"
+        );
+        assert!(!outside.join(KEY_FILE_NAME).exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn share_key_creation_rejects_symlinked_key_directory_for_signing_key() {
+        use std::os::unix::fs::symlink;
+
+        let root = unique_test_dir("share-key-dir-symlink-signing");
+        let outside = root.join("outside-keys");
+        fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, root.join("keys")).unwrap();
+
+        let error = ensure_share_signing_key(&root).unwrap_err();
+
+        assert!(
+            error.to_string().contains("symlink"),
+            "error should reject symlinked key directory: {error:#}"
+        );
+        assert!(!outside.join(SIGNING_KEY_FILE_NAME).exists());
     }
 
     #[test]
