@@ -45,6 +45,8 @@ const SHARE_CACHE_DIR: &str = "share-cache";
 const DEFAULT_REMOTE_NAME: &str = "origin";
 const MAX_SHARE_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_SHARE_OBJECT_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_SHARE_EXPORT_OBJECTS: usize = 100_000;
+const MAX_SHARE_EXPORT_BYTES: usize = 512 * 1024 * 1024;
 const TURN_SIGNATURE_DOMAIN: &[u8] = b"darc.share.turn.signature.v1";
 const SYNC_SIGNATURE_DOMAIN: &[u8] = b"darc.share.sync.signature.v1";
 
@@ -366,8 +368,7 @@ pub fn push_share_branch(
         clear_cache_worktree(&cache_path)?;
     }
     checkout_share_branch(&repository, &git_branch)?;
-    let cached_manifests = read_cached_manifests(&cache_path)?;
-    let existing_objects = read_existing_objects(&cache_path)?;
+    let cached_manifest_read = read_cached_manifests(&cache_path)?;
     let artifact = build_export_artifact(ExportBuildRequest {
         context,
         settings,
@@ -377,10 +378,16 @@ pub fn push_share_branch(
         signing_key: &signing_key,
         branch,
         turns,
-        existing_objects,
+        cache_path: &cache_path,
     })?;
-    remove_replaced_exporter_artifacts(&cache_path, &identity, &cached_manifests, &artifact)?;
+    remove_replaced_exporter_artifacts(
+        &cache_path,
+        &identity,
+        &cached_manifest_read.manifests,
+        &artifact,
+    )?;
     write_export_artifact(&cache_path, &artifact)?;
+    clean_unexpected_share_cache_files(&cache_path)?;
     let commit_id = commit_cache_repository(&repository, &identity, &git_branch)?;
     push_branch(&repository, &remote.url, &git_branch)?;
     Ok(SharePushReport {
@@ -518,6 +525,12 @@ struct CachedManifest {
     manifest: ManifestArtifact,
 }
 
+/// Stores cached manifests plus warnings collected while reading them.
+struct CachedManifestRead {
+    manifests: Vec<CachedManifest>,
+    warnings: Vec<String>,
+}
+
 /// Stores the inputs needed to build one share export artifact.
 struct ExportBuildRequest<'a> {
     context: &'a ShareProjectContext,
@@ -528,7 +541,7 @@ struct ExportBuildRequest<'a> {
     signing_key: &'a SigningKey,
     branch: &'a str,
     turns: Vec<ShareTurnExport>,
-    existing_objects: BTreeMap<String, Vec<u8>>,
+    cache_path: &'a Path,
 }
 
 /// Stores immutable context used while importing one manifest entry.
@@ -548,6 +561,7 @@ fn build_export_artifact(request: ExportBuildRequest<'_>) -> Result<BuiltExportA
     let recipient_fingerprint = encryption_recipient_fingerprint(&recipient_strings);
     let recipients = parse_encryption_recipients(&recipient_strings)?;
     let mut objects = BTreeMap::new();
+    let mut total_object_bytes = 0_usize;
     let mut manifest_turns = Vec::with_capacity(request.turns.len());
     let mut session_ids = BTreeSet::new();
     for turn in request.turns {
@@ -567,12 +581,17 @@ fn build_export_artifact(request: ExportBuildRequest<'_>) -> Result<BuiltExportA
         let object_path =
             format!("{ARTIFACT_ROOT}/objects/{recipient_fingerprint}-{payload_hash}.age");
         let encrypted = reusable_existing_object(
-            request.existing_objects.get(&object_path),
+            read_existing_object(request.cache_path, &object_path)?.as_ref(),
             request.decryption_identity,
             &plaintext,
             &recipients,
         )?;
-        objects.insert(object_path.clone(), encrypted);
+        insert_export_object(
+            &mut objects,
+            &mut total_object_bytes,
+            object_path.clone(),
+            encrypted,
+        )?;
         manifest_turns.push(TurnManifestEntry {
             provider: payload.turn.session.provider,
             session_id: payload.turn.session.session_id,
@@ -604,12 +623,17 @@ fn build_export_artifact(request: ExportBuildRequest<'_>) -> Result<BuiltExportA
     let sync_object_path =
         format!("{ARTIFACT_ROOT}/objects/sync-{recipient_fingerprint}-{sync_payload_hash}.age");
     let sync_encrypted = reusable_existing_object(
-        request.existing_objects.get(&sync_object_path),
+        read_existing_object(request.cache_path, &sync_object_path)?.as_ref(),
         request.decryption_identity,
         &sync_plaintext,
         &recipients,
     )?;
-    objects.insert(sync_object_path.clone(), sync_encrypted);
+    insert_export_object(
+        &mut objects,
+        &mut total_object_bytes,
+        sync_object_path.clone(),
+        sync_encrypted,
+    )?;
     let exported_turn_count =
         u64::try_from(manifest_turns.len()).context("turn count exceeds u64 range")?;
     Ok(BuiltExportArtifact {
@@ -641,6 +665,26 @@ fn build_export_artifact(request: ExportBuildRequest<'_>) -> Result<BuiltExportA
     })
 }
 
+/// Inserts one encrypted export object while enforcing in-memory export caps.
+fn insert_export_object(
+    objects: &mut BTreeMap<String, Vec<u8>>,
+    total_object_bytes: &mut usize,
+    object_path: String,
+    content: Vec<u8>,
+) -> Result<()> {
+    if objects.len() >= MAX_SHARE_EXPORT_OBJECTS {
+        bail!("share export exceeds {MAX_SHARE_EXPORT_OBJECTS} encrypted objects");
+    }
+    *total_object_bytes = total_object_bytes
+        .checked_add(content.len())
+        .context("share export object size overflow")?;
+    if *total_object_bytes > MAX_SHARE_EXPORT_BYTES {
+        bail!("share export exceeds {MAX_SHARE_EXPORT_BYTES} encrypted bytes");
+    }
+    objects.insert(object_path, content);
+    Ok(())
+}
+
 /// Writes all share artifacts into a cache repository workdir.
 fn write_export_artifact(path: &Path, artifact: &BuiltExportArtifact) -> Result<()> {
     write_json_artifact_file(
@@ -660,8 +704,9 @@ fn write_export_artifact(path: &Path, artifact: &BuiltExportArtifact) -> Result<
 }
 
 /// Reads all visible manifests from one cache workdir.
-fn read_cached_manifests(cache_path: &Path) -> Result<Vec<CachedManifest>> {
+fn read_cached_manifests(cache_path: &Path) -> Result<CachedManifestRead> {
     let mut manifests = Vec::new();
+    let mut warnings = Vec::new();
     let exporter_root = cache_path.join(ARTIFACT_ROOT).join(EXPORTERS_DIR);
     if is_regular_directory(&exporter_root)? {
         for entry in fs::read_dir(&exporter_root)
@@ -682,10 +727,7 @@ fn read_cached_manifests(cache_path: &Path) -> Result<Vec<CachedManifest>> {
                 format!("{ARTIFACT_ROOT}/{EXPORTERS_DIR}/{exporter_dir}/{LEGACY_MANIFEST_FILE}");
             let manifest_path = cache_path.join(&relative_path);
             if manifest_path.exists() {
-                manifests.push(CachedManifest {
-                    manifest: read_json_file(&manifest_path)?,
-                    relative_path,
-                });
+                read_cached_manifest(&mut manifests, &mut warnings, relative_path, &manifest_path);
             }
         }
     }
@@ -693,12 +735,33 @@ fn read_cached_manifests(cache_path: &Path) -> Result<Vec<CachedManifest>> {
     let legacy_relative_path = format!("{ARTIFACT_ROOT}/{LEGACY_MANIFEST_FILE}");
     let legacy_path = cache_path.join(&legacy_relative_path);
     if legacy_path.exists() {
-        manifests.push(CachedManifest {
-            manifest: read_json_file(&legacy_path)?,
-            relative_path: legacy_relative_path,
-        });
+        read_cached_manifest(
+            &mut manifests,
+            &mut warnings,
+            legacy_relative_path,
+            &legacy_path,
+        );
     }
-    Ok(manifests)
+    Ok(CachedManifestRead {
+        manifests,
+        warnings,
+    })
+}
+
+/// Reads one cached manifest, collecting parse failures as warnings.
+fn read_cached_manifest(
+    manifests: &mut Vec<CachedManifest>,
+    warnings: &mut Vec<String>,
+    relative_path: String,
+    manifest_path: &Path,
+) {
+    match read_json_file(manifest_path) {
+        Ok(manifest) => manifests.push(CachedManifest {
+            relative_path,
+            manifest,
+        }),
+        Err(error) => warnings.push(format!("skipped share manifest {relative_path}: {error:#}")),
+    }
 }
 
 /// Removes stale files owned by the exporter being replaced.
@@ -753,9 +816,11 @@ fn import_from_cache(
     expected_project_key: &str,
     cache_path: &Path,
 ) -> Result<ShareMergeReport> {
-    let mut warnings = Vec::new();
-    let manifests = read_cached_manifests(cache_path)?;
-    if manifests.is_empty() {
+    let CachedManifestRead {
+        manifests,
+        mut warnings,
+    } = read_cached_manifests(cache_path)?;
+    if manifests.is_empty() && warnings.is_empty() {
         bail!(
             "share branch does not contain a Darc manifest at {}/{} or {}/{}/<exporter>/{}",
             ARTIFACT_ROOT,
@@ -764,6 +829,19 @@ fn import_from_cache(
             EXPORTERS_DIR,
             LEGACY_MANIFEST_FILE
         );
+    }
+    if manifests.is_empty() {
+        return Ok(ShareMergeReport {
+            branch: branch.to_owned(),
+            git_branch: git_branch.to_owned(),
+            remote_name: remote_name.to_owned(),
+            project_key: expected_project_key.to_owned(),
+            imported_turn_count: 0,
+            skipped_turn_count: 0,
+            warning_count: u64::try_from(warnings.len())
+                .context("warning count exceeds u64 range")?,
+            warnings,
+        });
     }
     let identity_key = ensure_share_key(&context.root)?;
     let identity = read_share_identity_key(&identity_key.key_path)?;
@@ -775,17 +853,27 @@ fn import_from_cache(
     for cached in manifests {
         let manifest = cached.manifest;
         if manifest.schema != MANIFEST_SCHEMA {
-            bail!(
-                "unsupported Darc share manifest schema `{}`",
+            skipped_turn_count += u64::try_from(manifest.turns.len())
+                .context("skipped turn count exceeds u64 range")?;
+            warnings.push(format!(
+                "skipped share manifest {} for exporter {}: unsupported Darc share manifest schema `{}`",
+                cached.relative_path,
+                manifest.exporter.user_id,
                 manifest.schema
-            );
+            ));
+            continue;
         }
         if manifest.project_key != expected_project_key {
-            bail!(
-                "share branch project key `{}` does not match active project key `{}`",
+            skipped_turn_count += u64::try_from(manifest.turns.len())
+                .context("skipped turn count exceeds u64 range")?;
+            warnings.push(format!(
+                "skipped share manifest {} for exporter {}: share branch project key `{}` does not match active project key `{}`",
+                cached.relative_path,
+                manifest.exporter.user_id,
                 manifest.project_key,
                 expected_project_key
-            );
+            ));
+            continue;
         }
         let exporter_id = exporter_manifest_id(&manifest.exporter);
         if !imported_exporters.insert(exporter_id) {
@@ -1441,6 +1529,85 @@ fn clear_cache_worktree(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Removes files outside Darc's documented share artifact layout.
+fn clean_unexpected_share_cache_files(path: &Path) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(path).with_context(|| format!("failed to read {}", path.display()))? {
+        let entry = entry.with_context(|| format!("failed to read {}", path.display()))?;
+        if entry.file_name() == ".git" {
+            continue;
+        }
+        clean_unexpected_share_cache_entry(path, &entry.path())?;
+    }
+    Ok(())
+}
+
+/// Removes one unexpected cache entry and prunes empty directories.
+fn clean_unexpected_share_cache_entry(cache_path: &Path, path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("failed to inspect {}", path.display()))?;
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() {
+        return remove_file_if_exists(path);
+    }
+    if file_type.is_dir() {
+        for entry in
+            fs::read_dir(path).with_context(|| format!("failed to read {}", path.display()))?
+        {
+            let entry = entry.with_context(|| format!("failed to read {}", path.display()))?;
+            clean_unexpected_share_cache_entry(cache_path, &entry.path())?;
+        }
+        if fs::read_dir(path)
+            .with_context(|| format!("failed to read {}", path.display()))?
+            .next()
+            .is_none()
+        {
+            fs::remove_dir(path).with_context(|| format!("failed to remove {}", path.display()))?;
+        }
+        return Ok(());
+    }
+    let relative = path.strip_prefix(cache_path).with_context(|| {
+        format!(
+            "share cache path {} is outside cache {}",
+            path.display(),
+            cache_path.display()
+        )
+    })?;
+    if allowed_share_cache_file(relative) {
+        Ok(())
+    } else {
+        remove_file_if_exists(path)
+    }
+}
+
+/// Returns whether one cache-relative file belongs to the share artifact layout.
+fn allowed_share_cache_file(relative: &Path) -> bool {
+    let components = relative
+        .components()
+        .map(|component| match component {
+            Component::Normal(value) => value.to_str(),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>();
+    let Some(components) = components else {
+        return false;
+    };
+    match components.as_slice() {
+        ["darc-share", "v1", PROJECT_FILE] => true,
+        ["darc-share", "v1", "objects", file_name] => file_name.ends_with(".age"),
+        [
+            "darc-share",
+            "v1",
+            EXPORTERS_DIR,
+            exporter,
+            LEGACY_MANIFEST_FILE,
+        ] => !exporter.is_empty(),
+        _ => false,
+    }
+}
+
 /// Fetches one remote share branch into the cache repository.
 fn fetch_branch(repository: &Repository, remote_url: &str, git_branch: &str) -> Result<()> {
     let mut remote = repository
@@ -1504,7 +1671,7 @@ fn commit_cache_repository(
         .remove_all(["*"].iter(), None)
         .context("failed to stage removed share artifacts")?;
     index
-        .add_all(["*"].iter(), IndexAddOption::DEFAULT, None)
+        .add_all([ARTIFACT_ROOT].iter(), IndexAddOption::DEFAULT, None)
         .context("failed to add share artifacts to index")?;
     index.write().context("failed to write share cache index")?;
     let tree_oid = index.write_tree().context("failed to write share tree")?;
@@ -1607,33 +1774,14 @@ fn remote_callbacks(repository: &Repository) -> Result<RemoteCallbacks<'_>> {
     Ok(callbacks)
 }
 
-/// Reads encrypted object files that can be reused by content hash.
-fn read_existing_objects(cache_path: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
-    let root = cache_path.join(ARTIFACT_ROOT).join("objects");
-    let mut objects = BTreeMap::new();
-    if !is_regular_directory(&root)? {
-        return Ok(objects);
+/// Reads one existing encrypted object that can be reused by content hash.
+fn read_existing_object(cache_path: &Path, object_path: &str) -> Result<Option<Vec<u8>>> {
+    let path = manifest_artifact_path(cache_path, object_path)?;
+    match fs::symlink_metadata(&path) {
+        Ok(_) => read_regular_file(&path, MAX_SHARE_OBJECT_BYTES).map(Some),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("failed to inspect {}", path.display())),
     }
-    for entry in
-        fs::read_dir(&root).with_context(|| format!("failed to read {}", root.display()))?
-    {
-        let entry = entry.with_context(|| format!("failed to read {}", root.display()))?;
-        if !entry
-            .file_type()
-            .with_context(|| format!("failed to inspect {}", entry.path().display()))?
-            .is_file()
-        {
-            continue;
-        }
-        let path = entry.path();
-        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        let relative = format!("{ARTIFACT_ROOT}/objects/{file_name}");
-        let content = read_regular_file(&path, MAX_SHARE_OBJECT_BYTES)?;
-        objects.insert(relative, content);
-    }
-    Ok(objects)
 }
 
 /// Returns whether a path is an existing non-symlink directory.
@@ -2042,6 +2190,7 @@ mod tests {
     #[test]
     fn recipient_set_changes_encrypt_to_a_new_object_path() {
         let workspace = unique_test_dir("share-recipient-fingerprint");
+        let cache = workspace.join("cache");
         let index_db_path = workspace.join("index.sqlite");
         let context = ShareProjectContext {
             root: workspace.clone(),
@@ -2071,7 +2220,7 @@ mod tests {
             signing_key: &signing_key,
             branch: "team",
             turns: turns.clone(),
-            existing_objects: BTreeMap::new(),
+            cache_path: &cache,
         })
         .unwrap();
         let settings = ShareSettings {
@@ -2089,7 +2238,7 @@ mod tests {
             signing_key: &signing_key,
             branch: "team",
             turns,
-            existing_objects: first.objects.clone(),
+            cache_path: &cache,
         })
         .unwrap();
 
@@ -2107,6 +2256,7 @@ mod tests {
     #[test]
     fn corrupted_cached_object_is_not_reused() {
         let workspace = unique_test_dir("share-corrupted-cache");
+        let cache = workspace.join("cache");
         let index_db_path = workspace.join("index.sqlite");
         let context = ShareProjectContext {
             root: workspace.clone(),
@@ -2136,12 +2286,13 @@ mod tests {
             signing_key: &signing_key,
             branch: "team",
             turns: turns.clone(),
-            existing_objects: BTreeMap::new(),
+            cache_path: &cache,
         })
         .unwrap();
         let object_path = first.manifest.turns[0].object_path.clone();
-        let mut corrupted = first.objects.clone();
-        corrupted.insert(object_path.clone(), b"not an age payload".to_vec());
+        let target = cache.join(&object_path);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&target, b"not an age payload").unwrap();
 
         let second = build_export_artifact(ExportBuildRequest {
             context: &context,
@@ -2152,7 +2303,7 @@ mod tests {
             signing_key: &signing_key,
             branch: "team",
             turns,
-            existing_objects: corrupted,
+            cache_path: &cache,
         })
         .unwrap();
 
@@ -2313,7 +2464,7 @@ mod tests {
             signing_key: &source_signing_key,
             branch: "team",
             turns,
-            existing_objects: BTreeMap::new(),
+            cache_path: &cache,
         })
         .unwrap();
         write_export_artifact(&cache, &artifact).unwrap();
@@ -2356,6 +2507,141 @@ mod tests {
         assert!(
             report.warnings[0].contains("bad-sync"),
             "warning should mention skipped bad exporter: {:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn merge_skips_bad_visible_manifests_and_imports_valid_exporters() {
+        let workspace = unique_test_dir("share-bad-manifests-continue");
+        let cache = workspace.join("cache");
+        let source_root = workspace.join("source-root");
+        let target_root = workspace.join("target-root");
+        fs::create_dir_all(&source_root).unwrap();
+        fs::create_dir_all(&target_root).unwrap();
+        let target_key = ensure_share_key(&target_root).unwrap();
+        let source_context = ShareProjectContext {
+            root: source_root.clone(),
+            index_db_path: source_root.join("index.sqlite"),
+            project_id: "source-repo".to_owned(),
+            project_name: "source-repo".to_owned(),
+            local_path: source_root.join("repo"),
+            git_upstream: Some("https://example.invalid/team/repo.git".to_owned()),
+        };
+        let target_context = ShareProjectContext {
+            root: target_root.clone(),
+            index_db_path: target_root.join("index.sqlite"),
+            project_id: "target-repo".to_owned(),
+            project_name: "target-repo".to_owned(),
+            local_path: target_root.join("repo"),
+            git_upstream: Some("https://example.invalid/team/repo.git".to_owned()),
+        };
+        seed_share_export_session(
+            &source_context.index_db_path,
+            "source-repo",
+            "00000000-0000-4000-8000-000000000303",
+        );
+        update_share_policy(&source_context, SharePolicy::All).unwrap();
+        let source_age_identity = Identity::generate();
+        let source_signing_key = test_signing_key(&source_age_identity);
+        let source_identity = test_share_identity(&source_age_identity);
+        let source = open_index_database_writer(&source_context.index_db_path).unwrap();
+        let turns = query_share_export_turns(&source, "source-repo").unwrap();
+        let artifact = build_export_artifact(ExportBuildRequest {
+            context: &source_context,
+            settings: &ShareSettings {
+                remotes: Vec::new(),
+                recipients: vec![ShareRecipient {
+                    recipient: target_key.public_key,
+                }],
+            },
+            project_key: "git:https://example.invalid/team/repo",
+            identity: &source_identity,
+            decryption_identity: &source_age_identity,
+            signing_key: &source_signing_key,
+            branch: "team",
+            turns,
+            cache_path: &cache,
+        })
+        .unwrap();
+        write_export_artifact(&cache, &artifact).unwrap();
+        let bad_json_path = cache
+            .join(ARTIFACT_ROOT)
+            .join(EXPORTERS_DIR)
+            .join("bad-json")
+            .join(LEGACY_MANIFEST_FILE);
+        fs::create_dir_all(bad_json_path.parent().unwrap()).unwrap();
+        fs::write(&bad_json_path, b"not json").unwrap();
+        for (exporter_dir, schema, project_key) in [
+            (
+                "future-schema",
+                "darc.share.manifest.v999",
+                "git:https://example.invalid/team/repo",
+            ),
+            (
+                "foreign-project",
+                MANIFEST_SCHEMA,
+                "git:https://example.invalid/other/repo",
+            ),
+        ] {
+            let bad_identity = Identity::generate();
+            write_json_file(
+                &cache
+                    .join(ARTIFACT_ROOT)
+                    .join(EXPORTERS_DIR)
+                    .join(exporter_dir)
+                    .join(LEGACY_MANIFEST_FILE),
+                &ManifestArtifact {
+                    schema: schema.to_owned(),
+                    version: 1,
+                    project_key: project_key.to_owned(),
+                    branch: "team".to_owned(),
+                    exported_at: "2026-05-15T00:00:00Z".to_owned(),
+                    exporter: test_share_identity(&bad_identity),
+                    sync: SyncManifestEntry {
+                        payload_hash: "bad".to_owned(),
+                        object_path: format!("{ARTIFACT_ROOT}/objects/missing.age"),
+                    },
+                    turns: Vec::new(),
+                },
+            )
+            .unwrap();
+        }
+
+        let report = import_from_cache(
+            &target_context,
+            "team",
+            "darc/team",
+            "origin",
+            "git:https://example.invalid/team/repo",
+            &cache,
+        )
+        .unwrap();
+
+        assert_eq!(report.imported_turn_count, 1);
+        assert_eq!(report.warning_count, 3);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("bad-json")),
+            "warnings should mention bad JSON manifest: {:?}",
+            report.warnings
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("future-schema")),
+            "warnings should mention future schema manifest: {:?}",
+            report.warnings
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("foreign-project")),
+            "warnings should mention foreign project manifest: {:?}",
             report.warnings
         );
     }
@@ -2411,7 +2697,7 @@ mod tests {
             signing_key: &source_signing_key,
             branch: "team",
             turns,
-            existing_objects: BTreeMap::new(),
+            cache_path: &cache,
         })
         .unwrap();
         write_export_artifact(&cache, &artifact).unwrap();
@@ -2546,7 +2832,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn merge_rejects_symlinked_artifacts() {
+    fn merge_skips_symlinked_visible_manifests() {
         use std::os::unix::fs::symlink;
 
         let root = unique_test_dir("share-symlink-artifacts");
@@ -2602,7 +2888,7 @@ mod tests {
             git_upstream: Some("https://example.invalid/team/repo.git".to_owned()),
         };
 
-        let error = import_from_cache(
+        let report = import_from_cache(
             &context,
             "team",
             "darc/team",
@@ -2610,11 +2896,14 @@ mod tests {
             "git:https://example.invalid/team/repo",
             &cache,
         )
-        .unwrap_err();
+        .unwrap();
 
+        assert_eq!(report.imported_turn_count, 0);
+        assert_eq!(report.warning_count, 1);
         assert!(
-            error.to_string().contains("symlink"),
-            "error should reject symlinked manifest: {error:#}"
+            report.warnings[0].contains("symlink"),
+            "warning should reject symlinked manifest: {:?}",
+            report.warnings
         );
     }
 
@@ -2658,7 +2947,7 @@ mod tests {
             signing_key: &signing_key,
             branch: "team",
             turns,
-            existing_objects: BTreeMap::new(),
+            cache_path: &cache,
         })
         .unwrap();
 
@@ -2802,6 +3091,65 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(object_paths.len(), 1);
         assert!(object_paths[0].contains("/sync-"));
+    }
+
+    #[test]
+    fn push_drops_unexpected_cache_files_from_branch_tip() {
+        let workspace = unique_test_dir("share-artifact-only-tip");
+        let remote_path = workspace.join("share.git");
+        Repository::init_bare(&remote_path).unwrap();
+        let source_root = workspace.join("source-root");
+        let source_repo = workspace.join("source-repo");
+        fs::create_dir_all(&source_root).unwrap();
+        init_test_git_repo(&source_repo);
+        let remote_url = remote_path.to_string_lossy().into_owned();
+        let source_context = ShareProjectContext {
+            root: source_root.clone(),
+            index_db_path: source_root.join("index.sqlite"),
+            project_id: "source-repo".to_owned(),
+            project_name: "source-repo".to_owned(),
+            local_path: source_repo,
+            git_upstream: Some("https://example.invalid/team/repo.git".to_owned()),
+        };
+        seed_share_export_session(
+            &source_context.index_db_path,
+            "source-repo",
+            "00000000-0000-4000-8000-000000000303",
+        );
+        update_share_policy(&source_context, SharePolicy::All).unwrap();
+        let settings = ShareSettings {
+            remotes: vec![ShareRemote {
+                name: "share".to_owned(),
+                url: remote_url.clone(),
+            }],
+            recipients: Vec::new(),
+        };
+        push_share_branch(&source_context, &settings, "team", Some("share")).unwrap();
+        let cache = cache_repo_path(&source_root, &remote_url, "darc/team");
+        fs::write(cache.join("plaintext.txt"), b"do not publish").unwrap();
+        let rogue_object = cache
+            .join(ARTIFACT_ROOT)
+            .join("objects")
+            .join("plaintext.txt");
+        fs::write(&rogue_object, b"do not publish").unwrap();
+        let rogue_nested = cache
+            .join(ARTIFACT_ROOT)
+            .join("unexpected")
+            .join("file.txt");
+        fs::create_dir_all(rogue_nested.parent().unwrap()).unwrap();
+        fs::write(&rogue_nested, b"do not publish").unwrap();
+
+        push_share_branch(&source_context, &settings, "team", Some("share")).unwrap();
+
+        let paths = remote_tip_blob_paths(&remote_path, "darc/team");
+        assert!(
+            paths
+                .iter()
+                .all(|path| allowed_share_cache_file(Path::new(path))),
+            "remote branch should contain only Darc share artifacts: {paths:?}"
+        );
+        assert!(!paths.iter().any(|path| path.contains("plaintext")));
+        assert!(!paths.iter().any(|path| path.contains("unexpected")));
     }
 
     #[test]
@@ -3040,7 +3388,7 @@ mod tests {
             signing_key: &source_signing_key,
             branch: "team",
             turns,
-            existing_objects: BTreeMap::new(),
+            cache_path: &cache,
         })
         .unwrap();
         write_export_artifact(&cache, &artifact).unwrap();
@@ -3147,7 +3495,7 @@ mod tests {
             signing_key: &source_signing_key,
             branch: "team",
             turns: turns.clone(),
-            existing_objects: BTreeMap::new(),
+            cache_path: &cache,
         })
         .unwrap();
         write_export_artifact(&cache, &full).unwrap();
@@ -3169,7 +3517,7 @@ mod tests {
             signing_key: &source_signing_key,
             branch: "team",
             turns: turns.into_iter().take(1).collect(),
-            existing_objects: full.objects,
+            cache_path: &cache,
         })
         .unwrap();
         write_export_artifact(&cache, &shortened).unwrap();

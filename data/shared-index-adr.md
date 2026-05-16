@@ -103,6 +103,10 @@ The branch tip preserves one manifest namespace per exporter. A push replaces on
 objects that are no longer referenced by another exporter. This keeps a team branch usable for fresh pullers: the latest
 tree can expose every teammate's current export instead of only the most recent pusher.
 
+Before committing a share cache update, Darc removes paths outside this artifact layout and stages only
+`darc-share/v1`. Unexpected plaintext files, symlinks, orphan files, and unsupported artifact paths from a fetched
+branch are not republished.
+
 Encrypted object files contain the sensitive payload:
 
 - an encrypted sync payload containing the exporter identity and latest turn keep set for authenticated pruning
@@ -114,7 +118,8 @@ Encrypted object files contain the sensitive payload:
 
 V1 exports one encrypted object per turn. Each object repeats the parent session metadata needed to import that turn.
 This keeps incremental updates smooth when a session receives new turns: already-pushed turn objects remain unchanged and
-only new or changed turn objects are added.
+only new or changed turn objects are added. Push reuses cached ciphertext only by deterministic object path and applies
+explicit object-count and aggregate encrypted-byte caps while building the export.
 
 ### Project Identity
 
@@ -210,9 +215,9 @@ from the fetched tree into the local SQLite index. Pull is fetch plus merge.
 
 Merge decrypts and validates the encrypted sync payload signature before destructive pruning. It prunes stale imported
 turns only for the authenticated exporter identity contained in that decrypted payload, and then removes empty imported
-sessions for that exporter. Malformed, mismatched, undecryptable, unauthenticated, or schema-incompatible exporter
-sync payloads and turn objects are skipped with warnings. Valid objects continue to import. This keeps one bad teammate
-chunk from blocking the whole team index while preserving rigorous warning and test coverage.
+sessions for that exporter. Malformed, mismatched, undecryptable, unauthenticated, schema-incompatible, or foreign
+exporter manifests, sync payloads, and turn objects are skipped with warnings. Valid objects continue to import. This
+keeps one bad teammate chunk from blocking the whole team index while preserving rigorous warning and test coverage.
 
 Writes are isolated by content-addressed objects and manifest entries. Concurrent pushes may still have Git-level
 non-fast-forward failures. V1 reports those failures and asks users to pull first, matching Git expectations.
