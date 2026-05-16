@@ -1074,4 +1074,122 @@ mod tests {
         assert_eq!(existing.1, "synthetic prompt");
         Ok(())
     }
+
+    #[test]
+    fn shared_import_skips_existing_local_session() -> Result<()> {
+        let mut connection = open_index_database_writer(&test_db_path("local-owner-collision"))?;
+        let user = ShareUserRecord {
+            user_id: "usr-remote".to_owned(),
+            display_name: Some("Remote User".to_owned()),
+            email: Some("remote@example.invalid".to_owned()),
+            public_key: Some("age1remote".to_owned()),
+            source: "test".to_owned(),
+            updated_at: "2026-05-15T00:00:00Z".to_owned(),
+        };
+        let mut remote_turn = synthetic_share_turn();
+        remote_turn.user_message = "remote prompt".to_owned();
+        let local_session = &remote_turn.session;
+        connection.execute(
+            "
+            INSERT INTO sessions (
+                project_id,
+                provider,
+                session_id,
+                parent_session_id,
+                session_kind,
+                archive_path,
+                cwd,
+                cli_version,
+                schema_id,
+                determinism,
+                source_size,
+                source_mtime_ms
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            ",
+            params![
+                "target-repo",
+                local_session.provider.directory_name(),
+                local_session.session_id,
+                local_session.parent_session_id,
+                local_session.session_kind,
+                "local.jsonl",
+                "/tmp/local-repo",
+                local_session.cli_version,
+                local_session.schema_id,
+                local_session.determinism,
+                local_session.source_size,
+                local_session.source_mtime_ms,
+            ],
+        )?;
+        connection.execute(
+            INSERT_TURN_SQL,
+            params![
+                "target-repo",
+                local_session.provider.directory_name(),
+                local_session.session_id,
+                remote_turn.turn_ordinal,
+                remote_turn.turn_id,
+                remote_turn.started_at,
+                remote_turn.completed_at,
+                remote_turn.status,
+                "local prompt",
+                remote_turn.final_answer_at,
+                remote_turn.final_answer_text,
+                remote_turn.steps_json,
+                remote_turn.step_count,
+                remote_turn.tool_call_count,
+                remote_turn.tool_output_count,
+                remote_turn.attachment_count,
+                remote_turn.delegation_count,
+                remote_turn.hook_summary_count,
+                remote_turn.has_final_answer,
+                remote_turn.duration_ms,
+                remote_turn.effective_agent_runtime_ms,
+                remote_turn.provider_total_token_count,
+                remote_turn.input_uncached_token_count,
+                remote_turn.cache_read_token_count,
+                remote_turn.cache_write_token_count,
+                remote_turn.output_token_count,
+                remote_turn.reasoning_token_count,
+                remote_turn.total_token_count,
+                remote_turn.primary_model,
+                remote_turn.changed_file_count,
+                remote_turn.added_line_count,
+                remote_turn.removed_line_count,
+            ],
+        )?;
+
+        let imported = import_shared_turn(
+            &mut connection,
+            ShareTurnImport {
+                project_id: "target-repo",
+                user: &user,
+                remote_name: "origin:darc/team",
+                imported_at: "2026-05-15T00:01:00Z",
+                turn: &remote_turn,
+            },
+        )?;
+
+        let existing: (String, Option<String>, String) = connection.query_row(
+            "
+            SELECT sessions.origin_kind, sessions.origin_user_id, turns.user_message
+            FROM sessions
+            JOIN turns
+                ON turns.project_id = sessions.project_id
+                AND turns.provider = sessions.provider
+                AND turns.session_id = sessions.session_id
+            WHERE sessions.project_id = 'target-repo'
+                AND sessions.provider = 'codex'
+                AND sessions.session_id = ?1
+            ",
+            [&local_session.session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+
+        assert!(!imported);
+        assert_eq!(existing.0, "local");
+        assert_eq!(existing.1, None);
+        assert_eq!(existing.2, "local prompt");
+        Ok(())
+    }
 }
