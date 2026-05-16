@@ -5547,6 +5547,50 @@ fn session_and_search_queries_respect_shared_scope_and_author() -> Result<()> {
         Some("teammate@example.invalid")
     );
 
+    let all_sessions = query_project_sessions(
+        &index_path,
+        SessionsQueryRequest {
+            project_id: "repo-a",
+            project_root: None,
+            provider: None,
+            since: None,
+            until: None,
+            touched_path: None,
+            origin_scope: SessionOriginScope::All,
+            author: None,
+            view: SessionsView::Full,
+            limit: 10,
+            offset: 0,
+        },
+    )?;
+    assert_eq!(
+        all_sessions
+            .sessions
+            .iter()
+            .map(|session| session.session_id.as_str())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([local_session, shared_session])
+    );
+
+    let all_author_sessions = query_project_sessions(
+        &index_path,
+        SessionsQueryRequest {
+            project_id: "repo-a",
+            project_root: None,
+            provider: None,
+            since: None,
+            until: None,
+            touched_path: None,
+            origin_scope: SessionOriginScope::All,
+            author: Some("teammate@example.invalid"),
+            view: SessionsView::Full,
+            limit: 10,
+            offset: 0,
+        },
+    )?;
+    assert_eq!(all_author_sessions.sessions.len(), 1);
+    assert_eq!(all_author_sessions.sessions[0].session_id, shared_session);
+
     let local_search = query_search_turns(
         &index_path,
         SearchTurnsRequest {
@@ -5596,6 +5640,62 @@ fn session_and_search_queries_respect_shared_scope_and_author() -> Result<()> {
     )?;
     assert_eq!(shared_search.hits.len(), 1);
     assert_eq!(shared_search.hits[0].session_id, shared_session);
+
+    let all_search = query_search_turns(
+        &index_path,
+        SearchTurnsRequest {
+            project_id: "repo-a",
+            project_root: None,
+            mode: SearchMode::Keyword,
+            query: "marker",
+            include_tool_output: false,
+            fields: &[],
+            excluded_fields: &[],
+            provider: None,
+            session_id: None,
+            since: None,
+            until: None,
+            origin_scope: SessionOriginScope::All,
+            author: None,
+            limit: 10,
+            offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
+            match_limit: None,
+        },
+    )?;
+    assert_eq!(
+        all_search
+            .hits
+            .iter()
+            .map(|hit| hit.session_id.as_str())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([local_session, shared_session])
+    );
+
+    let all_author_search = query_search_turns(
+        &index_path,
+        SearchTurnsRequest {
+            project_id: "repo-a",
+            project_root: None,
+            mode: SearchMode::Keyword,
+            query: "marker",
+            include_tool_output: false,
+            fields: &[],
+            excluded_fields: &[],
+            provider: None,
+            session_id: None,
+            since: None,
+            until: None,
+            origin_scope: SessionOriginScope::All,
+            author: Some("teammate@example.invalid"),
+            limit: 10,
+            offset: 0,
+            matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
+            match_limit: None,
+        },
+    )?;
+    assert_eq!(all_author_search.hits.len(), 1);
+    assert_eq!(all_author_search.hits[0].session_id, shared_session);
 
     fs::remove_dir_all(
         index_path
