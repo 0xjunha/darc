@@ -242,7 +242,7 @@ Session summary payloads include `provenance`:
 
 - `origin_kind`: `local` or `shared`
 - `user_id`, `user_name`, and `user_email`: author metadata for imported shared sessions, otherwise `null`
-- `origin_remote`: remote/branch provenance for imported shared sessions
+- `origin_remote`: canonical non-secret remote/branch provenance key for imported shared sessions
 - `imported_at`: UTC import timestamp for imported shared sessions
 
 Session-list and search payloads include `origin_scope` and `author` so clients can distinguish local-only, shared-only,

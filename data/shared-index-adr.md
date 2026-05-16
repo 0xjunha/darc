@@ -157,6 +157,10 @@ SQLite adds a `users` table plus provenance columns on `sessions`:
 - `imported_at`
 - `share_state`: `unset`, `included`, or `excluded`
 
+`origin_remote` is an alias-independent, non-secret provenance key derived from the credential-sanitized remote URL and
+Git branch. Renaming a Darc remote alias for the same URL does not fork provenance, and retargeting an alias does not
+allow the new remote to prune rows imported from the old remote.
+
 This keeps canonical session and turn tables as the query source while preserving who a shared session came from.
 
 ### Share Selection
@@ -217,11 +221,12 @@ history rewriting and remote retention controls.
 Fetch downloads the `darc/<name>` branch into the local Darc share cache. Merge imports all current exporter manifests
 from the fetched tree into the local SQLite index. Pull is fetch plus merge.
 
-Merge decrypts and validates the encrypted sync payload signature before destructive pruning. It prunes stale imported
-turns only for the authenticated exporter identity contained in that decrypted payload, and then removes empty imported
-sessions for that exporter. Malformed, mismatched, undecryptable, unauthenticated, schema-incompatible, or foreign
-exporter manifests, sync payloads, and turn objects are skipped with warnings. Valid objects continue to import. This
-keeps one bad teammate chunk from blocking the whole team index while preserving rigorous warning and test coverage.
+Merge decrypts and validates the encrypted sync payload signature before destructive pruning. It imports only visible
+manifest turns that also appear in the signed sync payload, prunes stale imported turns only for the authenticated
+exporter identity contained in that decrypted payload, and then removes empty imported sessions for that exporter.
+Malformed, mismatched, undecryptable, unauthenticated, schema-incompatible, or foreign exporter manifests, sync payloads,
+and turn objects are skipped with warnings. Valid objects continue to import. This keeps one bad teammate chunk from
+blocking the whole team index while preserving rigorous warning and test coverage.
 
 Writes are isolated by content-addressed objects and manifest entries. Concurrent pushes may still have Git-level
 non-fast-forward failures. V1 reports those failures and asks users to pull first, matching Git expectations.
