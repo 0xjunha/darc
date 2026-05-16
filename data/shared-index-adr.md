@@ -231,8 +231,8 @@ Fetch downloads the `darc/<name>` branch into the local Darc share cache and cle
 Merge rejects symlinked cache roots and imports all current exporter manifests from the fetched tree into the local
 SQLite index. Pull is fetch plus merge.
 
-Merge decrypts and validates the encrypted sync payload signature before destructive pruning. It imports only visible
-manifest turns that also appear in the signed sync payload, prunes stale imported turns only for the authenticated
+Merge decrypts and validates the encrypted sync payload signature before destructive pruning. It imports only when the
+visible manifest turn set exactly matches the signed sync payload, prunes stale imported turns only for the authenticated
 exporter identity contained in that decrypted payload, and then removes empty imported sessions for that exporter.
 Malformed, mismatched, undecryptable, unauthenticated, schema-incompatible, or foreign exporter manifests, sync payloads,
 and turn objects are skipped with warnings. Valid objects continue to import. This keeps one bad teammate chunk from

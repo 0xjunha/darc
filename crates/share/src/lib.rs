@@ -1338,12 +1338,26 @@ fn import_from_cache(
             ));
             continue;
         }
+        let manifest_turns = manifest
+            .turns
+            .iter()
+            .map(sync_entry_from_manifest)
+            .collect::<BTreeSet<_>>();
+        let authenticated_turns = sync_payload.turns.iter().cloned().collect::<BTreeSet<_>>();
+        if authenticated_turns != manifest_turns {
+            skipped_turn_count += u64::try_from(manifest.turns.len())
+                .context("skipped turn count exceeds u64 range")?;
+            warnings.push(format!(
+                "skipped share manifest {} for exporter {}: signed sync entries do not match visible manifest entries",
+                cached.relative_path, sync_payload.exporter.user_id
+            ));
+            continue;
+        }
         let keep_turns = sync_payload
             .turns
             .iter()
             .map(|entry| (entry.provider, entry.session_id.clone(), entry.turn_ordinal))
             .collect::<BTreeSet<_>>();
-        let authenticated_turns = sync_payload.turns.iter().cloned().collect::<BTreeSet<_>>();
         let import_context = ImportEntryContext {
             expected_project_key,
             project_id: &context.project_id,
@@ -1636,6 +1650,7 @@ pub fn sanitize_git_url_for_display(url: &str) -> String {
 
 /// Reads and parses one age identity file.
 fn read_share_identity_key(path: &Path) -> Result<Identity> {
+    ensure_regular_private_key_file(path)?;
     let content =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     Identity::from_str(content.trim()).map_err(|error| anyhow::anyhow!("{error}"))
@@ -1643,6 +1658,7 @@ fn read_share_identity_key(path: &Path) -> Result<Identity> {
 
 /// Reads and parses one Ed25519 share signing key file.
 fn read_share_signing_key(path: &Path) -> Result<SigningKey> {
+    ensure_regular_private_key_file(path)?;
     let content =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let seed = hex_decode_fixed::<32>(content.trim())
@@ -1677,14 +1693,32 @@ fn write_share_private_key(path: &Path, content: &str) -> Result<()> {
 
 /// Restricts one private key file to the current user on Unix.
 fn harden_private_key_permissions(path: &Path) -> Result<()> {
+    ensure_regular_private_key_file(path)?;
     #[cfg(unix)]
     {
-        let mut permissions = fs::metadata(path)
+        let mut permissions = fs::symlink_metadata(path)
             .with_context(|| format!("failed to inspect {}", path.display()))?
             .permissions();
         permissions.set_mode(0o600);
         fs::set_permissions(path, permissions)
             .with_context(|| format!("failed to set permissions on {}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// Rejects missing, symlinked, or non-regular private key files.
+fn ensure_regular_private_key_file(path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("failed to inspect {}", path.display()))?;
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() {
+        bail!("share private key path is a symlink: {}", path.display());
+    }
+    if !file_type.is_file() {
+        bail!(
+            "share private key path is not a regular file: {}",
+            path.display()
+        );
     }
     Ok(())
 }
@@ -3022,6 +3056,46 @@ mod tests {
         assert_eq!(mode, 0o600);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn share_key_read_rejects_symlinked_age_key() {
+        use std::os::unix::fs::symlink;
+
+        let root = unique_test_dir("share-key-symlink-age");
+        let outside = root.join("outside.agekey");
+        let key_path = root.join("keys").join(KEY_FILE_NAME);
+        fs::create_dir_all(key_path.parent().unwrap()).unwrap();
+        fs::write(&outside, Identity::generate().to_string().expose_secret()).unwrap();
+        symlink(&outside, &key_path).unwrap();
+
+        let error = ensure_share_key(&root).unwrap_err();
+
+        assert!(
+            error.to_string().contains("symlink"),
+            "error should reject symlinked age key: {error:#}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn share_key_read_rejects_symlinked_signing_key() {
+        use std::os::unix::fs::symlink;
+
+        let root = unique_test_dir("share-key-symlink-signing");
+        let outside = root.join("outside.signingkey");
+        let key_path = root.join("keys").join(SIGNING_KEY_FILE_NAME);
+        fs::create_dir_all(key_path.parent().unwrap()).unwrap();
+        fs::write(&outside, hex_encode(&Sha256::digest(b"synthetic-seed"))).unwrap();
+        symlink(&outside, &key_path).unwrap();
+
+        let error = ensure_share_signing_key(&root).unwrap_err();
+
+        assert!(
+            error.to_string().contains("symlink"),
+            "error should reject symlinked signing key: {error:#}"
+        );
+    }
+
     #[test]
     fn recipient_set_changes_encrypt_to_a_new_object_path() {
         let workspace = unique_test_dir("share-recipient-fingerprint");
@@ -4181,15 +4255,90 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(report.imported_turn_count, 1);
-        assert_eq!(report.skipped_turn_count, 1);
+        assert_eq!(report.imported_turn_count, 0);
+        assert_eq!(report.skipped_turn_count, 2);
         assert_eq!(report.warning_count, 1);
         assert!(
-            report.warnings[0].contains("not authenticated by sync payload"),
+            report.warnings[0].contains("do not match visible manifest entries"),
             "warning should reject unauthenticated manifest turn: {:?}",
             report.warnings
         );
-        assert_eq!(turn_count, 1);
+        assert_eq!(turn_count, 0);
+    }
+
+    #[test]
+    fn merge_rejects_extra_signed_sync_entries() {
+        let TestShareArtifact {
+            cache,
+            target_context,
+            target_identity,
+            source_identity,
+            source_signing_key,
+            artifact,
+        } = build_single_turn_test_artifact("share-extra-sync-entry");
+        write_export_artifact(&cache, &artifact).unwrap();
+        let first_report = import_from_cache(
+            &target_context,
+            "team",
+            "darc/team",
+            "origin",
+            "https://example.invalid/team/share.git",
+            "git:https://example.invalid/team/repo",
+            &cache,
+        )
+        .unwrap();
+        let manifest_path = cache.join(exporter_manifest_relative_path(&source_identity));
+        let mut manifest = read_json_file::<ManifestArtifact>(&manifest_path).unwrap();
+        let stale_entry = sync_entry_from_manifest(&manifest.turns[0]);
+        manifest.turns.clear();
+        manifest.sync = write_test_sync_object(
+            &cache,
+            &target_identity,
+            &source_signing_key,
+            &source_identity,
+            "git:https://example.invalid/team/repo",
+            vec![stale_entry],
+        );
+        write_json_file(&manifest_path, &manifest).unwrap();
+
+        let second_report = import_from_cache(
+            &target_context,
+            "team",
+            "darc/team",
+            "origin",
+            "https://example.invalid/team/share.git",
+            "git:https://example.invalid/team/repo",
+            &cache,
+        )
+        .unwrap();
+
+        let connection = open_index_database_writer(&target_context.index_db_path).unwrap();
+        let imported_turn_count: i64 = connection
+            .query_row(
+                "
+                SELECT COUNT(*)
+                FROM turns
+                JOIN sessions
+                    ON sessions.project_id = turns.project_id
+                    AND sessions.provider = turns.provider
+                    AND sessions.session_id = turns.session_id
+                WHERE sessions.project_id = 'target-repo'
+                    AND sessions.origin_kind = 'shared'
+                ",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(first_report.imported_turn_count, 1);
+        assert_eq!(second_report.imported_turn_count, 0);
+        assert_eq!(second_report.warning_count, 1);
+        assert!(
+            second_report.warnings[0].contains("do not match visible manifest entries"),
+            "warning should reject extra signed sync entries: {:?}",
+            second_report.warnings
+        );
+        assert_eq!(imported_turn_count, 1);
     }
 
     #[test]
@@ -4233,7 +4382,7 @@ mod tests {
         assert_eq!(report.skipped_turn_count, 1);
         assert_eq!(report.warning_count, 1);
         assert!(
-            report.warnings[0].contains("not authenticated by sync payload"),
+            report.warnings[0].contains("do not match visible manifest entries"),
             "warning should reject stale manifest metadata replay: {:?}",
             report.warnings
         );
