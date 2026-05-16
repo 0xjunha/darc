@@ -216,6 +216,122 @@ fn canonical_read_commands_accept_shared_options_around_subcommands() {
 }
 
 #[test]
+fn parses_share_command_surface() {
+    let remote_add = Cli::try_parse_from([
+        "darc",
+        "remote",
+        "--root",
+        "/tmp/darc-root",
+        "add",
+        "team",
+        "https://example.invalid/team/share.git",
+    ])
+    .unwrap();
+    assert!(matches!(
+        remote_add.command,
+        Commands::Remote(super::RemoteArgs {
+            root,
+            command: super::RemoteCommands::Add(super::RemoteAddArgs {
+                name,
+                url,
+            }),
+        }) if root.as_path() == Path::new("/tmp/darc-root")
+            && name == "team"
+            && url == "https://example.invalid/team/share.git"
+    ));
+
+    let remote_list = Cli::try_parse_from(["darc", "remote", "list"]).unwrap();
+    assert!(matches!(
+        remote_list.command,
+        Commands::Remote(super::RemoteArgs {
+            command: super::RemoteCommands::List,
+            ..
+        })
+    ));
+
+    let include_all = Cli::try_parse_from([
+        "darc",
+        "share",
+        "--root",
+        "/tmp/darc-root",
+        "include",
+        "--all",
+    ])
+    .unwrap();
+    assert!(matches!(
+        include_all.command,
+        Commands::Share(super::ShareArgs {
+            root,
+            command: super::ShareCommands::Include(super::ShareSessionSelectionArgs {
+                all: true,
+                ..
+            }),
+        }) if root.as_path() == Path::new("/tmp/darc-root")
+    ));
+
+    let recipient_add = Cli::try_parse_from([
+        "darc",
+        "share",
+        "recipient",
+        "add",
+        "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+    ])
+    .unwrap();
+    assert!(matches!(
+        recipient_add.command,
+        Commands::Share(super::ShareArgs {
+            command: super::ShareCommands::Recipient(super::ShareRecipientArgs {
+                command: super::ShareRecipientCommands::Add(super::ShareRecipientValueArgs {
+                    recipient,
+                }),
+            }),
+            ..
+        }) if recipient.starts_with("age1")
+    ));
+
+    let push = Cli::try_parse_from([
+        "darc",
+        "push",
+        "team",
+        "--remote",
+        "share",
+        "--root",
+        "/tmp/darc-root",
+    ])
+    .unwrap();
+    assert!(matches!(
+        push.command,
+        Commands::Push(super::ShareBranchArgs {
+            branch,
+            remote: Some(remote),
+            root,
+        }) if branch == "team" && remote == "share" && root.as_path() == Path::new("/tmp/darc-root")
+    ));
+
+    let fetch = Cli::try_parse_from(["darc", "fetch", "team", "--remote", "share"]).unwrap();
+    assert!(matches!(
+        fetch.command,
+        Commands::Fetch(super::ShareBranchArgs {
+            branch,
+            remote: Some(remote),
+            ..
+        }) if branch == "team" && remote == "share"
+    ));
+
+    let merge = Cli::try_parse_from(["darc", "merge", "team"]).unwrap();
+    assert!(matches!(
+        merge.command,
+        Commands::Merge(super::ShareBranchArgs { branch, .. }) if branch == "team"
+    ));
+
+    let pull = Cli::try_parse_from(["darc", "pull", "team"]).unwrap();
+    assert!(matches!(
+        pull.command,
+        Commands::Pull(super::ShareBranchArgs { branch, .. }) if branch == "team"
+    ));
+}
+
+#[test]
 fn parses_canonical_list_show_search_stats_and_resolve_commands() {
     let sessions = Cli::try_parse_from([
         "darc",
