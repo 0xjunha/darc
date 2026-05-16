@@ -1172,6 +1172,15 @@ fn authenticated_retained_manifests(
                 return None;
             }
             let authenticated_turns = sync_payload.turns.iter().cloned().collect::<BTreeSet<_>>();
+            let manifest_turns = cached
+                .manifest
+                .turns
+                .iter()
+                .map(sync_entry_from_manifest)
+                .collect::<BTreeSet<_>>();
+            if authenticated_turns != manifest_turns {
+                return None;
+            }
             let turns_are_authenticated = cached.manifest.turns.iter().all(|entry| {
                 authenticated_turns.contains(&sync_entry_from_manifest(entry))
                     && verify_cached_turn_payload(
@@ -4499,6 +4508,44 @@ mod tests {
         let manifest_path = cache.join(exporter_manifest_relative_path(&source_identity));
         let mut manifest = read_json_file::<ManifestArtifact>(&manifest_path).unwrap();
         manifest.version = 2;
+        write_json_file(&manifest_path, &manifest).unwrap();
+
+        let cached = read_cached_manifests(&cache).unwrap();
+        let next_exporter = test_share_identity(&Identity::generate());
+        let retained = authenticated_retained_manifests(
+            &cache,
+            &cached.manifests,
+            "git:https://example.invalid/team/repo",
+            &next_exporter,
+            &target_identity,
+        );
+
+        assert!(retained.is_empty());
+    }
+
+    #[test]
+    fn retention_skips_extra_signed_sync_entries() {
+        let TestShareArtifact {
+            cache,
+            target_identity,
+            source_identity,
+            source_signing_key,
+            artifact,
+            ..
+        } = build_single_turn_test_artifact("share-retain-extra-sync");
+        write_export_artifact(&cache, &artifact).unwrap();
+        let manifest_path = cache.join(exporter_manifest_relative_path(&source_identity));
+        let mut manifest = read_json_file::<ManifestArtifact>(&manifest_path).unwrap();
+        let extra_entry = sync_entry_from_manifest(&manifest.turns[0]);
+        manifest.turns.clear();
+        manifest.sync = write_test_sync_object(
+            &cache,
+            &target_identity,
+            &source_signing_key,
+            &source_identity,
+            "git:https://example.invalid/team/repo",
+            vec![extra_entry],
+        );
         write_json_file(&manifest_path, &manifest).unwrap();
 
         let cached = read_cached_manifests(&cache).unwrap();
