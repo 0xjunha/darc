@@ -1381,7 +1381,6 @@ fn delete_indexed_session(
             WHERE project_id = ?1
                 AND provider = ?2
                 AND session_id = ?3
-                AND origin_kind = 'local'
             ",
             params![project_id, provider.directory_name(), session_id],
         )
@@ -1465,8 +1464,13 @@ fn optional_sql_i64_to_u64(value: Option<i64>, column_name: &str) -> Result<Opti
 
 #[cfg(test)]
 mod classification_tests {
-    use std::io;
+    use std::{
+        env, fs, io,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
+    use darc_store::open_index_database_writer;
+    use rusqlite::params;
     use serde_json::Value;
 
     use super::*;
@@ -1474,6 +1478,17 @@ mod classification_tests {
     /// Builds one reusable JSON error for classification tests.
     fn json_error() -> serde_json::Error {
         serde_json::from_str::<Value>("{").expect_err("invalid JSON fixture")
+    }
+
+    /// Builds one unique temporary database path for engine tests.
+    fn test_db_path(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after epoch")
+            .as_nanos();
+        let dir = env::temp_dir().join(format!("darc-{prefix}-{}-{nanos}", std::process::id()));
+        fs::create_dir_all(&dir).expect("failed to create test directory");
+        dir.join("index.sqlite")
     }
 
     /// Builds one archived candidate for snapshot matching tests.
@@ -1494,6 +1509,44 @@ mod classification_tests {
             size: 100,
             mtime_ms: 200,
         }
+    }
+
+    #[test]
+    fn delete_indexed_session_removes_shared_rows_for_local_promotion() {
+        let connection =
+            open_index_database_writer(test_db_path("promote-shared").as_path()).unwrap();
+        connection
+            .execute(
+                "
+                INSERT INTO sessions (
+                    project_id,
+                    provider,
+                    session_id,
+                    session_kind,
+                    archive_path,
+                    cwd,
+                    origin_kind,
+                    origin_user_id,
+                    origin_remote,
+                    imported_at
+                ) VALUES (?1, ?2, ?3, 'primary', ?4, ?5, 'shared', 'usr-remote', 'origin:darc/team', '2026-05-15T00:00:00Z')
+                ",
+                params![
+                    "repo",
+                    SourceKind::Codex.directory_name(),
+                    "session-promote",
+                    "shared://origin/usr-remote/codex/session-promote",
+                    "/tmp/repo",
+                ],
+            )
+            .unwrap();
+
+        delete_indexed_session(&connection, "repo", SourceKind::Codex, "session-promote").unwrap();
+
+        let count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
     }
 
     /// Builds one indexed snapshot for snapshot matching tests.
