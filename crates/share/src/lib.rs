@@ -460,6 +460,7 @@ pub fn merge_share_branch(
         branch,
         &git_branch,
         &remote.name,
+        &remote.url,
         &project_key,
         &cache_path,
     )
@@ -986,6 +987,7 @@ fn import_from_cache(
     branch: &str,
     git_branch: &str,
     remote_name: &str,
+    remote_url: &str,
     expected_project_key: &str,
     cache_path: &Path,
 ) -> Result<ShareMergeReport> {
@@ -1019,7 +1021,7 @@ fn import_from_cache(
     let identity_key = ensure_share_key(&context.root)?;
     let identity = read_share_identity_key(&identity_key.key_path)?;
     let mut connection = open_index_database_writer(&context.index_db_path)?;
-    let origin_remote = share_origin_remote(remote_name, git_branch);
+    let origin_remote = share_origin_remote(remote_url, git_branch);
     let mut imported_exporters = BTreeSet::new();
     let mut imported_turn_count = 0_u64;
     let mut skipped_turn_count = 0_u64;
@@ -2130,8 +2132,10 @@ fn cache_repo_path(root: &Path, remote_url: &str, git_branch: &str) -> PathBuf {
 }
 
 /// Builds the stored provenance key for one imported remote branch.
-fn share_origin_remote(remote_name: &str, git_branch: &str) -> String {
-    format!("{remote_name}:{git_branch}")
+fn share_origin_remote(remote_url: &str, git_branch: &str) -> String {
+    let sanitized_url = sanitize_git_url_for_display(remote_url);
+    let identity = sha256_hex(format!("{sanitized_url}\n{git_branch}").as_bytes());
+    format!("remote:{}:{git_branch}", &identity[..16])
 }
 
 /// Returns the per-exporter visible manifest path.
@@ -2781,6 +2785,7 @@ mod tests {
             "team",
             "darc/team",
             "origin",
+            "https://example.invalid/team/share.git",
             "git:https://example.invalid/team/repo",
             &cache,
         )
@@ -2879,6 +2884,7 @@ mod tests {
             "team",
             "darc/team",
             "origin",
+            "https://example.invalid/team/share.git",
             "git:https://example.invalid/team/repo",
             &cache,
         )
@@ -3003,6 +3009,7 @@ mod tests {
             "team",
             "darc/team",
             "origin",
+            "https://example.invalid/team/share.git",
             "git:https://example.invalid/team/repo",
             &cache,
         )
@@ -3112,6 +3119,7 @@ mod tests {
             "team",
             "darc/team",
             "origin",
+            "https://example.invalid/team/share.git",
             "git:https://example.invalid/team/repo",
             &cache,
         )
@@ -3225,6 +3233,7 @@ mod tests {
             "team",
             "darc/team",
             "origin",
+            "https://example.invalid/team/share.git",
             "git:https://example.invalid/team/repo",
             &cache,
         )
@@ -3323,6 +3332,7 @@ mod tests {
             "team",
             "darc/team",
             "origin",
+            "https://example.invalid/team/share.git",
             "git:https://example.invalid/team/repo",
             &cache,
         )
@@ -3345,6 +3355,7 @@ mod tests {
             target_context,
             target_identity,
             source_identity,
+            source_signing_key: _,
             artifact,
         } = build_single_turn_test_artifact("share-unsupported-payload-version");
         write_export_artifact(&cache, &artifact).unwrap();
@@ -3378,6 +3389,7 @@ mod tests {
             "team",
             "darc/team",
             "origin",
+            "https://example.invalid/team/share.git",
             "git:https://example.invalid/team/repo",
             &cache,
         )
@@ -3420,6 +3432,7 @@ mod tests {
             "team",
             "darc/team",
             "origin",
+            "https://example.invalid/team/share.git",
             "git:https://example.invalid/team/repo",
             &cache,
         )
@@ -3433,6 +3446,135 @@ mod tests {
             "warning should reject unsupported turn payload version: {:?}",
             report.warnings
         );
+    }
+
+    #[test]
+    fn merge_uses_canonical_remote_provenance_across_aliases() {
+        let TestShareArtifact {
+            cache,
+            target_context,
+            artifact,
+            ..
+        } = build_single_turn_test_artifact("share-canonical-remote-alias");
+        write_export_artifact(&cache, &artifact).unwrap();
+        let first_remote = "https://alice:token@example.invalid/team/share.git";
+        let second_remote = "https://bob:token@example.invalid/team/share.git";
+
+        let first = import_from_cache(
+            &target_context,
+            "team",
+            "darc/team",
+            "first-alias",
+            first_remote,
+            "git:https://example.invalid/team/repo",
+            &cache,
+        )
+        .unwrap();
+        let second = import_from_cache(
+            &target_context,
+            "team",
+            "darc/team",
+            "second-alias",
+            second_remote,
+            "git:https://example.invalid/team/repo",
+            &cache,
+        )
+        .unwrap();
+
+        let target = open_index_database_writer(&target_context.index_db_path).unwrap();
+        let stored: (i64, String) = target
+            .query_row(
+                "
+                SELECT COUNT(*), MIN(origin_remote)
+                FROM sessions
+                WHERE project_id = 'target-repo'
+                    AND origin_kind = 'shared'
+                ",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+
+        assert_eq!(first.imported_turn_count, 1);
+        assert_eq!(first.warning_count, 0);
+        assert_eq!(second.imported_turn_count, 1);
+        assert_eq!(second.warning_count, 0);
+        assert_eq!(stored.0, 1);
+        assert_eq!(stored.1, share_origin_remote(first_remote, "darc/team"));
+        assert_eq!(stored.1, share_origin_remote(second_remote, "darc/team"));
+        assert!(!stored.1.contains("first-alias"));
+        assert!(!stored.1.contains("second-alias"));
+    }
+
+    #[test]
+    fn merge_retargeted_alias_does_not_prune_previous_remote_rows() {
+        let TestShareArtifact {
+            cache,
+            target_context,
+            target_identity,
+            source_identity,
+            source_signing_key,
+            artifact,
+        } = build_single_turn_test_artifact("share-canonical-remote-retarget");
+        write_export_artifact(&cache, &artifact).unwrap();
+        let first_remote = "https://example.invalid/team/share-a.git";
+        let second_remote = "https://example.invalid/team/share-b.git";
+        import_from_cache(
+            &target_context,
+            "team",
+            "darc/team",
+            "share",
+            first_remote,
+            "git:https://example.invalid/team/repo",
+            &cache,
+        )
+        .unwrap();
+        let mut empty_manifest = artifact.manifest.clone();
+        empty_manifest.sync = write_test_sync_object(
+            &cache,
+            &target_identity,
+            &source_signing_key,
+            &source_identity,
+            "git:https://example.invalid/team/repo",
+            Vec::new(),
+        );
+        empty_manifest.turns.clear();
+        write_json_file(
+            &cache.join(exporter_manifest_relative_path(&source_identity)),
+            &empty_manifest,
+        )
+        .unwrap();
+
+        let report = import_from_cache(
+            &target_context,
+            "team",
+            "darc/team",
+            "share",
+            second_remote,
+            "git:https://example.invalid/team/repo",
+            &cache,
+        )
+        .unwrap();
+
+        let target = open_index_database_writer(&target_context.index_db_path).unwrap();
+        let stored: (i64, String) = target
+            .query_row(
+                "
+                SELECT COUNT(*), MIN(origin_remote)
+                FROM sessions
+                WHERE project_id = 'target-repo'
+                    AND origin_kind = 'shared'
+                ",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+
+        assert_eq!(report.imported_turn_count, 0);
+        assert_eq!(report.warning_count, 0);
+        assert_eq!(stored.0, 1);
+        assert_eq!(stored.1, share_origin_remote(first_remote, "darc/team"));
+        assert_ne!(stored.1, share_origin_remote(second_remote, "darc/team"));
     }
 
     #[test]
@@ -3491,6 +3633,7 @@ mod tests {
             "team",
             "darc/team",
             "origin",
+            "https://example.invalid/team/share.git",
             "git:https://example.invalid/team/repo",
             &cache,
         )
@@ -3569,6 +3712,7 @@ mod tests {
             "team",
             "darc/team",
             "origin",
+            "https://example.invalid/team/share.git",
             "git:https://example.invalid/team/repo",
             &cache,
         )
@@ -4129,6 +4273,7 @@ mod tests {
             "team",
             "darc/team",
             "origin",
+            "https://example.invalid/team/share.git",
             "git:https://example.invalid/team/repo",
             &cache,
         )
@@ -4144,6 +4289,7 @@ mod tests {
             "team",
             "darc/team",
             "origin",
+            "https://example.invalid/team/share.git",
             "git:https://example.invalid/team/repo",
             &cache,
         )
@@ -4236,6 +4382,7 @@ mod tests {
             "team",
             "darc/team",
             "origin",
+            "https://example.invalid/team/share.git",
             "git:https://example.invalid/team/repo",
             &cache,
         )
@@ -4259,6 +4406,7 @@ mod tests {
             "team",
             "darc/team",
             "origin",
+            "https://example.invalid/team/share.git",
             "git:https://example.invalid/team/repo",
             &cache,
         )
@@ -4289,6 +4437,7 @@ mod tests {
         target_context: ShareProjectContext,
         target_identity: Identity,
         source_identity: ShareIdentity,
+        source_signing_key: SigningKey,
         artifact: BuiltExportArtifact,
     }
 
@@ -4351,6 +4500,7 @@ mod tests {
             target_context,
             target_identity,
             source_identity,
+            source_signing_key,
             artifact,
         }
     }
