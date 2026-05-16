@@ -723,7 +723,20 @@ fn read_cached_manifests(cache_path: &Path) -> Result<CachedManifestRead> {
     let mut warnings = Vec::new();
     let mut manifest_count = 0_usize;
     let mut manifest_bytes = 0_u64;
-    let exporter_root = cache_path.join(ARTIFACT_ROOT).join(EXPORTERS_DIR);
+    let exporter_root_relative = format!("{ARTIFACT_ROOT}/{EXPORTERS_DIR}");
+    let exporter_root = cache_path.join(&exporter_root_relative);
+    if let Err(error) =
+        ensure_safe_artifact_ancestors(cache_path, Path::new(&exporter_root_relative))
+    {
+        warnings.push(format!(
+            "skipped share exporter root {}: {error:#}",
+            exporter_root.display()
+        ));
+        return Ok(CachedManifestRead {
+            manifests,
+            warnings,
+        });
+    }
     match is_regular_directory(&exporter_root) {
         Ok(true) => {
             for entry in fs::read_dir(&exporter_root)
@@ -744,16 +757,15 @@ fn read_cached_manifests(cache_path: &Path) -> Result<CachedManifestRead> {
                     "{ARTIFACT_ROOT}/{EXPORTERS_DIR}/{exporter_dir}/{LEGACY_MANIFEST_FILE}"
                 );
                 let manifest_path = cache_path.join(&relative_path);
-                if manifest_path.exists()
-                    && !read_cached_manifest(
-                        &mut manifests,
-                        &mut warnings,
-                        &mut manifest_count,
-                        &mut manifest_bytes,
-                        relative_path,
-                        &manifest_path,
-                    )
-                {
+                if !read_cached_manifest(
+                    &mut manifests,
+                    &mut warnings,
+                    &mut manifest_count,
+                    &mut manifest_bytes,
+                    cache_path,
+                    relative_path,
+                    &manifest_path,
+                ) {
                     break;
                 }
             }
@@ -767,16 +779,15 @@ fn read_cached_manifests(cache_path: &Path) -> Result<CachedManifestRead> {
     manifests.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
     let legacy_relative_path = format!("{ARTIFACT_ROOT}/{LEGACY_MANIFEST_FILE}");
     let legacy_path = cache_path.join(&legacy_relative_path);
-    if legacy_path.exists() {
-        read_cached_manifest(
-            &mut manifests,
-            &mut warnings,
-            &mut manifest_count,
-            &mut manifest_bytes,
-            legacy_relative_path,
-            &legacy_path,
-        );
-    }
+    read_cached_manifest(
+        &mut manifests,
+        &mut warnings,
+        &mut manifest_count,
+        &mut manifest_bytes,
+        cache_path,
+        legacy_relative_path,
+        &legacy_path,
+    );
     Ok(CachedManifestRead {
         manifests,
         warnings,
@@ -789,9 +800,17 @@ fn read_cached_manifest(
     warnings: &mut Vec<String>,
     manifest_count: &mut usize,
     manifest_bytes: &mut u64,
+    cache_path: &Path,
     relative_path: String,
     manifest_path: &Path,
 ) -> bool {
+    if let Err(error) = ensure_safe_artifact_ancestors(cache_path, Path::new(&relative_path)) {
+        warnings.push(format!("skipped share manifest {relative_path}: {error:#}"));
+        return true;
+    }
+    if !manifest_path.exists() {
+        return true;
+    }
     if *manifest_count >= MAX_CACHED_SHARE_MANIFESTS {
         warnings.push(format!(
             "skipped share manifest {relative_path}: cached manifest count exceeds {MAX_CACHED_SHARE_MANIFESTS}"
@@ -4013,6 +4032,48 @@ mod tests {
             "warning should reject symlinked manifest: {:?}",
             report.warnings
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn merge_skips_symlinked_manifest_ancestors() {
+        use std::os::unix::fs::symlink;
+
+        let TestShareArtifact {
+            cache,
+            target_context,
+            artifact,
+            ..
+        } = build_single_turn_test_artifact("share-symlink-manifest-ancestor");
+        write_export_artifact(&cache, &artifact).unwrap();
+        let outside = cache
+            .parent()
+            .expect("cache should have parent")
+            .join("outside-artifacts");
+        fs::remove_dir_all(cache.join("darc-share")).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join(LEGACY_MANIFEST_FILE), b"{}").unwrap();
+        symlink(&outside, cache.join("darc-share")).unwrap();
+
+        let report = import_from_cache(
+            &target_context,
+            "team",
+            "darc/team",
+            "origin",
+            "https://example.invalid/team/share.git",
+            "git:https://example.invalid/team/repo",
+            &cache,
+        )
+        .unwrap();
+
+        assert_eq!(report.imported_turn_count, 0);
+        assert_eq!(report.warning_count, 1);
+        assert!(
+            report.warnings[0].contains("ancestor is a symlink"),
+            "warning should reject symlinked manifest ancestor: {:?}",
+            report.warnings
+        );
+        assert!(outside.join(LEGACY_MANIFEST_FILE).exists());
     }
 
     #[cfg(unix)]
