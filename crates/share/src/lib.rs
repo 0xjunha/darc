@@ -1225,6 +1225,7 @@ fn import_manifest_entry(
     if payload.turn.session.provider != entry.provider
         || payload.turn.session.session_id != entry.session_id
         || payload.turn.turn_ordinal != entry.turn_ordinal
+        || payload.turn.started_at != entry.started_at
     {
         bail!("share payload identity does not match manifest entry");
     }
@@ -1317,7 +1318,9 @@ fn project_key(context: &ShareProjectContext) -> Result<String> {
 
 /// Normalizes one Git URL enough for Darc project matching.
 fn normalize_git_url(url: &str) -> Result<String> {
-    let trimmed = url.trim().trim_end_matches('/').trim_end_matches(".git");
+    let trimmed = strip_url_query_fragment(url.trim())
+        .trim_end_matches('/')
+        .trim_end_matches(".git");
     if let Some(normalized) = normalize_scp_like_git_url(trimmed) {
         return Ok(normalized);
     }
@@ -1334,6 +1337,11 @@ fn normalize_git_url(url: &str) -> Result<String> {
         "Darc share project keys require an ssh, https, or http Git remote; refusing to publish unsupported or local remote `{}` in visible share metadata",
         sanitize_git_url_for_display(trimmed)
     )
+}
+
+/// Removes URL query and fragment suffixes before URLs become visible metadata.
+fn strip_url_query_fragment(url: &str) -> &str {
+    url.find(['?', '#']).map_or(url, |index| &url[..index])
 }
 
 /// Normalizes one SSH scp-like Git URL.
@@ -1366,7 +1374,7 @@ fn normalize_scheme_git_url(url: &str, input_scheme: &str, output_scheme: &str) 
 
 /// Returns a remote URL suitable for terminal output.
 pub fn sanitize_git_url_for_display(url: &str) -> String {
-    let trimmed = url.trim();
+    let trimmed = strip_url_query_fragment(url.trim());
     if let Some((scheme, rest)) = trimmed.split_once("://")
         && let Some((authority, path)) = rest.split_once('/')
     {
@@ -1809,7 +1817,31 @@ fn clean_cached_checkout(path: &Path) -> Result<()> {
     }
     let repository = Repository::open(path)
         .with_context(|| format!("failed to open share cache repository {}", path.display()))?;
+    reset_cached_checkout(&repository)?;
     clean_untracked_cache_worktree(&repository, path)
+}
+
+/// Resets one cache checkout to its current HEAD before importing artifacts.
+fn reset_cached_checkout(repository: &Repository) -> Result<()> {
+    let head = match repository.head() {
+        Ok(head) => head,
+        Err(error)
+            if matches!(
+                error.code(),
+                git2::ErrorCode::UnbornBranch | git2::ErrorCode::NotFound
+            ) =>
+        {
+            return Ok(());
+        }
+        Err(error) => return Err(error).context("failed to read share cache HEAD"),
+    };
+    let object = head
+        .peel(git2::ObjectType::Commit)
+        .context("failed to peel share cache HEAD")?;
+    repository
+        .reset(&object, ResetType::Hard, None)
+        .context("failed to reset share cache checkout")?;
+    Ok(())
 }
 
 /// Removes worktree files that are not present in the checked-out Git tree.
@@ -2199,16 +2231,21 @@ fn is_regular_directory(path: &Path) -> Result<bool> {
 
 /// Returns one cache repository path for a remote URL and branch.
 fn cache_repo_path(root: &Path, remote_url: &str, git_branch: &str) -> PathBuf {
-    root.join(SHARE_CACHE_DIR)
-        .join(sha256_hex(format!("{remote_url}\n{git_branch}").as_bytes()))
+    root.join(SHARE_CACHE_DIR).join(sha256_hex(
+        format!("{}\n{git_branch}", canonical_share_remote_url(remote_url)).as_bytes(),
+    ))
 }
 
 /// Builds the stored provenance key for one imported remote branch.
 fn share_origin_remote(remote_url: &str, git_branch: &str) -> String {
-    let canonical_url =
-        normalize_git_url(remote_url).unwrap_or_else(|_| sanitize_git_url_for_display(remote_url));
+    let canonical_url = canonical_share_remote_url(remote_url);
     let identity = sha256_hex(format!("{canonical_url}\n{git_branch}").as_bytes());
     format!("remote:{}:{git_branch}", &identity[..16])
+}
+
+/// Returns a non-secret canonical URL for share cache and provenance keys.
+fn canonical_share_remote_url(remote_url: &str) -> String {
+    normalize_git_url(remote_url).unwrap_or_else(|_| sanitize_git_url_for_display(remote_url))
 }
 
 /// Returns the per-exporter visible manifest path.
@@ -2591,14 +2628,35 @@ mod tests {
             "https://github.com/Example/Darc"
         );
         assert_eq!(
+            normalize_git_url(
+                "https://user:token@github.com/Example/Darc.git?access_token=secret#frag"
+            )
+            .unwrap(),
+            "https://github.com/Example/Darc"
+        );
+        assert_eq!(
             normalize_git_url("ssh://deploy@github.com/Team/App.git").unwrap(),
             "https://github.com/Team/App"
         );
         assert!(normalize_git_url("file:///Users/alice/repo.git").is_err());
         assert!(normalize_git_url("/Users/alice/repo.git").is_err());
         assert_eq!(
-            sanitize_git_url_for_display("https://user:token@github.com/Example/Darc.git"),
+            sanitize_git_url_for_display(
+                "https://user:token@github.com/Example/Darc.git?access_token=secret#frag"
+            ),
             "https://github.com/Example/Darc.git"
+        );
+        assert_eq!(
+            cache_repo_path(
+                Path::new("/tmp/darc-root"),
+                "git@github.com:Example/Darc.git",
+                "darc/team"
+            ),
+            cache_repo_path(
+                Path::new("/tmp/darc-root"),
+                "https://github.com/Example/Darc.git?access_token=secret",
+                "darc/team"
+            )
         );
     }
 
@@ -3817,6 +3875,42 @@ mod tests {
         assert_eq!(imported_sessions, 1);
     }
 
+    #[test]
+    fn merge_rejects_manifest_started_at_mismatch() {
+        let TestShareArtifact {
+            cache,
+            target_context,
+            source_identity,
+            artifact,
+            ..
+        } = build_single_turn_test_artifact("share-started-at-mismatch");
+        write_export_artifact(&cache, &artifact).unwrap();
+        let manifest_path = cache.join(exporter_manifest_relative_path(&source_identity));
+        let mut manifest = read_json_file::<ManifestArtifact>(&manifest_path).unwrap();
+        manifest.turns[0].started_at = "2026-05-15T23:59:59Z".to_owned();
+        write_json_file(&manifest_path, &manifest).unwrap();
+
+        let report = import_from_cache(
+            &target_context,
+            "team",
+            "darc/team",
+            "origin",
+            "https://example.invalid/team/share.git",
+            "git:https://example.invalid/team/repo",
+            &cache,
+        )
+        .unwrap();
+
+        assert_eq!(report.imported_turn_count, 0);
+        assert_eq!(report.skipped_turn_count, 1);
+        assert_eq!(report.warning_count, 1);
+        assert!(
+            report.warnings[0].contains("identity does not match"),
+            "warning should reject started_at mismatch: {:?}",
+            report.warnings
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn merge_rejects_symlinked_object_ancestors() {
@@ -4408,6 +4502,65 @@ mod tests {
         assert!(!injected_manifest.exists());
         assert!(!injected_object.exists());
         let merge = merge_share_branch(&target_context, &settings, "team", Some("share")).unwrap();
+        assert_eq!(merge.imported_turn_count, 1);
+        assert_eq!(merge.warning_count, 0);
+    }
+
+    #[test]
+    fn merge_resets_tracked_cache_modifications_before_import() {
+        let workspace = unique_test_dir("share-merge-resets-tracked");
+        let remote_path = workspace.join("share.git");
+        Repository::init_bare(&remote_path).unwrap();
+        let source_root = workspace.join("source-root");
+        let source_repo = workspace.join("source-repo");
+        let target_root = workspace.join("target-root");
+        let target_repo = workspace.join("target-repo");
+        fs::create_dir_all(&source_root).unwrap();
+        fs::create_dir_all(&target_root).unwrap();
+        init_test_git_repo(&source_repo);
+        init_test_git_repo(&target_repo);
+        let target_key = ensure_share_key(&target_root).unwrap();
+        let remote_url = remote_path.to_string_lossy().into_owned();
+        let project_upstream = "https://example.invalid/team/repo.git".to_owned();
+        let source_context = ShareProjectContext {
+            root: source_root.clone(),
+            index_db_path: source_root.join("index.sqlite"),
+            project_id: "source-repo".to_owned(),
+            project_name: "source-repo".to_owned(),
+            local_path: source_repo,
+            git_upstream: Some(project_upstream.clone()),
+        };
+        let target_context = ShareProjectContext {
+            root: target_root.clone(),
+            index_db_path: target_root.join("index.sqlite"),
+            project_id: "target-repo".to_owned(),
+            project_name: "target-repo".to_owned(),
+            local_path: target_repo,
+            git_upstream: Some(project_upstream),
+        };
+        seed_share_export_session(
+            &source_context.index_db_path,
+            "source-repo",
+            "00000000-0000-4000-8000-000000000303",
+        );
+        update_share_policy(&source_context, SharePolicy::All).unwrap();
+        let settings = ShareSettings {
+            remotes: vec![ShareRemote {
+                name: "share".to_owned(),
+                url: remote_url.clone(),
+            }],
+            recipients: vec![ShareRecipient {
+                recipient: target_key.public_key,
+            }],
+        };
+
+        push_share_branch(&source_context, &settings, "team", Some("share")).unwrap();
+        fetch_share_branch(&target_context, &settings, "team", Some("share")).unwrap();
+        let cache = cache_repo_path(&target_root, &remote_url, "darc/team");
+        fs::write(first_exporter_manifest_path(&cache), b"not json").unwrap();
+
+        let merge = merge_share_branch(&target_context, &settings, "team", Some("share")).unwrap();
+
         assert_eq!(merge.imported_turn_count, 1);
         assert_eq!(merge.warning_count, 0);
     }
@@ -5051,6 +5204,16 @@ mod tests {
         .unwrap();
         paths.sort();
         paths
+    }
+
+    /// Returns the first per-exporter manifest path in one cache checkout.
+    fn first_exporter_manifest_path(cache: &Path) -> PathBuf {
+        fs::read_dir(cache.join(ARTIFACT_ROOT).join(EXPORTERS_DIR))
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path().join(LEGACY_MANIFEST_FILE))
+            .find(|path| path.exists())
+            .expect("cache should contain an exporter manifest")
     }
 
     fn seed_share_export_session(index_db_path: &Path, project_id: &str, session_id: &str) {

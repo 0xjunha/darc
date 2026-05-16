@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     derived_data::{TurnDerivedContext, insert_turn_derived_records},
     index_db::schema::INSERT_TURN_SQL,
+    redaction::{redact_normalized_steps, redact_text},
 };
 
 const DEFAULT_SHARE_POLICY: SharePolicy = SharePolicy::Manual;
@@ -425,8 +426,29 @@ pub fn query_share_export_turns(
     let rows = statement
         .query_map(params![project_id], read_share_turn_export_row)
         .with_context(|| format!("failed to query share export rows for project `{project_id}`"))?;
-    rows.map(|row| row.context("failed to read share export row"))
-        .collect()
+    let mut turns = rows
+        .map(|row| row.context("failed to read share export row"))
+        .collect::<Result<Vec<_>>>()?;
+    for turn in &mut turns {
+        redact_share_turn_export(turn)?;
+    }
+    Ok(turns)
+}
+
+/// Redacts one selected share export row before it crosses the share boundary.
+fn redact_share_turn_export(turn: &mut ShareTurnExport) -> Result<()> {
+    turn.session.archive_path = redact_text(&turn.session.archive_path);
+    turn.session.cwd = redact_text(&turn.session.cwd);
+    turn.user_message = redact_text(&turn.user_message);
+    if let Some(final_answer_text) = &mut turn.final_answer_text {
+        *final_answer_text = redact_text(final_answer_text);
+    }
+    let mut steps = serde_json::from_str::<Vec<NormalizedTurnStep>>(&turn.steps_json)
+        .context("failed to parse share export steps_json for redaction")?;
+    redact_normalized_steps(&mut steps);
+    turn.steps_json =
+        serde_json::to_string(&steps).context("failed to serialize redacted share export steps")?;
+    Ok(())
 }
 
 /// Imports one shared turn and rebuilds derived analytics for that turn.
@@ -918,6 +940,9 @@ mod tests {
 
     use super::*;
     use crate::index_db::open_index_database_writer;
+    use crate::test_support::{
+        IndexedSessionFixture, IndexedTurnFixture, insert_indexed_session, insert_indexed_turn,
+    };
 
     /// Builds one unique temporary database path for sharing tests.
     fn test_db_path(prefix: &str) -> std::path::PathBuf {
@@ -1003,6 +1028,85 @@ mod tests {
         turn.has_final_answer = 2;
 
         assert!(validate_shared_turn_numbers(&turn).is_err());
+    }
+
+    #[test]
+    fn share_export_redacts_stale_unredacted_rows() -> Result<()> {
+        let connection = open_index_database_writer(&test_db_path("export-redacts-stale"))?;
+        let session_id = "00000000-0000-4000-8000-000000000901";
+        insert_indexed_session(
+            &connection,
+            IndexedSessionFixture::new("repo", SourceKind::Codex, session_id, "/tmp/repo"),
+        )?;
+        insert_indexed_turn(
+            &connection,
+            IndexedTurnFixture {
+                has_final_answer: true,
+                final_answer_text: Some("benign answer"),
+                ..IndexedTurnFixture::new(
+                    "repo",
+                    SourceKind::Codex,
+                    session_id,
+                    1,
+                    "2026-05-15T00:00:00Z",
+                    "completed",
+                    "[]",
+                )
+            },
+        )?;
+        connection.execute(
+            "
+            UPDATE sessions
+            SET archive_path = ?1, cwd = ?2
+            WHERE project_id = 'repo' AND session_id = ?3
+            ",
+            params![
+                "/Users/alice/.codex/sessions/secret.jsonl",
+                "/Users/alice/private-repo",
+                session_id,
+            ],
+        )?;
+        let unredacted_steps = r#"[{"type":"tool_call","timestamp":"2026-05-15T00:00:00Z","call_id":"call-secret","name":"Read","arguments":"{\"api_key\":\"sk-proj-abcdefghijklmnop\",\"file_path\":\"/Users/alice/.env\"}"},{"type":"tool_call_output","timestamp":"2026-05-15T00:00:01Z","call_id":"call-secret","output":"token=ghp_abcdefghijklmnopqrstuvwxyz123456"}]"#;
+        connection.execute(
+            "
+            UPDATE turns
+            SET user_message = ?1, final_answer_text = ?2, steps_json = ?3
+            WHERE project_id = 'repo' AND session_id = ?4
+            ",
+            params![
+                "Use https://user:pass@example.invalid/repo.git and TOKEN=secretvalue",
+                "Final answer includes ghp_abcdefghijklmnopqrstuvwxyz123456",
+                unredacted_steps,
+                session_id,
+            ],
+        )?;
+        set_project_share_policy(
+            &connection,
+            "repo",
+            SharePolicy::All,
+            "2026-05-15T00:00:00Z",
+        )?;
+
+        let turns = query_share_export_turns(&connection, "repo")?;
+
+        assert_eq!(turns.len(), 1);
+        let exported = &turns[0];
+        let serialized = serde_json::to_string(exported)?;
+        for secret in [
+            "alice",
+            "user:pass",
+            "secretvalue",
+            "sk-proj-abcdefghijklmnop",
+            "ghp_abcdefghijklmnopqrstuvwxyz123456",
+        ] {
+            assert!(
+                !serialized.contains(secret),
+                "share export should redact {secret}: {serialized}"
+            );
+        }
+        assert!(serialized.contains("[REDACTED"));
+
+        Ok(())
     }
 
     #[test]
