@@ -3578,6 +3578,90 @@ mod tests {
     }
 
     #[test]
+    fn merge_skips_manifest_turns_missing_from_signed_sync_payload() {
+        let TestShareArtifact {
+            cache,
+            target_context,
+            target_identity,
+            source_identity,
+            source_signing_key,
+            artifact,
+        } = build_single_turn_test_artifact("share-unauthenticated-manifest-turn");
+        write_export_artifact(&cache, &artifact).unwrap();
+        let manifest_path = cache.join(exporter_manifest_relative_path(&source_identity));
+        let mut manifest = read_json_file::<ManifestArtifact>(&manifest_path).unwrap();
+        let original_turn = manifest.turns[0].clone();
+        let turn_ciphertext = fs::read(cache.join(&original_turn.object_path)).unwrap();
+        let turn_plaintext = decrypt_payload(&turn_ciphertext, &target_identity).unwrap();
+        let mut extra_payload: EncryptedTurnPayload =
+            serde_json::from_slice(&turn_plaintext).unwrap();
+        extra_payload.turn.turn_ordinal = 99;
+        extra_payload.turn.turn_id = Some("turn-extra".to_owned());
+        extra_payload.turn.started_at = "2026-05-15T23:59:59Z".to_owned();
+        sign_turn_payload(&mut extra_payload, &source_signing_key).unwrap();
+        let extra_plaintext = serde_json::to_vec(&extra_payload).unwrap();
+        let extra_object_path = format!(
+            "{ARTIFACT_ROOT}/objects/extra-turn-{}.age",
+            &sha256_hex(&extra_plaintext)[..16]
+        );
+        let extra_target = cache.join(&extra_object_path);
+        fs::create_dir_all(extra_target.parent().unwrap()).unwrap();
+        fs::write(
+            &extra_target,
+            encrypt_payload(&extra_plaintext, &[target_identity.to_public()]).unwrap(),
+        )
+        .unwrap();
+        manifest.turns.push(TurnManifestEntry {
+            provider: original_turn.provider,
+            session_id: original_turn.session_id,
+            turn_ordinal: extra_payload.turn.turn_ordinal,
+            started_at: extra_payload.turn.started_at,
+            payload_hash: sha256_hex(&extra_plaintext),
+            object_path: extra_object_path,
+        });
+        write_json_file(&manifest_path, &manifest).unwrap();
+
+        let report = import_from_cache(
+            &target_context,
+            "team",
+            "darc/team",
+            "origin",
+            "https://example.invalid/team/share.git",
+            "git:https://example.invalid/team/repo",
+            &cache,
+        )
+        .unwrap();
+
+        let target = open_index_database_writer(&target_context.index_db_path).unwrap();
+        let turn_count: i64 = target
+            .query_row(
+                "
+                SELECT COUNT(*)
+                FROM turns
+                JOIN sessions
+                    ON sessions.project_id = turns.project_id
+                    AND sessions.provider = turns.provider
+                    AND sessions.session_id = turns.session_id
+                WHERE sessions.project_id = 'target-repo'
+                    AND sessions.origin_kind = 'shared'
+                ",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(report.imported_turn_count, 1);
+        assert_eq!(report.skipped_turn_count, 1);
+        assert_eq!(report.warning_count, 1);
+        assert!(
+            report.warnings[0].contains("not authenticated by sync payload"),
+            "warning should reject unauthenticated manifest turn: {:?}",
+            report.warnings
+        );
+        assert_eq!(turn_count, 1);
+    }
+
+    #[test]
     fn merge_skips_unsafe_manifest_object_paths_with_warning() {
         let root = unique_test_dir("share-unsafe-object-path");
         let cache = root.join("cache");
