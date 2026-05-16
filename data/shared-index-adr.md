@@ -106,10 +106,12 @@ tree can expose every teammate's current export instead of only the most recent 
 Merge bounds visible manifest discovery by exporter count and aggregate manifest bytes, and v1 import rejects artifacts
 whose visible manifest, encrypted sync payload, or encrypted turn payload version is not exactly `1`.
 
-Before committing a share cache update, Darc removes paths outside this artifact layout and stages only
-`darc-share/v1`. Unexpected plaintext files, symlinks, orphan files, and unsupported artifact paths from a fetched
-branch are not republished. Existing exporter namespaces are retained only when their encrypted sync payload and turn
-objects can be decrypted and their exporter signatures verify against the visible exporter identity.
+After checking out a fetched share branch, Darc removes untracked and ignored files from the cache worktree so merge and
+push scan only artifacts from the fetched branch tip. Before committing a share cache update, Darc removes paths outside
+this artifact layout and stages only `darc-share/v1`. Unexpected plaintext files, symlinks, orphan files, and
+unsupported artifact paths from a fetched branch are not republished. Existing exporter namespaces are retained only when
+their encrypted sync payload and turn objects can be decrypted and their exporter signatures verify against the visible
+exporter identity.
 
 Encrypted object files contain the sensitive payload:
 
@@ -122,8 +124,8 @@ Encrypted object files contain the sensitive payload:
 
 V1 exports one encrypted object per turn. Each object repeats the parent session metadata needed to import that turn.
 This keeps incremental updates smooth when a session receives new turns: already-pushed turn objects remain unchanged and
-only new or changed turn objects are added. Push reuses cached ciphertext only by deterministic object path and applies
-explicit object-count and aggregate encrypted-byte caps while building the export.
+only new or changed turn objects are added. Push always encrypts the current plaintext to the current recipient set and
+applies explicit object-count and aggregate encrypted-byte caps while building the export.
 
 ### Project Identity
 
@@ -157,9 +159,10 @@ SQLite adds a `users` table plus provenance columns on `sessions`:
 - `imported_at`
 - `share_state`: `unset`, `included`, or `excluded`
 
-`origin_remote` is an alias-independent, non-secret provenance key derived from the credential-sanitized remote URL and
-Git branch. Renaming a Darc remote alias for the same URL does not fork provenance, and retargeting an alias does not
-allow the new remote to prune rows imported from the old remote.
+`origin_remote` is an alias-independent, non-secret provenance key derived from the normalized Git remote URL and Git
+branch, with a sanitized fallback for unsupported share-only transports. Renaming a Darc remote alias for the same URL
+does not fork provenance, and retargeting an alias does not allow the new remote to prune rows imported from the old
+remote.
 
 This keeps canonical session and turn tables as the query source while preserving who a shared session came from.
 
@@ -218,8 +221,9 @@ history rewriting and remote retention controls.
 
 ### Import And Conflict Model
 
-Fetch downloads the `darc/<name>` branch into the local Darc share cache. Merge imports all current exporter manifests
-from the fetched tree into the local SQLite index. Pull is fetch plus merge.
+Fetch downloads the `darc/<name>` branch into the local Darc share cache and cleans untracked cache files after checkout.
+Merge rejects symlinked cache roots and imports all current exporter manifests from the fetched tree into the local
+SQLite index. Pull is fetch plus merge.
 
 Merge decrypts and validates the encrypted sync payload signature before destructive pruning. It imports only visible
 manifest turns that also appear in the signed sync payload, prunes stale imported turns only for the authenticated

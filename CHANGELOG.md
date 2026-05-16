@@ -11,6 +11,7 @@ All notable Darc release changes should be summarized here.
 - Bound shared-index manifest discovery, reject unsupported artifact versions and invalid share branch names, and apply author filters when resolving search session prefixes.
 - Keep share cache cleanup inside real cache directories, store imported provenance by canonical remote identity, and reject manifest turns missing from the signed sync payload.
 - Prevent imported shared sessions from replacing another exporter's session with the same id.
+- Keep shared imports tied to fetched branch tips, normalize common share remote URL aliases for provenance, and re-encrypt exports for the current recipient set.
 - Redact common secrets, credential material, local home paths, and bulky data blobs before storing or migrating indexed session data.
 - Reduce false-positive redaction of indexed examples, CLI help text, boolean config values, search patterns, and comparison code.
 
