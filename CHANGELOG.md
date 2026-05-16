@@ -18,6 +18,7 @@ All notable Darc release changes should be summarized here.
 - Reuse trusted encrypted share objects for unchanged exports and keep unaddressable provider child sessions local.
 - Authenticate shared manifest object metadata in sync payloads and bound exporter-directory scans.
 - Require signed sync entries to match visible manifests exactly and reject symlinked share key files.
+- Prune stale shared turns when replacement imports fail and batch pull imports in one SQLite transaction.
 - Redact common secrets, credential material, local home paths, and bulky data blobs before storing or migrating indexed session data.
 - Reduce false-positive redaction of indexed examples, CLI help text, boolean config values, search patterns, and comparison code.
 

@@ -18,8 +18,8 @@ use anyhow::{Context, Result, bail};
 use darc_paths::current_utc_timestamp;
 use darc_store::{
     SharePolicy, ShareState, ShareTurnExport, ShareTurnImport, ShareUserRecord,
-    clear_project_share_states, import_shared_turn, open_index_database_writer, prune_shared_turns,
-    query_share_export_turns, query_share_status, set_project_share_policy,
+    clear_project_share_states, import_shared_turns, open_index_database_writer,
+    prune_shared_turns, query_share_export_turns, query_share_status, set_project_share_policy,
     set_session_share_state,
 };
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
@@ -27,7 +27,6 @@ use git2::{
     BranchType, Cred, FetchOptions, FetchPrune, IndexAddOption, PushOptions, RemoteCallbacks,
     Repository, ResetType, Status, StatusOptions,
 };
-use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -627,8 +626,6 @@ struct ExportReuseContext<'a> {
 /// Stores immutable context used while importing one manifest entry.
 struct ImportEntryContext<'a> {
     expected_project_key: &'a str,
-    project_id: &'a str,
-    origin_remote: &'a str,
     expected_exporter: &'a ShareIdentity,
     identity: &'a Identity,
     cache_path: &'a Path,
@@ -1371,45 +1368,25 @@ fn import_from_cache(
             ));
             continue;
         }
-        let authenticated_turns = match authenticated_manifest_turns(&manifest, &sync_payload) {
-            Ok(turns) => turns,
-            Err(error) => {
-                skipped_turn_count += u64::try_from(manifest.turns.len())
-                    .context("skipped turn count exceeds u64 range")?;
-                warnings.push(format!(
-                    "skipped share manifest {} for exporter {}: {error:#}",
-                    cached.relative_path, sync_payload.exporter.user_id
-                ));
-                continue;
-            }
-        };
-        let keep_turns = sync_payload
-            .turns
-            .iter()
-            .map(|entry| (entry.provider, entry.session_id.clone(), entry.turn_ordinal))
-            .collect::<BTreeSet<_>>();
+        if let Err(error) = authenticated_manifest_turns(&manifest, &sync_payload) {
+            skipped_turn_count += u64::try_from(manifest.turns.len())
+                .context("skipped turn count exceeds u64 range")?;
+            warnings.push(format!(
+                "skipped share manifest {} for exporter {}: {error:#}",
+                cached.relative_path, sync_payload.exporter.user_id
+            ));
+            continue;
+        }
         let import_context = ImportEntryContext {
             expected_project_key,
-            project_id: &context.project_id,
-            origin_remote: &origin_remote,
             expected_exporter: &sync_payload.exporter,
             identity: &identity,
             cache_path,
         };
+        let mut decoded_turns = Vec::new();
         for entry in &manifest.turns {
-            if !authenticated_turns.contains(&sync_entry_from_manifest(entry)) {
-                skipped_turn_count += 1;
-                warnings.push(format!(
-                    "skipped {} session {} turn {}: share manifest entry is not authenticated by sync payload",
-                    entry.provider.directory_name(),
-                    entry.session_id,
-                    entry.turn_ordinal
-                ));
-                continue;
-            }
-            match import_manifest_entry(&mut connection, &import_context, entry) {
-                Ok(true) => imported_turn_count += 1,
-                Ok(false) => skipped_turn_count += 1,
+            match read_manifest_entry_turn(&import_context, entry) {
+                Ok(turn) => decoded_turns.push(turn),
                 Err(error) => {
                     skipped_turn_count += 1;
                     warnings.push(format!(
@@ -1417,6 +1394,49 @@ fn import_from_cache(
                         entry.provider.directory_name(),
                         entry.session_id,
                         entry.turn_ordinal
+                    ));
+                }
+            }
+        }
+        let imported_at = current_utc_timestamp();
+        let user = ShareUserRecord {
+            user_id: sync_payload.exporter.user_id.clone(),
+            display_name: sync_payload.exporter.display_name.clone(),
+            email: sync_payload.exporter.email.clone(),
+            public_key: Some(sync_payload.exporter.public_key.clone()),
+            source: "share-manifest".to_owned(),
+            updated_at: imported_at.clone(),
+        };
+        let imports = decoded_turns
+            .iter()
+            .map(|turn| ShareTurnImport {
+                project_id: &context.project_id,
+                user: &user,
+                remote_name: &origin_remote,
+                imported_at: &imported_at,
+                turn,
+            })
+            .collect::<Vec<_>>();
+        let outcomes = import_shared_turns(&mut connection, &imports)?;
+        let mut keep_turns = BTreeSet::new();
+        for (turn, outcome) in decoded_turns.iter().zip(outcomes) {
+            match outcome {
+                Ok(true) => {
+                    imported_turn_count += 1;
+                    keep_turns.insert((
+                        turn.session.provider,
+                        turn.session.session_id.clone(),
+                        turn.turn_ordinal,
+                    ));
+                }
+                Ok(false) => skipped_turn_count += 1,
+                Err(error) => {
+                    skipped_turn_count += 1;
+                    warnings.push(format!(
+                        "skipped {} session {} turn {}: {error:#}",
+                        turn.session.provider.directory_name(),
+                        turn.session.session_id,
+                        turn.turn_ordinal
                     ));
                 }
             }
@@ -1476,12 +1496,11 @@ fn read_sync_payload(
     Ok(payload)
 }
 
-/// Imports one manifest entry from an encrypted object file.
-fn import_manifest_entry(
-    connection: &mut Connection,
+/// Reads and validates one manifest entry from an encrypted object file.
+fn read_manifest_entry_turn(
     context: &ImportEntryContext<'_>,
     entry: &TurnManifestEntry,
-) -> Result<bool> {
+) -> Result<ShareTurnExport> {
     let object_path = manifest_object_path(context.cache_path, entry)?;
     let ciphertext = read_regular_file(&object_path, MAX_SHARE_OBJECT_BYTES)?;
     let plaintext =
@@ -1511,24 +1530,7 @@ fn import_manifest_entry(
     {
         bail!("share payload identity does not match manifest entry");
     }
-    let user = ShareUserRecord {
-        user_id: payload.exporter.user_id,
-        display_name: payload.exporter.display_name,
-        email: payload.exporter.email,
-        public_key: Some(payload.exporter.public_key),
-        source: "share-manifest".to_owned(),
-        updated_at: current_utc_timestamp(),
-    };
-    import_shared_turn(
-        connection,
-        ShareTurnImport {
-            project_id: context.project_id,
-            user: &user,
-            remote_name: context.origin_remote,
-            imported_at: &current_utc_timestamp(),
-            turn: &payload.turn,
-        },
-    )
+    Ok(payload.turn)
 }
 
 /// Resolves the remote URL for one share operation.
@@ -4451,6 +4453,73 @@ mod tests {
             second_report.warnings
         );
         assert_eq!(imported_turn_count, 1);
+    }
+
+    #[test]
+    fn merge_prunes_stale_turn_when_replacement_object_is_invalid() {
+        let TestShareArtifact {
+            cache,
+            target_context,
+            target_identity: _,
+            source_identity,
+            source_signing_key: _,
+            artifact,
+        } = build_single_turn_test_artifact("share-corrupt-replacement-prunes");
+        write_export_artifact(&cache, &artifact).unwrap();
+        let first_report = import_from_cache(
+            &target_context,
+            "team",
+            "darc/team",
+            "origin",
+            "https://example.invalid/team/share.git",
+            "git:https://example.invalid/team/repo",
+            &cache,
+        )
+        .unwrap();
+        let manifest_path = cache.join(exporter_manifest_relative_path(&source_identity));
+        let manifest = read_json_file::<ManifestArtifact>(&manifest_path).unwrap();
+        let object_path = manifest_object_path(&cache, &manifest.turns[0]).unwrap();
+        fs::write(&object_path, b"not an age payload").unwrap();
+
+        let second_report = import_from_cache(
+            &target_context,
+            "team",
+            "darc/team",
+            "origin",
+            "https://example.invalid/team/share.git",
+            "git:https://example.invalid/team/repo",
+            &cache,
+        )
+        .unwrap();
+
+        let connection = open_index_database_writer(&target_context.index_db_path).unwrap();
+        let imported_turn_count: i64 = connection
+            .query_row(
+                "
+                SELECT COUNT(*)
+                FROM turns
+                JOIN sessions
+                    ON sessions.project_id = turns.project_id
+                    AND sessions.provider = turns.provider
+                    AND sessions.session_id = turns.session_id
+                WHERE sessions.project_id = 'target-repo'
+                    AND sessions.origin_kind = 'shared'
+                ",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(first_report.imported_turn_count, 1);
+        assert_eq!(second_report.imported_turn_count, 0);
+        assert_eq!(second_report.skipped_turn_count, 1);
+        assert_eq!(second_report.warning_count, 1);
+        assert!(
+            second_report.warnings[0].contains("failed to decrypt share object"),
+            "warning should identify the invalid replacement object: {:?}",
+            second_report.warnings
+        );
+        assert_eq!(imported_turn_count, 0);
     }
 
     #[test]

@@ -457,24 +457,55 @@ pub fn import_shared_turn(
     connection: &mut Connection,
     import: ShareTurnImport<'_>,
 ) -> Result<bool> {
-    let transaction = connection
+    let mut outcomes = import_shared_turns(connection, &[import])?;
+    outcomes
+        .pop()
+        .context("shared turn import produced no outcome")?
+}
+
+/// Imports shared turns in one transaction while isolating per-turn failures.
+pub fn import_shared_turns(
+    connection: &mut Connection,
+    imports: &[ShareTurnImport<'_>],
+) -> Result<Vec<Result<bool>>> {
+    let mut transaction = connection
         .transaction()
         .context("failed to begin shared turn import transaction")?;
-    upsert_share_user(&transaction, import.user)?;
+    let mut outcomes = Vec::with_capacity(imports.len());
+    for import in imports {
+        let savepoint = transaction
+            .savepoint()
+            .context("failed to begin shared turn import savepoint")?;
+        match import_shared_turn_in_connection(&savepoint, *import) {
+            Ok(imported) => {
+                savepoint
+                    .commit()
+                    .context("failed to commit shared turn import savepoint")?;
+                outcomes.push(Ok(imported));
+            }
+            Err(error) => outcomes.push(Err(error)),
+        }
+    }
+    transaction
+        .commit()
+        .context("failed to commit shared turn import transaction")?;
+    Ok(outcomes)
+}
+
+/// Imports one shared turn using the caller's transaction or savepoint.
+fn import_shared_turn_in_connection(
+    connection: &Connection,
+    import: ShareTurnImport<'_>,
+) -> Result<bool> {
+    upsert_share_user(connection, import.user)?;
     validate_shared_session_id(&import.turn.session.session_id)?;
     validate_shared_session_kind(&import.turn.session.session_kind)?;
     validate_shared_turn_status(&import.turn.status)?;
     validate_shared_turn_numbers(import.turn)?;
-    if !upsert_shared_session(&transaction, import)? {
-        transaction
-            .commit()
-            .context("failed to commit skipped shared turn import")?;
+    if !upsert_shared_session(connection, import)? {
         return Ok(false);
     }
-    replace_shared_turn(&transaction, import)?;
-    transaction
-        .commit()
-        .context("failed to commit shared turn import")?;
+    replace_shared_turn(connection, import)?;
     Ok(true)
 }
 
