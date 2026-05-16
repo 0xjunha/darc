@@ -80,6 +80,13 @@ pub struct ShareUserRecord {
     pub updated_at: String,
 }
 
+/// Stores provenance for one existing indexed session row.
+struct ExistingSessionOrigin {
+    origin_kind: OriginKind,
+    origin_user_id: Option<String>,
+    origin_remote: Option<String>,
+}
+
 /// Stores one session provenance block exposed in query payloads.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionProvenance {
@@ -504,14 +511,23 @@ fn validate_optional_non_negative(field: &str, value: Option<i64>) -> Result<()>
 /// Upserts one imported shared session unless a local session already owns the identity.
 fn upsert_shared_session(connection: &Connection, import: ShareTurnImport<'_>) -> Result<bool> {
     let session = &import.turn.session;
-    if let Some(origin_kind) = existing_session_origin(
+    if let Some(existing) = existing_session_origin(
         connection,
         import.project_id,
         session.provider,
         &session.session_id,
-    )? && origin_kind == OriginKind::Local
-    {
-        return Ok(false);
+    )? {
+        if existing.origin_kind == OriginKind::Local {
+            return Ok(false);
+        }
+        if existing.origin_user_id.as_deref() != Some(import.user.user_id.as_str())
+            || existing.origin_remote.as_deref() != Some(import.remote_name)
+        {
+            bail!(
+                "shared session `{}` is already owned by another exporter",
+                session.session_id
+            );
+        }
     }
     let archive_path = shared_archive_path(import);
     connection
@@ -680,20 +696,34 @@ fn existing_session_origin(
     project_id: &str,
     provider: SourceKind,
     session_id: &str,
-) -> Result<Option<OriginKind>> {
+) -> Result<Option<ExistingSessionOrigin>> {
     let value = connection
         .query_row(
             "
-            SELECT origin_kind
+            SELECT origin_kind, origin_user_id, origin_remote
             FROM sessions
             WHERE project_id = ?1 AND provider = ?2 AND session_id = ?3
             ",
             params![project_id, provider.directory_name(), session_id],
-            |row| row.get::<_, String>(0),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
         )
         .optional()
         .with_context(|| format!("failed to read origin for session `{session_id}`"))?;
-    value.as_deref().map(parse_origin_kind).transpose()
+    value
+        .map(|(origin_kind, origin_user_id, origin_remote)| {
+            Ok(ExistingSessionOrigin {
+                origin_kind: parse_origin_kind(&origin_kind)?,
+                origin_user_id,
+                origin_remote,
+            })
+        })
+        .transpose()
 }
 
 /// Deletes imported shared turns missing from the latest authenticated sync payload.
@@ -881,7 +911,27 @@ pub fn validate_shared_turn_status(value: &str) -> Result<NormalizedTurnStatus> 
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        env, fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
     use super::*;
+    use crate::index_db::open_index_database_writer;
+
+    /// Builds one unique temporary database path for sharing tests.
+    fn test_db_path(prefix: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after epoch")
+            .as_nanos();
+        let dir = env::temp_dir().join(format!(
+            "darc-store-{prefix}-{}-{nanos}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).expect("failed to create test directory");
+        dir.join("index.sqlite")
+    }
 
     /// Builds one valid synthetic shared turn export for validation tests.
     fn synthetic_share_turn() -> ShareTurnExport {
@@ -953,5 +1003,75 @@ mod tests {
         turn.has_final_answer = 2;
 
         assert!(validate_shared_turn_numbers(&turn).is_err());
+    }
+
+    #[test]
+    fn shared_import_rejects_existing_session_from_other_exporter() -> Result<()> {
+        let mut connection = open_index_database_writer(&test_db_path("owner-collision"))?;
+        let first_user = ShareUserRecord {
+            user_id: "usr-first".to_owned(),
+            display_name: Some("First User".to_owned()),
+            email: Some("first@example.invalid".to_owned()),
+            public_key: Some("age1first".to_owned()),
+            source: "test".to_owned(),
+            updated_at: "2026-05-15T00:00:00Z".to_owned(),
+        };
+        let second_user = ShareUserRecord {
+            user_id: "usr-second".to_owned(),
+            display_name: Some("Second User".to_owned()),
+            email: Some("second@example.invalid".to_owned()),
+            public_key: Some("age1second".to_owned()),
+            source: "test".to_owned(),
+            updated_at: "2026-05-15T00:00:00Z".to_owned(),
+        };
+        let turn = synthetic_share_turn();
+        assert!(import_shared_turn(
+            &mut connection,
+            ShareTurnImport {
+                project_id: "target-repo",
+                user: &first_user,
+                remote_name: "origin:darc/team",
+                imported_at: "2026-05-15T00:00:00Z",
+                turn: &turn,
+            },
+        )?);
+
+        let mut colliding_turn = synthetic_share_turn();
+        colliding_turn.user_message = "malicious replacement".to_owned();
+        let error = import_shared_turn(
+            &mut connection,
+            ShareTurnImport {
+                project_id: "target-repo",
+                user: &second_user,
+                remote_name: "origin:darc/team",
+                imported_at: "2026-05-15T00:01:00Z",
+                turn: &colliding_turn,
+            },
+        )
+        .unwrap_err();
+
+        let existing: (String, String) = connection.query_row(
+            "
+            SELECT sessions.origin_user_id, turns.user_message
+            FROM sessions
+            JOIN turns
+                ON turns.project_id = sessions.project_id
+                AND turns.provider = sessions.provider
+                AND turns.session_id = sessions.session_id
+            WHERE sessions.project_id = 'target-repo'
+                AND sessions.provider = 'codex'
+                AND sessions.session_id = ?1
+            ",
+            [&turn.session.session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+
+        assert!(
+            error.to_string().contains("already owned"),
+            "error should explain owner collision: {error:#}"
+        );
+        assert_eq!(existing.0, "usr-first");
+        assert_eq!(existing.1, "synthetic prompt");
+        Ok(())
     }
 }
