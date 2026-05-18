@@ -205,7 +205,7 @@ darc show session <SESSION_ID> --turn-limit 5 --step-limit 10
 
 ### Share an Encrypted Team Index
 
-Darc can share selected, redacted index rows through Git without a Darc-hosted cloud. Shared payload objects are
+Darc can share selected, redacted index rows through Git backend. Shared payload objects are
 encrypted with age recipients and pushed to Git branches named `darc/<name>`.
 
 ```sh
@@ -340,7 +340,6 @@ Run `darc --help` or `darc help <command>` for the current CLI surface.
 
 Darc reads local agent rollouts and writes archive/query state under `~/.darc`.
 
-- No Darc cloud account is required.
 - Session archives and query indexes stay local.
 - Indexed data is best-effort redacted before it is stored, including common secrets, credential-shaped values, local
   home-directory prefixes, and bulky data blobs.
