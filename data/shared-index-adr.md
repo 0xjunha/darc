@@ -57,6 +57,10 @@ The encryption choices were:
   multi-recipient encryption. Darc will use native age recipients rather than SSH recipient compatibility in V1.
 - Ed25519 payload signatures: accepted. `age` recipient encryption is anonymous, so Darc signs encrypted sync and turn
   plaintext with a persistent local signing key before encryption and verifies signatures before import or pruning.
+- Git LFS: accepted as an opportunistic storage layer for large encrypted object bytes. LFS does not replace age
+  encryption because the Git host still stores the bytes and should never receive plaintext session content.
+- Chunked payloads: accepted inside the existing V1 artifact namespace. Darc keeps `darc-share/v1` and V1 schema ids
+  during development, but V1 payload objects are compressed chunks rather than one encrypted Git object per turn.
 
 ## Decision
 
@@ -86,11 +90,14 @@ Each share branch stores only Darc share artifacts:
 ```text
 darc-share/v1/project.json
 darc-share/v1/exporters/<exporter-fingerprint>/manifest.json
-darc-share/v1/objects/<recipient-fingerprint>-<payload-sha256>.age
+darc-share/v1/objects/<recipient-fingerprint>-chunk-<chunk-index>-<compressed-sha256>.age
 darc-share/v1/objects/sync-<recipient-fingerprint>-<payload-sha256>.age
+.gitattributes
 ```
 
 Object paths are direct files under `darc-share/v1/objects/`; nested object directories are not valid V1 artifacts.
+`.gitattributes` marks `darc-share/v1/objects/*.age` for Git LFS. Darc runs `git lfs install --local`, `git lfs pull`,
+and `git lfs push` when `git-lfs` is installed; otherwise the same encrypted objects are committed through regular Git.
 
 `project.json` is visible and contains only routing metadata:
 
@@ -130,18 +137,22 @@ Encrypted object files contain the sensitive payload:
 
 - an encrypted sync payload containing the exporter identity, latest turn keep set, and signed object metadata for
   authenticated pruning and replay resistance
+- one or more encrypted chunk payloads containing signed per-turn records
 - redacted session metadata
 - redacted turn rows and `steps_json`
 - model metadata
 - file paths and derived evidence needed to rebuild local query tables
 - any preview text
 
-V1 exports one encrypted object per turn. Each object repeats the parent session metadata needed to import that turn.
-This keeps incremental updates smooth when a session receives new turns: already-pushed turn objects remain unchanged and
-only new or changed turn objects are added. Push reuses only locally trusted ciphertext that decrypts to the current
-plaintext; otherwise it encrypts the current plaintext to the current recipient set and applies explicit object-count and
-aggregate encrypted-byte caps while building the export. V1 share export only publishes canonical UUID session ids,
-leaving provider-specific child session ids local until shared read commands can address them.
+V1 exports signed per-turn records into gzip-compressed chunk payloads, then age-encrypts each chunk. The manifest maps
+each turn to a chunk id and record index so import can authenticate visible metadata against the signed sync payload and
+the decrypted chunk content. This greatly reduces Git object count for large projects and lets Git LFS store large
+encrypted blobs while preserving incremental updates: unchanged chunks are reused from Darc's trusted local object cache
+when they decrypt to the current compressed plaintext and match the current recipient fingerprint. Otherwise Darc
+compresses and encrypts the current chunk to the current recipient set. Push writes encrypted chunk objects to the share
+cache as each chunk is produced instead of buffering the whole export in memory, and pull imports chunked manifests one
+chunk group at a time with a decompressed-size cap. V1 share export only publishes canonical UUID session ids, leaving
+provider-specific child session ids local until shared read commands can address them.
 
 ### Project Identity
 
@@ -289,12 +300,14 @@ then treats project-wide file/stat scope as follow-up work.
 - Raw provider logs and raw SQLite files remain local.
 - Git hosting sees only minimal sync metadata and encrypted payload chunks.
 - JSON schemas are easy to inspect and migrate.
-- Per-turn chunks support smooth incremental export for extended sessions.
+- Chunked payloads and Git LFS support make large exports practical without changing the encrypted V1 artifact contract.
 - Provenance is stored directly with sessions, so query filters and attribution are straightforward.
 
 ### Negative
 
 - Darc now requires a working `git` executable on `PATH` for share push/fetch/pull.
+- Large exports should have `git-lfs` installed on `PATH`; without it, Darc still works but stores encrypted chunks as
+  regular Git objects.
 - Git credentials must be configured non-interactively; Darc does not implement provider-specific auth prompts.
 - V1 revocation is forward-only.
 - Visible manifest metadata still reveals project key, author identity, session ids, turn ordinals, object hashes, and
@@ -323,6 +336,11 @@ then treats project-wide file/stat scope as follow-up work.
      malformed object warnings, share selection policy, and import idempotency.
    - Integration test export/fetch/pull against a local bare Git repository.
    - Query tests for local default, shared scope, all scope, and author filters.
+6. Performance validation:
+   - Benchmark share export/push against a temporary root copied from a real Darc index with
+     `scripts/bench-share-export.sh`.
+   - Compare regular-Git and Git-LFS modes for the same selected session count.
+   - Keep benchmark artifacts under `tmp/agent-runs/` rather than committing generated share caches.
 
 ## References
 

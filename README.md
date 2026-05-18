@@ -205,10 +205,11 @@ darc show session <SESSION_ID> --turn-limit 5 --step-limit 10
 
 ### Share an Encrypted Team Index
 
-Darc can share selected, redacted index rows through a Git backend. Shared payload objects are
-encrypted with age recipients and pushed to Git branches named `darc/<name>`. Share fetches and pushes use the local
-`git` executable, so Darc relies on the same SSH keys, credential helpers, SSO, proxy settings, and host configuration
-as commands like `git fetch` and `git push`.
+Darc can share selected, redacted index rows through a Git backend. Shared payload objects are redacted, gzip-compressed,
+encrypted with age recipients, grouped into large V1 chunks, and pushed to Git branches named `darc/<name>`. When
+`git-lfs` is installed, Darc marks encrypted `.age` objects for Git LFS automatically; otherwise it falls back to normal
+Git objects. Share fetches and pushes use the local `git` executable, so Darc relies on the same SSH keys, credential
+helpers, SSO, proxy settings, and host configuration as commands like `git fetch` and `git push`.
 
 ```sh
 # Each teammate shares their public recipient.
@@ -241,6 +242,15 @@ A quick preflight is:
 git ls-remote git@github.com:example/darc-index.git
 git ls-remote https://github.com/example/darc-index.git
 ```
+
+For larger exports, install Git LFS before pushing:
+
+```sh
+git lfs version
+```
+
+LFS only changes where Git stores encrypted blob bytes. Darc still uses age encryption because GitHub and other Git hosts
+must not receive plaintext session content.
 
 Read commands stay local-only unless you explicitly ask for shared sessions:
 
@@ -389,4 +399,12 @@ cargo +nightly fmt
 cargo +stable clippy --locked --workspace --all-targets --all-features -- -D warnings -W clippy::all
 cargo +stable test --locked --workspace
 cargo +stable check --locked --workspace --all-targets --all-features --profile dist
+```
+
+Shared-index export benchmarks use a temporary Darc root copied from your real local index and push to local bare Git
+remotes:
+
+```sh
+cargo build --release -p darc
+scripts/bench-share-export.sh --sessions 50 --mode both --darc ./target/release/darc
 ```
