@@ -154,6 +154,16 @@ cache as each chunk is produced instead of buffering the whole export in memory,
 chunk group at a time with a decompressed-size cap. V1 share export only publishes canonical UUID session ids, leaving
 provider-specific child session ids local until shared read commands can address them.
 
+To avoid spending most unchanged pushes re-reading selected rows, re-redacting `steps_json`, serializing turn payloads,
+compressing, signing, and encrypting, V1 sync payloads also carry an encrypted signed session source summary: provider,
+session id, source size, and source mtime. A push first reads the lightweight selected-session state from SQLite and
+decrypts the previous exporter's sync object. If the current selected set exactly matches that signed source summary,
+the visible chunk metadata matches the signed chunk metadata, and all referenced chunk ciphertext files are still present
+with their signed hashes, Darc reuses the previous project artifact, manifest, sync object, and encrypted chunks. The Git
+commit is therefore a no-op when the branch already has that tree, preserving user-visible behavior while avoiding the
+expensive pre-upload export path. Older V1 sync payloads without session summaries or signed chunk summaries remain
+valid; they simply miss the fast path and are rebuilt once.
+
 ### Project Identity
 
 Darc local `project_id` remains host-local. Shared artifacts use a canonical project key:
@@ -314,6 +324,33 @@ then treats project-wide file/stat scope as follow-up work.
   coarse timestamps.
 - Separate index-only remotes require explicit Darc remote config.
 - Full Git conflict resolution is not hidden; non-fast-forward push failures remain user-visible.
+
+### Performance Results
+
+On May 19, 2026, the share benchmark was run against a temporary Darc root copied from the real Darc repository index,
+selecting 200 sessions and 511 turns. Results below measure local bare-Git remotes and include Darc export plus local
+push time; they do not include setup or session-selection time.
+
+| Mode | Binary | Cold push | Unchanged second push | Speedup |
+| --- | --- | ---: | ---: | ---: |
+| Plain Git | pre-fast-path `28ae746` | 8.828s | 7.599s | 1.2x |
+| Plain Git | fast path | 9.131s | 0.335s | 22.7x |
+| Git LFS | pre-fast-path `28ae746` | 7.745s | 7.849s | 1.0x |
+| Git LFS | fast path | 8.008s | 0.733s | 10.7x |
+
+The cold path is intentionally similar because it still has to produce the first signed encrypted export. The optimized
+case is the common incremental no-op push, where preserving correctness matters more than creating a new commit.
+
+### Rejected Performance Alternatives
+
+- Skipping defensive redaction based only on the current schema version was rejected because share export must still
+  protect stale or manually modified index rows.
+- Trusting visible manifest metadata alone for unchanged reuse was rejected because the encrypted signed sync payload is
+  the authenticated source of the previous exporter's session and turn set.
+- Switching V1 payloads to CBOR or another compact binary format was deferred because it would add a new format contract
+  and would not address unchanged exports spending time before compression and encryption.
+- Sharing raw provider session slices was deferred because the current V1 import path rebuilds query tables from
+  normalized, redacted rows, and raw slices would require a larger parser and privacy contract.
 
 ## Implementation Phases
 

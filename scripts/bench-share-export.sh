@@ -3,16 +3,17 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/bench-share-export.sh [--sessions N] [--mode lfs|plain|both] [--root DARC_ROOT] [--darc DARC_BIN]
+Usage: scripts/bench-share-export.sh [--sessions N] [--repeat N] [--mode lfs|plain|both] [--root DARC_ROOT] [--darc DARC_BIN]
 
 Benchmarks Darc share export/push with a temporary Darc root copied from the
 current user's real Darc config and index. Run from the Darc repository root.
 
-Outputs one JSON object per benchmark mode.
+Outputs one JSON object per benchmark mode and push iteration.
 USAGE
 }
 
 sessions=10
+repeat=1
 mode=both
 darc_root="${HOME}/.darc"
 darc_bin="./target/release/darc"
@@ -21,6 +22,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --sessions)
       sessions="$2"
+      shift 2
+      ;;
+    --repeat)
+      repeat="$2"
       shift 2
       ;;
     --mode)
@@ -54,6 +59,16 @@ case "$mode" in
     exit 2
     ;;
 esac
+
+if ! [[ "$sessions" =~ ^[0-9]+$ ]] || [[ "$sessions" -lt 1 ]]; then
+  echo "--sessions must be a positive integer" >&2
+  exit 2
+fi
+
+if ! [[ "$repeat" =~ ^[0-9]+$ ]] || [[ "$repeat" -lt 1 ]]; then
+  echo "--repeat must be a positive integer" >&2
+  exit 2
+fi
 
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
@@ -118,7 +133,7 @@ run_one() {
   local root="$workdir/root-$run_mode"
   local remote="$workdir/share-$run_mode.git"
   local branch="bench-$run_mode-$(date +%Y%m%d%H%M%S)"
-  local started ended duration_ms push_output
+  local iteration started ended duration_ms push_output
 
   prepare_root "$root"
   git init --bare "$remote" >/dev/null
@@ -132,31 +147,32 @@ run_one() {
     "$darc_bin" share include --root "$root" "$session_id" >/dev/null
   done < <(select_sessions "$root" "$sessions")
 
-  started="$(python3 - <<'PY'
+  for ((iteration = 1; iteration <= repeat; iteration += 1)); do
+    started="$(python3 - <<'PY'
 import time
 print(int(time.time() * 1000))
 PY
 )"
-  if [[ "$run_mode" == "plain" ]]; then
-    push_output="$(DARC_SHARE_DISABLE_LFS=1 "$darc_bin" push "$branch" --remote bench --root "$root")"
-  else
-    push_output="$("$darc_bin" push "$branch" --remote bench --root "$root")"
-  fi
-  ended="$(python3 - <<'PY'
+    if [[ "$run_mode" == "plain" ]]; then
+      push_output="$(DARC_SHARE_DISABLE_LFS=1 "$darc_bin" push "$branch" --remote bench --root "$root")"
+    else
+      push_output="$("$darc_bin" push "$branch" --remote bench --root "$root")"
+    fi
+    ended="$(python3 - <<'PY'
 import time
 print(int(time.time() * 1000))
 PY
 )"
-  duration_ms=$((ended - started))
+    duration_ms=$((ended - started))
 
-  python3 - "$run_mode" "$sessions" "$duration_ms" "$remote" "$root" "$push_output" <<'PY'
+    python3 - "$run_mode" "$sessions" "$repeat" "$iteration" "$duration_ms" "$remote" "$root" "$push_output" <<'PY'
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 
-mode, sessions, duration_ms, remote, root, push_output = sys.argv[1:]
+mode, sessions, repeat, iteration, duration_ms, remote, root, push_output = sys.argv[1:]
 def du_kib(path):
     path = Path(path)
     if not path.exists():
@@ -187,6 +203,9 @@ git_lfs_available = subprocess.run(
 print(json.dumps({
     "mode": mode,
     "session_limit": int(sessions),
+    "repeat_count": int(repeat),
+    "iteration": int(iteration),
+    "incremental": int(iteration) > 1,
     "duration_ms": int(duration_ms),
     "remote_kib": du_kib(remote),
     "remote_lfs_kib": du_kib(Path(remote) / "lfs" / "objects"),
@@ -199,6 +218,7 @@ print(json.dumps({
     "push_output": push_output,
 }, sort_keys=True))
 PY
+  done
 }
 
 case "$mode" in

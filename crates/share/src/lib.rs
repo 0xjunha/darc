@@ -21,10 +21,10 @@ use darc_paths::current_utc_timestamp;
 #[cfg(test)]
 use darc_store::ShareSessionExport;
 use darc_store::{
-    SharePolicy, ShareState, ShareTurnExport, ShareTurnImport, ShareUserRecord,
-    clear_project_share_states, import_shared_turns, open_index_database_writer,
-    prune_shared_turns, query_share_export_turns, query_share_status, set_project_share_policy,
-    set_session_share_state,
+    SharePolicy, ShareSessionExportState, ShareState, ShareTurnExport, ShareTurnImport,
+    ShareUserRecord, clear_project_share_states, import_shared_turns, open_index_database_writer,
+    prune_shared_turns, query_share_export_session_states, query_share_export_turns,
+    query_share_status, set_project_share_policy, set_session_share_state,
 };
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use flate2::{Compression, read::GzDecoder, write::GzEncoder};
@@ -262,7 +262,33 @@ struct EncryptedSyncPayload {
     exporter: ShareIdentity,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     signature: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    sessions: Vec<SyncSessionEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    chunks: Vec<SyncChunkEntry>,
     turns: Vec<SyncTurnEntry>,
+}
+
+/// Stores one authenticated exported session identity for fast unchanged-export reuse.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+struct SyncSessionEntry {
+    provider: darc_paths::SourceKind,
+    session_id: String,
+    source_size: i64,
+    source_mtime_ms: i64,
+}
+
+/// Stores authenticated chunk metadata for fast unchanged-export reuse.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+struct SyncChunkEntry {
+    chunk_id: String,
+    object_path: String,
+    compression: String,
+    plaintext_hash: String,
+    ciphertext_hash: String,
+    plaintext_bytes: u64,
+    ciphertext_bytes: u64,
+    turn_count: u64,
 }
 
 /// Stores one authenticated exported turn identity.
@@ -292,6 +318,40 @@ fn sync_entry_from_manifest(entry: &TurnManifestEntry) -> SyncTurnEntry {
         chunk_id: entry.chunk_id.clone(),
         chunk_record_index: entry.chunk_record_index,
     }
+}
+
+/// Builds the authenticated sync entry corresponding to one visible chunk entry.
+fn sync_chunk_from_manifest(entry: &ChunkManifestEntry) -> SyncChunkEntry {
+    SyncChunkEntry {
+        chunk_id: entry.chunk_id.clone(),
+        object_path: entry.object_path.clone(),
+        compression: entry.compression.clone(),
+        plaintext_hash: entry.plaintext_hash.clone(),
+        ciphertext_hash: entry.ciphertext_hash.clone(),
+        plaintext_bytes: entry.plaintext_bytes,
+        ciphertext_bytes: entry.ciphertext_bytes,
+        turn_count: entry.turn_count,
+    }
+}
+
+/// Builds an authenticated session entry from one fully materialized export turn.
+fn sync_session_entry_from_turn(turn: &ShareTurnExport) -> Option<SyncSessionEntry> {
+    Some(SyncSessionEntry {
+        provider: turn.session.provider,
+        session_id: turn.session.session_id.clone(),
+        source_size: turn.session.source_size?,
+        source_mtime_ms: turn.session.source_mtime_ms?,
+    })
+}
+
+/// Builds an authenticated session entry from one lightweight export state row.
+fn sync_session_entry_from_state(state: &ShareSessionExportState) -> Option<SyncSessionEntry> {
+    Some(SyncSessionEntry {
+        provider: state.provider,
+        session_id: state.session_id.clone(),
+        source_size: state.source_size?,
+        source_mtime_ms: state.source_mtime_ms?,
+    })
 }
 
 /// Returns the canonical Git branch for one Darc share branch shorthand.
@@ -446,7 +506,7 @@ pub fn push_share_branch(
     let decryption_identity = read_share_identity_key(&identity_key.key_path)?;
     let signing_key = ensure_share_signing_key(&context.root)?;
     let connection = open_index_database_writer(&context.index_db_path)?;
-    let turns = query_share_export_turns(&connection, &context.project_id)?;
+    let selected_sessions = query_share_export_session_states(&connection, &context.project_id)?;
     let cache_path = cache_repo_path(&context.root, &remote.resolved_url, &git_branch);
     prepare_cache_repository(&cache_path, &remote.url, &identity)?;
     let branch_exists = fetch_branch_if_exists(&cache_path, &git_branch)?;
@@ -475,24 +535,44 @@ pub fn push_share_branch(
         &decryption_identity,
     );
     let trusted_object_cache_path = trusted_object_cache_path(&cache_path);
-    let artifact = build_export_artifact_to_cache_with_reuse(
-        ExportBuildRequest {
-            context,
-            settings,
-            project_key: &project_key,
-            identity: &identity,
-            signing_key: &signing_key,
-            branch,
-            turns,
-        },
-        ExportReuseContext {
-            trusted_object_cache_path: Some(&trusted_object_cache_path),
-            decryption_identity: Some(&decryption_identity),
-            previous_project: previous_project.as_ref(),
-            previous_manifest: previous_manifest.as_ref(),
-        },
+    let recipient_strings = encryption_recipient_strings(&identity, settings);
+    let recipient_fingerprint = encryption_recipient_fingerprint(&recipient_strings);
+    let reuse_context = ExportReuseContext {
+        trusted_object_cache_path: Some(&trusted_object_cache_path),
+        decryption_identity: Some(&decryption_identity),
+        previous_project: previous_project.as_ref(),
+        previous_manifest: previous_manifest.as_ref(),
+    };
+    let artifact = match unchanged_previous_export_artifact(
         &cache_path,
-    )?;
+        previous_project.as_ref(),
+        previous_manifest.as_ref(),
+        &project_key,
+        &context.project_name,
+        branch,
+        &recipient_fingerprint,
+        &identity,
+        &decryption_identity,
+        &selected_sessions,
+    )? {
+        Some(artifact) => artifact,
+        None => {
+            let turns = query_share_export_turns(&connection, &context.project_id)?;
+            build_export_artifact_to_cache_with_reuse(
+                ExportBuildRequest {
+                    context,
+                    settings,
+                    project_key: &project_key,
+                    identity: &identity,
+                    signing_key: &signing_key,
+                    branch,
+                    turns,
+                },
+                reuse_context,
+                &cache_path,
+            )?
+        }
+    };
     remove_replaced_exporter_artifacts(
         &cache_path,
         &identity,
@@ -764,11 +844,15 @@ fn build_export_artifact_with_target(
     let mut manifest_turns = Vec::with_capacity(request.turns.len());
     let mut manifest_chunks = Vec::new();
     let mut session_ids = BTreeSet::new();
+    let mut sync_sessions = BTreeSet::new();
     let mut chunk_turns = Vec::new();
     let mut chunk_plaintext_bytes = 0_usize;
     let mut chunk_index = 0_u64;
     for turn in request.turns {
         session_ids.insert((turn.session.provider, turn.session.session_id.clone()));
+        if let Some(sync_session) = sync_session_entry_from_turn(&turn) {
+            sync_sessions.insert(sync_session);
+        }
         let mut payload = EncryptedTurnPayload {
             schema: TURN_PAYLOAD_SCHEMA.to_owned(),
             version: 1,
@@ -831,6 +915,11 @@ fn build_export_artifact_with_target(
         project_key: request.project_key.to_owned(),
         exporter: request.identity.clone(),
         signature: None,
+        sessions: sync_sessions.into_iter().collect(),
+        chunks: manifest_chunks
+            .iter()
+            .map(sync_chunk_from_manifest)
+            .collect(),
         turns: manifest_turns
             .iter()
             .map(sync_entry_from_manifest)
@@ -901,6 +990,153 @@ fn build_export_artifact_with_target(
         exported_session_count: u64::try_from(session_ids.len())
             .context("session count exceeds u64 range")?,
     })
+}
+
+/// Reuses the previous signed export when selected source sessions are unchanged.
+#[allow(clippy::too_many_arguments)]
+fn unchanged_previous_export_artifact(
+    cache_path: &Path,
+    previous_project: Option<&ProjectArtifact>,
+    previous_manifest: Option<&ManifestArtifact>,
+    expected_project_key: &str,
+    expected_project_name: &str,
+    expected_branch: &str,
+    expected_recipient_fingerprint: &str,
+    identity: &ShareIdentity,
+    decryption_identity: &Identity,
+    selected_sessions: &[ShareSessionExportState],
+) -> Result<Option<BuiltExportArtifact>> {
+    let Some(project) = previous_project else {
+        return Ok(None);
+    };
+    let Some(manifest) = previous_manifest else {
+        return Ok(None);
+    };
+    if project.schema != PROJECT_SCHEMA
+        || project.version != 1
+        || project.project_key != expected_project_key
+        || project.project_name != expected_project_name
+        || manifest.schema != MANIFEST_SCHEMA
+        || manifest.version != 1
+        || manifest.project_key != expected_project_key
+        || manifest.branch != expected_branch
+        || manifest.exporter != *identity
+        || !manifest_turns_are_chunked(&manifest.turns)
+        || !manifest_uses_recipient_fingerprint(manifest, expected_recipient_fingerprint)
+    {
+        return Ok(None);
+    }
+    let Some(selected_session_set) = sync_session_entries_from_states(selected_sessions) else {
+        return Ok(None);
+    };
+    let sync_payload = match read_sync_payload(
+        cache_path,
+        manifest,
+        expected_project_key,
+        decryption_identity,
+    ) {
+        Ok(payload) => payload,
+        Err(_) => return Ok(None),
+    };
+    if authenticated_manifest_turns(manifest, &sync_payload).is_err() {
+        return Ok(None);
+    }
+    if authenticated_manifest_chunks(manifest, &sync_payload).is_err() {
+        return Ok(None);
+    }
+    let previous_session_set = sync_payload
+        .sessions
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if previous_session_set.is_empty() || previous_session_set != selected_session_set {
+        return Ok(None);
+    }
+    if reusable_chunk_objects_are_available(cache_path, manifest).is_err() {
+        return Ok(None);
+    }
+    let object_paths = manifest_object_paths(manifest);
+    Ok(Some(BuiltExportArtifact {
+        project: project.clone(),
+        manifest: manifest.clone(),
+        #[cfg(test)]
+        objects: BTreeMap::new(),
+        object_count: u64::try_from(object_paths.len())
+            .context("object count exceeds u64 range")?,
+        object_paths,
+        exported_turn_count: u64::try_from(manifest.turns.len())
+            .context("turn count exceeds u64 range")?,
+        exported_session_count: u64::try_from(selected_session_set.len())
+            .context("session count exceeds u64 range")?,
+    }))
+}
+
+/// Returns the exact authenticated chunk set shared by one manifest and sync payload.
+fn authenticated_manifest_chunks(
+    manifest: &ManifestArtifact,
+    sync_payload: &EncryptedSyncPayload,
+) -> Result<BTreeSet<SyncChunkEntry>> {
+    let authenticated_chunks = sync_payload.chunks.iter().cloned().collect::<BTreeSet<_>>();
+    let manifest_chunks = manifest
+        .chunks
+        .iter()
+        .map(sync_chunk_from_manifest)
+        .collect::<BTreeSet<_>>();
+    if authenticated_chunks != manifest_chunks {
+        bail!("signed sync chunks do not match visible manifest chunks");
+    }
+    Ok(authenticated_chunks)
+}
+
+/// Returns whether every encrypted object path targets the current recipient set.
+fn manifest_uses_recipient_fingerprint(
+    manifest: &ManifestArtifact,
+    expected_recipient_fingerprint: &str,
+) -> bool {
+    let sync_prefix = format!("{ARTIFACT_ROOT}/objects/sync-{expected_recipient_fingerprint}-");
+    let chunk_prefix = format!("{ARTIFACT_ROOT}/objects/{expected_recipient_fingerprint}-");
+    manifest.sync.object_path.starts_with(&sync_prefix)
+        && manifest
+            .chunks
+            .iter()
+            .all(|chunk| chunk.object_path.starts_with(&chunk_prefix))
+}
+
+/// Builds the current selected-session set when every session has source metadata.
+fn sync_session_entries_from_states(
+    selected_sessions: &[ShareSessionExportState],
+) -> Option<BTreeSet<SyncSessionEntry>> {
+    selected_sessions
+        .iter()
+        .map(sync_session_entry_from_state)
+        .collect()
+}
+
+/// Checks that encrypted chunk files referenced by a reusable manifest still exist.
+fn reusable_chunk_objects_are_available(
+    cache_path: &Path,
+    manifest: &ManifestArtifact,
+) -> Result<()> {
+    let mut chunk_paths = BTreeSet::new();
+    for chunk in &manifest.chunks {
+        validate_manifest_object_relative_path(&chunk.object_path)?;
+        let object_path = manifest_artifact_path(cache_path, &chunk.object_path)?;
+        let ciphertext = read_regular_file(&object_path, MAX_SHARE_OBJECT_BYTES)?;
+        ensure_not_lfs_pointer(&ciphertext, &object_path)?;
+        if sha256_hex(&ciphertext) != chunk.ciphertext_hash {
+            bail!("cached share chunk ciphertext hash mismatch");
+        }
+        chunk_paths.insert(chunk.object_path.clone());
+    }
+    let turn_paths = manifest
+        .turns
+        .iter()
+        .map(|turn| turn.object_path.clone())
+        .collect::<BTreeSet<_>>();
+    if turn_paths != chunk_paths {
+        bail!("cached share chunk manifest does not cover every turn object");
+    }
+    Ok(())
 }
 
 /// Builds and inserts one compressed encrypted share chunk.
@@ -4394,6 +4630,275 @@ mod tests {
     }
 
     #[test]
+    fn unchanged_previous_export_reuses_manifest_without_turn_rebuild() {
+        let workspace = unique_test_dir("share-unchanged-export-reuse");
+        let cache = workspace.join("cache");
+        let index_db_path = workspace.join("index.sqlite");
+        let context = ShareProjectContext {
+            root: workspace.clone(),
+            index_db_path: index_db_path.clone(),
+            project_id: "repo".to_owned(),
+            project_name: "repo".to_owned(),
+            local_path: workspace.join("repo"),
+            git_upstream: Some("https://example.invalid/team/repo.git".to_owned()),
+        };
+        seed_share_export_session(
+            &index_db_path,
+            "repo",
+            "00000000-0000-4000-8000-000000000303",
+        );
+        update_share_policy(&context, SharePolicy::All).unwrap();
+        let connection = open_index_database_writer(&index_db_path).unwrap();
+        let turns = query_share_export_turns(&connection, "repo").unwrap();
+        let selected_sessions = query_share_export_session_states(&connection, "repo").unwrap();
+        let age_identity = Identity::generate();
+        let signing_key = test_signing_key(&age_identity);
+        let identity = test_share_identity(&age_identity);
+        let recipient_fingerprint = encryption_recipient_fingerprint(
+            &encryption_recipient_strings(&identity, &ShareSettings::default()),
+        );
+        let first = build_export_artifact(ExportBuildRequest {
+            context: &context,
+            settings: &ShareSettings::default(),
+            project_key: "git:https://example.invalid/team/repo",
+            identity: &identity,
+            signing_key: &signing_key,
+            branch: "team",
+            turns,
+        })
+        .unwrap();
+        write_export_artifact(&cache, &first).unwrap();
+
+        let reused = unchanged_previous_export_artifact(
+            &cache,
+            Some(&first.project),
+            Some(&first.manifest),
+            "git:https://example.invalid/team/repo",
+            "repo",
+            "team",
+            &recipient_fingerprint,
+            &identity,
+            &age_identity,
+            &selected_sessions,
+        )
+        .unwrap()
+        .expect("unchanged export should be reusable");
+
+        assert_eq!(reused.project, first.project);
+        assert_eq!(reused.manifest, first.manifest);
+        assert_eq!(reused.object_paths, first.object_paths);
+        assert_eq!(reused.exported_turn_count, first.exported_turn_count);
+        assert_eq!(reused.exported_session_count, first.exported_session_count);
+        assert!(reused.objects.is_empty());
+    }
+
+    #[test]
+    fn unchanged_previous_export_rebuilds_when_source_metadata_changes() {
+        let workspace = unique_test_dir("share-unchanged-export-source-change");
+        let cache = workspace.join("cache");
+        let index_db_path = workspace.join("index.sqlite");
+        let context = ShareProjectContext {
+            root: workspace.clone(),
+            index_db_path: index_db_path.clone(),
+            project_id: "repo".to_owned(),
+            project_name: "repo".to_owned(),
+            local_path: workspace.join("repo"),
+            git_upstream: Some("https://example.invalid/team/repo.git".to_owned()),
+        };
+        seed_share_export_session(
+            &index_db_path,
+            "repo",
+            "00000000-0000-4000-8000-000000000303",
+        );
+        update_share_policy(&context, SharePolicy::All).unwrap();
+        let connection = open_index_database_writer(&index_db_path).unwrap();
+        let turns = query_share_export_turns(&connection, "repo").unwrap();
+        let age_identity = Identity::generate();
+        let signing_key = test_signing_key(&age_identity);
+        let identity = test_share_identity(&age_identity);
+        let recipient_fingerprint = encryption_recipient_fingerprint(
+            &encryption_recipient_strings(&identity, &ShareSettings::default()),
+        );
+        let first = build_export_artifact(ExportBuildRequest {
+            context: &context,
+            settings: &ShareSettings::default(),
+            project_key: "git:https://example.invalid/team/repo",
+            identity: &identity,
+            signing_key: &signing_key,
+            branch: "team",
+            turns,
+        })
+        .unwrap();
+        write_export_artifact(&cache, &first).unwrap();
+        connection
+            .execute(
+                "UPDATE sessions SET source_mtime_ms = 2 WHERE project_id = 'repo'",
+                [],
+            )
+            .unwrap();
+        let selected_sessions = query_share_export_session_states(&connection, "repo").unwrap();
+
+        let reused = unchanged_previous_export_artifact(
+            &cache,
+            Some(&first.project),
+            Some(&first.manifest),
+            "git:https://example.invalid/team/repo",
+            "repo",
+            "team",
+            &recipient_fingerprint,
+            &identity,
+            &age_identity,
+            &selected_sessions,
+        )
+        .unwrap();
+
+        assert!(reused.is_none());
+
+        let mut forged_manifest = first.manifest.clone();
+        forged_manifest.chunks[0].ciphertext_hash = sha256_hex(b"corrupted chunk");
+        let reused_forged_metadata = unchanged_previous_export_artifact(
+            &cache,
+            Some(&first.project),
+            Some(&forged_manifest),
+            "git:https://example.invalid/team/repo",
+            "repo",
+            "team",
+            &recipient_fingerprint,
+            &identity,
+            &age_identity,
+            &selected_sessions,
+        )
+        .unwrap();
+
+        assert!(reused_forged_metadata.is_none());
+    }
+
+    #[test]
+    fn unchanged_previous_export_rebuilds_when_recipients_change() {
+        let workspace = unique_test_dir("share-unchanged-export-recipient-change");
+        let cache = workspace.join("cache");
+        let index_db_path = workspace.join("index.sqlite");
+        let context = ShareProjectContext {
+            root: workspace.clone(),
+            index_db_path: index_db_path.clone(),
+            project_id: "repo".to_owned(),
+            project_name: "repo".to_owned(),
+            local_path: workspace.join("repo"),
+            git_upstream: Some("https://example.invalid/team/repo.git".to_owned()),
+        };
+        seed_share_export_session(
+            &index_db_path,
+            "repo",
+            "00000000-0000-4000-8000-000000000303",
+        );
+        update_share_policy(&context, SharePolicy::All).unwrap();
+        let connection = open_index_database_writer(&index_db_path).unwrap();
+        let turns = query_share_export_turns(&connection, "repo").unwrap();
+        let selected_sessions = query_share_export_session_states(&connection, "repo").unwrap();
+        let age_identity = Identity::generate();
+        let signing_key = test_signing_key(&age_identity);
+        let identity = test_share_identity(&age_identity);
+        let first = build_export_artifact(ExportBuildRequest {
+            context: &context,
+            settings: &ShareSettings::default(),
+            project_key: "git:https://example.invalid/team/repo",
+            identity: &identity,
+            signing_key: &signing_key,
+            branch: "team",
+            turns,
+        })
+        .unwrap();
+        write_export_artifact(&cache, &first).unwrap();
+        let changed_settings = ShareSettings {
+            remotes: Vec::new(),
+            recipients: vec![ShareRecipient {
+                recipient: Identity::generate().to_public().to_string(),
+            }],
+        };
+        let changed_recipient_fingerprint = encryption_recipient_fingerprint(
+            &encryption_recipient_strings(&identity, &changed_settings),
+        );
+
+        let reused = unchanged_previous_export_artifact(
+            &cache,
+            Some(&first.project),
+            Some(&first.manifest),
+            "git:https://example.invalid/team/repo",
+            "repo",
+            "team",
+            &changed_recipient_fingerprint,
+            &identity,
+            &age_identity,
+            &selected_sessions,
+        )
+        .unwrap();
+
+        assert!(reused.is_none());
+    }
+
+    #[test]
+    fn unchanged_previous_export_rebuilds_when_chunk_is_corrupted() {
+        let workspace = unique_test_dir("share-unchanged-export-corrupt-chunk");
+        let cache = workspace.join("cache");
+        let index_db_path = workspace.join("index.sqlite");
+        let context = ShareProjectContext {
+            root: workspace.clone(),
+            index_db_path: index_db_path.clone(),
+            project_id: "repo".to_owned(),
+            project_name: "repo".to_owned(),
+            local_path: workspace.join("repo"),
+            git_upstream: Some("https://example.invalid/team/repo.git".to_owned()),
+        };
+        seed_share_export_session(
+            &index_db_path,
+            "repo",
+            "00000000-0000-4000-8000-000000000303",
+        );
+        update_share_policy(&context, SharePolicy::All).unwrap();
+        let connection = open_index_database_writer(&index_db_path).unwrap();
+        let turns = query_share_export_turns(&connection, "repo").unwrap();
+        let selected_sessions = query_share_export_session_states(&connection, "repo").unwrap();
+        let age_identity = Identity::generate();
+        let signing_key = test_signing_key(&age_identity);
+        let identity = test_share_identity(&age_identity);
+        let recipient_fingerprint = encryption_recipient_fingerprint(
+            &encryption_recipient_strings(&identity, &ShareSettings::default()),
+        );
+        let first = build_export_artifact(ExportBuildRequest {
+            context: &context,
+            settings: &ShareSettings::default(),
+            project_key: "git:https://example.invalid/team/repo",
+            identity: &identity,
+            signing_key: &signing_key,
+            branch: "team",
+            turns,
+        })
+        .unwrap();
+        write_export_artifact(&cache, &first).unwrap();
+        fs::write(
+            cache.join(&first.manifest.chunks[0].object_path),
+            b"corrupted chunk",
+        )
+        .unwrap();
+
+        let reused = unchanged_previous_export_artifact(
+            &cache,
+            Some(&first.project),
+            Some(&first.manifest),
+            "git:https://example.invalid/team/repo",
+            "repo",
+            "team",
+            &recipient_fingerprint,
+            &identity,
+            &age_identity,
+            &selected_sessions,
+        )
+        .unwrap();
+
+        assert!(reused.is_none());
+    }
+
+    #[test]
     fn corrupted_cached_object_is_not_reused() {
         let workspace = unique_test_dir("share-corrupted-cache");
         let trusted_cache = workspace.join("trusted-cache");
@@ -5014,6 +5519,8 @@ mod tests {
             project_key: "git:https://example.invalid/team/repo".to_owned(),
             exporter: source_identity,
             signature: None,
+            sessions: Vec::new(),
+            chunks: Vec::new(),
             turns: manifest
                 .turns
                 .iter()
@@ -7721,6 +8228,8 @@ mod tests {
             project_key: project_key.to_owned(),
             exporter: exporter.clone(),
             signature: None,
+            sessions: Vec::new(),
+            chunks: Vec::new(),
             turns,
         };
         sign_sync_payload(&mut payload, signing_key).unwrap();

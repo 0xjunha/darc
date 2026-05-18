@@ -18,6 +18,7 @@ All notable Darc release changes should be summarized here.
 - Strip query and fragment secrets from Git URLs, reset tracked cache changes before merge, and defensively redact share exports.
 - Preserve shared index state across rebuilds, reject unaddressable imported session ids, and redact credentialed pathless remotes.
 - Reuse trusted encrypted share objects for unchanged exports and keep unaddressable provider child sessions local.
+- Reuse previous signed share exports for unchanged selected session sets to speed up incremental pushes.
 - Authenticate shared manifest object metadata in sync payloads and bound exporter-directory scans.
 - Require signed sync entries to match visible manifests exactly and reject symlinked share key files.
 - Prune stale shared turns when replacement imports fail and batch pull imports in one SQLite transaction.

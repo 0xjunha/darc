@@ -112,6 +112,15 @@ pub struct ShareStatus {
     pub unset_session_count: u64,
 }
 
+/// Stores lightweight selected-session state used to detect unchanged share exports.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ShareSessionExportState {
+    pub provider: SourceKind,
+    pub session_id: String,
+    pub source_size: Option<i64>,
+    pub source_mtime_ms: Option<i64>,
+}
+
 /// Stores one canonical session row selected for export.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShareSessionExport {
@@ -349,6 +358,56 @@ pub fn query_share_status(connection: &Connection, project_id: &str) -> Result<S
         excluded_session_count: sql_count_to_u64(excluded_session_count)?,
         unset_session_count: sql_count_to_u64(unset_session_count)?,
     })
+}
+
+/// Reads selected local sessions that have exportable turns for one project.
+pub fn query_share_export_session_states(
+    connection: &Connection,
+    project_id: &str,
+) -> Result<Vec<ShareSessionExportState>> {
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT
+                sessions.provider,
+                sessions.session_id,
+                sessions.source_size,
+                sessions.source_mtime_ms
+            FROM sessions
+            LEFT JOIN project_share_policies
+                ON project_share_policies.project_id = sessions.project_id
+            WHERE sessions.project_id = ?1
+                AND sessions.origin_kind = 'local'
+                AND EXISTS (
+                    SELECT 1
+                    FROM turns
+                    WHERE turns.project_id = sessions.project_id
+                        AND turns.provider = sessions.provider
+                        AND turns.session_id = sessions.session_id
+                )
+                AND (
+                    sessions.share_state = 'included'
+                    OR (
+                        COALESCE(project_share_policies.default_policy, 'manual') = 'all'
+                        AND sessions.share_state <> 'excluded'
+                    )
+                )
+            ORDER BY sessions.provider ASC, sessions.session_id ASC
+            ",
+        )
+        .with_context(|| {
+            format!("failed to prepare share export session query for project `{project_id}`")
+        })?;
+    let rows = statement
+        .query_map(params![project_id], read_share_session_export_state_row)
+        .with_context(|| {
+            format!("failed to query share export sessions for project `{project_id}`")
+        })?;
+    let mut sessions = rows
+        .map(|row| row.context("failed to read share export session row"))
+        .collect::<Result<Vec<_>>>()?;
+    sessions.retain(|session| validate_shared_session_id(&session.session_id).is_ok());
+    Ok(sessions)
 }
 
 /// Reads every selected local turn that should be exported for one project.
@@ -878,6 +937,30 @@ pub fn prune_shared_turns(
             format!("failed to prune empty shared sessions for project `{project_id}`")
         })?;
     Ok(pruned)
+}
+
+/// Reads one selected export session state row from SQLite.
+fn read_share_session_export_state_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<ShareSessionExportState> {
+    let provider_text: String = row.get(0)?;
+    let provider = match provider_text.as_str() {
+        "claude" => SourceKind::Claude,
+        "codex" => SourceKind::Codex,
+        _ => {
+            return Err(rusqlite::Error::InvalidColumnType(
+                0,
+                "provider".to_owned(),
+                rusqlite::types::Type::Text,
+            ));
+        }
+    };
+    Ok(ShareSessionExportState {
+        provider,
+        session_id: row.get(1)?,
+        source_size: row.get(2)?,
+        source_mtime_ms: row.get(3)?,
+    })
 }
 
 /// Reads one selected export row from SQLite.

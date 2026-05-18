@@ -209,7 +209,9 @@ Darc can share selected, redacted index rows through a Git backend. Shared paylo
 encrypted with age recipients, grouped into large V1 chunks, and pushed to Git branches named `darc/<name>`. When
 `git-lfs` is installed, Darc marks encrypted `.age` objects for Git LFS automatically; otherwise it falls back to normal
 Git objects. Share fetches and pushes use the local `git` executable, so Darc relies on the same SSH keys, credential
-helpers, SSO, proxy settings, and host configuration as commands like `git fetch` and `git push`.
+helpers, SSO, proxy settings, and host configuration as commands like `git fetch` and `git push`. When the selected
+session set is unchanged, Darc reuses the previous signed V1 manifest and encrypted objects instead of re-reading and
+re-redacting every turn.
 
 ```sh
 # Each teammate shares their public recipient.
@@ -406,5 +408,5 @@ remotes:
 
 ```sh
 cargo build --release -p darc
-scripts/bench-share-export.sh --sessions 50 --mode both --darc ./target/release/darc
+scripts/bench-share-export.sh --sessions 50 --repeat 2 --mode both --darc ./target/release/darc
 ```
