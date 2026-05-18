@@ -18,6 +18,8 @@ use age::{
 };
 use anyhow::{Context, Result, bail};
 use darc_paths::current_utc_timestamp;
+#[cfg(test)]
+use darc_store::ShareSessionExport;
 use darc_store::{
     SharePolicy, ShareState, ShareTurnExport, ShareTurnImport, ShareUserRecord,
     clear_project_share_states, import_shared_turns, open_index_database_writer,
@@ -25,6 +27,7 @@ use darc_store::{
     set_session_share_state,
 };
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -32,8 +35,11 @@ const ARTIFACT_ROOT: &str = "darc-share/v1";
 const PROJECT_SCHEMA: &str = "darc.share.project.v1";
 const MANIFEST_SCHEMA: &str = "darc.share.manifest.v1";
 const TURN_PAYLOAD_SCHEMA: &str = "darc.share.turn.v1";
+const CHUNK_PAYLOAD_SCHEMA: &str = "darc.share.chunk.v1";
 const SYNC_PAYLOAD_SCHEMA: &str = "darc.share.sync.v1";
+const CHUNK_PAYLOAD_VERSION: u32 = 1;
 const SYNC_PAYLOAD_VERSION: u32 = 2;
+const GIT_ATTRIBUTES_FILE: &str = ".gitattributes";
 const LEGACY_MANIFEST_FILE: &str = "manifest.json";
 const PROJECT_FILE: &str = "project.json";
 const EXPORTERS_DIR: &str = "exporters";
@@ -56,10 +62,19 @@ const MAX_CACHED_SHARE_MANIFEST_BYTES: u64 = 128 * 1024 * 1024;
 #[cfg(test)]
 const MAX_CACHED_SHARE_MANIFEST_BYTES: u64 = 16 * 1024;
 const MAX_SHARE_OBJECT_BYTES: u64 = 256 * 1024 * 1024;
+#[cfg(not(test))]
+const MAX_SHARE_CHUNK_DECOMPRESSED_BYTES: u64 = 256 * 1024 * 1024;
+#[cfg(test)]
+const MAX_SHARE_CHUNK_DECOMPRESSED_BYTES: u64 = 64 * 1024;
 const MAX_SHARE_EXPORT_OBJECTS: usize = 100_000;
-const MAX_SHARE_EXPORT_BYTES: usize = 512 * 1024 * 1024;
+const MAX_SHARE_EXPORT_BYTES: usize = 8 * 1024 * 1024 * 1024;
+#[cfg(not(test))]
+const SHARE_CHUNK_TARGET_BYTES: usize = 64 * 1024 * 1024;
+#[cfg(test)]
+const SHARE_CHUNK_TARGET_BYTES: usize = 4 * 1024;
 const TURN_SIGNATURE_DOMAIN: &[u8] = b"darc.share.turn.signature.v1";
 const SYNC_SIGNATURE_DOMAIN: &[u8] = b"darc.share.sync.signature.v1";
+const GIT_LFS_POINTER_PREFIX: &[u8] = b"version https://git-lfs.github.com/spec/v1\n";
 
 /// Stores one active project resolved by Darc core for sharing.
 #[derive(Debug, Clone)]
@@ -175,6 +190,8 @@ struct ManifestArtifact {
     exported_at: String,
     exporter: ShareIdentity,
     sync: SyncManifestEntry,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    chunks: Vec<ChunkManifestEntry>,
     turns: Vec<TurnManifestEntry>,
 }
 
@@ -194,6 +211,23 @@ struct TurnManifestEntry {
     started_at: String,
     payload_hash: String,
     object_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    chunk_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    chunk_record_index: Option<u32>,
+}
+
+/// Stores one visible encrypted chunk object reference.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ChunkManifestEntry {
+    chunk_id: String,
+    object_path: String,
+    compression: String,
+    plaintext_hash: String,
+    ciphertext_hash: String,
+    plaintext_bytes: u64,
+    ciphertext_bytes: u64,
+    turn_count: u64,
 }
 
 /// Stores one encrypted per-turn payload.
@@ -206,6 +240,17 @@ struct EncryptedTurnPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     signature: Option<String>,
     turn: ShareTurnExport,
+}
+
+/// Stores one compressed chunk plaintext before age encryption.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ShareChunkPayload {
+    schema: String,
+    version: u32,
+    project_key: String,
+    exporter: ShareIdentity,
+    chunk_id: String,
+    turns: Vec<EncryptedTurnPayload>,
 }
 
 /// Stores one encrypted export manifest used to authenticate pruning inputs.
@@ -229,6 +274,10 @@ struct SyncTurnEntry {
     started_at: String,
     payload_hash: String,
     object_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    chunk_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    chunk_record_index: Option<u32>,
 }
 
 /// Builds the authenticated sync entry corresponding to one visible manifest entry.
@@ -240,6 +289,8 @@ fn sync_entry_from_manifest(entry: &TurnManifestEntry) -> SyncTurnEntry {
         started_at: entry.started_at.clone(),
         payload_hash: entry.payload_hash.clone(),
         object_path: entry.object_path.clone(),
+        chunk_id: entry.chunk_id.clone(),
+        chunk_record_index: entry.chunk_record_index,
     }
 }
 
@@ -404,6 +455,9 @@ pub fn push_share_branch(
     }
     checkout_share_branch(&cache_path, &git_branch)?;
     clean_untracked_cache_worktree(&cache_path)?;
+    if branch_exists {
+        hydrate_lfs_objects(&cache_path)?;
+    }
     let cached_manifest_read = read_cached_manifests(&cache_path)?;
     let previous_project = read_cached_project_artifact(&cache_path).ok().flatten();
     let previous_manifest = cached_manifest_read
@@ -421,7 +475,7 @@ pub fn push_share_branch(
         &decryption_identity,
     );
     let trusted_object_cache_path = trusted_object_cache_path(&cache_path);
-    let artifact = build_export_artifact_with_reuse(
+    let artifact = build_export_artifact_to_cache_with_reuse(
         ExportBuildRequest {
             context,
             settings,
@@ -437,6 +491,7 @@ pub fn push_share_branch(
             previous_project: previous_project.as_ref(),
             previous_manifest: previous_manifest.as_ref(),
         },
+        &cache_path,
     )?;
     remove_replaced_exporter_artifacts(
         &cache_path,
@@ -445,7 +500,7 @@ pub fn push_share_branch(
         &retained_manifests,
         &artifact,
     )?;
-    write_export_artifact(&cache_path, &artifact)?;
+    write_export_metadata(&cache_path, &artifact)?;
     let allowed_paths = allowed_share_cache_paths(&artifact, &retained_manifests);
     clean_unexpected_share_cache_files(&cache_path, &allowed_paths)?;
     let commit_id = commit_cache_repository(&cache_path, &git_branch)?;
@@ -464,6 +519,31 @@ pub fn push_share_branch(
     })
 }
 
+/// Builds share export artifacts directly into one cache worktree.
+fn build_export_artifact_to_cache_with_reuse(
+    request: ExportBuildRequest<'_>,
+    reuse: ExportReuseContext<'_>,
+    cache_path: &Path,
+) -> Result<BuiltExportArtifact> {
+    let mut target = ExportObjectTarget::Disk { cache_path };
+    build_export_artifact_with_target(request, reuse, &mut target)
+}
+
+/// Builds share export artifacts in memory for tests and artifact helpers.
+#[cfg(test)]
+fn build_export_artifact_with_reuse(
+    request: ExportBuildRequest<'_>,
+    reuse: ExportReuseContext<'_>,
+) -> Result<BuiltExportArtifact> {
+    let mut objects = BTreeMap::new();
+    let mut target = ExportObjectTarget::Memory {
+        objects: &mut objects,
+    };
+    let mut artifact = build_export_artifact_with_target(request, reuse, &mut target)?;
+    artifact.objects = objects;
+    Ok(artifact)
+}
+
 /// Fetches one share branch into the local Darc share cache.
 pub fn fetch_share_branch(
     context: &ShareProjectContext,
@@ -479,6 +559,7 @@ pub fn fetch_share_branch(
     fetch_branch(&cache_path, &git_branch)?;
     checkout_share_branch(&cache_path, &git_branch)?;
     clean_untracked_cache_worktree(&cache_path)?;
+    hydrate_lfs_objects(&cache_path)?;
     Ok(ShareFetchReport {
         branch: branch.to_owned(),
         git_branch,
@@ -500,6 +581,7 @@ pub fn merge_share_branch(
     let project_key = project_key(context)?;
     let cache_path = cache_repo_path(&context.root, &remote.resolved_url, &git_branch);
     clean_cached_checkout(&cache_path)?;
+    hydrate_lfs_objects(&cache_path)?;
     import_from_cache(
         context,
         branch,
@@ -564,14 +646,27 @@ pub fn validate_share_recipient(recipient: &str) -> Result<()> {
         .map_err(|error| anyhow::anyhow!("{error}"))
 }
 
-/// Stores one in-memory export artifact before writing to disk.
+/// Stores one built export artifact and its encrypted object paths.
 struct BuiltExportArtifact {
     project: ProjectArtifact,
     manifest: ManifestArtifact,
+    #[cfg(test)]
     objects: BTreeMap<String, Vec<u8>>,
+    object_paths: BTreeSet<String>,
     exported_turn_count: u64,
     exported_session_count: u64,
     object_count: u64,
+}
+
+/// Receives encrypted export objects as they are generated.
+enum ExportObjectTarget<'a> {
+    #[cfg(test)]
+    Memory {
+        objects: &'a mut BTreeMap<String, Vec<u8>>,
+    },
+    Disk {
+        cache_path: &'a Path,
+    },
 }
 
 /// Stores one resolved remote target.
@@ -622,6 +717,22 @@ struct ImportEntryContext<'a> {
     expected_exporter: &'a ShareIdentity,
     identity: &'a Identity,
     cache_path: &'a Path,
+    chunks: &'a DecodedChunks,
+}
+
+/// Stores decoded share chunks plus per-chunk failures.
+#[derive(Clone, Default)]
+struct DecodedChunks {
+    turns: BTreeMap<(String, u32), DecodedChunkTurn>,
+    errors: BTreeMap<String, String>,
+}
+
+/// Stores one decoded turn payload found inside an encrypted chunk.
+#[derive(Clone)]
+struct DecodedChunkTurn {
+    object_path: String,
+    payload_hash: String,
+    turn: ShareTurnExport,
 }
 
 /// Stores one completed system Git command result.
@@ -638,19 +749,24 @@ fn build_export_artifact(request: ExportBuildRequest<'_>) -> Result<BuiltExportA
     build_export_artifact_with_reuse(request, ExportReuseContext::default())
 }
 
-/// Builds share artifacts while reusing trusted local ciphertext when possible.
-fn build_export_artifact_with_reuse(
+/// Builds share artifacts into the provided encrypted object target.
+fn build_export_artifact_with_target(
     request: ExportBuildRequest<'_>,
     reuse: ExportReuseContext<'_>,
+    target: &mut ExportObjectTarget<'_>,
 ) -> Result<BuiltExportArtifact> {
     let timestamp = current_utc_timestamp();
     let recipient_strings = encryption_recipient_strings(request.identity, request.settings);
     let recipient_fingerprint = encryption_recipient_fingerprint(&recipient_strings);
     let recipients = parse_encryption_recipients(&recipient_strings)?;
-    let mut objects = BTreeMap::new();
+    let mut object_paths = BTreeSet::new();
     let mut total_object_bytes = 0_usize;
     let mut manifest_turns = Vec::with_capacity(request.turns.len());
+    let mut manifest_chunks = Vec::new();
     let mut session_ids = BTreeSet::new();
+    let mut chunk_turns = Vec::new();
+    let mut chunk_plaintext_bytes = 0_usize;
+    let mut chunk_index = 0_u64;
     for turn in request.turns {
         session_ids.insert((turn.session.provider, turn.session.session_id.clone()));
         let mut payload = EncryptedTurnPayload {
@@ -665,23 +781,49 @@ fn build_export_artifact_with_reuse(
         let plaintext =
             serde_json::to_vec(&payload).context("failed to serialize share payload")?;
         let payload_hash = sha256_hex(&plaintext);
-        let object_path =
-            format!("{ARTIFACT_ROOT}/objects/{recipient_fingerprint}-{payload_hash}.age");
-        let encrypted = encrypted_export_object(&reuse, &object_path, &plaintext, &recipients)?;
-        insert_export_object(
-            &mut objects,
+        if !chunk_turns.is_empty()
+            && chunk_plaintext_bytes
+                .checked_add(plaintext.len())
+                .context("share chunk size overflow")?
+                > SHARE_CHUNK_TARGET_BYTES
+        {
+            write_export_chunk(
+                &reuse,
+                target,
+                &mut object_paths,
+                &mut total_object_bytes,
+                &mut manifest_turns,
+                &mut manifest_chunks,
+                request.project_key,
+                request.identity,
+                &recipients,
+                &recipient_fingerprint,
+                chunk_index,
+                std::mem::take(&mut chunk_turns),
+            )?;
+            chunk_index += 1;
+            chunk_plaintext_bytes = 0;
+        }
+        chunk_plaintext_bytes = chunk_plaintext_bytes
+            .checked_add(plaintext.len())
+            .context("share chunk size overflow")?;
+        chunk_turns.push((payload_hash, payload));
+    }
+    if !chunk_turns.is_empty() {
+        write_export_chunk(
+            &reuse,
+            target,
+            &mut object_paths,
             &mut total_object_bytes,
-            object_path.clone(),
-            encrypted,
+            &mut manifest_turns,
+            &mut manifest_chunks,
+            request.project_key,
+            request.identity,
+            &recipients,
+            &recipient_fingerprint,
+            chunk_index,
+            chunk_turns,
         )?;
-        manifest_turns.push(TurnManifestEntry {
-            provider: payload.turn.session.provider,
-            session_id: payload.turn.session.session_id,
-            turn_ordinal: payload.turn.turn_ordinal,
-            started_at: payload.turn.started_at,
-            payload_hash,
-            object_path,
-        });
     }
     let mut sync_payload = EncryptedSyncPayload {
         schema: SYNC_PAYLOAD_SCHEMA.to_owned(),
@@ -691,14 +833,7 @@ fn build_export_artifact_with_reuse(
         signature: None,
         turns: manifest_turns
             .iter()
-            .map(|entry| SyncTurnEntry {
-                provider: entry.provider,
-                session_id: entry.session_id.clone(),
-                turn_ordinal: entry.turn_ordinal,
-                started_at: entry.started_at.clone(),
-                payload_hash: entry.payload_hash.clone(),
-                object_path: entry.object_path.clone(),
-            })
+            .map(sync_entry_from_manifest)
             .collect(),
     };
     sign_sync_payload(&mut sync_payload, request.signing_key)?;
@@ -710,7 +845,8 @@ fn build_export_artifact_with_reuse(
     let sync_encrypted =
         encrypted_export_object(&reuse, &sync_object_path, &sync_plaintext, &recipients)?;
     insert_export_object(
-        &mut objects,
+        target,
+        &mut object_paths,
         &mut total_object_bytes,
         sync_object_path.clone(),
         sync_encrypted,
@@ -735,6 +871,7 @@ fn build_export_artifact_with_reuse(
             payload_hash: sync_payload_hash,
             object_path: sync_object_path,
         },
+        chunks: manifest_chunks,
         turns: manifest_turns,
     };
     if let Some(previous_project) = reuse.previous_project
@@ -755,12 +892,90 @@ fn build_export_artifact_with_reuse(
     Ok(BuiltExportArtifact {
         project,
         manifest,
+        #[cfg(test)]
+        objects: BTreeMap::new(),
+        object_count: u64::try_from(object_paths.len())
+            .context("object count exceeds u64 range")?,
+        object_paths,
         exported_turn_count,
         exported_session_count: u64::try_from(session_ids.len())
             .context("session count exceeds u64 range")?,
-        object_count: u64::try_from(objects.len()).context("object count exceeds u64 range")?,
-        objects,
     })
+}
+
+/// Builds and inserts one compressed encrypted share chunk.
+#[allow(clippy::too_many_arguments)]
+fn write_export_chunk(
+    reuse: &ExportReuseContext<'_>,
+    target: &mut ExportObjectTarget<'_>,
+    object_paths: &mut BTreeSet<String>,
+    total_object_bytes: &mut usize,
+    manifest_turns: &mut Vec<TurnManifestEntry>,
+    manifest_chunks: &mut Vec<ChunkManifestEntry>,
+    project_key: &str,
+    identity: &ShareIdentity,
+    recipients: &[Recipient],
+    recipient_fingerprint: &str,
+    chunk_index: u64,
+    chunk_turns: Vec<(String, EncryptedTurnPayload)>,
+) -> Result<()> {
+    let chunk_id = format!("chunk-{chunk_index:08}");
+    let record_count = chunk_turns.len();
+    let chunk_payload = ShareChunkPayload {
+        schema: CHUNK_PAYLOAD_SCHEMA.to_owned(),
+        version: CHUNK_PAYLOAD_VERSION,
+        project_key: project_key.to_owned(),
+        exporter: identity.clone(),
+        chunk_id: chunk_id.clone(),
+        turns: chunk_turns
+            .iter()
+            .map(|(_, payload)| payload.clone())
+            .collect(),
+    };
+    let chunk_json =
+        serde_json::to_vec(&chunk_payload).context("failed to serialize share chunk payload")?;
+    let compressed_plaintext = gzip_compress(&chunk_json)?;
+    let plaintext_hash = sha256_hex(&compressed_plaintext);
+    let object_path =
+        format!("{ARTIFACT_ROOT}/objects/{recipient_fingerprint}-{chunk_id}-{plaintext_hash}.age");
+    let encrypted =
+        encrypted_export_object(reuse, &object_path, &compressed_plaintext, recipients)?;
+    let ciphertext_bytes =
+        u64::try_from(encrypted.len()).context("chunk ciphertext size exceeds u64 range")?;
+    let ciphertext_hash = sha256_hex(&encrypted);
+    insert_export_object(
+        target,
+        object_paths,
+        total_object_bytes,
+        object_path.clone(),
+        encrypted,
+    )?;
+    manifest_chunks.push(ChunkManifestEntry {
+        chunk_id: chunk_id.clone(),
+        object_path: object_path.clone(),
+        compression: "gzip".to_owned(),
+        plaintext_hash,
+        ciphertext_hash,
+        plaintext_bytes: u64::try_from(compressed_plaintext.len())
+            .context("chunk plaintext size exceeds u64 range")?,
+        ciphertext_bytes,
+        turn_count: u64::try_from(record_count).context("chunk turn count exceeds u64 range")?,
+    });
+    for (record_index, (payload_hash, payload)) in chunk_turns.into_iter().enumerate() {
+        manifest_turns.push(TurnManifestEntry {
+            provider: payload.turn.session.provider,
+            session_id: payload.turn.session.session_id,
+            turn_ordinal: payload.turn.turn_ordinal,
+            started_at: payload.turn.started_at,
+            payload_hash,
+            object_path: object_path.clone(),
+            chunk_id: Some(chunk_id.clone()),
+            chunk_record_index: Some(
+                u32::try_from(record_index).context("chunk record index exceeds u32 range")?,
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Returns whether two manifests differ only by export timestamp.
@@ -771,6 +986,7 @@ fn manifest_matches_without_timestamp(left: &ManifestArtifact, right: &ManifestA
         && left.branch == right.branch
         && left.exporter == right.exporter
         && left.sync == right.sync
+        && left.chunks == right.chunks
         && left.turns == right.turns
 }
 
@@ -898,12 +1114,13 @@ fn trusted_export_object_path(cache_path: &Path, object_path: &str) -> PathBuf {
 
 /// Inserts one encrypted export object while enforcing in-memory export caps.
 fn insert_export_object(
-    objects: &mut BTreeMap<String, Vec<u8>>,
+    target: &mut ExportObjectTarget<'_>,
+    object_paths: &mut BTreeSet<String>,
     total_object_bytes: &mut usize,
     object_path: String,
     content: Vec<u8>,
 ) -> Result<()> {
-    if objects.len() >= MAX_SHARE_EXPORT_OBJECTS {
+    if object_paths.len() >= MAX_SHARE_EXPORT_OBJECTS {
         bail!("share export exceeds {MAX_SHARE_EXPORT_OBJECTS} encrypted objects");
     }
     *total_object_bytes = total_object_bytes
@@ -912,12 +1129,36 @@ fn insert_export_object(
     if *total_object_bytes > MAX_SHARE_EXPORT_BYTES {
         bail!("share export exceeds {MAX_SHARE_EXPORT_BYTES} encrypted bytes");
     }
-    objects.insert(object_path, content);
+    object_paths.insert(object_path.clone());
+    match target {
+        #[cfg(test)]
+        ExportObjectTarget::Memory { objects } => {
+            objects.insert(object_path, content);
+        }
+        ExportObjectTarget::Disk { cache_path } => {
+            write_artifact_file(cache_path, &object_path, &content)?
+        }
+    }
     Ok(())
 }
 
 /// Writes all share artifacts into a cache repository workdir.
+#[cfg(test)]
 fn write_export_artifact(path: &Path, artifact: &BuiltExportArtifact) -> Result<()> {
+    write_export_metadata(path, artifact)?;
+    for (relative, content) in &artifact.objects {
+        write_artifact_file(path, relative, content)?;
+    }
+    Ok(())
+}
+
+/// Writes visible share metadata into a cache repository workdir.
+fn write_export_metadata(path: &Path, artifact: &BuiltExportArtifact) -> Result<()> {
+    write_artifact_file(
+        path,
+        GIT_ATTRIBUTES_FILE,
+        b"darc-share/v1/objects/*.age filter=lfs diff=lfs merge=lfs -text\n",
+    )?;
     write_json_artifact_file(
         path,
         &format!("{ARTIFACT_ROOT}/{PROJECT_FILE}"),
@@ -928,9 +1169,6 @@ fn write_export_artifact(path: &Path, artifact: &BuiltExportArtifact) -> Result<
         &exporter_manifest_relative_path(&artifact.manifest.exporter),
         &artifact.manifest,
     )?;
-    for (relative, content) in &artifact.objects {
-        write_artifact_file(path, relative, content)?;
-    }
     Ok(())
 }
 
@@ -1123,7 +1361,6 @@ fn remove_replaced_exporter_artifacts(
     artifact: &BuiltExportArtifact,
 ) -> Result<()> {
     let current_exporter_id = exporter_manifest_id(identity);
-    let current_object_paths = artifact.objects.keys().cloned().collect::<BTreeSet<_>>();
     let retained_object_paths = retained_manifests
         .iter()
         .flat_map(|cached| manifest_object_paths(&cached.manifest))
@@ -1133,7 +1370,7 @@ fn remove_replaced_exporter_artifacts(
         .filter(|cached| exporter_manifest_id(&cached.manifest.exporter) == current_exporter_id)
         .flat_map(|cached| manifest_object_paths(&cached.manifest))
         .filter(|path| {
-            !current_object_paths.contains(path) && !retained_object_paths.contains(path)
+            !artifact.object_paths.contains(path) && !retained_object_paths.contains(path)
         })
         .collect::<BTreeSet<_>>();
 
@@ -1186,20 +1423,45 @@ fn authenticated_retained_manifests(
             }
             let authenticated_turns =
                 authenticated_manifest_turns(&cached.manifest, &sync_payload).ok()?;
-            let turns_are_authenticated = cached.manifest.turns.iter().all(|entry| {
-                authenticated_turns.contains(&sync_entry_from_manifest(entry))
-                    && verify_cached_turn_payload(
-                        cache_path,
-                        &cached.manifest,
-                        expected_project_key,
-                        decryption_identity,
-                        entry,
-                    )
-                    .is_ok()
-            });
-            turns_are_authenticated.then(|| cached.clone())
+            let turns_are_authenticated = cached
+                .manifest
+                .turns
+                .iter()
+                .all(|entry| authenticated_turns.contains(&sync_entry_from_manifest(entry)));
+            (turns_are_authenticated
+                && verify_cached_manifest_payloads(
+                    cache_path,
+                    &cached.manifest,
+                    expected_project_key,
+                    decryption_identity,
+                )
+                .is_ok())
+            .then(|| cached.clone())
         })
         .collect()
+}
+
+/// Verifies all encrypted turn payloads referenced by one cached manifest.
+fn verify_cached_manifest_payloads(
+    cache_path: &Path,
+    manifest: &ManifestArtifact,
+    expected_project_key: &str,
+    identity: &Identity,
+) -> Result<()> {
+    if manifest_turns_are_chunked(&manifest.turns) {
+        let chunks = read_manifest_chunks(cache_path, manifest, expected_project_key, identity);
+        if !chunks.errors.is_empty() {
+            bail!("share manifest contains unauthenticated chunks");
+        }
+        for entry in &manifest.turns {
+            verify_chunked_manifest_entry(&chunks, entry)?;
+        }
+        return Ok(());
+    }
+    for entry in &manifest.turns {
+        verify_cached_turn_payload(cache_path, manifest, expected_project_key, identity, entry)?;
+    }
+    Ok(())
 }
 
 /// Returns the exact authenticated turn set shared by one manifest and sync payload.
@@ -1207,6 +1469,7 @@ fn authenticated_manifest_turns(
     manifest: &ManifestArtifact,
     sync_payload: &EncryptedSyncPayload,
 ) -> Result<BTreeSet<SyncTurnEntry>> {
+    validate_manifest_chunk_mode(&manifest.turns)?;
     let authenticated_turns = sync_payload.turns.iter().cloned().collect::<BTreeSet<_>>();
     let manifest_turns = manifest
         .turns
@@ -1219,6 +1482,28 @@ fn authenticated_manifest_turns(
     Ok(authenticated_turns)
 }
 
+/// Returns whether one manifest entry belongs to a chunked payload.
+fn manifest_entry_is_chunked(entry: &TurnManifestEntry) -> bool {
+    entry.chunk_id.is_some() || entry.chunk_record_index.is_some()
+}
+
+/// Returns whether a signed manifest turn set uses chunked payloads.
+fn manifest_turns_are_chunked(entries: &[TurnManifestEntry]) -> bool {
+    entries.iter().any(manifest_entry_is_chunked)
+}
+
+/// Validates that all manifest entries use one payload mode.
+fn validate_manifest_chunk_mode(entries: &[TurnManifestEntry]) -> Result<()> {
+    let chunked_count = entries
+        .iter()
+        .filter(|entry| manifest_entry_is_chunked(entry))
+        .count();
+    if chunked_count != 0 && chunked_count != entries.len() {
+        bail!("share manifest mixes legacy and chunked turn entries");
+    }
+    Ok(())
+}
+
 /// Verifies one cached turn object without importing it into SQLite.
 fn verify_cached_turn_payload(
     cache_path: &Path,
@@ -1227,8 +1512,20 @@ fn verify_cached_turn_payload(
     identity: &Identity,
     entry: &TurnManifestEntry,
 ) -> Result<()> {
+    if manifest_entry_is_chunked(entry) {
+        let chunks = read_manifest_chunks(cache_path, manifest, expected_project_key, identity);
+        if !chunks.errors.is_empty() {
+            bail!("share manifest contains unauthenticated chunks");
+        }
+        verify_chunked_manifest_entry(&chunks, entry)?;
+        return Ok(());
+    }
+    if entry.chunk_id.is_some() || entry.chunk_record_index.is_some() {
+        bail!("legacy share manifest entry unexpectedly references a chunk");
+    }
     let object_path = manifest_object_path(cache_path, entry)?;
     let ciphertext = read_regular_file(&object_path, MAX_SHARE_OBJECT_BYTES)?;
+    ensure_not_lfs_pointer(&ciphertext, &object_path)?;
     let plaintext =
         decrypt_payload(&ciphertext, identity).context("failed to decrypt share object")?;
     if sha256_hex(&plaintext) != entry.payload_hash {
@@ -1378,27 +1675,6 @@ fn import_from_cache(
             ));
             continue;
         }
-        let import_context = ImportEntryContext {
-            expected_project_key,
-            expected_exporter: &sync_payload.exporter,
-            identity: &identity,
-            cache_path,
-        };
-        let mut decoded_turns = Vec::new();
-        for entry in &manifest.turns {
-            match read_manifest_entry_turn(&import_context, entry) {
-                Ok(turn) => decoded_turns.push(turn),
-                Err(error) => {
-                    skipped_turn_count += 1;
-                    warnings.push(format!(
-                        "skipped {} session {} turn {}: {error:#}",
-                        entry.provider.directory_name(),
-                        entry.session_id,
-                        entry.turn_ordinal
-                    ));
-                }
-            }
-        }
         let imported_at = current_utc_timestamp();
         let user = ShareUserRecord {
             user_id: sync_payload.exporter.user_id.clone(),
@@ -1408,39 +1684,61 @@ fn import_from_cache(
             source: "share-manifest".to_owned(),
             updated_at: imported_at.clone(),
         };
-        let imports = decoded_turns
-            .iter()
-            .map(|turn| ShareTurnImport {
-                project_id: &context.project_id,
-                user: &user,
-                remote_name: &origin_remote,
-                imported_at: &imported_at,
-                turn,
-            })
-            .collect::<Vec<_>>();
-        let outcomes = import_shared_turns(&mut connection, &imports)?;
         let mut keep_turns = BTreeSet::new();
-        for (turn, outcome) in decoded_turns.iter().zip(outcomes) {
-            match outcome {
-                Ok(true) => {
-                    imported_turn_count += 1;
-                    keep_turns.insert((
-                        turn.session.provider,
-                        turn.session.session_id.clone(),
-                        turn.turn_ordinal,
-                    ));
-                }
-                Ok(false) => skipped_turn_count += 1,
-                Err(error) => {
-                    skipped_turn_count += 1;
-                    warnings.push(format!(
-                        "skipped {} session {} turn {}: {error:#}",
-                        turn.session.provider.directory_name(),
-                        turn.session.session_id,
-                        turn.turn_ordinal
-                    ));
+        if !manifest_turns_are_chunked(&manifest.turns) {
+            let chunks = DecodedChunks::default();
+            let import_context = ImportEntryContext {
+                expected_project_key,
+                expected_exporter: &sync_payload.exporter,
+                identity: &identity,
+                cache_path,
+                chunks: &chunks,
+            };
+            let mut decoded_turns = Vec::new();
+            for entry in &manifest.turns {
+                match read_manifest_entry_turn(&import_context, entry) {
+                    Ok(turn) => decoded_turns.push(turn),
+                    Err(error) => {
+                        skipped_turn_count += 1;
+                        warnings.push(format!(
+                            "skipped {} session {} turn {}: {error:#}",
+                            entry.provider.directory_name(),
+                            entry.session_id,
+                            entry.turn_ordinal
+                        ));
+                    }
                 }
             }
+            import_decoded_turns(
+                &mut connection,
+                context,
+                &origin_remote,
+                &user,
+                &imported_at,
+                &decoded_turns,
+                &mut keep_turns,
+                &mut imported_turn_count,
+                &mut skipped_turn_count,
+                &mut warnings,
+            )?;
+        } else {
+            import_chunked_manifest_turns(
+                &mut connection,
+                context,
+                cache_path,
+                expected_project_key,
+                &identity,
+                &manifest,
+                &sync_payload.exporter,
+                &cached.relative_path,
+                &origin_remote,
+                &user,
+                &imported_at,
+                &mut keep_turns,
+                &mut imported_turn_count,
+                &mut skipped_turn_count,
+                &mut warnings,
+            )?;
         }
         prune_shared_turns(
             &connection,
@@ -1462,6 +1760,167 @@ fn import_from_cache(
     })
 }
 
+/// Imports decoded turns and updates per-exporter keep state.
+#[allow(clippy::too_many_arguments)]
+fn import_decoded_turns(
+    connection: &mut rusqlite::Connection,
+    context: &ShareProjectContext,
+    origin_remote: &str,
+    user: &ShareUserRecord,
+    imported_at: &str,
+    decoded_turns: &[ShareTurnExport],
+    keep_turns: &mut BTreeSet<(darc_paths::SourceKind, String, i64)>,
+    imported_turn_count: &mut u64,
+    skipped_turn_count: &mut u64,
+    warnings: &mut Vec<String>,
+) -> Result<()> {
+    let imports = decoded_turns
+        .iter()
+        .map(|turn| ShareTurnImport {
+            project_id: &context.project_id,
+            user,
+            remote_name: origin_remote,
+            imported_at,
+            turn,
+        })
+        .collect::<Vec<_>>();
+    let outcomes = import_shared_turns(connection, &imports)?;
+    for (turn, outcome) in decoded_turns.iter().zip(outcomes) {
+        match outcome {
+            Ok(true) => {
+                *imported_turn_count += 1;
+                keep_turns.insert((
+                    turn.session.provider,
+                    turn.session.session_id.clone(),
+                    turn.turn_ordinal,
+                ));
+            }
+            Ok(false) => *skipped_turn_count += 1,
+            Err(error) => {
+                *skipped_turn_count += 1;
+                warnings.push(format!(
+                    "skipped {} session {} turn {}: {error:#}",
+                    turn.session.provider.directory_name(),
+                    turn.session.session_id,
+                    turn.turn_ordinal
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Imports a chunked manifest one chunk at a time to bound memory.
+#[allow(clippy::too_many_arguments)]
+fn import_chunked_manifest_turns(
+    connection: &mut rusqlite::Connection,
+    context: &ShareProjectContext,
+    cache_path: &Path,
+    expected_project_key: &str,
+    identity: &Identity,
+    manifest: &ManifestArtifact,
+    expected_exporter: &ShareIdentity,
+    relative_path: &str,
+    origin_remote: &str,
+    user: &ShareUserRecord,
+    imported_at: &str,
+    keep_turns: &mut BTreeSet<(darc_paths::SourceKind, String, i64)>,
+    imported_turn_count: &mut u64,
+    skipped_turn_count: &mut u64,
+    warnings: &mut Vec<String>,
+) -> Result<()> {
+    let mut entries_by_chunk = BTreeMap::<String, Vec<&TurnManifestEntry>>::new();
+    for entry in &manifest.turns {
+        if let Some(chunk_id) = &entry.chunk_id {
+            entries_by_chunk
+                .entry(chunk_id.clone())
+                .or_default()
+                .push(entry);
+        } else {
+            *skipped_turn_count += 1;
+            warnings.push(format!(
+                "skipped {} session {} turn {}: chunked share manifest entry is missing chunk_id",
+                entry.provider.directory_name(),
+                entry.session_id,
+                entry.turn_ordinal
+            ));
+        }
+    }
+
+    for (chunk_id, entries) in entries_by_chunk {
+        let decoded_turns = match read_manifest_chunk_for_entries(
+            cache_path,
+            manifest,
+            expected_project_key,
+            identity,
+            &chunk_id,
+            &entries,
+        ) {
+            Ok(turns) => {
+                let decoded = DecodedChunks {
+                    turns,
+                    errors: BTreeMap::new(),
+                };
+                let import_context = ImportEntryContext {
+                    expected_project_key,
+                    expected_exporter,
+                    identity,
+                    cache_path,
+                    chunks: &decoded,
+                };
+                decode_manifest_entries(&import_context, &entries, skipped_turn_count, warnings)
+            }
+            Err(error) => {
+                *skipped_turn_count +=
+                    u64::try_from(entries.len()).context("skipped turn count exceeds u64 range")?;
+                warnings.push(format!(
+                    "skipped share chunk {chunk_id} in manifest {relative_path} for exporter {}: {error:#}",
+                    expected_exporter.user_id
+                ));
+                Vec::new()
+            }
+        };
+        import_decoded_turns(
+            connection,
+            context,
+            origin_remote,
+            user,
+            imported_at,
+            &decoded_turns,
+            keep_turns,
+            imported_turn_count,
+            skipped_turn_count,
+            warnings,
+        )?;
+    }
+    Ok(())
+}
+
+/// Decodes manifest entries against already-decoded chunk content.
+fn decode_manifest_entries(
+    import_context: &ImportEntryContext<'_>,
+    entries: &[&TurnManifestEntry],
+    skipped_turn_count: &mut u64,
+    warnings: &mut Vec<String>,
+) -> Vec<ShareTurnExport> {
+    let mut decoded_turns = Vec::new();
+    for entry in entries {
+        match read_manifest_entry_turn(import_context, entry) {
+            Ok(turn) => decoded_turns.push(turn),
+            Err(error) => {
+                *skipped_turn_count += 1;
+                warnings.push(format!(
+                    "skipped {} session {} turn {}: {error:#}",
+                    entry.provider.directory_name(),
+                    entry.session_id,
+                    entry.turn_ordinal
+                ));
+            }
+        }
+    }
+    decoded_turns
+}
+
 /// Reads and validates the encrypted sync payload used for pruning.
 fn read_sync_payload(
     cache_path: &Path,
@@ -1471,6 +1930,7 @@ fn read_sync_payload(
 ) -> Result<EncryptedSyncPayload> {
     let sync_path = manifest_artifact_path(cache_path, &manifest.sync.object_path)?;
     let ciphertext = read_regular_file(&sync_path, MAX_SHARE_OBJECT_BYTES)?;
+    ensure_not_lfs_pointer(&ciphertext, &sync_path)?;
     let plaintext =
         decrypt_payload(&ciphertext, identity).context("failed to decrypt share sync object")?;
     if sha256_hex(&plaintext) != manifest.sync.payload_hash {
@@ -1502,8 +1962,15 @@ fn read_manifest_entry_turn(
     context: &ImportEntryContext<'_>,
     entry: &TurnManifestEntry,
 ) -> Result<ShareTurnExport> {
+    if !context.chunks.turns.is_empty() || !context.chunks.errors.is_empty() {
+        return verify_chunked_manifest_entry(context.chunks, entry);
+    }
+    if entry.chunk_id.is_some() || entry.chunk_record_index.is_some() {
+        bail!("legacy share manifest entry unexpectedly references a chunk");
+    }
     let object_path = manifest_object_path(context.cache_path, entry)?;
     let ciphertext = read_regular_file(&object_path, MAX_SHARE_OBJECT_BYTES)?;
+    ensure_not_lfs_pointer(&ciphertext, &object_path)?;
     let plaintext =
         decrypt_payload(&ciphertext, context.identity).context("failed to decrypt share object")?;
     if sha256_hex(&plaintext) != entry.payload_hash {
@@ -1532,6 +1999,191 @@ fn read_manifest_entry_turn(
         bail!("share payload identity does not match manifest entry");
     }
     Ok(payload.turn)
+}
+
+/// Reads every encrypted chunk for a manifest and indexes its decoded turn payloads.
+fn read_manifest_chunks(
+    cache_path: &Path,
+    manifest: &ManifestArtifact,
+    expected_project_key: &str,
+    identity: &Identity,
+) -> DecodedChunks {
+    let mut decoded = DecodedChunks::default();
+    let mut entries_by_chunk = BTreeMap::<String, Vec<&TurnManifestEntry>>::new();
+    for entry in &manifest.turns {
+        if let Some(chunk_id) = &entry.chunk_id {
+            entries_by_chunk
+                .entry(chunk_id.clone())
+                .or_default()
+                .push(entry);
+        }
+    }
+    for (chunk_id, entries) in entries_by_chunk {
+        match read_manifest_chunk_for_entries(
+            cache_path,
+            manifest,
+            expected_project_key,
+            identity,
+            &chunk_id,
+            &entries,
+        ) {
+            Ok(turns) => decoded.turns.extend(turns),
+            Err(error) => {
+                decoded
+                    .errors
+                    .insert(chunk_id.clone(), format!("{error:#}"));
+            }
+        }
+    }
+    decoded
+}
+
+/// Reads one encrypted chunk selected by authenticated turn entries.
+fn read_manifest_chunk_for_entries(
+    cache_path: &Path,
+    manifest: &ManifestArtifact,
+    expected_project_key: &str,
+    identity: &Identity,
+    chunk_id: &str,
+    entries: &[&TurnManifestEntry],
+) -> Result<BTreeMap<(String, u32), DecodedChunkTurn>> {
+    let object_path = chunk_object_path_for_entries(chunk_id, entries)?;
+    read_manifest_chunk(
+        cache_path,
+        manifest,
+        expected_project_key,
+        identity,
+        chunk_id,
+        &object_path,
+    )
+}
+
+/// Returns the single signed object path used by entries in one chunk.
+fn chunk_object_path_for_entries(chunk_id: &str, entries: &[&TurnManifestEntry]) -> Result<String> {
+    let first = entries
+        .first()
+        .with_context(|| format!("share chunk `{chunk_id}` has no manifest entries"))?;
+    let object_path = first.object_path.clone();
+    for entry in entries {
+        if entry.object_path != object_path {
+            bail!("share chunk entries disagree on object path");
+        }
+    }
+    Ok(object_path)
+}
+
+/// Reads one encrypted chunk and indexes its decoded turn payloads.
+fn read_manifest_chunk(
+    cache_path: &Path,
+    manifest: &ManifestArtifact,
+    expected_project_key: &str,
+    identity: &Identity,
+    chunk_id: &str,
+    object_path: &str,
+) -> Result<BTreeMap<(String, u32), DecodedChunkTurn>> {
+    let path = manifest_artifact_path(cache_path, object_path)?;
+    let ciphertext = read_regular_file(&path, MAX_SHARE_OBJECT_BYTES)?;
+    ensure_not_lfs_pointer(&ciphertext, &path)?;
+    let compressed =
+        decrypt_payload(&ciphertext, identity).context("failed to decrypt share chunk")?;
+    let plaintext = gzip_decompress(&compressed)?;
+    let payload: ShareChunkPayload =
+        serde_json::from_slice(&plaintext).context("failed to parse share chunk JSON")?;
+    if payload.schema != CHUNK_PAYLOAD_SCHEMA {
+        bail!(
+            "unsupported share chunk payload schema `{}`",
+            payload.schema
+        );
+    }
+    if payload.version != CHUNK_PAYLOAD_VERSION {
+        bail!(
+            "unsupported share chunk payload version `{}`",
+            payload.version
+        );
+    }
+    if payload.project_key != expected_project_key {
+        bail!("share chunk project key does not match active project");
+    }
+    if payload.exporter != manifest.exporter {
+        bail!("share chunk exporter does not match manifest exporter");
+    }
+    if payload.chunk_id != chunk_id {
+        bail!("share chunk id does not match manifest chunk entry");
+    }
+    let mut decoded = BTreeMap::new();
+    for (record_index, turn_payload) in payload.turns.into_iter().enumerate() {
+        if turn_payload.schema != TURN_PAYLOAD_SCHEMA {
+            bail!(
+                "unsupported share payload schema `{}` in chunk",
+                turn_payload.schema
+            );
+        }
+        if turn_payload.version != 1 {
+            bail!(
+                "unsupported share payload version `{}` in chunk",
+                turn_payload.version
+            );
+        }
+        if turn_payload.project_key != expected_project_key {
+            bail!("share payload project key in chunk does not match active project");
+        }
+        if turn_payload.exporter != manifest.exporter {
+            bail!("share payload exporter in chunk does not match manifest exporter");
+        }
+        verify_turn_payload_signature(&turn_payload)?;
+        let payload_bytes = serde_json::to_vec(&turn_payload)
+            .context("failed to serialize decoded share chunk turn")?;
+        let payload_hash = sha256_hex(&payload_bytes);
+        decoded.insert(
+            (
+                chunk_id.to_owned(),
+                u32::try_from(record_index)
+                    .context("share chunk record index exceeds u32 range")?,
+            ),
+            DecodedChunkTurn {
+                object_path: object_path.to_owned(),
+                payload_hash,
+                turn: turn_payload.turn,
+            },
+        );
+    }
+    Ok(decoded)
+}
+
+/// Verifies and returns one decoded chunked manifest entry.
+fn verify_chunked_manifest_entry(
+    chunks: &DecodedChunks,
+    entry: &TurnManifestEntry,
+) -> Result<ShareTurnExport> {
+    let chunk_id = entry
+        .chunk_id
+        .as_ref()
+        .context("chunked share manifest entry is missing chunk_id")?;
+    if let Some(error) = chunks.errors.get(chunk_id) {
+        bail!("share chunk `{chunk_id}` could not be imported: {error}");
+    }
+    let record_index = entry
+        .chunk_record_index
+        .context("chunked share manifest entry is missing chunk_record_index")?;
+    let decoded = chunks
+        .turns
+        .get(&(chunk_id.clone(), record_index))
+        .context("share chunk does not contain manifest entry")?;
+    if decoded.object_path != entry.object_path {
+        validate_manifest_object_relative_path(&entry.object_path)?;
+        bail!("share chunked manifest object path does not match chunk entry");
+    }
+    if decoded.payload_hash != entry.payload_hash {
+        bail!("share payload hash mismatch");
+    }
+    if decoded.turn.session.provider != entry.provider
+        || decoded.turn.session.session_id != entry.session_id
+        || decoded.turn.turn_ordinal != entry.turn_ordinal
+        || decoded.turn.started_at != entry.started_at
+    {
+        bail!("share payload identity does not match manifest entry");
+    }
+    Ok(decoded.turn.clone())
 }
 
 /// Resolves the remote URL for one share operation.
@@ -1807,6 +2459,34 @@ fn parse_encryption_recipients(recipient_strings: &[String]) -> Result<Vec<Recip
 /// Returns a short stable fingerprint for the recipient set used by an object.
 fn encryption_recipient_fingerprint(recipient_strings: &[String]) -> String {
     sha256_hex(recipient_strings.join("\n").as_bytes())[..16].to_owned()
+}
+
+/// Compresses one share chunk before encryption.
+fn gzip_compress(plaintext: &[u8]) -> Result<Vec<u8>> {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+    encoder
+        .write_all(plaintext)
+        .context("failed to write gzip share chunk")?;
+    encoder
+        .finish()
+        .context("failed to finish gzip share chunk")
+}
+
+/// Decompresses one decrypted share chunk.
+fn gzip_decompress(compressed: &[u8]) -> Result<Vec<u8>> {
+    let mut decoder = GzDecoder::new(compressed);
+    let mut plaintext = Vec::new();
+    decoder
+        .by_ref()
+        .take(MAX_SHARE_CHUNK_DECOMPRESSED_BYTES + 1)
+        .read_to_end(&mut plaintext)
+        .context("failed to decompress share chunk")?;
+    if u64::try_from(plaintext.len()).unwrap_or(u64::MAX) > MAX_SHARE_CHUNK_DECOMPRESSED_BYTES {
+        bail!(
+            "decompressed share chunk exceeds maximum supported size of {MAX_SHARE_CHUNK_DECOMPRESSED_BYTES} bytes"
+        );
+    }
+    Ok(plaintext)
 }
 
 /// Encrypts one plaintext payload to every configured recipient.
@@ -2181,6 +2861,80 @@ fn configure_cache_repository(
         ["config", "commit.gpgsign", "false"],
         "failed to disable share cache commit signing",
     )?;
+    configure_git_lfs(path)?;
+    Ok(())
+}
+
+/// Enables Git LFS filters for the share cache when git-lfs is installed.
+fn configure_git_lfs(path: &Path) -> Result<bool> {
+    if !git_lfs_available(path)? {
+        return Ok(false);
+    }
+    run_cache_git_with_hook_override(
+        path,
+        ["lfs", "install", "--local"],
+        "failed to initialize Git LFS in share cache",
+        false,
+    )?;
+    Ok(true)
+}
+
+/// Returns whether the system Git client can run git-lfs.
+fn git_lfs_available(path: &Path) -> Result<bool> {
+    if std::env::var_os("DARC_SHARE_DISABLE_LFS").is_some() {
+        return Ok(false);
+    }
+    let output = run_git_raw(path, ["lfs", "version"]).context("failed to inspect Git LFS")?;
+    Ok(output.status.success())
+}
+
+/// Downloads Git LFS share objects for one fetched cache checkout when supported.
+fn hydrate_lfs_objects(path: &Path) -> Result<()> {
+    if !ensure_safe_existing_cache_dir(path)? {
+        return Ok(());
+    }
+    if !git_lfs_available(path)? {
+        reject_lfs_pointer_objects(path)?;
+        return Ok(());
+    }
+    run_cache_git(
+        path,
+        [
+            "lfs",
+            "pull",
+            DEFAULT_REMOTE_NAME,
+            "--include=darc-share/v1/objects/*.age",
+        ],
+        "failed to hydrate Git LFS share objects",
+    )?;
+    reject_lfs_pointer_objects(path)?;
+    Ok(())
+}
+
+/// Rejects checked-out LFS pointer files in the encrypted object namespace.
+fn reject_lfs_pointer_objects(cache_path: &Path) -> Result<()> {
+    let objects_path = cache_path.join(ARTIFACT_ROOT).join("objects");
+    if !is_regular_directory(&objects_path)? {
+        return Ok(());
+    }
+    let entries = fs::read_dir(&objects_path)
+        .with_context(|| format!("failed to read {}", objects_path.display()))?;
+    for entry in entries {
+        let entry = entry.with_context(|| format!("failed to read {}", objects_path.display()))?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)
+            .with_context(|| format!("failed to inspect {}", path.display()))?;
+        if !metadata.file_type().is_file() {
+            continue;
+        }
+        let prefix = read_file_prefix(&path, u64::try_from(GIT_LFS_POINTER_PREFIX.len())?)?;
+        if prefix == GIT_LFS_POINTER_PREFIX {
+            bail!(
+                "share object {} is a Git LFS pointer; install git-lfs and retry so Darc can hydrate existing encrypted share objects before continuing",
+                path.display()
+            );
+        }
+    }
     Ok(())
 }
 
@@ -2288,12 +3042,13 @@ fn allowed_share_cache_paths(
     retained_manifests: &[CachedManifest],
 ) -> BTreeSet<String> {
     let mut paths = BTreeSet::new();
+    insert_allowed_share_cache_path(&mut paths, GIT_ATTRIBUTES_FILE);
     insert_allowed_share_cache_path(&mut paths, &format!("{ARTIFACT_ROOT}/{PROJECT_FILE}"));
     insert_allowed_share_cache_path(
         &mut paths,
         &exporter_manifest_relative_path(&artifact.manifest.exporter),
     );
-    for object_path in artifact.objects.keys() {
+    for object_path in &artifact.object_paths {
         insert_allowed_share_cache_path(&mut paths, object_path);
     }
     for cached in retained_manifests {
@@ -2378,6 +3133,7 @@ fn allowed_share_cache_file(relative: &Path) -> bool {
         return false;
     };
     match components.as_slice() {
+        [GIT_ATTRIBUTES_FILE] => true,
         ["darc-share", "v1", PROJECT_FILE] => true,
         ["darc-share", "v1", "objects", file_name] => file_name.ends_with(".age"),
         [
@@ -2459,10 +3215,12 @@ fn commit_cache_repository(path: &Path, git_branch: &str) -> Result<String> {
         ["rm", "-r", "-f", "--cached", "--ignore-unmatch", "."],
         "failed to stage removed share artifacts",
     )?;
-    run_cache_git(
+    let use_lfs_filters = git_lfs_available(path)?;
+    run_cache_git_with_lfs_filter_override(
         path,
-        ["add", "-f", "--", ARTIFACT_ROOT],
+        ["add", "-f", "--", GIT_ATTRIBUTES_FILE, ARTIFACT_ROOT],
         "failed to add share artifacts to index",
+        !use_lfs_filters,
     )?;
     let diff = run_cache_git_raw(path, ["diff", "--cached", "--quiet"])
         .context("failed to inspect staged share artifacts")?;
@@ -2486,6 +3244,14 @@ fn commit_cache_repository(path: &Path, git_branch: &str) -> Result<String> {
 
 /// Pushes one local share branch to the configured remote.
 fn push_branch(path: &Path, git_branch: &str) -> Result<()> {
+    if git_lfs_available(path)? {
+        let local_ref = format!("refs/heads/{git_branch}");
+        run_cache_git(
+            path,
+            ["lfs", "push", DEFAULT_REMOTE_NAME, &local_ref],
+            &format!("failed to push Git LFS objects for share branch `{git_branch}`"),
+        )?;
+    }
     let refspec = format!("refs/heads/{git_branch}:refs/heads/{git_branch}");
     run_cache_git(
         path,
@@ -2563,6 +3329,73 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
+    run_cache_git_raw_with_hook_override(cache_path, args, true)
+}
+
+/// Runs one cache Git command while controlling Git hook override behavior.
+fn run_cache_git_with_hook_override<I, S>(
+    cache_path: &Path,
+    args: I,
+    context: &str,
+    disable_hooks: bool,
+) -> Result<GitCommandOutput>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let output = run_cache_git_raw_with_hook_override(cache_path, args, disable_hooks)
+        .with_context(|| context.to_owned())?;
+    if output.status.success() {
+        Ok(output)
+    } else {
+        bail!("{}", git_failure_message(context, &output))
+    }
+}
+
+/// Runs one cache Git command while optionally disabling LFS filters.
+fn run_cache_git_with_lfs_filter_override<I, S>(
+    cache_path: &Path,
+    args: I,
+    context: &str,
+    disable_lfs_filters: bool,
+) -> Result<GitCommandOutput>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let output = run_cache_git_raw_with_options(cache_path, args, true, disable_lfs_filters)
+        .with_context(|| context.to_owned())?;
+    if output.status.success() {
+        Ok(output)
+    } else {
+        bail!("{}", git_failure_message(context, &output))
+    }
+}
+
+/// Runs one cache Git command with optional hook override.
+fn run_cache_git_raw_with_hook_override<I, S>(
+    cache_path: &Path,
+    args: I,
+    disable_hooks: bool,
+) -> Result<GitCommandOutput>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    run_cache_git_raw_with_options(cache_path, args, disable_hooks, false)
+}
+
+/// Runs one cache Git command with optional hook and LFS filter overrides.
+fn run_cache_git_raw_with_options<I, S>(
+    cache_path: &Path,
+    args: I,
+    disable_hooks: bool,
+    disable_lfs_filters: bool,
+) -> Result<GitCommandOutput>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
     ensure_safe_cache_git_dir(cache_path)?;
     let git_dir = cache_path.join(".git");
     let mut scoped_args = vec![
@@ -2572,7 +3405,7 @@ where
         cache_path.as_os_str().to_owned(),
     ];
     scoped_args.extend(args.into_iter().map(|arg| arg.as_ref().to_owned()));
-    run_git_raw(cache_path, scoped_args)
+    run_git_raw_with_options(cache_path, scoped_args, disable_hooks, disable_lfs_filters)
 }
 
 /// Runs one system Git command without interpreting its exit status.
@@ -2581,25 +3414,55 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
+    run_git_raw_with_hook_override(path, args, true)
+}
+
+/// Runs one system Git command with optional hook override.
+fn run_git_raw_with_hook_override<I, S>(
+    path: &Path,
+    args: I,
+    disable_hooks: bool,
+) -> Result<GitCommandOutput>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    run_git_raw_with_options(path, args, disable_hooks, false)
+}
+
+/// Runs one system Git command with optional hook and LFS filter overrides.
+fn run_git_raw_with_options<I, S>(
+    path: &Path,
+    args: I,
+    disable_hooks: bool,
+    disable_lfs_filters: bool,
+) -> Result<GitCommandOutput>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
     let args = args
         .into_iter()
         .map(|arg| arg.as_ref().to_owned())
         .collect::<Vec<OsString>>();
-    let output = Command::new("git")
-        .args([
-            "-c",
-            "core.hooksPath=/dev/null",
-            "-c",
-            "core.askPass=false",
-            "-c",
-            "filter.lfs.required=false",
+    let mut command = Command::new("git");
+    if disable_hooks {
+        command.args(["-c", "core.hooksPath=/dev/null"]);
+    }
+    if disable_lfs_filters {
+        command.args([
             "-c",
             "filter.lfs.clean=",
             "-c",
-            "filter.lfs.smudge=",
+            "filter.lfs.smudge=cat",
             "-c",
             "filter.lfs.process=",
-        ])
+            "-c",
+            "filter.lfs.required=false",
+        ]);
+    }
+    let output = command
+        .args(["-c", "core.askPass=false"])
         .args(&args)
         .current_dir(path)
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -2795,6 +3658,13 @@ fn remove_file_if_exists(path: &Path) -> Result<()> {
 
 /// Resolves and validates one encrypted object path below the cache workdir.
 fn manifest_artifact_path(cache_path: &Path, object_path: &str) -> Result<PathBuf> {
+    let relative = validate_manifest_object_relative_path(object_path)?;
+    ensure_safe_artifact_ancestors(cache_path, relative)?;
+    Ok(cache_path.join(relative))
+}
+
+/// Validates one visible encrypted object path without touching the worktree.
+fn validate_manifest_object_relative_path(object_path: &str) -> Result<&Path> {
     let expected_prefix = format!("{ARTIFACT_ROOT}/objects/");
     if !object_path.starts_with(&expected_prefix) || !object_path.ends_with(".age") {
         bail!("share object path is outside the supported object namespace");
@@ -2814,8 +3684,7 @@ fn manifest_artifact_path(cache_path: &Path, object_path: &str) -> Result<PathBu
             bail!("share object path contains unsafe path components");
         }
     }
-    ensure_safe_artifact_ancestors(cache_path, relative)?;
-    Ok(cache_path.join(relative))
+    Ok(relative)
 }
 
 /// Writes one JSON artifact below the cache workdir without following symlinks.
@@ -3020,6 +3889,42 @@ fn read_regular_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>> {
         );
     }
     fs::read(path).with_context(|| format!("failed to read {}", path.display()))
+}
+
+/// Reads a bounded prefix from a regular file after rejecting symlinks.
+fn read_file_prefix(path: &Path, max_bytes: u64) -> Result<Vec<u8>> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("failed to inspect {}", path.display()))?;
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() {
+        bail!("share artifact path is a symlink: {}", path.display());
+    }
+    if !file_type.is_file() {
+        bail!(
+            "share artifact path is not a regular file: {}",
+            path.display()
+        );
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .open(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let mut prefix = Vec::new();
+    file.take(max_bytes)
+        .read_to_end(&mut prefix)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    Ok(prefix)
+}
+
+/// Rejects a Git LFS pointer when an encrypted object should be hydrated.
+fn ensure_not_lfs_pointer(content: &[u8], path: &Path) -> Result<()> {
+    if content.starts_with(GIT_LFS_POINTER_PREFIX) {
+        bail!(
+            "share object {} is a Git LFS pointer; run `git lfs pull` for the share cache",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 /// Validates one user-facing share branch shorthand.
@@ -3402,22 +4307,22 @@ mod tests {
         .unwrap();
 
         assert_ne!(
-            first.manifest.turns[0].object_path,
-            second.manifest.turns[0].object_path
+            first.manifest.chunks[0].object_path,
+            second.manifest.chunks[0].object_path
         );
         assert!(
             !first
                 .objects
-                .contains_key(&second.manifest.turns[0].object_path)
+                .contains_key(&second.manifest.chunks[0].object_path)
         );
         let plaintext = decrypt_payload(
-            &second.objects[&second.manifest.turns[0].object_path],
+            &second.objects[&second.manifest.chunks[0].object_path],
             &extra_identity,
         )
         .unwrap();
         assert_eq!(
             sha256_hex(&plaintext),
-            second.manifest.turns[0].payload_hash
+            second.manifest.chunks[0].plaintext_hash
         );
     }
 
@@ -3530,7 +4435,7 @@ mod tests {
             },
         )
         .unwrap();
-        let object_path = first.manifest.turns[0].object_path.clone();
+        let object_path = first.manifest.chunks[0].object_path.clone();
         let target = trusted_export_object_path(&trusted_cache, &object_path);
         fs::create_dir_all(target.parent().unwrap()).unwrap();
         fs::write(&target, b"not an age payload").unwrap();
@@ -3556,7 +4461,10 @@ mod tests {
 
         assert_ne!(second.objects[&object_path], b"not an age payload");
         let plaintext = decrypt_payload(&second.objects[&object_path], &age_identity).unwrap();
-        assert_eq!(sha256_hex(&plaintext), first.manifest.turns[0].payload_hash);
+        assert_eq!(
+            sha256_hex(&plaintext),
+            first.manifest.chunks[0].plaintext_hash
+        );
     }
 
     #[test]
@@ -3658,6 +4566,8 @@ mod tests {
             started_at: "2026-05-15T00:00:00Z".to_owned(),
             payload_hash: "bad-hash".to_owned(),
             object_path: format!("{ARTIFACT_ROOT}/objects/bad.age"),
+            chunk_id: None,
+            chunk_record_index: None,
         };
         let sync = write_test_sync_object(
             &cache,
@@ -3677,6 +4587,7 @@ mod tests {
                 exported_at: "2026-05-15T00:00:00Z".to_owned(),
                 exporter,
                 sync,
+                chunks: Vec::new(),
                 turns: vec![turn],
             },
         )
@@ -3782,6 +4693,7 @@ mod tests {
                     payload_hash: "bad".to_owned(),
                     object_path: format!("{ARTIFACT_ROOT}/objects/missing.age"),
                 },
+                chunks: Vec::new(),
                 turns: Vec::new(),
             },
         )
@@ -3904,6 +4816,7 @@ mod tests {
                         payload_hash: "bad".to_owned(),
                         object_path: format!("{ARTIFACT_ROOT}/objects/missing.age"),
                     },
+                    chunks: Vec::new(),
                     turns: Vec::new(),
                 },
             )
@@ -4201,26 +5114,16 @@ mod tests {
         write_export_artifact(&cache, &artifact).unwrap();
         let manifest_path = cache.join(exporter_manifest_relative_path(&source_identity));
         let mut manifest = read_json_file::<ManifestArtifact>(&manifest_path).unwrap();
-        let original_object_path = manifest.turns[0].object_path.clone();
-        let original_ciphertext = fs::read(cache.join(&original_object_path)).unwrap();
-        let original_plaintext = decrypt_payload(&original_ciphertext, &target_identity).unwrap();
-        let mut forged_payload: EncryptedTurnPayload =
-            serde_json::from_slice(&original_plaintext).unwrap();
-        forged_payload.turn.user_message = "forged task".to_owned();
-        let forged_plaintext = serde_json::to_vec(&forged_payload).unwrap();
-        let forged_object_path = format!(
-            "{ARTIFACT_ROOT}/objects/forged-turn-{}.age",
-            &sha256_hex(&forged_plaintext)[..16]
-        );
-        let forged_target = cache.join(&forged_object_path);
-        fs::create_dir_all(forged_target.parent().unwrap()).unwrap();
-        fs::write(
-            &forged_target,
-            encrypt_payload(&forged_plaintext, &[target_identity.to_public()]).unwrap(),
-        )
-        .unwrap();
+        let mut chunk_payload = read_test_chunk_payload(&cache, &manifest, &target_identity);
+        chunk_payload.turns[0].turn.user_message = "forged task".to_owned();
+        let forged_plaintext = serde_json::to_vec(&chunk_payload.turns[0]).unwrap();
         manifest.turns[0].payload_hash = sha256_hex(&forged_plaintext);
-        manifest.turns[0].object_path = forged_object_path;
+        write_test_chunk_payload(
+            &cache,
+            &mut manifest,
+            &chunk_payload,
+            &[target_identity.to_public()],
+        );
         manifest.sync = write_test_sync_object(
             &cache,
             &target_identity,
@@ -4246,7 +5149,10 @@ mod tests {
         assert_eq!(report.skipped_turn_count, 1);
         assert_eq!(report.warning_count, 1);
         assert!(
-            report.warnings[0].contains("signature"),
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("signature")),
             "warning should reject forged turn signature: {:?}",
             report.warnings
         );
@@ -4310,25 +5216,16 @@ mod tests {
 
         write_export_artifact(&cache, &artifact).unwrap();
         let mut manifest = read_json_file::<ManifestArtifact>(&manifest_path).unwrap();
-        let turn_ciphertext = fs::read(cache.join(&manifest.turns[0].object_path)).unwrap();
-        let turn_plaintext = decrypt_payload(&turn_ciphertext, &target_identity).unwrap();
-        let mut turn_payload: EncryptedTurnPayload =
-            serde_json::from_slice(&turn_plaintext).unwrap();
-        turn_payload.version = 2;
-        let turn_plaintext = serde_json::to_vec(&turn_payload).unwrap();
-        let turn_object_path = format!(
-            "{ARTIFACT_ROOT}/objects/turn-v2-{}.age",
-            &sha256_hex(&turn_plaintext)[..16]
-        );
-        let turn_target = cache.join(&turn_object_path);
-        fs::create_dir_all(turn_target.parent().unwrap()).unwrap();
-        fs::write(
-            &turn_target,
-            encrypt_payload(&turn_plaintext, &[target_identity.to_public()]).unwrap(),
-        )
-        .unwrap();
+        let mut chunk_payload = read_test_chunk_payload(&cache, &manifest, &target_identity);
+        chunk_payload.turns[0].version = 2;
+        let turn_plaintext = serde_json::to_vec(&chunk_payload.turns[0]).unwrap();
         manifest.turns[0].payload_hash = sha256_hex(&turn_plaintext);
-        manifest.turns[0].object_path = turn_object_path;
+        write_test_chunk_payload(
+            &cache,
+            &mut manifest,
+            &chunk_payload,
+            &[target_identity.to_public()],
+        );
         manifest.sync = write_test_sync_object(
             &cache,
             &target_identity,
@@ -4354,7 +5251,10 @@ mod tests {
         assert_eq!(report.skipped_turn_count, 1);
         assert_eq!(report.warning_count, 1);
         assert!(
-            report.warnings[0].contains("share payload version"),
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("share payload version")),
             "warning should reject unsupported turn payload version: {:?}",
             report.warnings
         );
@@ -4503,34 +5403,31 @@ mod tests {
         let manifest_path = cache.join(exporter_manifest_relative_path(&source_identity));
         let mut manifest = read_json_file::<ManifestArtifact>(&manifest_path).unwrap();
         let original_turn = manifest.turns[0].clone();
-        let turn_ciphertext = fs::read(cache.join(&original_turn.object_path)).unwrap();
-        let turn_plaintext = decrypt_payload(&turn_ciphertext, &target_identity).unwrap();
-        let mut extra_payload: EncryptedTurnPayload =
-            serde_json::from_slice(&turn_plaintext).unwrap();
+        let mut chunk_payload = read_test_chunk_payload(&cache, &manifest, &target_identity);
+        let mut extra_payload = chunk_payload.turns[0].clone();
         extra_payload.turn.turn_ordinal = 99;
         extra_payload.turn.turn_id = Some("turn-extra".to_owned());
         extra_payload.turn.started_at = "2026-05-15T23:59:59Z".to_owned();
         sign_turn_payload(&mut extra_payload, &source_signing_key).unwrap();
         let extra_plaintext = serde_json::to_vec(&extra_payload).unwrap();
-        let extra_object_path = format!(
-            "{ARTIFACT_ROOT}/objects/extra-turn-{}.age",
-            &sha256_hex(&extra_plaintext)[..16]
-        );
-        let extra_target = cache.join(&extra_object_path);
-        fs::create_dir_all(extra_target.parent().unwrap()).unwrap();
-        fs::write(
-            &extra_target,
-            encrypt_payload(&extra_plaintext, &[target_identity.to_public()]).unwrap(),
-        )
-        .unwrap();
+        let extra_record_index = u32::try_from(chunk_payload.turns.len()).unwrap();
+        chunk_payload.turns.push(extra_payload.clone());
         manifest.turns.push(TurnManifestEntry {
             provider: original_turn.provider,
             session_id: original_turn.session_id,
             turn_ordinal: extra_payload.turn.turn_ordinal,
             started_at: extra_payload.turn.started_at,
             payload_hash: sha256_hex(&extra_plaintext),
-            object_path: extra_object_path,
+            object_path: original_turn.object_path,
+            chunk_id: original_turn.chunk_id,
+            chunk_record_index: Some(extra_record_index),
         });
+        write_test_chunk_payload(
+            &cache,
+            &mut manifest,
+            &chunk_payload,
+            &[target_identity.to_public()],
+        );
         write_json_file(&manifest_path, &manifest).unwrap();
 
         let report = import_from_cache(
@@ -4670,9 +5567,12 @@ mod tests {
         )
         .unwrap();
         let manifest_path = cache.join(exporter_manifest_relative_path(&source_identity));
-        let manifest = read_json_file::<ManifestArtifact>(&manifest_path).unwrap();
+        let mut manifest = read_json_file::<ManifestArtifact>(&manifest_path).unwrap();
         let object_path = manifest_object_path(&cache, &manifest.turns[0]).unwrap();
         fs::write(&object_path, b"not an age payload").unwrap();
+        manifest.chunks[0].ciphertext_hash = sha256_hex(b"not an age payload");
+        manifest.chunks[0].ciphertext_bytes = u64::try_from(b"not an age payload".len()).unwrap();
+        write_json_file(&manifest_path, &manifest).unwrap();
 
         let second_report = import_from_cache(
             &target_context,
@@ -4708,11 +5608,305 @@ mod tests {
         assert_eq!(second_report.skipped_turn_count, 1);
         assert_eq!(second_report.warning_count, 1);
         assert!(
-            second_report.warnings[0].contains("failed to decrypt share object"),
+            second_report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("failed to decrypt share chunk")),
             "warning should identify the invalid replacement object: {:?}",
             second_report.warnings
         );
         assert_eq!(imported_turn_count, 0);
+    }
+
+    #[test]
+    fn merge_imports_valid_chunks_when_one_chunk_is_bad() {
+        let TestShareArtifact {
+            cache,
+            target_context,
+            source_identity,
+            artifact,
+            ..
+        } = build_multi_chunk_test_artifact("share-bad-chunk-isolation");
+        write_export_artifact(&cache, &artifact).unwrap();
+        let manifest_path = cache.join(exporter_manifest_relative_path(&source_identity));
+        let mut manifest = read_json_file::<ManifestArtifact>(&manifest_path).unwrap();
+        let bad_chunk_id = manifest.chunks[1].chunk_id.clone();
+        let bad_object_path = manifest.chunks[1].object_path.clone();
+        fs::write(cache.join(&bad_object_path), b"not an age payload").unwrap();
+        manifest.chunks[1].ciphertext_hash = sha256_hex(b"not an age payload");
+        manifest.chunks[1].ciphertext_bytes = u64::try_from(b"not an age payload".len()).unwrap();
+        write_json_file(&manifest_path, &manifest).unwrap();
+
+        let report = import_from_cache(
+            &target_context,
+            "team",
+            "darc/team",
+            "origin",
+            "https://example.invalid/team/share.git",
+            "git:https://example.invalid/team/repo",
+            &cache,
+        )
+        .unwrap();
+        let expected_imported_count = manifest
+            .turns
+            .iter()
+            .filter(|turn| turn.chunk_id.as_deref() != Some(bad_chunk_id.as_str()))
+            .count();
+
+        assert_eq!(
+            report.imported_turn_count,
+            u64::try_from(expected_imported_count).unwrap()
+        );
+        assert_eq!(
+            report.skipped_turn_count,
+            u64::try_from(manifest.turns.len() - expected_imported_count).unwrap()
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains(&bad_chunk_id)
+                    && warning.contains("failed to decrypt share chunk")),
+            "warning should identify the bad chunk: {:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn merge_rejects_oversized_decompressed_chunks() {
+        let TestShareArtifact {
+            cache,
+            target_context,
+            target_identity,
+            source_identity,
+            artifact,
+            ..
+        } = build_single_turn_test_artifact("share-oversized-chunk");
+        write_export_artifact(&cache, &artifact).unwrap();
+        let manifest_path = cache.join(exporter_manifest_relative_path(&source_identity));
+        let mut manifest = read_json_file::<ManifestArtifact>(&manifest_path).unwrap();
+        let oversized_plaintext =
+            vec![b'x'; usize::try_from(MAX_SHARE_CHUNK_DECOMPRESSED_BYTES + 1).unwrap()];
+        let compressed = gzip_compress(&oversized_plaintext).unwrap();
+        let ciphertext = encrypt_payload(&compressed, &[target_identity.to_public()]).unwrap();
+        fs::write(cache.join(&manifest.chunks[0].object_path), &ciphertext).unwrap();
+        manifest.chunks[0].plaintext_hash = sha256_hex(&compressed);
+        manifest.chunks[0].ciphertext_hash = sha256_hex(&ciphertext);
+        manifest.chunks[0].plaintext_bytes = u64::try_from(compressed.len()).unwrap();
+        manifest.chunks[0].ciphertext_bytes = u64::try_from(ciphertext.len()).unwrap();
+        write_json_file(&manifest_path, &manifest).unwrap();
+
+        let report = import_from_cache(
+            &target_context,
+            "team",
+            "darc/team",
+            "origin",
+            "https://example.invalid/team/share.git",
+            "git:https://example.invalid/team/repo",
+            &cache,
+        )
+        .unwrap();
+
+        assert_eq!(report.imported_turn_count, 0);
+        assert_eq!(report.skipped_turn_count, 1);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("decompressed share chunk exceeds")),
+            "warning should identify decompression cap: {:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn retention_ignores_unreferenced_chunk_entries() {
+        let TestShareArtifact {
+            cache,
+            target_identity,
+            artifact,
+            ..
+        } = build_single_turn_test_artifact("share-unreferenced-chunk");
+        write_export_artifact(&cache, &artifact).unwrap();
+        let mut manifest = artifact.manifest.clone();
+        let orphan_path = format!("{ARTIFACT_ROOT}/objects/orphan.age");
+        manifest.chunks.push(ChunkManifestEntry {
+            chunk_id: "orphan-chunk".to_owned(),
+            object_path: orphan_path.clone(),
+            compression: "gzip".to_owned(),
+            plaintext_hash: "bad".to_owned(),
+            ciphertext_hash: "bad".to_owned(),
+            plaintext_bytes: 1,
+            ciphertext_bytes: 1,
+            turn_count: 1,
+        });
+
+        verify_cached_manifest_payloads(
+            &cache,
+            &manifest,
+            "git:https://example.invalid/team/repo",
+            &target_identity,
+        )
+        .unwrap();
+
+        assert!(!manifest_object_paths(&manifest).contains(&orphan_path));
+    }
+
+    #[test]
+    fn merge_ignores_unsigned_unreferenced_chunks_on_legacy_manifest() {
+        let root = unique_test_dir("share-legacy-extra-chunk");
+        let cache = root.join("cache");
+        let key = ensure_share_key(&root).unwrap();
+        let identity = read_share_identity_key(&key.key_path).unwrap();
+        let signing_key = test_signing_key(&identity);
+        let exporter = test_share_identity(&identity);
+        let turn_payload = EncryptedTurnPayload {
+            schema: TURN_PAYLOAD_SCHEMA.to_owned(),
+            version: 1,
+            project_key: "git:https://example.invalid/team/repo".to_owned(),
+            exporter: exporter.clone(),
+            signature: None,
+            turn: synthetic_share_turn("repo", "00000000-0000-4000-8000-000000000001", 1),
+        };
+        let mut turn_payload = turn_payload;
+        sign_turn_payload(&mut turn_payload, &signing_key).unwrap();
+        let plaintext = serde_json::to_vec(&turn_payload).unwrap();
+        let object_path = format!(
+            "{ARTIFACT_ROOT}/objects/legacy-turn-{}.age",
+            &sha256_hex(&plaintext)[..16]
+        );
+        let target = cache.join(&object_path);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(
+            &target,
+            encrypt_payload(&plaintext, &[identity.to_public()]).unwrap(),
+        )
+        .unwrap();
+        let turn = TurnManifestEntry {
+            provider: SourceKind::Codex,
+            session_id: "00000000-0000-4000-8000-000000000001".to_owned(),
+            turn_ordinal: 1,
+            started_at: "2026-05-15T00:00:00Z".to_owned(),
+            payload_hash: sha256_hex(&plaintext),
+            object_path,
+            chunk_id: None,
+            chunk_record_index: None,
+        };
+        let sync = write_test_sync_object(
+            &cache,
+            &identity,
+            &signing_key,
+            &exporter,
+            "git:https://example.invalid/team/repo",
+            vec![sync_entry_from_manifest(&turn)],
+        );
+        write_json_file(
+            &cache.join(ARTIFACT_ROOT).join("manifest.json"),
+            &ManifestArtifact {
+                schema: MANIFEST_SCHEMA.to_owned(),
+                version: 1,
+                project_key: "git:https://example.invalid/team/repo".to_owned(),
+                branch: "team".to_owned(),
+                exported_at: "2026-05-15T00:00:00Z".to_owned(),
+                exporter,
+                sync,
+                chunks: vec![ChunkManifestEntry {
+                    chunk_id: "unsigned-orphan".to_owned(),
+                    object_path: format!("{ARTIFACT_ROOT}/objects/missing-orphan.age"),
+                    compression: "gzip".to_owned(),
+                    plaintext_hash: "bad".to_owned(),
+                    ciphertext_hash: "bad".to_owned(),
+                    plaintext_bytes: 1,
+                    ciphertext_bytes: 1,
+                    turn_count: 1,
+                }],
+                turns: vec![turn],
+            },
+        )
+        .unwrap();
+        let context = ShareProjectContext {
+            root: root.clone(),
+            index_db_path: root.join("index.sqlite"),
+            project_id: "repo".to_owned(),
+            project_name: "repo".to_owned(),
+            local_path: root.join("repo"),
+            git_upstream: Some("https://example.invalid/team/repo.git".to_owned()),
+        };
+
+        let report = import_from_cache(
+            &context,
+            "team",
+            "darc/team",
+            "origin",
+            "https://example.invalid/team/share.git",
+            "git:https://example.invalid/team/repo",
+            &cache,
+        )
+        .unwrap();
+
+        assert_eq!(report.imported_turn_count, 1);
+        assert_eq!(report.skipped_turn_count, 0);
+        assert_eq!(report.warning_count, 0);
+    }
+
+    #[test]
+    fn merge_imports_chunked_manifest_without_visible_chunk_metadata() {
+        let TestShareArtifact {
+            cache,
+            target_context,
+            source_identity,
+            artifact,
+            ..
+        } = build_single_turn_test_artifact("share-missing-chunk-metadata");
+        write_export_artifact(&cache, &artifact).unwrap();
+        let first_report = import_from_cache(
+            &target_context,
+            "team",
+            "darc/team",
+            "origin",
+            "https://example.invalid/team/share.git",
+            "git:https://example.invalid/team/repo",
+            &cache,
+        )
+        .unwrap();
+        let manifest_path = cache.join(exporter_manifest_relative_path(&source_identity));
+        let mut manifest = read_json_file::<ManifestArtifact>(&manifest_path).unwrap();
+        manifest.chunks.clear();
+        write_json_file(&manifest_path, &manifest).unwrap();
+
+        let second_report = import_from_cache(
+            &target_context,
+            "team",
+            "darc/team",
+            "origin",
+            "https://example.invalid/team/share.git",
+            "git:https://example.invalid/team/repo",
+            &cache,
+        )
+        .unwrap();
+        let connection = open_index_database_writer(&target_context.index_db_path).unwrap();
+        let imported_turn_count: i64 = connection
+            .query_row(
+                "
+                SELECT COUNT(*)
+                FROM turns
+                JOIN sessions
+                    ON sessions.project_id = turns.project_id
+                    AND sessions.provider = turns.provider
+                    AND sessions.session_id = turns.session_id
+                WHERE sessions.project_id = 'target-repo'
+                    AND sessions.origin_kind = 'shared'
+                ",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(first_report.imported_turn_count, 1);
+        assert_eq!(second_report.imported_turn_count, 1);
+        assert_eq!(second_report.skipped_turn_count, 0);
+        assert_eq!(second_report.warning_count, 0);
+        assert_eq!(imported_turn_count, 1);
     }
 
     #[test]
@@ -5053,6 +6247,8 @@ mod tests {
             started_at: "2026-05-15T00:00:00Z".to_owned(),
             payload_hash: "bad-hash".to_owned(),
             object_path: format!("{ARTIFACT_ROOT}/objects/../bad.age"),
+            chunk_id: None,
+            chunk_record_index: None,
         };
         let sync = write_test_sync_object(
             &cache,
@@ -5072,6 +6268,7 @@ mod tests {
                 exported_at: "2026-05-15T00:00:00Z".to_owned(),
                 exporter,
                 sync,
+                chunks: Vec::new(),
                 turns: vec![turn],
             },
         )
@@ -5150,7 +6347,7 @@ mod tests {
         assert_eq!(report.skipped_turn_count, 1);
         assert_eq!(report.warning_count, 1);
         assert!(
-            report.warnings[0].contains("direct object file"),
+            report.warnings[0].contains("object path"),
             "warning should reject nested object path: {:?}",
             report.warnings
         );
@@ -5174,6 +6371,8 @@ mod tests {
             started_at: "2026-05-15T00:00:00Z".to_owned(),
             payload_hash: "bad-hash".to_owned(),
             object_path: format!("{ARTIFACT_ROOT}/objects/bad.age"),
+            chunk_id: None,
+            chunk_record_index: None,
         };
         let sync = write_test_sync_object(
             &cache,
@@ -5194,6 +6393,7 @@ mod tests {
                 exported_at: "2026-05-15T00:00:00Z".to_owned(),
                 exporter,
                 sync,
+                chunks: Vec::new(),
                 turns: vec![turn],
             },
         )
@@ -5398,6 +6598,31 @@ mod tests {
             "merge should reject symlinked cache root: {error:#}"
         );
         assert!(outside.join("keep.txt").exists());
+    }
+
+    #[test]
+    fn lfs_hydration_skips_missing_cache_root() {
+        let root = unique_test_dir("share-missing-lfs-cache-root");
+        hydrate_lfs_objects(&root.join("missing-cache")).unwrap();
+    }
+
+    #[test]
+    fn lfs_pointer_objects_require_hydration_before_share_writes() {
+        let root = unique_test_dir("share-lfs-pointer-detection");
+        let object_path = root.join(ARTIFACT_ROOT).join("objects").join("pointer.age");
+        fs::create_dir_all(object_path.parent().unwrap()).unwrap();
+        fs::write(
+            &object_path,
+            b"version https://git-lfs.github.com/spec/v1\noid sha256:0000\nsize 123\n",
+        )
+        .unwrap();
+
+        let error = reject_lfs_pointer_objects(&root).unwrap_err();
+
+        assert!(
+            error.to_string().contains("Git LFS pointer"),
+            "error should require hydrated LFS objects: {error:#}"
+        );
     }
 
     #[test]
@@ -6241,6 +7466,186 @@ mod tests {
             source_identity,
             source_signing_key,
             artifact,
+        }
+    }
+
+    /// Builds a synthetic artifact whose turn payloads span multiple chunks.
+    fn build_multi_chunk_test_artifact(prefix: &str) -> TestShareArtifact {
+        let workspace = unique_test_dir(prefix);
+        let cache = workspace.join("cache");
+        let source_root = workspace.join("source-root");
+        let target_root = workspace.join("target-root");
+        fs::create_dir_all(&source_root).unwrap();
+        fs::create_dir_all(&target_root).unwrap();
+        let target_key = ensure_share_key(&target_root).unwrap();
+        let target_identity = read_share_identity_key(&target_key.key_path).unwrap();
+        let source_context = ShareProjectContext {
+            root: source_root.clone(),
+            index_db_path: source_root.join("index.sqlite"),
+            project_id: "source-repo".to_owned(),
+            project_name: "source-repo".to_owned(),
+            local_path: source_root.join("repo"),
+            git_upstream: Some("https://example.invalid/team/repo.git".to_owned()),
+        };
+        let target_context = ShareProjectContext {
+            root: target_root.clone(),
+            index_db_path: target_root.join("index.sqlite"),
+            project_id: "target-repo".to_owned(),
+            project_name: "target-repo".to_owned(),
+            local_path: target_root.join("repo"),
+            git_upstream: Some("https://example.invalid/team/repo.git".to_owned()),
+        };
+        let session_id = "00000000-0000-4000-8000-000000000303";
+        let connection = open_index_database_writer(&source_context.index_db_path).unwrap();
+        insert_indexed_session(
+            &connection,
+            IndexedSessionFixture::new("source-repo", SourceKind::Codex, session_id, "/tmp/repo"),
+        )
+        .unwrap();
+        let large_message = "synthetic share export prompt ".repeat(300);
+        for ordinal in 1..=3 {
+            let started_at = format!("2026-05-15T12:00:0{ordinal}Z");
+            insert_indexed_turn(
+                &connection,
+                IndexedTurnFixture {
+                    user_message: &large_message,
+                    final_answer_text: Some("synthetic share export answer"),
+                    has_final_answer: true,
+                    ..IndexedTurnFixture::new(
+                        "source-repo",
+                        SourceKind::Codex,
+                        session_id,
+                        ordinal,
+                        &started_at,
+                        "completed",
+                        "[]",
+                    )
+                },
+            )
+            .unwrap();
+        }
+        update_share_policy(&source_context, SharePolicy::All).unwrap();
+        let source_age_identity = Identity::generate();
+        let source_signing_key = test_signing_key(&source_age_identity);
+        let source_identity = test_share_identity(&source_age_identity);
+        let turns = query_share_export_turns(&connection, "source-repo").unwrap();
+        let artifact = build_export_artifact(ExportBuildRequest {
+            context: &source_context,
+            settings: &ShareSettings {
+                remotes: Vec::new(),
+                recipients: vec![ShareRecipient {
+                    recipient: target_key.public_key,
+                }],
+            },
+            project_key: "git:https://example.invalid/team/repo",
+            identity: &source_identity,
+            signing_key: &source_signing_key,
+            branch: "team",
+            turns,
+        })
+        .unwrap();
+        assert!(
+            artifact.manifest.chunks.len() > 1,
+            "test fixture should span multiple chunks"
+        );
+        TestShareArtifact {
+            cache,
+            target_context,
+            target_identity,
+            source_identity,
+            source_signing_key,
+            artifact,
+        }
+    }
+
+    /// Reads the first chunk payload from a synthetic test manifest.
+    fn read_test_chunk_payload(
+        cache: &Path,
+        manifest: &ManifestArtifact,
+        identity: &Identity,
+    ) -> ShareChunkPayload {
+        let chunk = manifest
+            .chunks
+            .first()
+            .expect("test artifact should contain a chunk");
+        let ciphertext = fs::read(cache.join(&chunk.object_path)).unwrap();
+        let compressed = decrypt_payload(&ciphertext, identity).unwrap();
+        let plaintext = gzip_decompress(&compressed).unwrap();
+        serde_json::from_slice(&plaintext).unwrap()
+    }
+
+    /// Rewrites the first encrypted chunk in a synthetic test manifest.
+    fn write_test_chunk_payload(
+        cache: &Path,
+        manifest: &mut ManifestArtifact,
+        payload: &ShareChunkPayload,
+        recipients: &[Recipient],
+    ) {
+        let chunk = manifest
+            .chunks
+            .first_mut()
+            .expect("test artifact should contain a chunk");
+        let plaintext = serde_json::to_vec(payload).unwrap();
+        let compressed = gzip_compress(&plaintext).unwrap();
+        let ciphertext = encrypt_payload(&compressed, recipients).unwrap();
+        fs::write(cache.join(&chunk.object_path), &ciphertext).unwrap();
+        chunk.plaintext_hash = sha256_hex(&compressed);
+        chunk.ciphertext_hash = sha256_hex(&ciphertext);
+        chunk.plaintext_bytes = u64::try_from(compressed.len()).unwrap();
+        chunk.ciphertext_bytes = u64::try_from(ciphertext.len()).unwrap();
+        chunk.turn_count = u64::try_from(payload.turns.len()).unwrap();
+    }
+
+    /// Builds one synthetic shared turn export for legacy artifact tests.
+    fn synthetic_share_turn(
+        project_id: &str,
+        session_id: &str,
+        turn_ordinal: i64,
+    ) -> ShareTurnExport {
+        ShareTurnExport {
+            session: ShareSessionExport {
+                project_id: project_id.to_owned(),
+                provider: SourceKind::Codex,
+                session_id: session_id.to_owned(),
+                parent_session_id: None,
+                session_kind: "primary".to_owned(),
+                archive_path: "synthetic.jsonl".to_owned(),
+                cwd: "/tmp/synthetic-repo".to_owned(),
+                cli_version: Some("0.1.0".to_owned()),
+                schema_id: Some("codex:test".to_owned()),
+                determinism: Some("exact".to_owned()),
+                source_size: Some(1),
+                source_mtime_ms: Some(1),
+            },
+            turn_ordinal,
+            turn_id: Some(format!("turn-{turn_ordinal}")),
+            started_at: "2026-05-15T00:00:00Z".to_owned(),
+            completed_at: Some("2026-05-15T00:00:01Z".to_owned()),
+            status: "completed".to_owned(),
+            user_message: "synthetic prompt".to_owned(),
+            final_answer_at: Some("2026-05-15T00:00:01Z".to_owned()),
+            final_answer_text: Some("synthetic answer".to_owned()),
+            steps_json: "[]".to_owned(),
+            step_count: 0,
+            tool_call_count: 0,
+            tool_output_count: 0,
+            attachment_count: 0,
+            delegation_count: 0,
+            hook_summary_count: 0,
+            has_final_answer: 1,
+            duration_ms: Some(1),
+            effective_agent_runtime_ms: Some(1),
+            provider_total_token_count: Some(1),
+            input_uncached_token_count: Some(1),
+            cache_read_token_count: Some(0),
+            cache_write_token_count: Some(0),
+            output_token_count: Some(1),
+            reasoning_token_count: Some(0),
+            total_token_count: Some(1),
+            primary_model: Some("synthetic-model".to_owned()),
+            changed_file_count: 0,
+            added_line_count: 0,
+            removed_line_count: 0,
         }
     }
 

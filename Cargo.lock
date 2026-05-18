@@ -498,6 +498,7 @@ dependencies = [
  "darc-store",
  "darc-test-utils",
  "ed25519-dalek",
+ "flate2",
  "rusqlite",
  "serde",
  "serde_json",
