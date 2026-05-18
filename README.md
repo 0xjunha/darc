@@ -205,8 +205,10 @@ darc show session <SESSION_ID> --turn-limit 5 --step-limit 10
 
 ### Share an Encrypted Team Index
 
-Darc can share selected, redacted index rows through Git backend. Shared payload objects are
-encrypted with age recipients and pushed to Git branches named `darc/<name>`.
+Darc can share selected, redacted index rows through a Git backend. Shared payload objects are
+encrypted with age recipients and pushed to Git branches named `darc/<name>`. Share fetches and pushes use the local
+`git` executable, so Darc relies on the same SSH keys, credential helpers, SSO, proxy settings, and host configuration
+as commands like `git fetch` and `git push`.
 
 ```sh
 # Each teammate shares their public recipient.
@@ -229,6 +231,15 @@ By default, `darc push team` uses the active project's Git upstream or `origin`.
 darc remote add team-index git@github.com:example/darc-index.git
 darc push team --remote team-index
 darc pull team --remote team-index
+```
+
+For private remotes, configure non-interactive Git authentication first. Darc disables Git terminal/askpass prompts,
+forces SSH batch mode, and does not ask for GitHub usernames, passwords, or tokens. Do not store tokens in remote URLs.
+A quick preflight is:
+
+```sh
+git ls-remote git@github.com:example/darc-index.git
+git ls-remote https://github.com/example/darc-index.git
 ```
 
 Read commands stay local-only unless you explicitly ask for shared sessions:

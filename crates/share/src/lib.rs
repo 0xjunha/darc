@@ -4,9 +4,11 @@
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    ffi::{OsStr, OsString},
     fs::{self, OpenOptions},
     io::{Read, Write},
     path::{Component, Path, PathBuf},
+    process::{Command, ExitStatus, Stdio},
     str::FromStr,
 };
 
@@ -23,10 +25,6 @@ use darc_store::{
     set_session_share_state,
 };
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use git2::{
-    BranchType, Cred, FetchOptions, FetchPrune, IndexAddOption, PushOptions, RemoteCallbacks,
-    Repository, ResetType, Status, StatusOptions,
-};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -309,15 +307,9 @@ pub fn local_share_identity(context: &ShareProjectContext) -> Result<ShareIdenti
     let key = ensure_share_key(&context.root)?;
     let signing_key = ensure_share_signing_key(&context.root)?;
     let signing_public_key = signing_public_key_hex(&signing_key);
-    let repository = Repository::discover(&context.local_path).with_context(|| {
-        format!(
-            "failed to discover Git repository from {}",
-            context.local_path.display()
-        )
-    })?;
-    let config = repository.config().context("failed to read Git config")?;
-    let display_name = config.get_string("user.name").ok();
-    let email = config.get_string("user.email").ok();
+    ensure_git_repository(&context.local_path)?;
+    let display_name = git_config_value(&context.local_path, "user.name")?;
+    let email = git_config_value(&context.local_path, "user.email")?;
     let user_id = derive_user_id(&signing_public_key);
     Ok(ShareIdentity {
         user_id,
@@ -404,14 +396,14 @@ pub fn push_share_branch(
     let signing_key = ensure_share_signing_key(&context.root)?;
     let connection = open_index_database_writer(&context.index_db_path)?;
     let turns = query_share_export_turns(&connection, &context.project_id)?;
-    let cache_path = cache_repo_path(&context.root, &remote.url, &git_branch);
-    let repository = prepare_cache_repository(&cache_path, &remote.url, &identity)?;
-    let branch_exists = fetch_branch_if_exists(&repository, &remote.url, &git_branch)?;
+    let cache_path = cache_repo_path(&context.root, &remote.resolved_url, &git_branch);
+    prepare_cache_repository(&cache_path, &remote.url, &identity)?;
+    let branch_exists = fetch_branch_if_exists(&cache_path, &git_branch)?;
     if !branch_exists {
         clear_cache_worktree(&cache_path)?;
     }
-    checkout_share_branch(&repository, &git_branch)?;
-    clean_untracked_cache_worktree(&repository, &cache_path)?;
+    checkout_share_branch(&cache_path, &git_branch)?;
+    clean_untracked_cache_worktree(&cache_path)?;
     let cached_manifest_read = read_cached_manifests(&cache_path)?;
     let previous_project = read_cached_project_artifact(&cache_path).ok().flatten();
     let previous_manifest = cached_manifest_read
@@ -428,7 +420,7 @@ pub fn push_share_branch(
         &identity,
         &decryption_identity,
     );
-    let trusted_object_cache_path = trusted_object_cache_path(&repository);
+    let trusted_object_cache_path = trusted_object_cache_path(&cache_path);
     let artifact = build_export_artifact_with_reuse(
         ExportBuildRequest {
             context,
@@ -456,8 +448,8 @@ pub fn push_share_branch(
     write_export_artifact(&cache_path, &artifact)?;
     let allowed_paths = allowed_share_cache_paths(&artifact, &retained_manifests);
     clean_unexpected_share_cache_files(&cache_path, &allowed_paths)?;
-    let commit_id = commit_cache_repository(&repository, &identity, &git_branch)?;
-    push_branch(&repository, &remote.url, &git_branch)?;
+    let commit_id = commit_cache_repository(&cache_path, &git_branch)?;
+    push_branch(&cache_path, &git_branch)?;
     Ok(SharePushReport {
         branch: branch.to_owned(),
         git_branch,
@@ -482,11 +474,11 @@ pub fn fetch_share_branch(
     let git_branch = share_git_branch(branch)?;
     let remote = resolve_remote(context, settings, remote_name)?;
     let identity = local_share_identity(context)?;
-    let cache_path = cache_repo_path(&context.root, &remote.url, &git_branch);
-    let repository = prepare_cache_repository(&cache_path, &remote.url, &identity)?;
-    fetch_branch(&repository, &remote.url, &git_branch)?;
-    checkout_share_branch(&repository, &git_branch)?;
-    clean_untracked_cache_worktree(&repository, &cache_path)?;
+    let cache_path = cache_repo_path(&context.root, &remote.resolved_url, &git_branch);
+    prepare_cache_repository(&cache_path, &remote.url, &identity)?;
+    fetch_branch(&cache_path, &git_branch)?;
+    checkout_share_branch(&cache_path, &git_branch)?;
+    clean_untracked_cache_worktree(&cache_path)?;
     Ok(ShareFetchReport {
         branch: branch.to_owned(),
         git_branch,
@@ -506,14 +498,14 @@ pub fn merge_share_branch(
     let git_branch = share_git_branch(branch)?;
     let remote = resolve_remote(context, settings, remote_name)?;
     let project_key = project_key(context)?;
-    let cache_path = cache_repo_path(&context.root, &remote.url, &git_branch);
+    let cache_path = cache_repo_path(&context.root, &remote.resolved_url, &git_branch);
     clean_cached_checkout(&cache_path)?;
     import_from_cache(
         context,
         branch,
         &git_branch,
         &remote.name,
-        &remote.url,
+        &remote.resolved_url,
         &project_key,
         &cache_path,
     )
@@ -587,6 +579,7 @@ struct BuiltExportArtifact {
 struct ResolvedRemote {
     name: String,
     url: String,
+    resolved_url: String,
     display_url: String,
 }
 
@@ -629,6 +622,14 @@ struct ImportEntryContext<'a> {
     expected_exporter: &'a ShareIdentity,
     identity: &'a Identity,
     cache_path: &'a Path,
+}
+
+/// Stores one completed system Git command result.
+#[derive(Debug)]
+struct GitCommandOutput {
+    status: ExitStatus,
+    stdout: String,
+    stderr: String,
 }
 
 /// Builds all share artifacts for the current export.
@@ -1548,6 +1549,7 @@ fn resolve_remote(
         return Ok(ResolvedRemote {
             name: remote.name.clone(),
             display_url: sanitize_git_url_for_display(&remote.url),
+            resolved_url: resolved_remote_url(&context.local_path, &remote.url)?,
             url: remote.url.clone(),
         });
     }
@@ -1555,25 +1557,16 @@ fn resolve_remote(
         return Ok(ResolvedRemote {
             name: DEFAULT_REMOTE_NAME.to_owned(),
             display_url: sanitize_git_url_for_display(&url),
+            resolved_url: resolved_remote_url(&context.local_path, &url)?,
             url,
         });
     }
-    let repository = Repository::discover(&context.local_path).with_context(|| {
-        format!(
-            "failed to discover Git repository from {}",
-            context.local_path.display()
-        )
-    })?;
-    let remote = repository
-        .find_remote(DEFAULT_REMOTE_NAME)
+    let url = origin_configured_remote_url(&context.local_path)
         .context("active project has no git_upstream and no origin remote")?;
-    let url = remote
-        .url()
-        .context("origin remote URL is not valid UTF-8")?
-        .to_owned();
     Ok(ResolvedRemote {
         name: DEFAULT_REMOTE_NAME.to_owned(),
         display_url: sanitize_git_url_for_display(&url),
+        resolved_url: resolved_remote_url(&context.local_path, &url)?,
         url,
     })
 }
@@ -1581,21 +1574,10 @@ fn resolve_remote(
 /// Returns the canonical shared-project key for one active project.
 fn project_key(context: &ShareProjectContext) -> Result<String> {
     let url = if let Some(url) = context.git_upstream.as_deref() {
-        url.to_owned()
+        resolved_remote_url(&context.local_path, url)?
     } else {
-        let repository = Repository::discover(&context.local_path).with_context(|| {
-            format!(
-                "failed to discover Git repository from {}",
-                context.local_path.display()
-            )
-        })?;
-        let remote = repository
-            .find_remote(DEFAULT_REMOTE_NAME)
-            .context("active project has no git_upstream and no origin remote")?;
-        remote
-            .url()
-            .context("origin remote URL is not valid UTF-8")?
-            .to_owned()
+        origin_effective_remote_url(&context.local_path)
+            .context("active project has no git_upstream and no origin remote")?
     };
     Ok(format!("git:{}", normalize_git_url(&url)?))
 }
@@ -1956,20 +1938,98 @@ fn signing_public_key_hex(signing_key: &SigningKey) -> String {
     hex_encode(&signing_key.verifying_key().to_bytes())
 }
 
-/// Prepares one local Git cache repository.
-fn prepare_cache_repository(
-    path: &Path,
-    remote_url: &str,
-    identity: &ShareIdentity,
-) -> Result<Repository> {
-    create_safe_cache_repository_dir(path)?;
-    let repository = if path.join(".git").exists() {
-        Repository::open(path).with_context(|| format!("failed to open {}", path.display()))?
+/// Verifies that a path resolves inside a Git repository.
+fn ensure_git_repository(path: &Path) -> Result<()> {
+    run_git(
+        path,
+        ["rev-parse", "--git-dir"],
+        &format!("failed to discover Git repository from {}", path.display()),
+    )?;
+    Ok(())
+}
+
+/// Reads one optional Git config value through the user's Git client.
+fn git_config_value(path: &Path, key: &str) -> Result<Option<String>> {
+    let output = run_git_raw(path, ["config", "--get", key])
+        .with_context(|| format!("failed to read Git config `{key}`"))?;
+    if output.status.success() {
+        let value = output.stdout.trim().to_owned();
+        return Ok((!value.is_empty()).then_some(value));
+    }
+    if output.status.code() == Some(1) {
+        return Ok(None);
+    }
+    bail!(
+        "{}",
+        git_failure_message(&format!("failed to read Git config `{key}`"), &output)
+    )
+}
+
+/// Reads the active repository's configured origin URL without expanding rewrites.
+fn origin_configured_remote_url(path: &Path) -> Result<String> {
+    ensure_git_repository(path)?;
+    let output = run_git_raw(path, ["config", "--get", "remote.origin.url"])
+        .context("failed to read configured origin remote URL")?;
+    if !output.status.success() {
+        if output.status.code() == Some(1) {
+            bail!("origin remote URL is not configured");
+        }
+        bail!(
+            "{}",
+            git_failure_message("failed to read configured origin remote URL", &output)
+        );
+    }
+    let value = output.stdout.trim().to_owned();
+    (!value.is_empty())
+        .then_some(value)
+        .context("origin remote URL is empty")
+}
+
+/// Reads the active repository's effective origin URL through Git URL rewrites.
+fn origin_effective_remote_url(path: &Path) -> Result<String> {
+    ensure_git_repository(path)?;
+    let output = run_git(
+        path,
+        ["remote", "get-url", DEFAULT_REMOTE_NAME],
+        "failed to read origin remote URL",
+    )
+    .context("active project has no origin remote URL configured")?;
+    let value = output.stdout.trim().to_owned();
+    (!value.is_empty())
+        .then_some(value)
+        .context("origin remote URL is empty")
+}
+
+/// Resolves one remote URL through Git URL rewrite configuration without contacting the remote.
+fn resolved_remote_url(path: &Path, url: &str) -> Result<String> {
+    let output = run_git(
+        path,
+        ["ls-remote", "--get-url", url],
+        "failed to resolve Git remote URL",
+    )?;
+    let value = output.stdout.trim().to_owned();
+    Ok(if value.is_empty() {
+        url.to_owned()
     } else {
-        Repository::init(path).with_context(|| format!("failed to init {}", path.display()))?
-    };
-    configure_cache_repository(&repository, remote_url, identity)?;
-    Ok(repository)
+        value
+    })
+}
+
+/// Prepares one local Git cache repository.
+fn prepare_cache_repository(path: &Path, remote_url: &str, identity: &ShareIdentity) -> Result<()> {
+    create_safe_cache_repository_dir(path)?;
+    if path.join(".git").exists() {
+        ensure_safe_cache_git_dir(path)?;
+        run_cache_git(
+            path,
+            ["rev-parse", "--git-dir"],
+            "failed to open share cache repository",
+        )?;
+    } else {
+        run_git(path, ["init"], "failed to init share cache repository")?;
+        ensure_safe_cache_git_dir(path)?;
+    }
+    configure_cache_repository(path, remote_url, identity)
 }
 
 /// Creates one cache repository root without following symlinked ancestors.
@@ -2051,72 +2111,92 @@ fn ensure_safe_existing_cache_dir(path: &Path) -> Result<bool> {
     }
 }
 
+/// Verifies the share cache `.git` directory is a normal directory.
+fn ensure_safe_cache_git_dir(path: &Path) -> Result<()> {
+    let git_dir = path.join(".git");
+    let metadata = fs::symlink_metadata(&git_dir)
+        .with_context(|| format!("failed to inspect {}", git_dir.display()))?;
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() {
+        bail!(
+            "share cache Git directory is a symlink: {}",
+            git_dir.display()
+        );
+    }
+    if !file_type.is_dir() {
+        bail!(
+            "share cache Git path is not a directory: {}",
+            git_dir.display()
+        );
+    }
+    Ok(())
+}
+
 /// Configures remote and author identity for one cache repository.
 fn configure_cache_repository(
-    repository: &Repository,
+    path: &Path,
     remote_url: &str,
     identity: &ShareIdentity,
 ) -> Result<()> {
-    match repository.find_remote(DEFAULT_REMOTE_NAME) {
-        Ok(_) => repository
-            .remote_set_url(DEFAULT_REMOTE_NAME, remote_url)
-            .context("failed to update share cache remote URL")?,
-        Err(_) => {
-            repository
-                .remote(DEFAULT_REMOTE_NAME, remote_url)
-                .context("failed to add share cache remote")?;
-        }
+    if run_cache_git_raw(path, ["remote", "get-url", DEFAULT_REMOTE_NAME])
+        .context("failed to inspect share cache remote")?
+        .status
+        .success()
+    {
+        run_cache_git(
+            path,
+            ["remote", "set-url", DEFAULT_REMOTE_NAME, remote_url],
+            "failed to update share cache remote URL",
+        )?;
+    } else {
+        run_cache_git(
+            path,
+            ["remote", "add", DEFAULT_REMOTE_NAME, remote_url],
+            "failed to add share cache remote",
+        )?;
     }
-    let mut config = repository
-        .config()
-        .context("failed to open share cache config")?;
-    config
-        .set_str(
+    run_cache_git(
+        path,
+        [
+            "config",
             "user.name",
             identity.display_name.as_deref().unwrap_or("Darc Share"),
-        )
-        .context("failed to set share cache user.name")?;
-    config
-        .set_str(
+        ],
+        "failed to set share cache user.name",
+    )?;
+    run_cache_git(
+        path,
+        [
+            "config",
             "user.email",
             identity
                 .email
                 .as_deref()
                 .unwrap_or("darc-share@example.invalid"),
-        )
-        .context("failed to set share cache user.email")?;
-    config
-        .set_bool("commit.gpgsign", false)
-        .context("failed to disable share cache commit signing")?;
+        ],
+        "failed to set share cache user.email",
+    )?;
+    run_cache_git(
+        path,
+        ["config", "commit.gpgsign", "false"],
+        "failed to disable share cache commit signing",
+    )?;
     Ok(())
 }
 
 /// Fetches a branch and treats a missing remote branch as a non-fatal first push case.
-fn fetch_branch_if_exists(
-    repository: &Repository,
-    remote_url: &str,
-    git_branch: &str,
-) -> Result<bool> {
-    match fetch_branch(repository, remote_url, git_branch) {
+fn fetch_branch_if_exists(path: &Path, git_branch: &str) -> Result<bool> {
+    match fetch_branch(path, git_branch) {
         Ok(()) => {
             let remote_ref = format!("refs/remotes/{DEFAULT_REMOTE_NAME}/{git_branch}");
-            if repository.find_reference(&remote_ref).is_err() {
-                clear_share_branch_refs(repository, git_branch)?;
+            if !git_ref_exists(path, &remote_ref)? {
+                clear_share_branch_refs(path, git_branch)?;
                 return Ok(false);
             }
             Ok(true)
         }
-        Err(error)
-            if error
-                .root_cause()
-                .to_string()
-                .contains("couldn't find remote ref") =>
-        {
-            clear_share_branch_refs(repository, git_branch)?;
-            Ok(false)
-        }
-        Err(error) if error.root_cause().to_string().contains("not found") => {
-            clear_share_branch_refs(repository, git_branch)?;
+        Err(error) if is_missing_remote_ref_error(&error) => {
+            clear_share_branch_refs(path, git_branch)?;
             Ok(false)
         }
         Err(error) => Err(error),
@@ -2124,15 +2204,17 @@ fn fetch_branch_if_exists(
 }
 
 /// Deletes stale local cache refs for one missing remote share branch.
-fn clear_share_branch_refs(repository: &Repository, git_branch: &str) -> Result<()> {
+fn clear_share_branch_refs(path: &Path, git_branch: &str) -> Result<()> {
     for reference_name in [
         format!("refs/heads/{git_branch}"),
         format!("refs/remotes/{DEFAULT_REMOTE_NAME}/{git_branch}"),
     ] {
-        if let Ok(mut reference) = repository.find_reference(&reference_name) {
-            reference.delete().with_context(|| {
-                format!("failed to delete stale share cache ref `{reference_name}`")
-            })?;
+        if git_ref_exists(path, &reference_name)? {
+            run_cache_git(
+                path,
+                ["update-ref", "-d", &reference_name],
+                &format!("failed to delete stale share cache ref `{reference_name}`"),
+            )?;
         }
     }
     Ok(())
@@ -2167,106 +2249,37 @@ fn clean_cached_checkout(path: &Path) -> Result<()> {
     if !ensure_safe_existing_cache_dir(path)? {
         return Ok(());
     }
-    let repository = Repository::open(path)
-        .with_context(|| format!("failed to open share cache repository {}", path.display()))?;
-    reset_cached_checkout(&repository)?;
-    clean_untracked_cache_worktree(&repository, path)
+    ensure_safe_cache_git_dir(path)?;
+    reset_cached_checkout(path)?;
+    clean_untracked_cache_worktree(path)
 }
 
 /// Resets one cache checkout to its current HEAD before importing artifacts.
-fn reset_cached_checkout(repository: &Repository) -> Result<()> {
-    let head = match repository.head() {
-        Ok(head) => head,
-        Err(error)
-            if matches!(
-                error.code(),
-                git2::ErrorCode::UnbornBranch | git2::ErrorCode::NotFound
-            ) =>
-        {
-            return Ok(());
-        }
-        Err(error) => return Err(error).context("failed to read share cache HEAD"),
-    };
-    let object = head
-        .peel(git2::ObjectType::Commit)
-        .context("failed to peel share cache HEAD")?;
-    repository
-        .reset(&object, ResetType::Hard, None)
-        .context("failed to reset share cache checkout")?;
+fn reset_cached_checkout(path: &Path) -> Result<()> {
+    let head = run_cache_git_raw(path, ["rev-parse", "--verify", "HEAD"])
+        .context("failed to inspect share cache HEAD")?;
+    if !head.status.success() {
+        return Ok(());
+    }
+    run_cache_git(
+        path,
+        ["reset", "--hard", "HEAD"],
+        "failed to reset share cache checkout",
+    )?;
     Ok(())
 }
 
 /// Removes worktree files that are not present in the checked-out Git tree.
-fn clean_untracked_cache_worktree(repository: &Repository, cache_path: &Path) -> Result<()> {
+fn clean_untracked_cache_worktree(cache_path: &Path) -> Result<()> {
     if !ensure_safe_existing_cache_dir(cache_path)? {
         return Ok(());
     }
-    let mut options = StatusOptions::new();
-    options
-        .include_untracked(true)
-        .recurse_untracked_dirs(true)
-        .include_ignored(true);
-    let statuses = repository
-        .statuses(Some(&mut options))
-        .context("failed to read share cache status")?;
-    let mut paths = statuses
-        .iter()
-        .filter_map(|entry| {
-            let status = entry.status();
-            if !(status.intersects(Status::WT_NEW) || status.intersects(Status::IGNORED)) {
-                return None;
-            }
-            let path = entry.path()?;
-            if path == ".git" || path.starts_with(".git/") {
-                return None;
-            }
-            Some(PathBuf::from(path))
-        })
-        .collect::<Vec<_>>();
-    paths.sort_by(|left, right| {
-        right
-            .components()
-            .count()
-            .cmp(&left.components().count())
-            .then_with(|| left.cmp(right))
-    });
-    for relative in paths {
-        let target = cache_path.join(&relative);
-        let checked = target.strip_prefix(cache_path).with_context(|| {
-            format!(
-                "share cache path {} is outside cache {}",
-                target.display(),
-                cache_path.display()
-            )
-        })?;
-        if cache_relative_path_components(checked).is_none() {
-            bail!(
-                "share cache untracked path is not a safe relative path: {}",
-                checked.display()
-            );
-        }
-        remove_cache_worktree_entry(&target)?;
-    }
+    run_cache_git(
+        cache_path,
+        ["clean", "-ffdx"],
+        "failed to clean untracked share cache files",
+    )?;
     Ok(())
-}
-
-/// Removes one cache worktree entry without following symlinks.
-fn remove_cache_worktree_entry(path: &Path) -> Result<()> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) => {
-            let file_type = metadata.file_type();
-            if file_type.is_dir() && !file_type.is_symlink() {
-                fs::remove_dir_all(path)
-                    .with_context(|| format!("failed to remove {}", path.display()))?;
-            } else {
-                fs::remove_file(path)
-                    .with_context(|| format!("failed to remove {}", path.display()))?;
-            }
-            Ok(())
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error).with_context(|| format!("failed to inspect {}", path.display())),
-    }
 }
 
 /// Builds the exact cache-relative file set that may be published.
@@ -2395,169 +2408,296 @@ fn cache_relative_path_key(relative: &Path) -> Option<String> {
 }
 
 /// Fetches one remote share branch into the cache repository.
-fn fetch_branch(repository: &Repository, remote_url: &str, git_branch: &str) -> Result<()> {
-    let mut remote = repository
-        .find_remote(DEFAULT_REMOTE_NAME)
-        .or_else(|_| repository.remote_anonymous(remote_url))
-        .context("failed to resolve share remote")?;
+fn fetch_branch(path: &Path, git_branch: &str) -> Result<()> {
     let refspec =
-        format!("refs/heads/{git_branch}:refs/remotes/{DEFAULT_REMOTE_NAME}/{git_branch}");
-    let callbacks = remote_callbacks(repository)?;
-    let mut fetch_options = FetchOptions::new();
-    fetch_options.remote_callbacks(callbacks);
-    fetch_options.prune(FetchPrune::On);
-    remote
-        .fetch(&[refspec.as_str()], Some(&mut fetch_options), None)
-        .with_context(|| format!("failed to fetch share branch `{git_branch}`"))?;
+        format!("+refs/heads/{git_branch}:refs/remotes/{DEFAULT_REMOTE_NAME}/{git_branch}");
+    run_cache_git(
+        path,
+        ["fetch", "--prune", DEFAULT_REMOTE_NAME, &refspec],
+        &format!("failed to fetch share branch `{git_branch}` with system git"),
+    )?;
     Ok(())
 }
 
 /// Checks out one local share branch from remote state when possible.
-fn checkout_share_branch(repository: &Repository, git_branch: &str) -> Result<()> {
+fn checkout_share_branch(path: &Path, git_branch: &str) -> Result<()> {
     let local_ref = format!("refs/heads/{git_branch}");
     let remote_ref = format!("refs/remotes/{DEFAULT_REMOTE_NAME}/{git_branch}");
-    if let Ok(reference) = repository.find_reference(&remote_ref) {
-        let oid = reference
-            .target()
-            .context("fetched share branch did not point at a commit")?;
-        repository
-            .reference(&local_ref, oid, true, "update share branch from remote")
-            .with_context(|| format!("failed to update local branch `{git_branch}`"))?;
-    }
-    if repository.find_reference(&local_ref).is_ok() {
-        repository
-            .set_head(&local_ref)
-            .with_context(|| format!("failed to set HEAD to `{git_branch}`"))?;
-        let object = repository
-            .head()
-            .context("failed to read share cache HEAD")?
-            .peel(git2::ObjectType::Commit)
-            .context("failed to peel share cache HEAD")?;
-        repository
-            .reset(&object, ResetType::Hard, None)
-            .context("failed to reset share cache branch")?;
+    if git_ref_exists(path, &remote_ref)? {
+        run_cache_git(
+            path,
+            ["update-ref", &local_ref, &remote_ref],
+            &format!("failed to update share branch `{git_branch}`"),
+        )?;
+        run_cache_git(
+            path,
+            ["symbolic-ref", "HEAD", &local_ref],
+            &format!("failed to set HEAD to `{git_branch}`"),
+        )?;
+        reset_cached_checkout(path)?;
+    } else if git_ref_exists(path, &local_ref)? {
+        run_cache_git(
+            path,
+            ["symbolic-ref", "HEAD", &local_ref],
+            &format!("failed to check out share branch `{git_branch}`"),
+        )?;
+        reset_cached_checkout(path)?;
     } else {
-        repository
-            .set_head(&local_ref)
-            .with_context(|| format!("failed to set unborn HEAD to `{git_branch}`"))?;
+        run_cache_git(
+            path,
+            ["symbolic-ref", "HEAD", &local_ref],
+            &format!("failed to set unborn HEAD to `{git_branch}`"),
+        )?;
     }
     Ok(())
 }
 
 /// Commits the current cache repository workdir.
-fn commit_cache_repository(
-    repository: &Repository,
-    identity: &ShareIdentity,
-    git_branch: &str,
-) -> Result<String> {
-    let mut index = repository
-        .index()
-        .context("failed to open share cache index")?;
-    index
-        .remove_all(["*"].iter(), None)
-        .context("failed to stage removed share artifacts")?;
-    index
-        .add_all([ARTIFACT_ROOT].iter(), IndexAddOption::DEFAULT, None)
-        .context("failed to add share artifacts to index")?;
-    index.write().context("failed to write share cache index")?;
-    let tree_oid = index.write_tree().context("failed to write share tree")?;
-    let tree = repository
-        .find_tree(tree_oid)
-        .context("failed to find share tree")?;
-    let signature = repository
-        .signature()
-        .or_else(|_| {
-            git2::Signature::now(
-                identity.display_name.as_deref().unwrap_or("Darc Share"),
-                identity
-                    .email
-                    .as_deref()
-                    .unwrap_or("darc-share@example.invalid"),
-            )
-        })
-        .context("failed to build share commit signature")?;
-    let parent = repository
-        .find_branch(git_branch, BranchType::Local)
-        .ok()
-        .and_then(|branch| branch.get().target())
-        .and_then(|oid| repository.find_commit(oid).ok());
-    if let Some(parent) = parent.as_ref()
-        && parent.tree_id() == tree_oid
-    {
-        return Ok(parent.id().to_string());
+fn commit_cache_repository(path: &Path, git_branch: &str) -> Result<String> {
+    run_cache_git(
+        path,
+        ["rm", "-r", "-f", "--cached", "--ignore-unmatch", "."],
+        "failed to stage removed share artifacts",
+    )?;
+    run_cache_git(
+        path,
+        ["add", "-f", "--", ARTIFACT_ROOT],
+        "failed to add share artifacts to index",
+    )?;
+    let diff = run_cache_git_raw(path, ["diff", "--cached", "--quiet"])
+        .context("failed to inspect staged share artifacts")?;
+    if diff.status.success() {
+        return rev_parse_head(path);
+    }
+    if diff.status.code() != Some(1) {
+        bail!(
+            "{}",
+            git_failure_message("failed to inspect staged share artifacts", &diff)
+        );
     }
     let message = format!("chore(share): update {git_branch}");
-    let oid = if let Some(parent) = parent.as_ref() {
-        repository.commit(
-            Some(&format!("refs/heads/{git_branch}")),
-            &signature,
-            &signature,
-            &message,
-            &tree,
-            &[parent],
-        )
-    } else {
-        repository.commit(
-            Some(&format!("refs/heads/{git_branch}")),
-            &signature,
-            &signature,
-            &message,
-            &tree,
-            &[],
-        )
-    }
-    .context("failed to commit share artifacts")?;
-    Ok(oid.to_string())
+    run_cache_git(
+        path,
+        ["commit", "--no-gpg-sign", "-m", &message],
+        "failed to commit share artifacts",
+    )?;
+    rev_parse_head(path)
 }
 
 /// Pushes one local share branch to the configured remote.
-fn push_branch(repository: &Repository, remote_url: &str, git_branch: &str) -> Result<()> {
-    let mut remote = repository
-        .find_remote(DEFAULT_REMOTE_NAME)
-        .or_else(|_| repository.remote_anonymous(remote_url))
-        .context("failed to resolve share remote")?;
+fn push_branch(path: &Path, git_branch: &str) -> Result<()> {
     let refspec = format!("refs/heads/{git_branch}:refs/heads/{git_branch}");
-    let callbacks = remote_callbacks(repository)?;
-    let mut push_options = PushOptions::new();
-    push_options.remote_callbacks(callbacks);
-    remote
-        .push(&[refspec.as_str()], Some(&mut push_options))
-        .with_context(|| format!("failed to push share branch `{git_branch}`"))?;
+    run_cache_git(
+        path,
+        ["push", DEFAULT_REMOTE_NAME, &refspec],
+        &format!("failed to push share branch `{git_branch}` with system git"),
+    )?;
     Ok(())
 }
 
-/// Builds remote callbacks that use standard Git credential sources.
-fn remote_callbacks(repository: &Repository) -> Result<RemoteCallbacks<'_>> {
-    let config = repository.config().context("failed to open Git config")?;
-    let mut callbacks = RemoteCallbacks::new();
-    callbacks.credentials(move |url, username_from_url, allowed| {
-        if allowed.is_user_pass_plaintext()
-            && let Ok(credential) = Cred::credential_helper(&config, url, username_from_url)
-        {
-            return Ok(credential);
-        }
-        if allowed.is_ssh_key()
-            && let Some(username) = username_from_url.or(Some("git"))
-            && let Ok(credential) = Cred::ssh_key_from_agent(username)
-        {
-            return Ok(credential);
-        }
-        if allowed.is_username()
-            && let Some(username) = username_from_url.or(Some("git"))
-        {
-            return Cred::username(username);
-        }
-        Cred::default()
+/// Returns whether one Git ref exists in the cache repository.
+fn git_ref_exists(path: &Path, reference: &str) -> Result<bool> {
+    let output = run_cache_git_raw(path, ["show-ref", "--verify", "--quiet", reference])
+        .with_context(|| format!("failed to inspect Git ref `{reference}`"))?;
+    if output.status.success() {
+        return Ok(true);
+    }
+    if output.status.code() == Some(1) {
+        return Ok(false);
+    }
+    bail!(
+        "{}",
+        git_failure_message(&format!("failed to inspect Git ref `{reference}`"), &output)
+    )
+}
+
+/// Returns the current HEAD commit id from a cache repository.
+fn rev_parse_head(path: &Path) -> Result<String> {
+    let output = run_cache_git(
+        path,
+        ["rev-parse", "HEAD"],
+        "failed to read share commit id",
+    )?;
+    Ok(output.stdout.trim().to_owned())
+}
+
+/// Returns whether one Git failure means the remote share branch is absent.
+fn is_missing_remote_ref_error(error: &anyhow::Error) -> bool {
+    let message = format!("{error:#}");
+    message.contains("couldn't find remote ref")
+        || message.contains("could not find remote ref")
+        || message.contains("couldn't find remote branch")
+}
+
+/// Runs one system Git command and requires a successful exit status.
+fn run_git<I, S>(path: &Path, args: I, context: &str) -> Result<GitCommandOutput>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let output = run_git_raw(path, args).with_context(|| context.to_owned())?;
+    if output.status.success() {
+        Ok(output)
+    } else {
+        bail!("{}", git_failure_message(context, &output))
+    }
+}
+
+/// Runs one system Git command pinned to a Darc share cache worktree.
+fn run_cache_git<I, S>(cache_path: &Path, args: I, context: &str) -> Result<GitCommandOutput>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let output = run_cache_git_raw(cache_path, args).with_context(|| context.to_owned())?;
+    if output.status.success() {
+        Ok(output)
+    } else {
+        bail!("{}", git_failure_message(context, &output))
+    }
+}
+
+/// Runs one cache Git command with explicit git-dir and work-tree scope.
+fn run_cache_git_raw<I, S>(cache_path: &Path, args: I) -> Result<GitCommandOutput>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    ensure_safe_cache_git_dir(cache_path)?;
+    let git_dir = cache_path.join(".git");
+    let mut scoped_args = vec![
+        OsString::from("--git-dir"),
+        git_dir.into_os_string(),
+        OsString::from("--work-tree"),
+        cache_path.as_os_str().to_owned(),
+    ];
+    scoped_args.extend(args.into_iter().map(|arg| arg.as_ref().to_owned()));
+    run_git_raw(cache_path, scoped_args)
+}
+
+/// Runs one system Git command without interpreting its exit status.
+fn run_git_raw<I, S>(path: &Path, args: I) -> Result<GitCommandOutput>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let args = args
+        .into_iter()
+        .map(|arg| arg.as_ref().to_owned())
+        .collect::<Vec<OsString>>();
+    let output = Command::new("git")
+        .args([
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.askPass=false",
+            "-c",
+            "filter.lfs.required=false",
+            "-c",
+            "filter.lfs.clean=",
+            "-c",
+            "filter.lfs.smudge=",
+            "-c",
+            "filter.lfs.process=",
+        ])
+        .args(&args)
+        .current_dir(path)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "false")
+        .env("SSH_ASKPASS", "false")
+        .env("GIT_SSH_COMMAND", git_ssh_command())
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+        .env_remove("GIT_COMMON_DIR")
+        .env_remove("GIT_TEMPLATE_DIR")
+        .env_remove("GIT_AUTHOR_NAME")
+        .env_remove("GIT_AUTHOR_EMAIL")
+        .env_remove("GIT_AUTHOR_DATE")
+        .env_remove("GIT_COMMITTER_NAME")
+        .env_remove("GIT_COMMITTER_EMAIL")
+        .env_remove("GIT_COMMITTER_DATE")
+        .stdin(Stdio::null())
+        .output()
+        .with_context(|| {
+            format!(
+                "failed to run system git in {}: git {}",
+                path.display(),
+                git_args_display(&args)
+            )
+        })?;
+    Ok(GitCommandOutput {
+        status: output.status,
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
+}
+
+/// Returns an SSH command that preserves user config while disabling password prompts.
+fn git_ssh_command() -> OsString {
+    noninteractive_ssh_command(std::env::var_os("GIT_SSH_COMMAND"))
+}
+
+/// Adds SSH batch mode to an optional user-provided SSH command.
+fn noninteractive_ssh_command(command: Option<OsString>) -> OsString {
+    let command = command.unwrap_or_else(|| OsString::from("ssh"));
+    let command_string = command.to_string_lossy();
+    if command_string.contains("BatchMode") {
+        command
+    } else {
+        OsString::from(format!("{command_string} -o BatchMode=yes"))
+    }
+}
+
+/// Formats one failed Git command for user-facing errors.
+fn git_failure_message(context: &str, output: &GitCommandOutput) -> String {
+    let mut message = format!("{context}: git exited with {}", output.status);
+    let stdout_redacted = sanitize_git_diagnostic(&output.stdout);
+    let stdout = stdout_redacted.trim();
+    if !stdout.is_empty() {
+        message.push_str("\nstdout:\n");
+        message.push_str(stdout);
+    }
+    let stderr_redacted = sanitize_git_diagnostic(&output.stderr);
+    let stderr = stderr_redacted.trim();
+    if !stderr.is_empty() {
+        message.push_str("\nstderr:\n");
+        message.push_str(stderr);
+    }
+    message
+}
+
+/// Sanitizes Git diagnostic text before it reaches CLI errors or logs.
+fn sanitize_git_diagnostic(text: &str) -> String {
+    text.split_whitespace()
+        .map(sanitize_git_diagnostic_token)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Sanitizes one possible URL-bearing diagnostic token.
+fn sanitize_git_diagnostic_token(token: &str) -> String {
+    let trimmed = token.trim_matches(|character: char| {
+        matches!(
+            character,
+            '\'' | '"' | '`' | '<' | '>' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';'
+        )
     });
-    callbacks.push_update_reference(|reference, status| {
-        if let Some(status) = status {
-            return Err(git2::Error::from_str(&format!(
-                "push rejected for {reference}: {status}"
-            )));
-        }
-        Ok(())
-    });
-    Ok(callbacks)
+    if trimmed.contains("://") || trimmed.contains('@') || trimmed.contains('?') {
+        let sanitized = sanitize_git_url_for_display(trimmed);
+        return token.replacen(trimmed, &sanitized, 1);
+    }
+    token.to_owned()
+}
+
+/// Formats Git arguments for diagnostics without invoking a shell.
+fn git_args_display(args: &[OsString]) -> String {
+    args.iter()
+        .map(|arg| sanitize_git_diagnostic_token(arg.to_string_lossy().as_ref()))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Returns whether a path is an existing non-symlink directory.
@@ -2589,8 +2729,8 @@ fn cache_repo_path(root: &Path, remote_url: &str, git_branch: &str) -> PathBuf {
 }
 
 /// Returns the trusted local object cache path for one cache repository.
-fn trusted_object_cache_path(repository: &Repository) -> PathBuf {
-    repository.path().join(TRUSTED_OBJECT_CACHE_DIR)
+fn trusted_object_cache_path(cache_path: &Path) -> PathBuf {
+    cache_path.join(".git").join(TRUSTED_OBJECT_CACHE_DIR)
 }
 
 /// Builds the stored provenance key for one imported remote branch.
@@ -3422,12 +3562,14 @@ mod tests {
     #[test]
     fn resolve_remote_sanitizes_credentialed_display_url() {
         let workspace = unique_test_dir("share-sanitized-remote-report");
+        let repo = workspace.join("repo");
+        init_test_git_repo(&repo);
         let context = ShareProjectContext {
             root: workspace.clone(),
             index_db_path: workspace.join("index.sqlite"),
             project_id: "repo".to_owned(),
             project_name: "repo".to_owned(),
-            local_path: workspace.join("repo"),
+            local_path: repo,
             git_upstream: Some("https://example.invalid/team/repo.git".to_owned()),
         };
         let settings = ShareSettings {
@@ -3445,6 +3587,57 @@ mod tests {
             "https://user:token@example.invalid/team/share.git"
         );
         assert_eq!(remote.display_url, "https://example.invalid/team/share.git");
+    }
+
+    #[test]
+    fn origin_fallback_uses_resolved_url_without_storing_it() {
+        let workspace = unique_test_dir("share-origin-fallback-rewrite");
+        let repo = workspace.join("repo");
+        init_test_git_repo(&repo);
+        run_git(
+            &repo,
+            ["remote", "add", DEFAULT_REMOTE_NAME, "gh:Example/Darc.git"],
+            "failed to add synthetic origin",
+        )
+        .unwrap();
+        run_git(
+            &repo,
+            [
+                "config",
+                "url.https://user:token@github.com/.insteadOf",
+                "gh:",
+            ],
+            "failed to add synthetic URL rewrite",
+        )
+        .unwrap();
+        let context = ShareProjectContext {
+            root: workspace.clone(),
+            index_db_path: workspace.join("index.sqlite"),
+            project_id: "repo".to_owned(),
+            project_name: "repo".to_owned(),
+            local_path: repo,
+            git_upstream: None,
+        };
+
+        let remote = resolve_remote(&context, &ShareSettings::default(), None).unwrap();
+
+        assert_eq!(remote.url, "gh:Example/Darc.git");
+        assert_eq!(
+            remote.resolved_url,
+            "https://user:token@github.com/Example/Darc.git"
+        );
+        assert_eq!(
+            project_key(&context).unwrap(),
+            "git:https://github.com/Example/Darc"
+        );
+        assert_eq!(
+            cache_repo_path(&workspace, &remote.resolved_url, "darc/team"),
+            cache_repo_path(
+                &workspace,
+                "https://github.com/Example/Darc.git",
+                "darc/team"
+            )
+        );
     }
 
     #[test]
@@ -5211,7 +5404,7 @@ mod tests {
     fn push_and_pull_round_trip_rebinds_refreshes_and_prunes_sessions() {
         let workspace = unique_test_dir("share-round-trip");
         let remote_path = workspace.join("share.git");
-        Repository::init_bare(&remote_path).unwrap();
+        init_bare_remote(&remote_path);
         let source_root = workspace.join("source-root");
         let source_repo = workspace.join("source-repo");
         let target_root = workspace.join("target-root");
@@ -5344,7 +5537,7 @@ mod tests {
     fn fetch_cleans_untracked_cache_artifacts_before_merge() {
         let workspace = unique_test_dir("share-fetch-cleans-untracked");
         let remote_path = workspace.join("share.git");
-        Repository::init_bare(&remote_path).unwrap();
+        init_bare_remote(&remote_path);
         let source_root = workspace.join("source-root");
         let source_repo = workspace.join("source-repo");
         let target_root = workspace.join("target-root");
@@ -5391,6 +5584,19 @@ mod tests {
         push_share_branch(&source_context, &settings, "team", Some("share")).unwrap();
         fetch_share_branch(&target_context, &settings, "team", Some("share")).unwrap();
         let cache = cache_repo_path(&target_root, &remote_url, "darc/team");
+        let outside_worktree = workspace.join("outside-worktree");
+        fs::create_dir_all(&outside_worktree).unwrap();
+        fs::write(outside_worktree.join("keep.txt"), b"keep").unwrap();
+        run_cache_git(
+            &cache,
+            [
+                "config",
+                "core.worktree",
+                outside_worktree.to_str().unwrap(),
+            ],
+            "failed to poison synthetic cache worktree",
+        )
+        .unwrap();
         let injected_manifest = cache
             .join(ARTIFACT_ROOT)
             .join(EXPORTERS_DIR)
@@ -5403,13 +5609,27 @@ mod tests {
             .join("objects")
             .join("injected.age");
         fs::write(&injected_object, b"not an age payload").unwrap();
+        let nested_git = cache
+            .join(ARTIFACT_ROOT)
+            .join(EXPORTERS_DIR)
+            .join("nested-git")
+            .join(".git");
+        fs::create_dir_all(&nested_git).unwrap();
+        fs::write(
+            nested_git.parent().unwrap().join(LEGACY_MANIFEST_FILE),
+            b"not json",
+        )
+        .unwrap();
         assert!(injected_manifest.exists());
         assert!(injected_object.exists());
+        assert!(nested_git.exists());
 
         fetch_share_branch(&target_context, &settings, "team", Some("share")).unwrap();
 
         assert!(!injected_manifest.exists());
         assert!(!injected_object.exists());
+        assert!(!nested_git.exists());
+        assert!(outside_worktree.join("keep.txt").exists());
         let merge = merge_share_branch(&target_context, &settings, "team", Some("share")).unwrap();
         assert_eq!(merge.imported_turn_count, 1);
         assert_eq!(merge.warning_count, 0);
@@ -5419,7 +5639,7 @@ mod tests {
     fn merge_resets_tracked_cache_modifications_before_import() {
         let workspace = unique_test_dir("share-merge-resets-tracked");
         let remote_path = workspace.join("share.git");
-        Repository::init_bare(&remote_path).unwrap();
+        init_bare_remote(&remote_path);
         let source_root = workspace.join("source-root");
         let source_repo = workspace.join("source-repo");
         let target_root = workspace.join("target-root");
@@ -5467,6 +5687,11 @@ mod tests {
         fetch_share_branch(&target_context, &settings, "team", Some("share")).unwrap();
         let cache = cache_repo_path(&target_root, &remote_url, "darc/team");
         fs::write(first_exporter_manifest_path(&cache), b"not json").unwrap();
+        fs::write(
+            cache.join("darc-share").join("v1").join("project.json"),
+            b"not json",
+        )
+        .unwrap();
 
         let merge = merge_share_branch(&target_context, &settings, "team", Some("share")).unwrap();
 
@@ -5478,7 +5703,7 @@ mod tests {
     fn push_drops_unexpected_cache_files_from_branch_tip() {
         let workspace = unique_test_dir("share-artifact-only-tip");
         let remote_path = workspace.join("share.git");
-        Repository::init_bare(&remote_path).unwrap();
+        init_bare_remote(&remote_path);
         let source_root = workspace.join("source-root");
         let source_repo = workspace.join("source-repo");
         fs::create_dir_all(&source_root).unwrap();
@@ -5507,6 +5732,7 @@ mod tests {
         };
         push_share_branch(&source_context, &settings, "team", Some("share")).unwrap();
         let cache = cache_repo_path(&source_root, &remote_url, "darc/team");
+        fs::write(cache.join(".git").join("info").join("exclude"), "*.age\n").unwrap();
         fs::write(cache.join("plaintext.txt"), b"do not publish").unwrap();
         let rogue_object = cache
             .join(ARTIFACT_ROOT)
@@ -5541,13 +5767,14 @@ mod tests {
         assert!(!paths.iter().any(|path| path.contains("plaintext")));
         assert!(!paths.iter().any(|path| path.contains("unexpected")));
         assert!(!paths.iter().any(|path| path.contains("orphan")));
+        assert!(paths.iter().any(|path| path.ends_with(".age")));
     }
 
     #[test]
     fn push_preserves_same_email_exporters_at_branch_tip() {
         let workspace = unique_test_dir("share-same-email-author-tip");
         let remote_path = workspace.join("share.git");
-        Repository::init_bare(&remote_path).unwrap();
+        init_bare_remote(&remote_path);
         let first_root = workspace.join("first-root");
         let first_repo = workspace.join("first-repo");
         let second_root = workspace.join("second-root");
@@ -5684,7 +5911,7 @@ mod tests {
     fn missing_remote_branch_drops_stale_cache_parent() {
         let workspace = unique_test_dir("share-missing-remote-branch");
         let remote_path = workspace.join("share.git");
-        Repository::init_bare(&remote_path).unwrap();
+        init_bare_remote(&remote_path);
         let source_root = workspace.join("source-root");
         let source_repo = workspace.join("source-repo");
         fs::create_dir_all(&source_root).unwrap();
@@ -5714,12 +5941,7 @@ mod tests {
         };
 
         push_share_branch(&source_context, &settings, "team", Some("share")).unwrap();
-        let remote = Repository::open_bare(&remote_path).unwrap();
-        remote
-            .find_reference("refs/heads/darc/team")
-            .unwrap()
-            .delete()
-            .unwrap();
+        delete_remote_branch(&remote_path, "darc/team");
         let stale_manifest = cache_repo_path(&source_root, &settings.remotes[0].url, "darc/team")
             .join(ARTIFACT_ROOT)
             .join(EXPORTERS_DIR)
@@ -6024,12 +6246,40 @@ mod tests {
 
     fn init_test_git_repo(path: &Path) {
         fs::create_dir_all(path).unwrap();
-        let repository = Repository::init(path).unwrap();
-        let mut config = repository.config().unwrap();
-        config.set_str("user.name", "Synthetic User").unwrap();
-        config
-            .set_str("user.email", "synthetic@example.invalid")
-            .unwrap();
+        run_git(path, ["init"], "failed to init synthetic Git repo").unwrap();
+        run_git(
+            path,
+            ["config", "user.name", "Synthetic User"],
+            "failed to set synthetic Git user.name",
+        )
+        .unwrap();
+        run_git(
+            path,
+            ["config", "user.email", "synthetic@example.invalid"],
+            "failed to set synthetic Git user.email",
+        )
+        .unwrap();
+    }
+
+    fn init_bare_remote(path: &Path) {
+        let parent = path.parent().unwrap();
+        fs::create_dir_all(parent).unwrap();
+        run_git(
+            parent,
+            ["init", "--bare", path.to_str().unwrap()],
+            "failed to init synthetic bare Git repo",
+        )
+        .unwrap();
+    }
+
+    fn delete_remote_branch(remote_path: &Path, git_branch: &str) {
+        let reference = format!("refs/heads/{git_branch}");
+        run_git(
+            remote_path,
+            ["update-ref", "-d", &reference],
+            "failed to delete synthetic remote branch",
+        )
+        .unwrap();
     }
 
     fn test_share_identity(identity: &Identity) -> ShareIdentity {
@@ -6083,36 +6333,82 @@ mod tests {
     }
 
     fn remote_tip_parent_count(remote_path: &Path, git_branch: &str) -> usize {
-        let repository = Repository::open_bare(remote_path).unwrap();
-        let oid = repository
-            .find_reference(&format!("refs/heads/{git_branch}"))
-            .unwrap()
-            .target()
-            .unwrap();
-        repository.find_commit(oid).unwrap().parent_count()
+        let reference = format!("refs/heads/{git_branch}");
+        let output = run_git(
+            remote_path,
+            ["rev-list", "--parents", "-n", "1", &reference],
+            "failed to inspect synthetic remote commit parents",
+        )
+        .unwrap();
+        output.stdout.split_whitespace().count().saturating_sub(1)
     }
 
     fn remote_tip_blob_paths(remote_path: &Path, git_branch: &str) -> Vec<String> {
-        let repository = Repository::open_bare(remote_path).unwrap();
-        let oid = repository
-            .find_reference(&format!("refs/heads/{git_branch}"))
-            .unwrap()
-            .target()
-            .unwrap();
-        let commit = repository.find_commit(oid).unwrap();
-        let tree = commit.tree().unwrap();
-        let mut paths = Vec::new();
-        tree.walk(git2::TreeWalkMode::PreOrder, |root, entry| {
-            if entry.kind() == Some(git2::ObjectType::Blob)
-                && let Some(name) = entry.name()
-            {
-                paths.push(format!("{root}{name}"));
-            }
-            git2::TreeWalkResult::Ok
-        })
+        let reference = format!("refs/heads/{git_branch}");
+        let output = run_git(
+            remote_path,
+            ["ls-tree", "-r", "--name-only", &reference],
+            "failed to inspect synthetic remote tree",
+        )
         .unwrap();
+        let mut paths = output.stdout.lines().map(str::to_owned).collect::<Vec<_>>();
         paths.sort();
         paths
+    }
+
+    #[test]
+    fn git_failure_messages_redact_credentialed_urls() {
+        let output = GitCommandOutput {
+            status: failure_exit_status(),
+            stdout: "https://user:token@example.invalid/repo.git?access_token=secret".to_owned(),
+            stderr: "fatal: could not read Username for 'https://user:token@example.invalid/repo.git?access_token=secret'".to_owned(),
+        };
+        let message = git_failure_message("failed synthetic git command", &output);
+
+        assert!(message.contains("https://example.invalid/repo.git"));
+        assert!(!message.contains("user:token"));
+        assert!(!message.contains("access_token"));
+        assert!(!message.contains("secret"));
+
+        let display = git_args_display(&[
+            OsString::from("remote"),
+            OsString::from("add"),
+            OsString::from("https://user:token@example.invalid/repo.git?access_token=secret"),
+        ]);
+        assert!(display.contains("https://example.invalid/repo.git"));
+        assert!(!display.contains("user:token"));
+        assert!(!display.contains("access_token"));
+        assert!(!display.contains("secret"));
+    }
+
+    #[test]
+    fn ssh_command_runs_in_batch_mode() {
+        assert_eq!(
+            noninteractive_ssh_command(None),
+            OsString::from("ssh -o BatchMode=yes")
+        );
+        assert_eq!(
+            noninteractive_ssh_command(Some(OsString::from("ssh -F config"))),
+            OsString::from("ssh -F config -o BatchMode=yes")
+        );
+        assert_eq!(
+            noninteractive_ssh_command(Some(OsString::from("ssh -o BatchMode=yes"))),
+            OsString::from("ssh -o BatchMode=yes")
+        );
+    }
+
+    #[cfg(unix)]
+    fn failure_exit_status() -> ExitStatus {
+        use std::os::unix::process::ExitStatusExt;
+
+        ExitStatus::from_raw(1 << 8)
+    }
+
+    #[cfg(windows)]
+    fn failure_exit_status() -> ExitStatus {
+        use std::os::windows::process::ExitStatusExt;
+
+        ExitStatus::from_raw(1)
     }
 
     /// Returns the first per-exporter manifest path in one cache checkout.
