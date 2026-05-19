@@ -547,28 +547,38 @@ pub fn update_share_policy(context: &ShareProjectContext, policy: SharePolicy) -
 
 /// Includes all local sessions by switching the project policy to all.
 pub fn include_all_sessions(context: &ShareProjectContext) -> Result<()> {
-    let connection = open_index_database_writer(&context.index_db_path)?;
+    let mut connection = open_index_database_writer(&context.index_db_path)?;
+    let transaction = connection
+        .transaction()
+        .context("failed to begin share include-all transaction")?;
     set_project_share_policy(
-        &connection,
+        &transaction,
         &context.project_id,
         SharePolicy::All,
         &current_utc_timestamp(),
     )?;
-    clear_project_share_states(&connection, &context.project_id)?;
-    Ok(())
+    clear_project_share_states(&transaction, &context.project_id)?;
+    transaction
+        .commit()
+        .context("failed to commit share include-all transaction")
 }
 
 /// Excludes all local sessions by switching to manual policy and clearing overrides.
 pub fn exclude_all_sessions(context: &ShareProjectContext) -> Result<()> {
-    let connection = open_index_database_writer(&context.index_db_path)?;
+    let mut connection = open_index_database_writer(&context.index_db_path)?;
+    let transaction = connection
+        .transaction()
+        .context("failed to begin share exclude-all transaction")?;
     set_project_share_policy(
-        &connection,
+        &transaction,
         &context.project_id,
         SharePolicy::Manual,
         &current_utc_timestamp(),
     )?;
-    clear_project_share_states(&connection, &context.project_id)?;
-    Ok(())
+    clear_project_share_states(&transaction, &context.project_id)?;
+    transaction
+        .commit()
+        .context("failed to commit share exclude-all transaction")
 }
 
 /// Sets one local session's sharing state.
@@ -2378,8 +2388,6 @@ fn import_from_cache_with_progress(
             continue;
         }
         if imported_exporters.contains(&exporter_id) {
-            skipped_turn_count += u64::try_from(manifest.turns.len())
-                .context("skipped turn count exceeds u64 range")?;
             warnings.push(format!(
                 "skipped duplicate share manifest {} for exporter {}",
                 cached.relative_path, sync_payload.exporter.user_id
@@ -2404,8 +2412,7 @@ fn import_from_cache_with_progress(
             .iter()
             .map(sync_turn_prune_key)
             .collect::<BTreeSet<_>>();
-        let skipped_turn_count_before_manifest = skipped_turn_count;
-        let warning_count_before_manifest = warnings.len();
+        let mut manifest_decode_complete = true;
         let imported_at = current_utc_timestamp();
         let user = ShareUserRecord {
             user_id: sync_payload.exporter.user_id.clone(),
@@ -2429,6 +2436,7 @@ fn import_from_cache_with_progress(
                 match read_manifest_entry_turn(&import_context, entry) {
                     Ok(turn) => decoded_turns.push(turn),
                     Err(error) => {
+                        manifest_decode_complete = false;
                         skipped_turn_count += 1;
                         warnings.push(format!(
                             "skipped {} session {} turn {}: {error:#}",
@@ -2453,7 +2461,7 @@ fn import_from_cache_with_progress(
                 &mut warnings,
             )?;
         } else {
-            import_chunked_manifest_turns(
+            manifest_decode_complete = import_chunked_manifest_turns(
                 &mut connection,
                 context,
                 cache_path,
@@ -2480,9 +2488,7 @@ fn import_from_cache_with_progress(
             &sync_payload.exporter.user_id,
             &keep_turns,
         )?;
-        if skipped_turn_count == skipped_turn_count_before_manifest
-            && warnings.len() == warning_count_before_manifest
-        {
+        if manifest_decode_complete {
             imported_exporters.insert(exporter_id);
         }
     }
@@ -2573,7 +2579,8 @@ fn import_chunked_manifest_turns(
     warnings: &mut Vec<String>,
     session_progress: &mut ImportSessionProgress,
     progress: &mut impl FnMut(SharePullProgress),
-) -> Result<()> {
+) -> Result<bool> {
+    let mut manifest_decode_complete = true;
     let mut entries_by_chunk = BTreeMap::<String, Vec<&TurnManifestEntry>>::new();
     for entry in &manifest.turns {
         if let Some(chunk_id) = &entry.chunk_id {
@@ -2582,6 +2589,7 @@ fn import_chunked_manifest_turns(
                 .or_default()
                 .push(entry);
         } else {
+            manifest_decode_complete = false;
             *skipped_turn_count += 1;
             warnings.push(format!(
                 "skipped {} session {} turn {}: chunked share manifest entry is missing chunk_id",
@@ -2614,9 +2622,17 @@ fn import_chunked_manifest_turns(
                     cache_path,
                     chunks: &decoded,
                 };
-                decode_manifest_entries(&import_context, &entries, skipped_turn_count, warnings)
+                let (turns, complete) = decode_manifest_entries(
+                    &import_context,
+                    &entries,
+                    skipped_turn_count,
+                    warnings,
+                );
+                manifest_decode_complete &= complete;
+                turns
             }
             Err(error) => {
+                manifest_decode_complete = false;
                 *skipped_turn_count +=
                     u64::try_from(entries.len()).context("skipped turn count exceeds u64 range")?;
                 warnings.push(format!(
@@ -2640,7 +2656,7 @@ fn import_chunked_manifest_turns(
             warnings,
         )?;
     }
-    Ok(())
+    Ok(manifest_decode_complete)
 }
 
 /// Decodes manifest entries against already-decoded chunk content.
@@ -2649,12 +2665,14 @@ fn decode_manifest_entries(
     entries: &[&TurnManifestEntry],
     skipped_turn_count: &mut u64,
     warnings: &mut Vec<String>,
-) -> Vec<ShareTurnExport> {
+) -> (Vec<ShareTurnExport>, bool) {
     let mut decoded_turns = Vec::new();
+    let mut complete = true;
     for entry in entries {
         match read_manifest_entry_turn(import_context, entry) {
             Ok(turn) => decoded_turns.push(turn),
             Err(error) => {
+                complete = false;
                 *skipped_turn_count += 1;
                 warnings.push(format!(
                     "skipped {} session {} turn {}: {error:#}",
@@ -2665,7 +2683,7 @@ fn decode_manifest_entries(
             }
         }
     }
-    decoded_turns
+    (decoded_turns, complete)
 }
 
 /// Reads and validates the encrypted sync payload used for pruning.
@@ -3084,14 +3102,11 @@ pub fn validate_share_remote_url(url: &str) -> Result<()> {
     let authority = rest.split('/').next().unwrap_or(rest);
     let scheme = scheme.to_ascii_lowercase();
     let userinfo = authority.rsplit_once('@').map(|(userinfo, _)| userinfo);
-    if matches!(scheme.as_str(), "http" | "https") && userinfo.is_some() {
+    if userinfo.is_some_and(|userinfo| {
+        matches!(scheme.as_str(), "http" | "https") || scheme != "ssh" || userinfo.contains(':')
+    }) {
         bail!(
-            "share remote URL `{display_url}` must not include HTTP credentials; configure Git credentials outside the URL"
-        );
-    }
-    if scheme == "ssh" && userinfo.is_some_and(|userinfo| userinfo.contains(':')) {
-        bail!(
-            "share remote URL `{display_url}` must not include SSH password credentials; configure Git credentials outside the URL"
+            "share remote URL `{display_url}` must not include URL credentials; configure Git credentials outside the URL"
         );
     }
     Ok(())
@@ -4475,7 +4490,7 @@ fn configured_git_command(
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_ASKPASS", "false")
         .env("SSH_ASKPASS", "false")
-        .env("GIT_SSH_COMMAND", git_ssh_command())
+        .env("GIT_SSH_COMMAND", git_ssh_command(path))
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE")
@@ -4534,8 +4549,31 @@ fn emit_git_progress_fragment(
 }
 
 /// Returns an SSH command that preserves user config while disabling password prompts.
-fn git_ssh_command() -> OsString {
-    noninteractive_ssh_command(std::env::var_os("GIT_SSH_COMMAND"))
+fn git_ssh_command(path: &Path) -> OsString {
+    git_ssh_command_with_env(path, std::env::var_os("GIT_SSH_COMMAND"))
+}
+
+/// Returns an SSH command using environment first, then Git config.
+fn git_ssh_command_with_env(path: &Path, command: Option<OsString>) -> OsString {
+    if command.is_some() {
+        return noninteractive_ssh_command(command);
+    }
+    noninteractive_ssh_command(git_core_ssh_command(path))
+}
+
+/// Reads the effective Git core.sshCommand for one repository path.
+fn git_core_ssh_command(path: &Path) -> Option<OsString> {
+    let output = Command::new("git")
+        .args(["config", "--get", "core.sshCommand"])
+        .current_dir(path)
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let command = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    (!command.is_empty()).then(|| OsString::from(command))
 }
 
 /// Adds SSH batch mode to an optional user-provided SSH command.
@@ -5130,6 +5168,10 @@ mod tests {
             validate_share_remote_url("https://example.invalid/team/share.git?token=secret")
                 .is_err()
         );
+        assert!(
+            validate_share_remote_url("git://user:token@example.invalid/team/share.git").is_err()
+        );
+        assert!(validate_share_remote_url("git://user@example.invalid/team/share.git").is_err());
         assert!(
             validate_share_remote_url("ssh://user:pass@example.invalid/team/share.git").is_err()
         );
@@ -5891,7 +5933,7 @@ mod tests {
 
         let error = resolve_remote(&context, &settings, Some("team")).unwrap_err();
 
-        assert!(format!("{error:#}").contains("must not include HTTP credentials"));
+        assert!(format!("{error:#}").contains("must not include URL credentials"));
     }
 
     #[test]
@@ -9644,6 +9686,27 @@ mod tests {
         assert_eq!(
             noninteractive_ssh_command(Some(OsString::from("ssh -o BatchMode=no"))),
             OsString::from("ssh -o BatchMode=yes -o BatchMode=no")
+        );
+    }
+
+    #[test]
+    fn ssh_command_preserves_core_ssh_command() {
+        let workspace = unique_test_dir("share-core-ssh-command");
+        init_test_git_repo(&workspace);
+        run_git(
+            &workspace,
+            ["config", "core.sshCommand", "ssh -i synthetic_key"],
+            "failed to configure core.sshCommand",
+        )
+        .unwrap();
+
+        assert_eq!(
+            git_ssh_command_with_env(&workspace, None),
+            OsString::from("ssh -o BatchMode=yes -i synthetic_key")
+        );
+        assert_eq!(
+            git_ssh_command_with_env(&workspace, Some(OsString::from("ssh -F env_config"))),
+            OsString::from("ssh -o BatchMode=yes -F env_config")
         );
     }
 
