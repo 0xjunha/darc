@@ -387,11 +387,3 @@ cargo +stable clippy --locked --workspace --all-targets --all-features -- -D war
 cargo +stable test --locked --workspace
 cargo +stable check --locked --workspace --all-targets --all-features --profile dist
 ```
-
-Shared-index export benchmarks use a temporary Darc root copied from an explicit synthetic or scrubbed root and push to
-local bare Git remotes:
-
-```sh
-cargo build --release -p darc
-scripts/bench-share-export.sh --root /tmp/darc-synthetic-root --sessions 50 --repeat 2 --mode both --darc ./target/release/darc
-```
