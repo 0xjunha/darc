@@ -10,6 +10,7 @@ use std::{
     path::{Component, Path, PathBuf},
     process::{Command, ExitStatus, Stdio},
     str::FromStr,
+    thread,
 };
 
 use age::{
@@ -168,6 +169,54 @@ pub struct ShareMergeReport {
 pub struct SharePullReport {
     pub fetch: ShareFetchReport,
     pub merge: ShareMergeReport,
+}
+
+/// Identifies one Git upload phase during a share push.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ShareUploadKind {
+    Lfs,
+    Git,
+}
+
+/// Describes one progress event emitted while pushing a share branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SharePushProgress {
+    Started {
+        git_branch: String,
+        remote_name: String,
+        remote_url: String,
+    },
+    PreparingCache,
+    FetchingRemote,
+    HydratingLfs,
+    ReadingCache,
+    ReusingPreviousExport {
+        exported_turn_count: u64,
+        exported_session_count: u64,
+    },
+    BuildingExport {
+        total_turns: u64,
+    },
+    ExportingTurns {
+        exported_turns: u64,
+        total_turns: u64,
+    },
+    WritingMetadata {
+        object_count: u64,
+    },
+    Committing,
+    Uploading {
+        kind: ShareUploadKind,
+    },
+    GitProgress {
+        kind: ShareUploadKind,
+        message: String,
+    },
+    Finished {
+        commit_id: String,
+    },
 }
 
 /// Stores one visible project artifact.
@@ -498,8 +547,42 @@ pub fn push_share_branch(
     branch: &str,
     remote_name: Option<&str>,
 ) -> Result<SharePushReport> {
+    push_share_branch_impl(context, settings, branch, remote_name, false, |_| {})
+}
+
+/// Exports the active project and pushes it while emitting progress events.
+pub fn push_share_branch_with_progress<F>(
+    context: &ShareProjectContext,
+    settings: &ShareSettings,
+    branch: &str,
+    remote_name: Option<&str>,
+    progress: F,
+) -> Result<SharePushReport>
+where
+    F: FnMut(SharePushProgress),
+{
+    push_share_branch_impl(context, settings, branch, remote_name, true, progress)
+}
+
+/// Exports the active project with optional progress emission.
+fn push_share_branch_impl<F>(
+    context: &ShareProjectContext,
+    settings: &ShareSettings,
+    branch: &str,
+    remote_name: Option<&str>,
+    progress_enabled: bool,
+    mut progress: F,
+) -> Result<SharePushReport>
+where
+    F: FnMut(SharePushProgress),
+{
     let git_branch = share_git_branch(branch)?;
     let remote = resolve_remote(context, settings, remote_name)?;
+    progress(SharePushProgress::Started {
+        git_branch: git_branch.clone(),
+        remote_name: remote.name.clone(),
+        remote_url: remote.display_url.clone(),
+    });
     let project_key = project_key(context)?;
     let identity = local_share_identity(context)?;
     let identity_key = ensure_share_key(&context.root)?;
@@ -508,7 +591,9 @@ pub fn push_share_branch(
     let connection = open_index_database_writer(&context.index_db_path)?;
     let selected_sessions = query_share_export_session_states(&connection, &context.project_id)?;
     let cache_path = cache_repo_path(&context.root, &remote.resolved_url, &git_branch);
+    progress(SharePushProgress::PreparingCache);
     prepare_cache_repository(&cache_path, &remote.url, &identity)?;
+    progress(SharePushProgress::FetchingRemote);
     let branch_exists = fetch_branch_if_exists(&cache_path, &git_branch)?;
     if !branch_exists {
         clear_cache_worktree(&cache_path)?;
@@ -516,8 +601,10 @@ pub fn push_share_branch(
     checkout_share_branch(&cache_path, &git_branch)?;
     clean_untracked_cache_worktree(&cache_path)?;
     if branch_exists {
+        progress(SharePushProgress::HydratingLfs);
         hydrate_lfs_objects(&cache_path)?;
     }
+    progress(SharePushProgress::ReadingCache);
     let cached_manifest_read = read_cached_manifests(&cache_path)?;
     let previous_project = read_cached_project_artifact(&cache_path).ok().flatten();
     let previous_manifest = cached_manifest_read
@@ -555,9 +642,18 @@ pub fn push_share_branch(
         &decryption_identity,
         &selected_sessions,
     )? {
-        Some(artifact) => artifact,
+        Some(artifact) => {
+            progress(SharePushProgress::ReusingPreviousExport {
+                exported_turn_count: artifact.exported_turn_count,
+                exported_session_count: artifact.exported_session_count,
+            });
+            artifact
+        }
         None => {
             let turns = query_share_export_turns(&connection, &context.project_id)?;
+            progress(SharePushProgress::BuildingExport {
+                total_turns: u64::try_from(turns.len()).context("turn count exceeds u64 range")?,
+            });
             build_export_artifact_to_cache_with_reuse(
                 ExportBuildRequest {
                     context,
@@ -570,6 +666,7 @@ pub fn push_share_branch(
                 },
                 reuse_context,
                 &cache_path,
+                &mut progress,
             )?
         }
     };
@@ -580,11 +677,22 @@ pub fn push_share_branch(
         &retained_manifests,
         &artifact,
     )?;
+    progress(SharePushProgress::WritingMetadata {
+        object_count: artifact.object_count,
+    });
     write_export_metadata(&cache_path, &artifact)?;
     let allowed_paths = allowed_share_cache_paths(&artifact, &retained_manifests);
     clean_unexpected_share_cache_files(&cache_path, &allowed_paths)?;
+    progress(SharePushProgress::Committing);
     let commit_id = commit_cache_repository(&cache_path, &git_branch)?;
-    push_branch(&cache_path, &git_branch)?;
+    if progress_enabled {
+        push_branch_with_progress(&cache_path, &git_branch, &mut progress)?;
+    } else {
+        push_branch(&cache_path, &git_branch)?;
+    }
+    progress(SharePushProgress::Finished {
+        commit_id: commit_id.clone(),
+    });
     Ok(SharePushReport {
         branch: branch.to_owned(),
         git_branch,
@@ -604,9 +712,10 @@ fn build_export_artifact_to_cache_with_reuse(
     request: ExportBuildRequest<'_>,
     reuse: ExportReuseContext<'_>,
     cache_path: &Path,
+    progress: &mut impl FnMut(SharePushProgress),
 ) -> Result<BuiltExportArtifact> {
     let mut target = ExportObjectTarget::Disk { cache_path };
-    build_export_artifact_with_target(request, reuse, &mut target)
+    build_export_artifact_with_target(request, reuse, &mut target, progress)
 }
 
 /// Builds share export artifacts in memory for tests and artifact helpers.
@@ -619,7 +728,7 @@ fn build_export_artifact_with_reuse(
     let mut target = ExportObjectTarget::Memory {
         objects: &mut objects,
     };
-    let mut artifact = build_export_artifact_with_target(request, reuse, &mut target)?;
+    let mut artifact = build_export_artifact_with_target(request, reuse, &mut target, &mut |_| {})?;
     artifact.objects = objects;
     Ok(artifact)
 }
@@ -823,6 +932,15 @@ struct GitCommandOutput {
     stderr: String,
 }
 
+/// Stores one system Git upload command for a share branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PushBranchCommand {
+    kind: ShareUploadKind,
+    quiet_args: Vec<OsString>,
+    progress_args: Vec<OsString>,
+    context: String,
+}
+
 /// Builds all share artifacts for the current export.
 #[cfg(test)]
 fn build_export_artifact(request: ExportBuildRequest<'_>) -> Result<BuiltExportArtifact> {
@@ -834,6 +952,7 @@ fn build_export_artifact_with_target(
     request: ExportBuildRequest<'_>,
     reuse: ExportReuseContext<'_>,
     target: &mut ExportObjectTarget<'_>,
+    progress: &mut impl FnMut(SharePushProgress),
 ) -> Result<BuiltExportArtifact> {
     let timestamp = current_utc_timestamp();
     let recipient_strings = encryption_recipient_strings(request.identity, request.settings);
@@ -848,7 +967,8 @@ fn build_export_artifact_with_target(
     let mut chunk_turns = Vec::new();
     let mut chunk_plaintext_bytes = 0_usize;
     let mut chunk_index = 0_u64;
-    for turn in request.turns {
+    let total_turns = request.turns.len();
+    for (turn_index, turn) in request.turns.into_iter().enumerate() {
         session_ids.insert((turn.session.provider, turn.session.session_id.clone()));
         if let Some(sync_session) = sync_session_entry_from_turn(&turn) {
             sync_sessions.insert(sync_session);
@@ -892,6 +1012,14 @@ fn build_export_artifact_with_target(
             .checked_add(plaintext.len())
             .context("share chunk size overflow")?;
         chunk_turns.push((payload_hash, payload));
+        let exported_turns = turn_index + 1;
+        if should_emit_export_turn_progress(exported_turns, total_turns) {
+            progress(SharePushProgress::ExportingTurns {
+                exported_turns: u64::try_from(exported_turns)
+                    .context("turn count exceeds u64 range")?,
+                total_turns: u64::try_from(total_turns).context("turn count exceeds u64 range")?,
+            });
+        }
     }
     if !chunk_turns.is_empty() {
         write_export_chunk(
@@ -990,6 +1118,12 @@ fn build_export_artifact_with_target(
         exported_session_count: u64::try_from(session_ids.len())
             .context("session count exceeds u64 range")?,
     })
+}
+
+/// Returns whether a per-turn export progress update should be emitted.
+#[allow(clippy::manual_is_multiple_of)]
+fn should_emit_export_turn_progress(exported_turns: usize, total_turns: usize) -> bool {
+    exported_turns == 1 || exported_turns == total_turns || exported_turns % 100 == 0
 }
 
 /// Reuses the previous signed export when selected source sessions are unchanged.
@@ -3478,23 +3612,79 @@ fn commit_cache_repository(path: &Path, git_branch: &str) -> Result<String> {
     rev_parse_head(path)
 }
 
-/// Pushes one local share branch to the configured remote.
+/// Pushes one local share branch without streaming Git progress.
 fn push_branch(path: &Path, git_branch: &str) -> Result<()> {
-    if git_lfs_available(path)? {
+    push_branch_impl::<fn(SharePushProgress)>(path, git_branch, None)
+}
+
+/// Pushes one local share branch while streaming Git upload progress.
+fn push_branch_with_progress<F>(path: &Path, git_branch: &str, progress: &mut F) -> Result<()>
+where
+    F: FnMut(SharePushProgress),
+{
+    push_branch_impl(path, git_branch, Some(progress))
+}
+
+/// Pushes one local share branch, optionally streaming Git upload progress.
+fn push_branch_impl<F>(path: &Path, git_branch: &str, mut progress: Option<&mut F>) -> Result<()>
+where
+    F: FnMut(SharePushProgress),
+{
+    for command in push_branch_commands(git_branch, git_lfs_available(path)?) {
+        match progress.as_mut() {
+            Some(progress) => {
+                progress(SharePushProgress::Uploading { kind: command.kind });
+                run_cache_git_streaming_progress(
+                    path,
+                    command.progress_args.iter(),
+                    &command.context,
+                    command.kind,
+                    &mut **progress,
+                )?;
+            }
+            None => {
+                run_cache_git(path, command.quiet_args.iter(), &command.context)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Builds the ordered Git commands needed to upload one share branch.
+fn push_branch_commands(git_branch: &str, lfs_available: bool) -> Vec<PushBranchCommand> {
+    let mut commands = Vec::new();
+    if lfs_available {
         let local_ref = format!("refs/heads/{git_branch}");
-        run_cache_git(
-            path,
-            ["lfs", "push", DEFAULT_REMOTE_NAME, &local_ref],
-            &format!("failed to push Git LFS objects for share branch `{git_branch}`"),
-        )?;
+        let args = vec![
+            OsString::from("lfs"),
+            OsString::from("push"),
+            OsString::from(DEFAULT_REMOTE_NAME),
+            OsString::from(local_ref),
+        ];
+        commands.push(PushBranchCommand {
+            kind: ShareUploadKind::Lfs,
+            quiet_args: args.clone(),
+            progress_args: args,
+            context: format!("failed to push Git LFS objects for share branch `{git_branch}`"),
+        });
     }
     let refspec = format!("refs/heads/{git_branch}:refs/heads/{git_branch}");
-    run_cache_git(
-        path,
-        ["push", DEFAULT_REMOTE_NAME, &refspec],
-        &format!("failed to push share branch `{git_branch}` with system git"),
-    )?;
-    Ok(())
+    commands.push(PushBranchCommand {
+        kind: ShareUploadKind::Git,
+        quiet_args: vec![
+            OsString::from("push"),
+            OsString::from(DEFAULT_REMOTE_NAME),
+            OsString::from(&refspec),
+        ],
+        progress_args: vec![
+            OsString::from("push"),
+            OsString::from("--progress"),
+            OsString::from(DEFAULT_REMOTE_NAME),
+            OsString::from(refspec),
+        ],
+        context: format!("failed to push share branch `{git_branch}` with system git"),
+    });
+    commands
 }
 
 /// Returns whether one Git ref exists in the cache repository.
@@ -3633,6 +3823,60 @@ where
     S: AsRef<OsStr>,
 {
     ensure_safe_cache_git_dir(cache_path)?;
+    let scoped_args = scoped_cache_git_args(cache_path, args);
+    run_git_raw_with_options(cache_path, scoped_args, disable_hooks, disable_lfs_filters)
+}
+
+/// Runs one cache Git command while streaming upload progress.
+fn run_cache_git_streaming_progress<I, S>(
+    cache_path: &Path,
+    args: I,
+    context: &str,
+    kind: ShareUploadKind,
+    progress: &mut impl FnMut(SharePushProgress),
+) -> Result<GitCommandOutput>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let output = run_cache_git_raw_streaming_progress(cache_path, args, kind, progress)
+        .with_context(|| context.to_owned())?;
+    if output.status.success() {
+        Ok(output)
+    } else {
+        bail!("{}", git_failure_message(context, &output))
+    }
+}
+
+/// Runs one cache Git command with streamed stderr and no exit-status interpretation.
+fn run_cache_git_raw_streaming_progress<I, S>(
+    cache_path: &Path,
+    args: I,
+    kind: ShareUploadKind,
+    progress: &mut impl FnMut(SharePushProgress),
+) -> Result<GitCommandOutput>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    ensure_safe_cache_git_dir(cache_path)?;
+    let scoped_args = scoped_cache_git_args(cache_path, args);
+    run_git_raw_streaming_progress_with_options(
+        cache_path,
+        scoped_args,
+        true,
+        false,
+        kind,
+        progress,
+    )
+}
+
+/// Builds scoped Git arguments for one share cache worktree.
+fn scoped_cache_git_args<I, S>(cache_path: &Path, args: I) -> Vec<OsString>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
     let git_dir = cache_path.join(".git");
     let mut scoped_args = vec![
         OsString::from("--git-dir"),
@@ -3641,7 +3885,7 @@ where
         cache_path.as_os_str().to_owned(),
     ];
     scoped_args.extend(args.into_iter().map(|arg| arg.as_ref().to_owned()));
-    run_git_raw_with_options(cache_path, scoped_args, disable_hooks, disable_lfs_filters)
+    scoped_args
 }
 
 /// Runs one system Git command without interpreting its exit status.
@@ -3681,6 +3925,94 @@ where
         .into_iter()
         .map(|arg| arg.as_ref().to_owned())
         .collect::<Vec<OsString>>();
+    let output = configured_git_command(path, &args, disable_hooks, disable_lfs_filters)
+        .stdin(Stdio::null())
+        .output()
+        .with_context(|| {
+            format!(
+                "failed to run system git in {}: git {}",
+                path.display(),
+                git_args_display(&args)
+            )
+        })?;
+    Ok(GitCommandOutput {
+        status: output.status,
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
+}
+
+/// Runs one system Git command and streams sanitized stderr progress.
+fn run_git_raw_streaming_progress_with_options<I, S>(
+    path: &Path,
+    args: I,
+    disable_hooks: bool,
+    disable_lfs_filters: bool,
+    kind: ShareUploadKind,
+    progress: &mut impl FnMut(SharePushProgress),
+) -> Result<GitCommandOutput>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let args = args
+        .into_iter()
+        .map(|arg| arg.as_ref().to_owned())
+        .collect::<Vec<OsString>>();
+    let child = configured_git_command(path, &args, disable_hooks, disable_lfs_filters)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| {
+            format!(
+                "failed to run system git in {}: git {}",
+                path.display(),
+                git_args_display(&args)
+            )
+        })?;
+    collect_streaming_command_output(child, kind, progress)
+}
+
+/// Collects one spawned command while streaming sanitized stderr progress.
+fn collect_streaming_command_output(
+    mut child: std::process::Child,
+    kind: ShareUploadKind,
+    progress: &mut impl FnMut(SharePushProgress),
+) -> Result<GitCommandOutput> {
+    let mut stdout = child
+        .stdout
+        .take()
+        .context("failed to capture Git stdout")?;
+    let stdout_reader = thread::spawn(move || {
+        let mut data = Vec::new();
+        stdout.read_to_end(&mut data).map(|_| data)
+    });
+    let mut stderr = child
+        .stderr
+        .take()
+        .context("failed to capture Git stderr")?;
+    let stderr = read_git_progress_stderr(&mut stderr, kind, progress)
+        .context("failed to read Git stderr")?;
+    let status = child.wait().context("failed to wait for system git")?;
+    let stdout = stdout_reader
+        .join()
+        .map_err(|_| anyhow::anyhow!("failed to join Git stdout reader"))?
+        .context("failed to read Git stdout")?;
+    Ok(GitCommandOutput {
+        status,
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+    })
+}
+
+/// Builds one sanitized Git command with Darc's non-interactive environment.
+fn configured_git_command(
+    path: &Path,
+    args: &[OsString],
+    disable_hooks: bool,
+    disable_lfs_filters: bool,
+) -> Command {
     let mut command = Command::new("git");
     if disable_hooks {
         command.args(["-c", "core.hooksPath=/dev/null"]);
@@ -3697,9 +4029,9 @@ where
             "filter.lfs.required=false",
         ]);
     }
-    let output = command
+    command
         .args(["-c", "core.askPass=false"])
-        .args(&args)
+        .args(args)
         .current_dir(path)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_ASKPASS", "false")
@@ -3717,21 +4049,49 @@ where
         .env_remove("GIT_AUTHOR_DATE")
         .env_remove("GIT_COMMITTER_NAME")
         .env_remove("GIT_COMMITTER_EMAIL")
-        .env_remove("GIT_COMMITTER_DATE")
-        .stdin(Stdio::null())
-        .output()
-        .with_context(|| {
-            format!(
-                "failed to run system git in {}: git {}",
-                path.display(),
-                git_args_display(&args)
-            )
-        })?;
-    Ok(GitCommandOutput {
-        status: output.status,
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-    })
+        .env_remove("GIT_COMMITTER_DATE");
+    command
+}
+
+/// Reads Git stderr, returning full text while emitting progress fragments.
+fn read_git_progress_stderr<R: Read>(
+    reader: &mut R,
+    kind: ShareUploadKind,
+    progress: &mut impl FnMut(SharePushProgress),
+) -> std::io::Result<Vec<u8>> {
+    let mut data = Vec::new();
+    let mut pending = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        data.extend_from_slice(&buffer[..read]);
+        for byte in &buffer[..read] {
+            if *byte == b'\n' || *byte == b'\r' {
+                emit_git_progress_fragment(kind, &pending, progress);
+                pending.clear();
+            } else {
+                pending.push(*byte);
+            }
+        }
+    }
+    emit_git_progress_fragment(kind, &pending, progress);
+    Ok(data)
+}
+
+/// Emits one sanitized Git progress fragment when it contains text.
+fn emit_git_progress_fragment(
+    kind: ShareUploadKind,
+    fragment: &[u8],
+    progress: &mut impl FnMut(SharePushProgress),
+) {
+    let message = String::from_utf8_lossy(fragment);
+    let message = sanitize_git_diagnostic(message.trim());
+    if !message.is_empty() {
+        progress(SharePushProgress::GitProgress { kind, message });
+    }
 }
 
 /// Returns an SSH command that preserves user config while disabling password prompts.
@@ -7266,6 +7626,81 @@ mod tests {
     }
 
     #[test]
+    fn push_share_branch_with_progress_emits_producer_events() {
+        let workspace = unique_test_dir("share-push-progress-events");
+        let remote_path = workspace.join("share.git");
+        init_bare_remote(&remote_path);
+        let source_root = workspace.join("source-root");
+        let source_repo = workspace.join("source-repo");
+        let target_root = workspace.join("target-root");
+        fs::create_dir_all(&source_root).unwrap();
+        fs::create_dir_all(&target_root).unwrap();
+        init_test_git_repo(&source_repo);
+        let target_key = ensure_share_key(&target_root).unwrap();
+        let source_context = ShareProjectContext {
+            root: source_root.clone(),
+            index_db_path: source_root.join("index.sqlite"),
+            project_id: "source-repo".to_owned(),
+            project_name: "source-repo".to_owned(),
+            local_path: source_repo,
+            git_upstream: Some("https://example.invalid/team/repo.git".to_owned()),
+        };
+        seed_share_export_session(
+            &source_context.index_db_path,
+            "source-repo",
+            "00000000-0000-4000-8000-000000000808",
+        );
+        update_share_policy(&source_context, SharePolicy::All).unwrap();
+        let settings = ShareSettings {
+            remotes: vec![ShareRemote {
+                name: "share".to_owned(),
+                url: remote_path.to_string_lossy().into_owned(),
+            }],
+            recipients: vec![ShareRecipient {
+                recipient: target_key.public_key,
+            }],
+        };
+        let mut events = Vec::new();
+
+        let report = push_share_branch_with_progress(
+            &source_context,
+            &settings,
+            "team",
+            Some("share"),
+            |event| events.push(event),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            events.first(),
+            Some(SharePushProgress::Started { .. })
+        ));
+        assert!(events.iter().any(|event| {
+            matches!(event, SharePushProgress::BuildingExport { total_turns: 1 })
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                SharePushProgress::ExportingTurns {
+                    exported_turns: 1,
+                    total_turns: 1
+                }
+            )
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                SharePushProgress::Uploading {
+                    kind: ShareUploadKind::Git
+                }
+            )
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(event, SharePushProgress::Finished { commit_id } if commit_id == &report.commit_id)
+        }));
+    }
+
+    #[test]
     fn fetch_cleans_untracked_cache_artifacts_before_merge() {
         let workspace = unique_test_dir("share-fetch-cleans-untracked");
         let remote_path = workspace.join("share.git");
@@ -8293,6 +8728,116 @@ mod tests {
         assert!(!display.contains("user:token"));
         assert!(!display.contains("access_token"));
         assert!(!display.contains("secret"));
+    }
+
+    #[test]
+    fn git_failure_message_keeps_streamed_stderr_in_returned_error() {
+        let output = GitCommandOutput {
+            status: failure_exit_status(),
+            stdout: String::new(),
+            stderr: "fatal: synthetic upload failure".to_owned(),
+        };
+
+        let message = git_failure_message("failed synthetic git command", &output);
+
+        assert!(message.contains("failed synthetic git command"));
+        assert!(message.contains("synthetic upload failure"));
+    }
+
+    #[test]
+    fn git_progress_stderr_reader_emits_carriage_return_fragments() {
+        let mut input: &[u8] = b"Writing objects: 50% (1/2)\rWriting objects: 100% (2/2)\n";
+        let mut events = Vec::new();
+
+        let stderr = read_git_progress_stderr(&mut input, ShareUploadKind::Git, &mut |event| {
+            events.push(event);
+        })
+        .unwrap();
+
+        assert!(String::from_utf8_lossy(&stderr).contains("Writing objects: 100%"));
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                SharePushProgress::GitProgress { message, .. }
+                    if message.contains("50%")
+            )
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                SharePushProgress::GitProgress { message, .. }
+                    if message.contains("100%")
+            )
+        }));
+    }
+
+    #[test]
+    fn spawned_git_progress_reader_emits_child_stderr_fragments() {
+        let child = Command::new("sh")
+            .arg("-c")
+            .arg("printf '%s\\r' 'Writing objects: 25% (1/4)' >&2; printf stdout")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut events = Vec::new();
+
+        let output = collect_streaming_command_output(child, ShareUploadKind::Git, &mut |event| {
+            events.push(event);
+        })
+        .unwrap();
+
+        assert!(output.status.success());
+        assert_eq!(output.stdout, "stdout");
+        assert!(output.stderr.contains("Writing objects: 25%"));
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                SharePushProgress::GitProgress {
+                    kind: ShareUploadKind::Git,
+                    message
+                } if message.contains("25%")
+            )
+        }));
+    }
+
+    #[test]
+    fn push_branch_commands_cover_lfs_and_git_upload_progress() {
+        let commands = push_branch_commands("darc/team", true);
+        assert_eq!(
+            commands
+                .iter()
+                .map(|command| command.kind)
+                .collect::<Vec<_>>(),
+            vec![ShareUploadKind::Lfs, ShareUploadKind::Git]
+        );
+        assert_eq!(
+            commands[0]
+                .progress_args
+                .iter()
+                .map(|arg| arg.to_string_lossy())
+                .collect::<Vec<_>>(),
+            vec!["lfs", "push", DEFAULT_REMOTE_NAME, "refs/heads/darc/team"]
+        );
+        assert_eq!(
+            commands[1]
+                .progress_args
+                .iter()
+                .map(|arg| arg.to_string_lossy())
+                .collect::<Vec<_>>(),
+            vec![
+                "push",
+                "--progress",
+                DEFAULT_REMOTE_NAME,
+                "refs/heads/darc/team:refs/heads/darc/team"
+            ]
+        );
+
+        let git_only = push_branch_commands("darc/team", false);
+        assert_eq!(git_only.len(), 1);
+        assert_eq!(git_only[0].kind, ShareUploadKind::Git);
+        assert!(!git_only[0].quiet_args.iter().any(|arg| arg == "--progress"));
     }
 
     #[test]

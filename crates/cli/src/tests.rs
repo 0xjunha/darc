@@ -142,4 +142,5 @@ mod command_queries;
 mod output;
 mod schema_audit;
 mod service_watch;
+mod share_progress;
 mod upgrade;

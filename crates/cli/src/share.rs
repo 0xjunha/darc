@@ -1,16 +1,239 @@
+use std::{
+    io::{self, Write},
+    path::PathBuf,
+};
+
 use anyhow::{Result, bail};
 use darc_core::{
-    SharePolicy, ShareState, add_share_recipient, add_share_remote, exclude_all_sessions,
-    fetch_share_branch, include_all_sessions, merge_share_branch, pull_share_branch,
-    push_share_branch, remove_share_recipient, set_session_share_state, set_share_policy,
-    share_config, share_identity, share_key, share_remote_display_url, share_status,
+    SharePolicy, SharePushReport, ShareState, add_share_recipient, add_share_remote,
+    exclude_all_sessions, fetch_share_branch, include_all_sessions, merge_share_branch,
+    pull_share_branch, push_share_branch, push_share_branch_with_progress, remove_share_recipient,
+    set_session_share_state, set_share_policy, share_config, share_identity, share_key,
+    share_remote_display_url, share_status,
 };
+use darc_core::{SharePushProgress, ShareUploadKind};
 
 use crate::args::{
     RemoteArgs, RemoteCommands, ShareArgs, ShareBranchArgs, ShareCommands, SharePolicyArg,
     ShareRecipientCommands, ShareSessionSelectionArgs,
 };
+use crate::output::{HumanStyle, stderr_progress_enabled};
 use crate::query_commands::provider_arg_to_source_kind;
+
+const SHARE_PROGRESS_BAR_WIDTH: usize = 24;
+const CLEAR_ACTIVE_LINE: &str = "\x1b[K";
+
+/// Renders Darc share push progress for interactive terminals.
+pub(crate) struct SharePushProgressPrinter<W> {
+    writer: W,
+    style: HumanStyle,
+    enabled: bool,
+    active_line: bool,
+    step_index: usize,
+}
+
+impl SharePushProgressPrinter<io::Stderr> {
+    /// Builds one share push progress printer for the current stderr stream.
+    pub(crate) fn stderr() -> Self {
+        Self::new(
+            io::stderr(),
+            HumanStyle::stderr(),
+            stderr_progress_enabled(),
+        )
+    }
+}
+
+impl<W: Write> SharePushProgressPrinter<W> {
+    /// Builds one share push progress printer from resolved terminal facts.
+    pub(crate) fn new(writer: W, style: HumanStyle, enabled: bool) -> Self {
+        Self {
+            writer,
+            style,
+            enabled,
+            active_line: false,
+            step_index: 0,
+        }
+    }
+
+    /// Returns whether this printer will render progress.
+    pub(crate) fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Finishes any active progress row before the caller prints another message.
+    pub(crate) fn finish(&mut self) {
+        if self.enabled {
+            let _ = self.finish_active_line();
+            let _ = self.writer.flush();
+        }
+    }
+
+    /// Records one share push progress event, ignoring presentation write failures.
+    pub(crate) fn record(&mut self, event: SharePushProgress) {
+        if self.enabled {
+            let _ = self.write_event(event);
+            let _ = self.writer.flush();
+        }
+    }
+
+    /// Writes one share push progress event to the configured stream.
+    pub(crate) fn write_event(&mut self, event: SharePushProgress) -> io::Result<()> {
+        match event {
+            SharePushProgress::Started {
+                git_branch,
+                remote_name,
+                remote_url,
+            } => {
+                self.finish_active_line()?;
+                self.step_index = 0;
+                writeln!(
+                    self.writer,
+                    "Pushing {} to {} ({})",
+                    self.style.bold(git_branch),
+                    self.style.bold(remote_name),
+                    remote_url
+                )
+            }
+            SharePushProgress::PreparingCache => self.step("Preparing share cache..."),
+            SharePushProgress::FetchingRemote => self.step("Fetching remote branch..."),
+            SharePushProgress::HydratingLfs => self.step("Hydrating Git LFS objects..."),
+            SharePushProgress::ReadingCache => self.step("Reading cached share artifacts..."),
+            SharePushProgress::ReusingPreviousExport {
+                exported_turn_count,
+                exported_session_count,
+            } => self.step(&format!(
+                "Reusing previous signed export ({} turns, {} sessions).",
+                self.style.count(exported_turn_count),
+                self.style.count(exported_session_count)
+            )),
+            SharePushProgress::BuildingExport { total_turns } => self.step(&format!(
+                "Building encrypted export ({} turns)...",
+                self.style.count(total_turns)
+            )),
+            SharePushProgress::ExportingTurns {
+                exported_turns,
+                total_turns,
+            } => self.write_bar("      Exporting", exported_turns, total_turns),
+            SharePushProgress::WritingMetadata { object_count } => self.step(&format!(
+                "Writing share metadata ({} objects)...",
+                self.style.count(object_count)
+            )),
+            SharePushProgress::Committing => self.step("Committing share artifacts..."),
+            SharePushProgress::Uploading { kind } => self.upload_step(kind),
+            SharePushProgress::GitProgress { kind: _, message } => {
+                self.write_git_progress(&message)
+            }
+            SharePushProgress::Finished { commit_id } => {
+                self.finish_active_line()?;
+                writeln!(
+                    self.writer,
+                    "  {} {}",
+                    self.style.ok("done"),
+                    self.style.muted(commit_id)
+                )?;
+                writeln!(self.writer)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Writes one numbered push step.
+    fn step(&mut self, message: &str) -> io::Result<()> {
+        self.finish_active_line()?;
+        self.step_index += 1;
+        writeln!(
+            self.writer,
+            "  [{}] {}",
+            self.style.count(self.step_index),
+            message
+        )
+    }
+
+    /// Writes one upload phase step.
+    fn upload_step(&mut self, kind: ShareUploadKind) -> io::Result<()> {
+        let message = match kind {
+            ShareUploadKind::Lfs => "Uploading encrypted LFS objects...",
+            ShareUploadKind::Git => "Uploading share branch...",
+            _ => "Uploading share data...",
+        };
+        self.step(message)
+    }
+
+    /// Writes one in-place progress bar.
+    fn write_bar(&mut self, label: &str, current: u64, total: u64) -> io::Result<()> {
+        let bar = render_share_progress_bar(current, total, SHARE_PROGRESS_BAR_WIDTH);
+        write!(
+            self.writer,
+            "\r{label} {bar} {}/{}{CLEAR_ACTIVE_LINE}",
+            self.style.count(current),
+            self.style.count(total)
+        )?;
+        self.active_line = true;
+        Ok(())
+    }
+
+    /// Writes one streamed Git progress fragment.
+    fn write_git_progress(&mut self, message: &str) -> io::Result<()> {
+        if let Some(percent) = git_progress_percent(message) {
+            let bar = render_share_progress_bar(u64::from(percent), 100, SHARE_PROGRESS_BAR_WIDTH);
+            write!(
+                self.writer,
+                "\r      Uploading {bar} {}%{CLEAR_ACTIVE_LINE}",
+                self.style.count(percent)
+            )?;
+            self.active_line = true;
+        }
+        Ok(())
+    }
+
+    /// Finishes any in-place progress line before writing regular output.
+    fn finish_active_line(&mut self) -> io::Result<()> {
+        if self.active_line {
+            writeln!(self.writer)?;
+            self.active_line = false;
+        }
+        Ok(())
+    }
+}
+
+/// Renders a fixed-width ASCII progress bar.
+fn render_share_progress_bar(current: u64, total: u64, width: usize) -> String {
+    let filled = if total == 0 {
+        width
+    } else {
+        let bounded = current.min(total);
+        let width = u64::try_from(width).unwrap_or(u64::MAX);
+        let scaled = (u128::from(bounded) * u128::from(width)) / u128::from(total);
+        usize::try_from(scaled).unwrap_or(usize::MAX)
+    };
+    let filled = filled.min(width);
+    format!(
+        "[{}{}]",
+        "#".repeat(filled),
+        "-".repeat(width.saturating_sub(filled))
+    )
+}
+
+/// Extracts the last integer percentage from one Git progress fragment.
+fn git_progress_percent(message: &str) -> Option<u8> {
+    let percent_index = message.rfind('%')?;
+    let prefix = &message[..percent_index];
+    let digits = prefix
+        .chars()
+        .rev()
+        .take_while(|character| character.is_ascii_digit())
+        .collect::<String>();
+    if digits.is_empty() {
+        return None;
+    }
+    let value = digits
+        .chars()
+        .rev()
+        .collect::<String>()
+        .parse::<u8>()
+        .ok()?;
+    (value <= 100).then_some(value)
+}
 
 /// Dispatches Darc share remote commands.
 pub(crate) fn run_remote(args: RemoteArgs) -> Result<()> {
@@ -113,7 +336,55 @@ pub(crate) fn run_share(args: ShareArgs) -> Result<()> {
 
 /// Runs `darc push` for one Darc share branch.
 pub(crate) fn run_push(args: ShareBranchArgs) -> Result<()> {
-    let report = push_share_branch(Some(args.root), &args.branch, args.remote.as_deref())?;
+    let mut progress = SharePushProgressPrinter::stderr();
+    run_push_with_progress_printer(
+        args,
+        &mut progress,
+        push_share_branch,
+        |root, branch, remote, progress| {
+            push_share_branch_with_progress(root, branch, remote, progress)
+        },
+    )
+}
+
+/// Runs `darc push` with injectable push functions for progress wiring tests.
+pub(crate) fn run_push_with_progress_printer<W, P, Q>(
+    args: ShareBranchArgs,
+    progress: &mut SharePushProgressPrinter<W>,
+    push_quiet: P,
+    push_progress: Q,
+) -> Result<()>
+where
+    W: Write,
+    P: FnOnce(Option<PathBuf>, &str, Option<&str>) -> Result<SharePushReport>,
+    Q: FnOnce(
+        Option<PathBuf>,
+        &str,
+        Option<&str>,
+        &mut dyn FnMut(SharePushProgress),
+    ) -> Result<SharePushReport>,
+{
+    let report = if progress.enabled() {
+        let result = {
+            let mut record_progress = |event| progress.record(event);
+            push_progress(
+                Some(args.root.clone()),
+                &args.branch,
+                args.remote.as_deref(),
+                &mut record_progress,
+            )
+        };
+        if result.is_err() {
+            progress.finish();
+        }
+        result?
+    } else {
+        push_quiet(
+            Some(args.root.clone()),
+            &args.branch,
+            args.remote.as_deref(),
+        )?
+    };
     println!(
         "Pushed {} to {} ({}) with {} turns across {} sessions in commit {}.",
         report.git_branch,

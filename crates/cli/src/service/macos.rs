@@ -3,8 +3,7 @@ use std::io::Write;
 use std::path::Path;
 #[cfg(target_os = "macos")]
 use std::{
-    env, fs,
-    io::{self, IsTerminal},
+    env, fs, io,
     path::PathBuf,
     process::Command,
     time::{Duration, Instant, SystemTime},
@@ -24,7 +23,7 @@ use crate::args::ServiceCommands;
 #[cfg(any(target_os = "macos", test))]
 use crate::output::HumanStyle;
 #[cfg(target_os = "macos")]
-use crate::output::{print_field, print_line, print_section};
+use crate::output::{print_field, print_line, print_section, stderr_progress_enabled};
 #[cfg(target_os = "macos")]
 use crate::refresh::inspect_refresh_lock;
 #[cfg(any(target_os = "macos", test))]
@@ -45,11 +44,10 @@ pub(crate) struct ServiceProgressPrinter<W> {
 impl ServiceProgressPrinter<io::Stderr> {
     /// Builds one service progress printer for the current stderr stream.
     pub(crate) fn stderr() -> Self {
-        let term = env::var("TERM").ok();
         Self::new(
             io::stderr(),
             HumanStyle::stderr(),
-            io::stderr().is_terminal() && term.as_deref() != Some("dumb"),
+            stderr_progress_enabled(),
         )
     }
 }

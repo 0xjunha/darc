@@ -5,6 +5,7 @@ All notable Darc release changes should be summarized here.
 ## Unreleased
 
 - Add Git-backed encrypted shared indexes with `darc share`, `darc remote`, `darc push/fetch/merge/pull`, and explicit shared query filters.
+- Show interactive `darc push` progress for export preparation, encrypted object generation, and Git/LFS upload.
 - Store shared-index payloads as compressed encrypted V1 chunks and use Git LFS for encrypted share objects when available.
 - Use the system `git` executable for shared-index fetches and pushes so Darc honors existing local Git authentication.
 - Harden shared indexes so branch tips retain all exporters, visible metadata avoids credential/local-path leaks, and explicit share selections survive re-indexing.

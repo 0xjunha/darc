@@ -3,7 +3,7 @@ use std::{env, fs, path::PathBuf};
 use anyhow::{Context, Result, bail};
 pub use darc_share::{
     ShareFetchReport, ShareIdentity, ShareKeyInfo, ShareMergeReport, SharePullReport,
-    SharePushReport,
+    SharePushProgress, SharePushReport, ShareUploadKind,
 };
 use darc_share::{ShareProjectContext, ShareRecipient, ShareRemote, ShareSettings};
 pub use darc_store::{SharePolicy, ShareState, ShareStatus};
@@ -163,6 +163,27 @@ pub fn push_share_branch(
     let resolved = resolve_share_project(root)?;
     let settings = share_settings_from_config(&resolved.config.share);
     darc_share::push_share_branch(&resolved.context, &settings, branch, remote_name)
+}
+
+/// Pushes the active project's selected shared sessions while emitting progress events.
+pub fn push_share_branch_with_progress<F>(
+    root: Option<PathBuf>,
+    branch: &str,
+    remote_name: Option<&str>,
+    progress: F,
+) -> Result<SharePushReport>
+where
+    F: FnMut(SharePushProgress),
+{
+    let resolved = resolve_share_project(root)?;
+    let settings = share_settings_from_config(&resolved.config.share);
+    darc_share::push_share_branch_with_progress(
+        &resolved.context,
+        &settings,
+        branch,
+        remote_name,
+        progress,
+    )
 }
 
 /// Fetches one Darc share branch into the local share cache.

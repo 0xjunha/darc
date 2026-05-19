@@ -211,7 +211,8 @@ encrypted with age recipients, grouped into large V1 chunks, and pushed to Git b
 Git objects. Share fetches and pushes use the local `git` executable, so Darc relies on the same SSH keys, credential
 helpers, SSO, proxy settings, and host configuration as commands like `git fetch` and `git push`. When the selected
 session set is unchanged, Darc reuses the previous signed V1 manifest and encrypted objects instead of re-reading and
-re-redacting every turn.
+re-redacting every turn. Interactive `darc push` runs show stderr progress for export preparation, encrypted object
+generation, and Git/LFS upload.
 
 ```sh
 # Each teammate shares their public recipient.

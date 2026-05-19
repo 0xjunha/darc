@@ -27,9 +27,10 @@ pub use project::{
 };
 pub use share::{
     ShareConfigReport, ShareFetchReport, ShareIdentity, ShareKeyInfo, ShareMergeReport,
-    SharePolicy, SharePullReport, SharePushReport, ShareState, ShareStatus, add_share_recipient,
-    add_share_remote, exclude_all_sessions, fetch_share_branch, include_all_sessions,
-    merge_share_branch, pull_share_branch, push_share_branch, remove_share_recipient,
+    SharePolicy, SharePullReport, SharePushProgress, SharePushReport, ShareState, ShareStatus,
+    ShareUploadKind, add_share_recipient, add_share_remote, exclude_all_sessions,
+    fetch_share_branch, include_all_sessions, merge_share_branch, pull_share_branch,
+    push_share_branch, push_share_branch_with_progress, remove_share_recipient,
     set_session_share_state, set_share_policy, share_config, share_identity, share_key,
     share_remote_display_url, share_status,
 };
