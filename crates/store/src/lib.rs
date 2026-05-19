@@ -15,7 +15,7 @@ pub use index_db::{
     INDEX_DB_FILE_NAME, IndexDatabaseRebuildRecommendation, count_project_index_rows_read_only,
     ensure_index_database, open_existing_index_database, open_index_database,
     open_index_database_read_only, open_index_database_writer, preserve_index_sharing_state,
-    remove_index_database, replace_index_database,
+    preserve_index_sharing_state_for_projects, remove_index_database, replace_index_database,
 };
 pub use sharing::{
     OriginKind, SessionProvenance, SharePolicy, ShareSessionExport, ShareSessionExportState,

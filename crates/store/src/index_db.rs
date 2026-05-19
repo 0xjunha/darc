@@ -220,7 +220,28 @@ pub fn replace_index_database(replacement: &Path, destination: &Path) -> Result<
 
 /// Copies SQLite-only sharing state from an existing index into a rebuilt index.
 pub fn preserve_index_sharing_state(source: &Path, destination: &Path) -> Result<bool> {
+    preserve_index_sharing_state_impl(source, destination, None)
+}
+
+/// Copies sharing state for configured projects from an existing index into a rebuilt index.
+pub fn preserve_index_sharing_state_for_projects(
+    source: &Path,
+    destination: &Path,
+    project_ids: &[String],
+) -> Result<bool> {
+    preserve_index_sharing_state_impl(source, destination, Some(project_ids))
+}
+
+/// Copies filtered SQLite-only sharing state from an existing index into a rebuilt index.
+fn preserve_index_sharing_state_impl(
+    source: &Path,
+    destination: &Path,
+    project_ids: Option<&[String]>,
+) -> Result<bool> {
     if !source.exists() {
+        return Ok(false);
+    }
+    if project_ids.is_some_and(|project_ids| project_ids.is_empty()) {
         return Ok(false);
     }
     let source_connection =
@@ -254,6 +275,7 @@ pub fn preserve_index_sharing_state(source: &Path, destination: &Path) -> Result
             "old index sharing-state schema does not match rebuilt index; refusing to drop existing shared sessions during rebuild"
         );
     }
+    create_preserved_projects_table(&destination_connection, project_ids)?;
     let transaction = destination_connection
         .transaction()
         .context("failed to begin sharing state preservation transaction")?;
@@ -267,6 +289,49 @@ pub fn preserve_index_sharing_state(source: &Path, destination: &Path) -> Result
         .execute_batch("DETACH DATABASE old_index;")
         .context("failed to detach old index after preserving sharing state")?;
     Ok(true)
+}
+
+/// Creates the temporary project allowlist used by sharing-state preservation SQL.
+fn create_preserved_projects_table(
+    connection: &Connection,
+    project_ids: Option<&[String]>,
+) -> Result<()> {
+    connection
+        .execute_batch(
+            "
+            DROP TABLE IF EXISTS temp.preserved_projects;
+            CREATE TEMP TABLE preserved_projects (
+                project_id TEXT PRIMARY KEY
+            ) WITHOUT ROWID;
+            ",
+        )
+        .context("failed to create sharing-state project filter")?;
+    if let Some(project_ids) = project_ids {
+        for project_id in project_ids {
+            connection
+                .execute(
+                    "INSERT OR IGNORE INTO preserved_projects (project_id) VALUES (?1)",
+                    params![project_id],
+                )
+                .with_context(|| {
+                    format!("failed to preserve sharing-state project `{project_id}`")
+                })?;
+        }
+    } else {
+        connection
+            .execute_batch(
+                "
+                INSERT OR IGNORE INTO preserved_projects (project_id)
+                SELECT project_id FROM old_index.project_share_policies;
+                INSERT OR IGNORE INTO preserved_projects (project_id)
+                SELECT DISTINCT project_id FROM old_index.sessions;
+                INSERT OR IGNORE INTO preserved_projects (project_id)
+                SELECT DISTINCT project_id FROM sessions;
+                ",
+            )
+            .context("failed to populate sharing-state project filter")?;
+    }
+    Ok(())
 }
 
 /// Returns whether one SQLite database has every current sharing-state table.
@@ -372,7 +437,14 @@ const PRESERVE_SHARING_STATE_SQL: &str = "
         public_key,
         source,
         updated_at
-    FROM old_index.users;
+    FROM old_index.users AS users
+    WHERE EXISTS (
+        SELECT 1
+        FROM old_index.sessions AS sessions
+        WHERE sessions.origin_kind = 'shared'
+            AND sessions.origin_user_id = users.user_id
+            AND sessions.project_id IN (SELECT project_id FROM preserved_projects)
+    );
 
     INSERT OR REPLACE INTO project_share_policies (
         project_id,
@@ -383,7 +455,8 @@ const PRESERVE_SHARING_STATE_SQL: &str = "
         project_id,
         default_policy,
         updated_at
-    FROM old_index.project_share_policies;
+    FROM old_index.project_share_policies AS project_share_policies
+    WHERE project_id IN (SELECT project_id FROM preserved_projects);
 
     UPDATE sessions
     SET share_state = (
@@ -395,6 +468,7 @@ const PRESERVE_SHARING_STATE_SQL: &str = "
             AND old_sessions.origin_kind = 'local'
     )
     WHERE sessions.origin_kind = 'local'
+        AND sessions.project_id IN (SELECT project_id FROM preserved_projects)
         AND EXISTS (
             SELECT 1
             FROM old_index.sessions AS old_sessions
@@ -402,6 +476,7 @@ const PRESERVE_SHARING_STATE_SQL: &str = "
                 AND old_sessions.provider = sessions.provider
                 AND old_sessions.session_id = sessions.session_id
                 AND old_sessions.origin_kind = 'local'
+                AND old_sessions.project_id IN (SELECT project_id FROM preserved_projects)
         );
 
     INSERT OR IGNORE INTO sessions (
@@ -442,7 +517,8 @@ const PRESERVE_SHARING_STATE_SQL: &str = "
         imported_at,
         share_state
     FROM old_index.sessions
-    WHERE origin_kind = 'shared';
+    WHERE origin_kind = 'shared'
+        AND project_id IN (SELECT project_id FROM preserved_projects);
 
     INSERT OR IGNORE INTO turns (
         project_id,

@@ -11,7 +11,8 @@ pub use darc_index::{IndexReport, SkippedCodexRollout, SkippedRollout};
 use darc_index::{ProjectIndexRequest, index_project_archived_sessions};
 use darc_paths::SourceKind;
 use darc_store::{
-    INDEX_DB_FILE_NAME, preserve_index_sharing_state, remove_index_database, replace_index_database,
+    INDEX_DB_FILE_NAME, preserve_index_sharing_state_for_projects, remove_index_database,
+    replace_index_database,
 };
 
 use crate::{
@@ -104,7 +105,11 @@ pub fn rebuild_workspace_index(root: Option<PathBuf>) -> Result<WorkspaceIndexRe
         }
     };
 
-    preserve_index_sharing_state(&index_db_path, &temp_index_db_path)?;
+    let project_ids = projects
+        .iter()
+        .map(|project| project.id.clone())
+        .collect::<Vec<_>>();
+    preserve_index_sharing_state_for_projects(&index_db_path, &temp_index_db_path, &project_ids)?;
     replace_index_database(&temp_index_db_path, &index_db_path)?;
     for report in &mut reports {
         report.index_db_path.clone_from(&index_db_path);
@@ -549,6 +554,104 @@ mod tests {
         assert_eq!(share_state, "included");
         assert_eq!(shared, (1, "shared prompt".to_owned()));
         assert_eq!(user_count, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn rebuild_workspace_index_drops_removed_project_shared_state() -> Result<()> {
+        let root = unique_test_dir("workspace-rebuild-drops-removed-share-state");
+        let first_project_root = root.join("repo-one");
+        let second_project_root = root.join("repo-two");
+        let first_sessions_root = root.join("projects/repo-one-123/sessions");
+        let second_sessions_root = root.join("projects/repo-two-456/sessions");
+        fs::create_dir_all(&first_project_root)?;
+        fs::create_dir_all(&second_project_root)?;
+        write_archived_codex_rollout(
+            &first_sessions_root,
+            &first_project_root,
+            "22222222-2222-4222-8222-22222222223f",
+            "Index first project",
+            "First indexed",
+        )?;
+        write_archived_codex_rollout(
+            &second_sessions_root,
+            &second_project_root,
+            "33333333-3333-4333-8333-33333333333f",
+            "Index second project",
+            "Second indexed",
+        )?;
+        let first_project = ProjectConfig {
+            id: "repo-one-123".into(),
+            name: "repo-one".into(),
+            local_path: first_project_root,
+            git_upstream: None,
+            sessions_root: first_sessions_root,
+            known_paths: Vec::new(),
+        };
+        let second_project = ProjectConfig {
+            id: "repo-two-456".into(),
+            name: "repo-two".into(),
+            local_path: second_project_root,
+            git_upstream: None,
+            sessions_root: second_sessions_root,
+            known_paths: Vec::new(),
+        };
+        let config = SharedConfig::new(
+            root.clone(),
+            vec![first_project.clone(), second_project],
+            SourcesConfig::default(),
+        );
+        fs::write(
+            root.join(CONFIG_FILE_NAME),
+            toml::to_string_pretty(&config)?,
+        )?;
+        let index_db_path = root.join(darc_store::INDEX_DB_FILE_NAME);
+        rebuild_workspace_index(Some(root.clone()))?;
+
+        let mut connection = open_index_database_writer(&index_db_path)?;
+        let user = ShareUserRecord {
+            user_id: "usr-removed-project".to_owned(),
+            display_name: Some("Removed User".to_owned()),
+            email: Some("removed@example.invalid".to_owned()),
+            public_key: Some("age1removed".to_owned()),
+            source: "test".to_owned(),
+            updated_at: "2026-05-15T00:00:00Z".to_owned(),
+        };
+        let shared_turn = synthetic_shared_turn("55555555-5555-4555-8555-55555555555f");
+        import_shared_turn(
+            &mut connection,
+            ShareTurnImport {
+                project_id: "repo-two-456",
+                user: &user,
+                remote_name: "remote:abcdef:darc/team",
+                imported_at: "2026-05-15T00:00:00Z",
+                turn: &shared_turn,
+            },
+        )?;
+        drop(connection);
+
+        let config = SharedConfig::new(root.clone(), vec![first_project], SourcesConfig::default());
+        fs::write(
+            root.join(CONFIG_FILE_NAME),
+            toml::to_string_pretty(&config)?,
+        )?;
+        rebuild_workspace_index(Some(root.clone()))?;
+
+        let connection = Connection::open(&index_db_path)?;
+        let removed_project_rows: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM sessions WHERE project_id = 'repo-two-456'",
+            [],
+            |row| row.get(0),
+        )?;
+        let removed_user_rows: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM users WHERE user_id = 'usr-removed-project'",
+            [],
+            |row| row.get(0),
+        )?;
+
+        assert_eq!(removed_project_rows, 0);
+        assert_eq!(removed_user_rows, 0);
 
         Ok(())
     }

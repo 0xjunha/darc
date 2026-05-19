@@ -650,7 +650,12 @@ where
     let selected_sessions = query_share_export_session_states(&connection, &context.project_id)?;
     let cache_path = cache_repo_path(&context.root, &remote.resolved_url, &git_branch);
     progress(SharePushProgress::PreparingCache);
-    prepare_cache_repository(&cache_path, &remote.url, &identity)?;
+    prepare_cache_repository(
+        &cache_path,
+        &remote.resolved_url,
+        &context.local_path,
+        &identity,
+    )?;
     progress(SharePushProgress::FetchingRemote);
     let branch_exists = fetch_branch_if_exists(&cache_path, &git_branch)?;
     if !branch_exists {
@@ -821,7 +826,12 @@ fn fetch_share_branch_impl(
     let identity = local_share_identity(context)?;
     let cache_path = cache_repo_path(&context.root, &remote.resolved_url, &git_branch);
     progress(SharePullProgress::PreparingCache);
-    prepare_cache_repository(&cache_path, &remote.url, &identity)?;
+    prepare_cache_repository(
+        &cache_path,
+        &remote.resolved_url,
+        &context.local_path,
+        &identity,
+    )?;
     progress(SharePullProgress::FetchingRemote);
     fetch_branch(&cache_path, &git_branch)?;
     checkout_share_branch(&cache_path, &git_branch)?;
@@ -989,6 +999,7 @@ enum ExportObjectTarget<'a> {
 #[derive(Debug, Clone)]
 struct ResolvedRemote {
     name: String,
+    #[cfg(test)]
     url: String,
     resolved_url: String,
     display_url: String,
@@ -2973,6 +2984,7 @@ fn resolve_remote(
             name: remote.name.clone(),
             display_url: sanitize_git_url_for_display(&remote.url),
             resolved_url: resolved_remote_url(&context.local_path, &remote.url)?,
+            #[cfg(test)]
             url: remote.url.clone(),
         });
     }
@@ -2982,6 +2994,7 @@ fn resolve_remote(
             name: DEFAULT_REMOTE_NAME.to_owned(),
             display_url: sanitize_git_url_for_display(&url),
             resolved_url: resolved_remote_url(&context.local_path, &url)?,
+            #[cfg(test)]
             url,
         });
     }
@@ -2992,6 +3005,7 @@ fn resolve_remote(
         name: DEFAULT_REMOTE_NAME.to_owned(),
         display_url: sanitize_git_url_for_display(&url),
         resolved_url: resolved_remote_url(&context.local_path, &url)?,
+        #[cfg(test)]
         url,
     })
 }
@@ -3491,15 +3505,30 @@ fn resolved_remote_url(path: &Path, url: &str) -> Result<String> {
         "failed to resolve Git remote URL",
     )?;
     let value = output.stdout.trim().to_owned();
-    Ok(if value.is_empty() {
+    let resolved = if value.is_empty() {
         url.to_owned()
     } else {
         value
-    })
+    };
+    Ok(resolve_local_git_path_url(path, &resolved))
+}
+
+/// Resolves one local Git path URL against the active project path.
+fn resolve_local_git_path_url(project_path: &Path, url: &str) -> String {
+    let candidate = Path::new(url);
+    if url.contains("://") || normalize_scp_like_git_url(url).is_some() || candidate.is_absolute() {
+        return url.to_owned();
+    }
+    project_path.join(candidate).to_string_lossy().into_owned()
 }
 
 /// Prepares one local Git cache repository.
-fn prepare_cache_repository(path: &Path, remote_url: &str, identity: &ShareIdentity) -> Result<()> {
+fn prepare_cache_repository(
+    path: &Path,
+    remote_url: &str,
+    source_repo_path: &Path,
+    identity: &ShareIdentity,
+) -> Result<()> {
     create_safe_cache_repository_dir(path)?;
     if path.join(".git").exists() {
         ensure_safe_cache_git_dir(path)?;
@@ -3512,7 +3541,7 @@ fn prepare_cache_repository(path: &Path, remote_url: &str, identity: &ShareIdent
         run_git(path, ["init"], "failed to init share cache repository")?;
         ensure_safe_cache_git_dir(path)?;
     }
-    configure_cache_repository(path, remote_url, identity)
+    configure_cache_repository(path, remote_url, source_repo_path, identity)
 }
 
 /// Creates one cache repository root without following symlinked ancestors.
@@ -3619,6 +3648,7 @@ fn ensure_safe_cache_git_dir(path: &Path) -> Result<()> {
 fn configure_cache_repository(
     path: &Path,
     remote_url: &str,
+    source_repo_path: &Path,
     identity: &ShareIdentity,
 ) -> Result<()> {
     if run_cache_git_raw(path, ["remote", "get-url", DEFAULT_REMOTE_NAME])
@@ -3664,7 +3694,33 @@ fn configure_cache_repository(
         ["config", "commit.gpgsign", "false"],
         "failed to disable share cache commit signing",
     )?;
+    configure_cache_ssh_command(path, source_repo_path)?;
     configure_git_lfs(path)?;
+    Ok(())
+}
+
+/// Mirrors active-repository SSH transport config into one cache repository.
+fn configure_cache_ssh_command(cache_path: &Path, source_repo_path: &Path) -> Result<()> {
+    let Some(command) = git_core_ssh_command(source_repo_path) else {
+        let output = run_cache_git_raw(cache_path, ["config", "--unset", "core.sshCommand"])
+            .context("failed to clear stale share cache core.sshCommand")?;
+        if output.status.success() || output.status.code() == Some(5) {
+            return Ok(());
+        }
+        bail!(
+            "{}",
+            git_failure_message("failed to clear stale share cache core.sshCommand", &output)
+        );
+    };
+    run_cache_git(
+        cache_path,
+        [
+            OsString::from("config"),
+            OsString::from("core.sshCommand"),
+            command,
+        ],
+        "failed to copy active repository core.sshCommand into share cache",
+    )?;
     Ok(())
 }
 
@@ -4588,12 +4644,14 @@ fn noninteractive_ssh_command(command: Option<OsString>) -> OsString {
     let command_string = command.to_string_lossy();
     if command_string.contains("BatchMode=yes") {
         command
+    } else if command_string.contains("BatchMode=no") {
+        OsString::from(command_string.replace("BatchMode=no", "BatchMode=yes"))
     } else if let Some(args) = command_string.strip_prefix("ssh ") {
         OsString::from(format!("ssh -o BatchMode=yes {args}"))
     } else if command_string == "ssh" {
         OsString::from("ssh -o BatchMode=yes")
     } else {
-        command
+        OsString::from(format!("{command_string} -o BatchMode=yes"))
     }
 }
 
@@ -6030,6 +6088,49 @@ mod tests {
                 "darc/team"
             )
         );
+    }
+
+    #[test]
+    fn relative_share_remote_is_resolved_against_project_path() {
+        let workspace = unique_test_dir("share-relative-remote");
+        let repo = workspace.join("repo");
+        let cache = workspace.join("cache");
+        init_test_git_repo(&repo);
+        let context = ShareProjectContext {
+            root: workspace.clone(),
+            index_db_path: workspace.join("index.sqlite"),
+            project_id: "repo".to_owned(),
+            project_name: "repo".to_owned(),
+            local_path: repo.clone(),
+            git_upstream: Some("https://example.invalid/team/repo.git".to_owned()),
+        };
+        let settings = ShareSettings {
+            remotes: vec![ShareRemote {
+                name: "team".to_owned(),
+                url: "../share.git".to_owned(),
+            }],
+            recipients: Vec::new(),
+        };
+        let identity = test_share_identity(&Identity::generate());
+
+        let remote = resolve_remote(&context, &settings, Some("team")).unwrap();
+        prepare_cache_repository(&cache, &remote.resolved_url, &repo, &identity).unwrap();
+        let cache_remote = run_git(
+            &cache,
+            ["remote", "get-url", DEFAULT_REMOTE_NAME],
+            "failed to read synthetic cache remote",
+        )
+        .unwrap()
+        .stdout
+        .trim()
+        .to_owned();
+
+        assert_eq!(remote.url, "../share.git");
+        assert_eq!(
+            remote.resolved_url,
+            repo.join("../share.git").to_string_lossy().into_owned()
+        );
+        assert_eq!(cache_remote, remote.resolved_url);
     }
 
     #[test]
@@ -8071,6 +8172,7 @@ mod tests {
         let prepare_error = match prepare_cache_repository(
             &cache,
             "https://example.invalid/share.git",
+            &workspace,
             &identity,
         ) {
             Ok(_) => panic!("prepare should reject symlinked cache root"),
@@ -9811,15 +9913,19 @@ mod tests {
         );
         assert_eq!(
             noninteractive_ssh_command(Some(OsString::from("ssh -o BatchMode=no"))),
-            OsString::from("ssh -o BatchMode=yes -o BatchMode=no")
+            OsString::from("ssh -o BatchMode=yes")
         );
         assert_eq!(
             noninteractive_ssh_command(Some(OsString::from("DARC_SSH_OPTION=1 ssh -F config"))),
-            OsString::from("DARC_SSH_OPTION=1 ssh -F config")
+            OsString::from("DARC_SSH_OPTION=1 ssh -F config -o BatchMode=yes")
         );
         assert_eq!(
             noninteractive_ssh_command(Some(OsString::from("\"/tmp/synthetic ssh\" -F config"))),
-            OsString::from("\"/tmp/synthetic ssh\" -F config")
+            OsString::from("\"/tmp/synthetic ssh\" -F config -o BatchMode=yes")
+        );
+        assert_eq!(
+            noninteractive_ssh_command(Some(OsString::from("/usr/bin/ssh -F config"))),
+            OsString::from("/usr/bin/ssh -F config -o BatchMode=yes")
         );
     }
 
@@ -9842,6 +9948,54 @@ mod tests {
             git_ssh_command_with_env(&workspace, Some(OsString::from("ssh -F env_config"))),
             OsString::from("ssh -o BatchMode=yes -F env_config")
         );
+    }
+
+    #[test]
+    fn prepare_cache_repository_copies_project_ssh_command() {
+        let workspace = unique_test_dir("share-cache-project-ssh-command");
+        let source = workspace.join("source");
+        let cache = workspace.join("cache");
+        init_test_git_repo(&source);
+        run_git(
+            &source,
+            ["config", "core.sshCommand", "ssh -i synthetic_key"],
+            "failed to configure source core.sshCommand",
+        )
+        .unwrap();
+        let identity = test_share_identity(&Identity::generate());
+
+        prepare_cache_repository(
+            &cache,
+            "https://example.invalid/share.git",
+            &source,
+            &identity,
+        )
+        .unwrap();
+
+        assert_eq!(
+            git_core_ssh_command(&cache),
+            Some(OsString::from("ssh -i synthetic_key"))
+        );
+        assert_eq!(
+            git_ssh_command_with_env(&cache, None),
+            OsString::from("ssh -o BatchMode=yes -i synthetic_key")
+        );
+
+        run_git(
+            &source,
+            ["config", "--unset", "core.sshCommand"],
+            "failed to clear source core.sshCommand",
+        )
+        .unwrap();
+        prepare_cache_repository(
+            &cache,
+            "https://example.invalid/share.git",
+            &source,
+            &identity,
+        )
+        .unwrap();
+
+        assert_eq!(git_core_ssh_command(&cache), None);
     }
 
     #[cfg(unix)]
