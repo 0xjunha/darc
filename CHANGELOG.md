@@ -5,9 +5,9 @@ All notable Darc release changes should be summarized here.
 ## Unreleased
 
 - Add Git-backed encrypted shared indexes with `darc share`, `darc remote`, `darc push/fetch/merge/pull`, and explicit shared query filters.
-- Store shared-index payloads as compressed encrypted V1 chunks, use Git LFS when available, and reuse unchanged signed exports for faster incremental pushes.
+- Store shared-index payloads as compressed encrypted V1 chunks, support opt-in Git LFS, and reuse unchanged signed exports for faster incremental pushes.
 - Use the system `git` executable for shared-index fetches and pushes, and show interactive share push/pull progress with animated step spinners, export/import session counts, encrypted object generation, and Git/LFS upload.
-- Harden shared-index sync by authenticating manifests and payload metadata, retaining all exporters at branch tips, rejecting malformed artifacts, and isolating bad exporter imports.
+- Harden shared-index sync by authenticating manifests and payload metadata, retaining all exporters at branch tips, rejecting malformed artifacts, and preserving last-good shared imports when replacement objects fail.
 - Keep shared imports consistent by preserving share selections across rebuilds, canonicalizing remote provenance, re-encrypting exports for current recipients, and preventing cross-exporter session replacement.
 - Redact share-visible metadata, Git URL secrets, credentialed or local paths, share remotes, bulky blobs, and exported payloads before storing or displaying them.
 - Redact common secrets, credential material, local home paths, and bulky data blobs before storing or migrating indexed session data.

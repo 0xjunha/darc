@@ -3,10 +3,10 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/bench-share-export.sh [--sessions N] [--repeat N] [--mode lfs|plain|both] [--root DARC_ROOT] [--darc DARC_BIN]
+Usage: scripts/bench-share-export.sh --root DARC_ROOT [--sessions N] [--repeat N] [--mode lfs|plain|both] [--darc DARC_BIN]
 
-Benchmarks Darc share export/push with a temporary Darc root copied from the
-current user's real Darc config and index. Run from the Darc repository root.
+Benchmarks Darc share export/push with a temporary Darc root copied from an
+explicit synthetic or scrubbed Darc root. Run from the Darc repository root.
 
 Outputs one JSON object per benchmark mode and push iteration.
 USAGE
@@ -15,7 +15,7 @@ USAGE
 sessions=10
 repeat=1
 mode=both
-darc_root="${HOME}/.darc"
+darc_root=
 darc_bin="./target/release/darc"
 
 while [[ $# -gt 0 ]]; do
@@ -75,6 +75,11 @@ cd "$repo_root"
 
 if [[ ! -x "$darc_bin" ]]; then
   echo "Darc binary not found or not executable: $darc_bin" >&2
+  exit 2
+fi
+
+if [[ -z "$darc_root" ]]; then
+  echo "--root is required and must point to a synthetic or scrubbed Darc root" >&2
   exit 2
 fi
 

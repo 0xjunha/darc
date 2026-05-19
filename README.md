@@ -246,10 +246,12 @@ git ls-remote git@github.com:example/darc-index.git
 git ls-remote https://github.com/example/darc-index.git
 ```
 
-For larger exports, install Git LFS before pushing:
+By default, Darc stores encrypted share objects as regular Git blobs. For larger exports, install Git LFS and opt in for
+the push process:
 
 ```sh
 git lfs version
+DARC_SHARE_ENABLE_LFS=1 darc push team
 ```
 
 LFS only changes where Git stores encrypted blob bytes. Darc still uses age encryption because GitHub and other Git hosts

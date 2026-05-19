@@ -336,6 +336,8 @@ struct EncryptedSyncPayload {
     schema: String,
     version: u32,
     project_key: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    export_fingerprint: String,
     exporter: ShareIdentity,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     signature: Option<String>,
@@ -429,6 +431,12 @@ fn sync_session_entry_from_state(state: &ShareSessionExportState) -> Option<Sync
         source_size: state.source_size?,
         source_mtime_ms: state.source_mtime_ms?,
     })
+}
+
+/// Hashes the current redacted export rows used by fast unchanged-export reuse.
+fn share_export_fingerprint(turns: &[ShareTurnExport]) -> Result<String> {
+    let encoded = serde_json::to_vec(turns).context("failed to fingerprint share export rows")?;
+    Ok(sha256_hex(&encoded))
 }
 
 /// Returns the progress key for one visible manifest session entry.
@@ -664,6 +672,8 @@ where
     let trusted_object_cache_path = trusted_object_cache_path(&cache_path);
     let recipient_strings = encryption_recipient_strings(&identity, settings);
     let recipient_fingerprint = encryption_recipient_fingerprint(&recipient_strings);
+    let turns = query_share_export_turns(&connection, &context.project_id)?;
+    let export_fingerprint = share_export_fingerprint(&turns)?;
     let reuse_context = ExportReuseContext {
         trusted_object_cache_path: Some(&trusted_object_cache_path),
         decryption_identity: Some(&decryption_identity),
@@ -678,6 +688,7 @@ where
         &context.project_name,
         branch,
         &recipient_fingerprint,
+        &export_fingerprint,
         &identity,
         &decryption_identity,
         &selected_sessions,
@@ -690,7 +701,6 @@ where
             artifact
         }
         None => {
-            let turns = query_share_export_turns(&connection, &context.project_id)?;
             progress(SharePushProgress::BuildingExport {
                 total_turns: u64::try_from(turns.len()).context("turn count exceeds u64 range")?,
             });
@@ -1233,6 +1243,7 @@ fn build_export_artifact_with_target(
     let mut manifest_chunks = Vec::new();
     let mut session_ids = BTreeSet::new();
     let mut sync_sessions = BTreeSet::new();
+    let export_fingerprint = share_export_fingerprint(&request.turns)?;
     let mut chunk_turns = Vec::new();
     let mut chunk_plaintext_bytes = 0_usize;
     let mut chunk_index = 0_u64;
@@ -1316,6 +1327,7 @@ fn build_export_artifact_with_target(
         schema: SYNC_PAYLOAD_SCHEMA.to_owned(),
         version: SYNC_PAYLOAD_VERSION,
         project_key: request.project_key.to_owned(),
+        export_fingerprint,
         exporter: request.identity.clone(),
         signature: None,
         sessions: sync_sessions.into_iter().collect(),
@@ -1430,6 +1442,7 @@ fn unchanged_previous_export_artifact(
     expected_project_name: &str,
     expected_branch: &str,
     expected_recipient_fingerprint: &str,
+    expected_export_fingerprint: &str,
     identity: &ShareIdentity,
     decryption_identity: &Identity,
     selected_sessions: &[ShareSessionExportState],
@@ -1470,6 +1483,9 @@ fn unchanged_previous_export_artifact(
         return Ok(None);
     }
     if authenticated_manifest_chunks(manifest, &sync_payload).is_err() {
+        return Ok(None);
+    }
+    if sync_payload.export_fingerprint != expected_export_fingerprint {
         return Ok(None);
     }
     let previous_session_set = sync_payload
@@ -2369,16 +2385,23 @@ fn import_from_cache_with_progress(
             session_progress.finish_manifest(&manifest, progress);
             continue;
         }
-        if let Err(error) = authenticated_manifest_turns(&manifest, &sync_payload) {
-            skipped_turn_count += u64::try_from(manifest.turns.len())
-                .context("skipped turn count exceeds u64 range")?;
-            warnings.push(format!(
-                "skipped share manifest {} for exporter {}: {error:#}",
-                cached.relative_path, sync_payload.exporter.user_id
-            ));
-            session_progress.finish_manifest(&manifest, progress);
-            continue;
-        }
+        let authenticated_turns = match authenticated_manifest_turns(&manifest, &sync_payload) {
+            Ok(turns) => turns,
+            Err(error) => {
+                skipped_turn_count += u64::try_from(manifest.turns.len())
+                    .context("skipped turn count exceeds u64 range")?;
+                warnings.push(format!(
+                    "skipped share manifest {} for exporter {}: {error:#}",
+                    cached.relative_path, sync_payload.exporter.user_id
+                ));
+                session_progress.finish_manifest(&manifest, progress);
+                continue;
+            }
+        };
+        let mut keep_turns = authenticated_turns
+            .iter()
+            .map(sync_turn_prune_key)
+            .collect::<BTreeSet<_>>();
         let imported_at = current_utc_timestamp();
         let user = ShareUserRecord {
             user_id: sync_payload.exporter.user_id.clone(),
@@ -2388,7 +2411,6 @@ fn import_from_cache_with_progress(
             source: "share-manifest".to_owned(),
             updated_at: imported_at.clone(),
         };
-        let mut keep_turns = BTreeSet::new();
         if !manifest_turns_are_chunked(&manifest.turns) {
             let chunks = DecodedChunks::default();
             let import_context = ImportEntryContext {
@@ -2465,6 +2487,11 @@ fn import_from_cache_with_progress(
         warning_count: u64::try_from(warnings.len()).context("warning count exceeds u64 range")?,
         warnings,
     })
+}
+
+/// Returns the imported-turn identity used when pruning shared rows.
+fn sync_turn_prune_key(entry: &SyncTurnEntry) -> (darc_paths::SourceKind, String, i64) {
+    (entry.provider, entry.session_id.clone(), entry.turn_ordinal)
 }
 
 /// Imports decoded turns and updates per-exporter keep state.
@@ -3576,9 +3603,9 @@ fn configure_cache_repository(
     Ok(())
 }
 
-/// Enables Git LFS filters for the share cache when git-lfs is installed.
+/// Enables Git LFS filters for the share cache when LFS publishing is opted in.
 fn configure_git_lfs(path: &Path) -> Result<bool> {
-    if !git_lfs_available(path)? {
+    if !git_lfs_publish_enabled(path)? {
         return Ok(false);
     }
     run_cache_git_with_hook_override(
@@ -3592,11 +3619,37 @@ fn configure_git_lfs(path: &Path) -> Result<bool> {
 
 /// Returns whether the system Git client can run git-lfs.
 fn git_lfs_available(path: &Path) -> Result<bool> {
+    let output = run_git_raw(path, ["lfs", "version"]).context("failed to inspect Git LFS")?;
+    Ok(output.status.success())
+}
+
+/// Returns whether Darc should publish share objects through Git LFS.
+fn git_lfs_publish_enabled(path: &Path) -> Result<bool> {
+    if !git_lfs_publish_enabled_from_env(
+        std::env::var_os("DARC_SHARE_ENABLE_LFS"),
+        std::env::var_os("DARC_SHARE_DISABLE_LFS"),
+        git_lfs_available(path)?,
+    ) {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+/// Resolves Git LFS publish opt-in flags against local git-lfs availability.
+fn git_lfs_publish_enabled_from_env(
+    enable: Option<OsString>,
+    disable: Option<OsString>,
+    available: bool,
+) -> bool {
+    disable.is_none() && enable.is_some() && available
+}
+
+/// Returns whether Darc can hydrate existing Git LFS share objects.
+fn git_lfs_hydration_enabled(path: &Path) -> Result<bool> {
     if std::env::var_os("DARC_SHARE_DISABLE_LFS").is_some() {
         return Ok(false);
     }
-    let output = run_git_raw(path, ["lfs", "version"]).context("failed to inspect Git LFS")?;
-    Ok(output.status.success())
+    git_lfs_available(path)
 }
 
 /// Downloads Git LFS share objects for one fetched cache checkout when supported.
@@ -3604,7 +3657,7 @@ fn hydrate_lfs_objects(path: &Path) -> Result<()> {
     if !ensure_safe_existing_cache_dir(path)? {
         return Ok(());
     }
-    if !git_lfs_available(path)? {
+    if !git_lfs_hydration_enabled(path)? {
         reject_lfs_pointer_objects(path)?;
         return Ok(());
     }
@@ -3641,7 +3694,7 @@ fn reject_lfs_pointer_objects(cache_path: &Path) -> Result<()> {
         let prefix = read_file_prefix(&path, u64::try_from(GIT_LFS_POINTER_PREFIX.len())?)?;
         if prefix == GIT_LFS_POINTER_PREFIX {
             bail!(
-                "share object {} is a Git LFS pointer; install git-lfs and retry so Darc can hydrate existing encrypted share objects before continuing",
+                "share object {} is a Git LFS pointer; install git-lfs and retry without DARC_SHARE_DISABLE_LFS so Darc can hydrate existing encrypted share objects before continuing",
                 path.display()
             );
         }
@@ -3926,7 +3979,7 @@ fn commit_cache_repository(path: &Path, git_branch: &str) -> Result<String> {
         ["rm", "-r", "-f", "--cached", "--ignore-unmatch", "."],
         "failed to stage removed share artifacts",
     )?;
-    let use_lfs_filters = git_lfs_available(path)?;
+    let use_lfs_filters = git_lfs_publish_enabled(path)?;
     run_cache_git_with_lfs_filter_override(
         path,
         ["add", "-f", "--", GIT_ATTRIBUTES_FILE, ARTIFACT_ROOT],
@@ -3971,7 +4024,7 @@ fn push_branch_impl<F>(path: &Path, git_branch: &str, mut progress: Option<&mut 
 where
     F: FnMut(SharePushProgress),
 {
-    for command in push_branch_commands(git_branch, git_lfs_available(path)?) {
+    for command in push_branch_commands(git_branch, git_lfs_publish_enabled(path)?) {
         match progress.as_mut() {
             Some(progress) => {
                 progress(SharePushProgress::Uploading { kind: command.kind });
@@ -4444,7 +4497,7 @@ fn git_ssh_command() -> OsString {
 fn noninteractive_ssh_command(command: Option<OsString>) -> OsString {
     let command = command.unwrap_or_else(|| OsString::from("ssh"));
     let command_string = command.to_string_lossy();
-    if command_string.contains("BatchMode") {
+    if command_string.contains("BatchMode=yes") {
         command
     } else {
         OsString::from(format!("{command_string} -o BatchMode=yes"))
@@ -5351,6 +5404,7 @@ mod tests {
         update_share_policy(&context, SharePolicy::All).unwrap();
         let connection = open_index_database_writer(&index_db_path).unwrap();
         let turns = query_share_export_turns(&connection, "repo").unwrap();
+        let export_fingerprint = share_export_fingerprint(&turns).unwrap();
         let selected_sessions = query_share_export_session_states(&connection, "repo").unwrap();
         let age_identity = Identity::generate();
         let signing_key = test_signing_key(&age_identity);
@@ -5378,6 +5432,7 @@ mod tests {
             "repo",
             "team",
             &recipient_fingerprint,
+            &export_fingerprint,
             &identity,
             &age_identity,
             &selected_sessions,
@@ -5391,6 +5446,72 @@ mod tests {
         assert_eq!(reused.exported_turn_count, first.exported_turn_count);
         assert_eq!(reused.exported_session_count, first.exported_session_count);
         assert!(reused.objects.is_empty());
+    }
+
+    #[test]
+    fn unchanged_previous_export_rebuilds_when_redacted_rows_change() {
+        let workspace = unique_test_dir("share-unchanged-export-redacted-row-change");
+        let cache = workspace.join("cache");
+        let index_db_path = workspace.join("index.sqlite");
+        let context = ShareProjectContext {
+            root: workspace.clone(),
+            index_db_path: index_db_path.clone(),
+            project_id: "repo".to_owned(),
+            project_name: "repo".to_owned(),
+            local_path: workspace.join("repo"),
+            git_upstream: Some("https://example.invalid/team/repo.git".to_owned()),
+        };
+        seed_share_export_session(
+            &index_db_path,
+            "repo",
+            "00000000-0000-4000-8000-000000000303",
+        );
+        update_share_policy(&context, SharePolicy::All).unwrap();
+        let connection = open_index_database_writer(&index_db_path).unwrap();
+        let turns = query_share_export_turns(&connection, "repo").unwrap();
+        let age_identity = Identity::generate();
+        let signing_key = test_signing_key(&age_identity);
+        let identity = test_share_identity(&age_identity);
+        let recipient_fingerprint = encryption_recipient_fingerprint(
+            &encryption_recipient_strings(&identity, &ShareSettings::default()),
+        );
+        let first = build_export_artifact(ExportBuildRequest {
+            context: &context,
+            settings: &ShareSettings::default(),
+            project_key: "git:https://example.invalid/team/repo",
+            identity: &identity,
+            signing_key: &signing_key,
+            branch: "team",
+            turns,
+        })
+        .unwrap();
+        write_export_artifact(&cache, &first).unwrap();
+        connection
+            .execute(
+                "UPDATE turns SET user_message = 'synthetic changed prompt' WHERE project_id = 'repo'",
+                [],
+            )
+            .unwrap();
+        let selected_sessions = query_share_export_session_states(&connection, "repo").unwrap();
+        let changed_turns = query_share_export_turns(&connection, "repo").unwrap();
+        let changed_export_fingerprint = share_export_fingerprint(&changed_turns).unwrap();
+
+        let reused = unchanged_previous_export_artifact(
+            &cache,
+            Some(&first.project),
+            Some(&first.manifest),
+            "git:https://example.invalid/team/repo",
+            "repo",
+            "team",
+            &recipient_fingerprint,
+            &changed_export_fingerprint,
+            &identity,
+            &age_identity,
+            &selected_sessions,
+        )
+        .unwrap();
+
+        assert!(reused.is_none());
     }
 
     #[test]
@@ -5438,6 +5559,8 @@ mod tests {
             )
             .unwrap();
         let selected_sessions = query_share_export_session_states(&connection, "repo").unwrap();
+        let changed_turns = query_share_export_turns(&connection, "repo").unwrap();
+        let changed_export_fingerprint = share_export_fingerprint(&changed_turns).unwrap();
 
         let reused = unchanged_previous_export_artifact(
             &cache,
@@ -5447,6 +5570,7 @@ mod tests {
             "repo",
             "team",
             &recipient_fingerprint,
+            &changed_export_fingerprint,
             &identity,
             &age_identity,
             &selected_sessions,
@@ -5465,6 +5589,7 @@ mod tests {
             "repo",
             "team",
             &recipient_fingerprint,
+            &changed_export_fingerprint,
             &identity,
             &age_identity,
             &selected_sessions,
@@ -5495,6 +5620,7 @@ mod tests {
         update_share_policy(&context, SharePolicy::All).unwrap();
         let connection = open_index_database_writer(&index_db_path).unwrap();
         let turns = query_share_export_turns(&connection, "repo").unwrap();
+        let export_fingerprint = share_export_fingerprint(&turns).unwrap();
         let selected_sessions = query_share_export_session_states(&connection, "repo").unwrap();
         let age_identity = Identity::generate();
         let signing_key = test_signing_key(&age_identity);
@@ -5528,6 +5654,7 @@ mod tests {
             "repo",
             "team",
             &changed_recipient_fingerprint,
+            &export_fingerprint,
             &identity,
             &age_identity,
             &selected_sessions,
@@ -5558,6 +5685,7 @@ mod tests {
         update_share_policy(&context, SharePolicy::All).unwrap();
         let connection = open_index_database_writer(&index_db_path).unwrap();
         let turns = query_share_export_turns(&connection, "repo").unwrap();
+        let export_fingerprint = share_export_fingerprint(&turns).unwrap();
         let selected_sessions = query_share_export_session_states(&connection, "repo").unwrap();
         let age_identity = Identity::generate();
         let signing_key = test_signing_key(&age_identity);
@@ -5590,6 +5718,7 @@ mod tests {
             "repo",
             "team",
             &recipient_fingerprint,
+            &export_fingerprint,
             &identity,
             &age_identity,
             &selected_sessions,
@@ -6218,6 +6347,7 @@ mod tests {
             schema: SYNC_PAYLOAD_SCHEMA.to_owned(),
             version: SYNC_PAYLOAD_VERSION,
             project_key: "git:https://example.invalid/team/repo".to_owned(),
+            export_fingerprint: String::new(),
             exporter: source_identity,
             signature: None,
             sessions: Vec::new(),
@@ -6754,7 +6884,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_prunes_stale_turn_when_replacement_object_is_invalid() {
+    fn merge_preserves_stale_turn_when_replacement_object_is_invalid() {
         let TestShareArtifact {
             cache,
             target_context,
@@ -6823,7 +6953,7 @@ mod tests {
             "warning should identify the invalid replacement object: {:?}",
             second_report.warnings
         );
-        assert_eq!(imported_turn_count, 0);
+        assert_eq!(imported_turn_count, 1);
     }
 
     #[test]
@@ -9192,6 +9322,7 @@ mod tests {
             schema: SYNC_PAYLOAD_SCHEMA.to_owned(),
             version: SYNC_PAYLOAD_VERSION,
             project_key: project_key.to_owned(),
+            export_fingerprint: String::new(),
             exporter: exporter.clone(),
             signature: None,
             sessions: Vec::new(),
@@ -9372,6 +9503,26 @@ mod tests {
     }
 
     #[test]
+    fn lfs_publish_requires_explicit_opt_in() {
+        assert!(!git_lfs_publish_enabled_from_env(None, None, true));
+        assert!(git_lfs_publish_enabled_from_env(
+            Some(OsString::from("1")),
+            None,
+            true
+        ));
+        assert!(!git_lfs_publish_enabled_from_env(
+            Some(OsString::from("1")),
+            Some(OsString::from("1")),
+            true
+        ));
+        assert!(!git_lfs_publish_enabled_from_env(
+            Some(OsString::from("1")),
+            None,
+            false
+        ));
+    }
+
+    #[test]
     fn ssh_command_runs_in_batch_mode() {
         assert_eq!(
             noninteractive_ssh_command(None),
@@ -9384,6 +9535,10 @@ mod tests {
         assert_eq!(
             noninteractive_ssh_command(Some(OsString::from("ssh -o BatchMode=yes"))),
             OsString::from("ssh -o BatchMode=yes")
+        );
+        assert_eq!(
+            noninteractive_ssh_command(Some(OsString::from("ssh -o BatchMode=no"))),
+            OsString::from("ssh -o BatchMode=no -o BatchMode=yes")
         );
     }
 

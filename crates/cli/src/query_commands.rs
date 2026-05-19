@@ -809,7 +809,7 @@ pub(crate) fn provider_arg_to_source_kind(provider: ProviderArg) -> SourceKind {
 }
 
 /// Converts parsed shared-scope flags into the query origin scope.
-fn query_origin_scope(
+pub(crate) fn query_origin_scope(
     shared: bool,
     scope: Option<SessionScopeArg>,
     author: Option<&str>,

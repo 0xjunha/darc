@@ -310,14 +310,15 @@ then treats project-wide file/stat scope as follow-up work.
 - Raw provider logs and raw SQLite files remain local.
 - Git hosting sees only minimal sync metadata and encrypted payload chunks.
 - JSON schemas are easy to inspect and migrate.
-- Chunked payloads and Git LFS support make large exports practical without changing the encrypted V1 artifact contract.
+- Chunked payloads and opt-in Git LFS support make large exports practical without changing the encrypted V1 artifact
+  contract.
 - Provenance is stored directly with sessions, so query filters and attribution are straightforward.
 
 ### Negative
 
 - Darc now requires a working `git` executable on `PATH` for share push/fetch/pull.
-- Large exports should have `git-lfs` installed on `PATH`; without it, Darc still works but stores encrypted chunks as
-  regular Git objects.
+- Large exports can opt into `git-lfs` with `DARC_SHARE_ENABLE_LFS=1`; without it, Darc still works but stores encrypted
+  chunks as regular Git objects.
 - Git credentials must be configured non-interactively; Darc does not implement provider-specific auth prompts.
 - V1 revocation is forward-only.
 - Visible manifest metadata still reveals project key, author identity, session ids, turn ordinals, object hashes, and
@@ -325,21 +326,14 @@ then treats project-wide file/stat scope as follow-up work.
 - Separate index-only remotes require explicit Darc remote config.
 - Full Git conflict resolution is not hidden; non-fast-forward push failures remain user-visible.
 
-### Performance Results
+### Performance Measurement
 
-On May 19, 2026, the share benchmark was run against a temporary Darc root copied from the real Darc repository index,
-selecting 200 sessions and 511 turns. Results below measure local bare-Git remotes and include Darc export plus local
-push time; they do not include setup or session-selection time.
+Use `scripts/bench-share-export.sh --root <synthetic-or-scrubbed-root>` to compare cold and unchanged share pushes against
+local bare-Git remotes. The benchmark intentionally requires an explicit Darc root so repository examples do not depend on
+private local session data.
 
-| Mode | Binary | Cold push | Unchanged second push | Speedup |
-| --- | --- | ---: | ---: | ---: |
-| Plain Git | pre-fast-path `28ae746` | 8.828s | 7.599s | 1.2x |
-| Plain Git | fast path | 9.131s | 0.335s | 22.7x |
-| Git LFS | pre-fast-path `28ae746` | 7.745s | 7.849s | 1.0x |
-| Git LFS | fast path | 8.008s | 0.733s | 10.7x |
-
-The cold path is intentionally similar because it still has to produce the first signed encrypted export. The optimized
-case is the common incremental no-op push, where preserving correctness matters more than creating a new commit.
+The cold path still has to produce the first signed encrypted export. The optimized case is the common incremental no-op
+push, where preserving correctness matters more than creating a new commit.
 
 ### Rejected Performance Alternatives
 

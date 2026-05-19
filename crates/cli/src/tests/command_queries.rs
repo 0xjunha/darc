@@ -386,6 +386,38 @@ fn parses_canonical_list_show_search_stats_and_resolve_commands() {
             && shared
     ));
 
+    let all_scope_search =
+        Cli::try_parse_from(["darc", "search", "needle", "--scope", "all"]).unwrap();
+    assert!(matches!(
+        all_scope_search.command,
+        Commands::Search(super::SearchArgs {
+            scope: Some(super::SessionScopeArg::All),
+            ..
+        })
+    ));
+    assert_eq!(
+        query_origin_scope(false, Some(super::SessionScopeArg::All), None),
+        darc_core::query::SessionOriginScope::All
+    );
+
+    let shared_scope_search =
+        Cli::try_parse_from(["darc", "search", "needle", "--scope", "shared"]).unwrap();
+    assert!(matches!(
+        shared_scope_search.command,
+        Commands::Search(super::SearchArgs {
+            scope: Some(super::SessionScopeArg::Shared),
+            ..
+        })
+    ));
+    assert_eq!(
+        query_origin_scope(false, Some(super::SessionScopeArg::Shared), None),
+        darc_core::query::SessionOriginScope::Shared
+    );
+    assert_eq!(
+        query_origin_scope(false, None, Some("synthetic-author")),
+        darc_core::query::SessionOriginScope::Shared
+    );
+
     let path_files = Cli::try_parse_from([
         "darc",
         "list",
