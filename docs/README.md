@@ -8,5 +8,6 @@ Darc keeps the root README focused on overview and quickstart. Use these docs fo
 - [Background refresh service](service.md)
 - [Upgrade and uninstall](upgrade-uninstall.md)
 - [Release process](release.md)
+- [Shared index ADR](adr/shared-index.md)
 - [Agent rollout schema audits](schema-audits.md)
 - [Agent rollout schema changelog](schema-changelog.md)
