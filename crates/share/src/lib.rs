@@ -652,7 +652,7 @@ where
     progress(SharePushProgress::PreparingCache);
     prepare_cache_repository(
         &cache_path,
-        &remote.resolved_url,
+        &remote.cache_url,
         &context.local_path,
         &identity,
     )?;
@@ -828,7 +828,7 @@ fn fetch_share_branch_impl(
     progress(SharePullProgress::PreparingCache);
     prepare_cache_repository(
         &cache_path,
-        &remote.resolved_url,
+        &remote.cache_url,
         &context.local_path,
         &identity,
     )?;
@@ -1002,6 +1002,7 @@ struct ResolvedRemote {
     #[cfg(test)]
     url: String,
     resolved_url: String,
+    cache_url: String,
     display_url: String,
 }
 
@@ -2984,6 +2985,7 @@ fn resolve_remote(
             name: remote.name.clone(),
             display_url: sanitize_git_url_for_display(&remote.url),
             resolved_url: resolved_remote_url(&context.local_path, &remote.url)?,
+            cache_url: cache_remote_url(&context.local_path, &remote.url)?,
             #[cfg(test)]
             url: remote.url.clone(),
         });
@@ -2994,6 +2996,7 @@ fn resolve_remote(
             name: DEFAULT_REMOTE_NAME.to_owned(),
             display_url: sanitize_git_url_for_display(&url),
             resolved_url: resolved_remote_url(&context.local_path, &url)?,
+            cache_url: cache_remote_url(&context.local_path, &url)?,
             #[cfg(test)]
             url,
         });
@@ -3005,6 +3008,7 @@ fn resolve_remote(
         name: DEFAULT_REMOTE_NAME.to_owned(),
         display_url: sanitize_git_url_for_display(&url),
         resolved_url: resolved_remote_url(&context.local_path, &url)?,
+        cache_url: cache_remote_url(&context.local_path, &url)?,
         #[cfg(test)]
         url,
     })
@@ -3070,7 +3074,13 @@ fn normalize_scp_like_git_url(url: &str) -> Option<String> {
 
 /// Normalizes one scheme Git URL while removing credential userinfo.
 fn normalize_scheme_git_url(url: &str, input_scheme: &str, output_scheme: &str) -> Option<String> {
-    let rest = url.strip_prefix(input_scheme)?;
+    if !url
+        .get(..input_scheme.len())?
+        .eq_ignore_ascii_case(input_scheme)
+    {
+        return None;
+    }
+    let rest = &url[input_scheme.len()..];
     let (authority, path) = rest.split_once('/')?;
     let host = authority
         .rsplit_once('@')
@@ -3513,6 +3523,14 @@ fn resolved_remote_url(path: &Path, url: &str) -> Result<String> {
     Ok(resolve_local_git_path_url(path, &resolved))
 }
 
+/// Returns the credential-free URL written into one share cache Git remote.
+fn cache_remote_url(path: &Path, url: &str) -> Result<String> {
+    let resolved = resolved_remote_url(path, url)?;
+    let cache_url = sanitize_git_url_for_cache_remote(&resolved);
+    validate_share_remote_url(&cache_url)?;
+    Ok(cache_url)
+}
+
 /// Resolves one local Git path URL against the active project path.
 fn resolve_local_git_path_url(project_path: &Path, url: &str) -> String {
     let candidate = Path::new(url);
@@ -3520,6 +3538,31 @@ fn resolve_local_git_path_url(project_path: &Path, url: &str) -> String {
         return url.to_owned();
     }
     project_path.join(candidate).to_string_lossy().into_owned()
+}
+
+/// Removes credential-bearing URL parts before persisting a cache Git remote.
+fn sanitize_git_url_for_cache_remote(url: &str) -> String {
+    let trimmed = strip_url_query_fragment(url.trim());
+    let Some((scheme, rest)) = trimmed.split_once("://") else {
+        return trimmed.to_owned();
+    };
+    let (authority, path) = rest
+        .split_once('/')
+        .map_or((rest, None), |(authority, path)| (authority, Some(path)));
+    let scheme_lower = scheme.to_ascii_lowercase();
+    let authority = authority
+        .rsplit_once('@')
+        .map_or(authority, |(userinfo, host)| {
+            if scheme_lower == "ssh" && !userinfo.contains(':') {
+                authority
+            } else {
+                host
+            }
+        });
+    path.map_or_else(
+        || format!("{scheme}://{authority}"),
+        |path| format!("{scheme}://{authority}/{path}"),
+    )
 }
 
 /// Prepares one local Git cache repository.
@@ -5184,6 +5227,10 @@ mod tests {
             "https://github.com/Example/Darc"
         );
         assert_eq!(
+            normalize_git_url("HTTPS://github.com/Example/Darc.git").unwrap(),
+            "https://github.com/Example/Darc"
+        );
+        assert_eq!(
             normalize_git_url("https://user:token@github.com/Example/Darc.git/").unwrap(),
             "https://github.com/Example/Darc"
         );
@@ -6076,6 +6123,21 @@ mod tests {
             remote.resolved_url,
             "https://user:token@github.com/Example/Darc.git"
         );
+        assert_eq!(remote.cache_url, "https://github.com/Example/Darc.git");
+        let cache = workspace.join("cache");
+        let identity = test_share_identity(&Identity::generate());
+        prepare_cache_repository(&cache, &remote.cache_url, &context.local_path, &identity)
+            .unwrap();
+        let cache_remote = run_git(
+            &cache,
+            ["remote", "get-url", DEFAULT_REMOTE_NAME],
+            "failed to read synthetic cache remote",
+        )
+        .unwrap()
+        .stdout
+        .trim()
+        .to_owned();
+        assert_eq!(cache_remote, "https://github.com/Example/Darc.git");
         assert_eq!(
             project_key(&context).unwrap(),
             "git:https://github.com/Example/Darc"
@@ -6114,7 +6176,7 @@ mod tests {
         let identity = test_share_identity(&Identity::generate());
 
         let remote = resolve_remote(&context, &settings, Some("team")).unwrap();
-        prepare_cache_repository(&cache, &remote.resolved_url, &repo, &identity).unwrap();
+        prepare_cache_repository(&cache, &remote.cache_url, &repo, &identity).unwrap();
         let cache_remote = run_git(
             &cache,
             ["remote", "get-url", DEFAULT_REMOTE_NAME],
@@ -6130,6 +6192,7 @@ mod tests {
             remote.resolved_url,
             repo.join("../share.git").to_string_lossy().into_owned()
         );
+        assert_eq!(remote.cache_url, remote.resolved_url);
         assert_eq!(cache_remote, remote.resolved_url);
     }
 
