@@ -369,8 +369,8 @@ Darc reads local agent rollouts and writes archive/query state under `~/.darc`.
 - Session archives and query indexes stay local.
 - Indexed data is best-effort redacted before it is stored, including common secrets, credential-shaped values, local
   home-directory prefixes, and bulky data blobs.
-- Raw SQLite index files are local cache artifacts, not sharing artifacts; future sharing should export fresh redacted
-  projections from the index.
+- Raw SQLite index files are local cache artifacts, not sharing artifacts; `darc share` exports fresh encrypted,
+  redacted projections from the index instead of publishing the SQLite database.
 - Read commands query your local SQLite index.
 - Optional upgrade checks contact GitHub only for release metadata and require explicit opt-in.
 

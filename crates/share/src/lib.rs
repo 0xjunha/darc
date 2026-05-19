@@ -836,6 +836,7 @@ fn fetch_share_branch_impl(
     fetch_branch(&cache_path, &git_branch)?;
     checkout_share_branch(&cache_path, &git_branch)?;
     clean_untracked_cache_worktree(&cache_path)?;
+    clean_non_artifact_share_cache_files(&cache_path)?;
     progress(SharePullProgress::HydratingLfs);
     hydrate_lfs_objects(&cache_path)?;
     Ok(ShareFetchReport {
@@ -871,6 +872,7 @@ fn merge_share_branch_impl(
     let cache_path = cache_repo_path(&context.root, &remote.resolved_url, &git_branch);
     progress(SharePullProgress::ReadingCache);
     clean_cached_checkout(&cache_path)?;
+    clean_non_artifact_share_cache_files(&cache_path)?;
     hydrate_lfs_objects(&cache_path)?;
     import_from_cache_with_progress(
         ImportCacheRequest {
@@ -1484,7 +1486,7 @@ fn unchanged_previous_export_artifact(
         || manifest.project_key != expected_project_key
         || manifest.branch != expected_branch
         || manifest.exporter != *identity
-        || !manifest_turns_are_chunked(&manifest.turns)
+        || (!manifest.turns.is_empty() && !manifest_turns_are_chunked(&manifest.turns))
         || !manifest_uses_recipient_fingerprint(manifest, expected_recipient_fingerprint)
     {
         return Ok(None);
@@ -1515,7 +1517,7 @@ fn unchanged_previous_export_artifact(
         .iter()
         .cloned()
         .collect::<BTreeSet<_>>();
-    if previous_session_set.is_empty() || previous_session_set != selected_session_set {
+    if previous_session_set != selected_session_set {
         return Ok(None);
     }
     if reusable_chunk_objects_are_available(cache_path, manifest).is_err() {
@@ -2980,37 +2982,28 @@ fn resolve_remote(
             .iter()
             .find(|remote| remote.name == remote_name)
             .with_context(|| format!("Darc share remote `{remote_name}` is not configured"))?;
-        validate_share_remote_url(&remote.url)?;
-        return Ok(ResolvedRemote {
-            name: remote.name.clone(),
-            display_url: sanitize_git_url_for_display(&remote.url),
-            resolved_url: resolved_remote_url(&context.local_path, &remote.url)?,
-            cache_url: cache_remote_url(&context.local_path, &remote.url)?,
-            #[cfg(test)]
-            url: remote.url.clone(),
-        });
+        return resolved_remote(&context.local_path, &remote.name, &remote.url);
     }
     if let Some(url) = context.git_upstream.clone() {
-        validate_share_remote_url(&url)?;
-        return Ok(ResolvedRemote {
-            name: DEFAULT_REMOTE_NAME.to_owned(),
-            display_url: sanitize_git_url_for_display(&url),
-            resolved_url: resolved_remote_url(&context.local_path, &url)?,
-            cache_url: cache_remote_url(&context.local_path, &url)?,
-            #[cfg(test)]
-            url,
-        });
+        return resolved_remote(&context.local_path, DEFAULT_REMOTE_NAME, &url);
     }
     let url = origin_configured_remote_url(&context.local_path)
         .context("active project has no git_upstream and no origin remote")?;
-    validate_share_remote_url(&url)?;
+    resolved_remote(&context.local_path, DEFAULT_REMOTE_NAME, &url)
+}
+
+/// Builds one remote target from a configured URL and one rewritten URL lookup.
+fn resolved_remote(project_path: &Path, name: &str, url: &str) -> Result<ResolvedRemote> {
+    validate_share_remote_url(url)?;
+    let resolved_url = resolved_remote_url(project_path, url)?;
+    let cache_url = cache_remote_url_from_resolved(&resolved_url)?;
     Ok(ResolvedRemote {
-        name: DEFAULT_REMOTE_NAME.to_owned(),
-        display_url: sanitize_git_url_for_display(&url),
-        resolved_url: resolved_remote_url(&context.local_path, &url)?,
-        cache_url: cache_remote_url(&context.local_path, &url)?,
+        name: name.to_owned(),
+        display_url: sanitize_git_url_for_display(url),
+        resolved_url,
+        cache_url,
         #[cfg(test)]
-        url,
+        url: url.to_owned(),
     })
 }
 
@@ -3524,9 +3517,8 @@ fn resolved_remote_url(path: &Path, url: &str) -> Result<String> {
 }
 
 /// Returns the credential-free URL written into one share cache Git remote.
-fn cache_remote_url(path: &Path, url: &str) -> Result<String> {
-    let resolved = resolved_remote_url(path, url)?;
-    let cache_url = sanitize_git_url_for_cache_remote(&resolved);
+fn cache_remote_url_from_resolved(resolved: &str) -> Result<String> {
+    let cache_url = sanitize_git_url_for_cache_remote(resolved);
     validate_share_remote_url(&cache_url)?;
     Ok(cache_url)
 }
@@ -3963,6 +3955,59 @@ fn clean_untracked_cache_worktree(cache_path: &Path) -> Result<()> {
         "failed to clean untracked share cache files",
     )?;
     Ok(())
+}
+
+/// Removes checked-out files that are outside the share artifact layout.
+fn clean_non_artifact_share_cache_files(path: &Path) -> Result<()> {
+    if !ensure_safe_existing_cache_dir(path)? {
+        return Ok(());
+    }
+    for entry in fs::read_dir(path).with_context(|| format!("failed to read {}", path.display()))? {
+        let entry = entry.with_context(|| format!("failed to read {}", path.display()))?;
+        if entry.file_name() == ".git" {
+            continue;
+        }
+        clean_non_artifact_share_cache_entry(path, &entry.path())?;
+    }
+    Ok(())
+}
+
+/// Removes one non-artifact cache entry and prunes empty directories.
+fn clean_non_artifact_share_cache_entry(cache_path: &Path, path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("failed to inspect {}", path.display()))?;
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() {
+        return remove_file_if_exists(path);
+    }
+    if file_type.is_dir() {
+        for entry in
+            fs::read_dir(path).with_context(|| format!("failed to read {}", path.display()))?
+        {
+            let entry = entry.with_context(|| format!("failed to read {}", path.display()))?;
+            clean_non_artifact_share_cache_entry(cache_path, &entry.path())?;
+        }
+        if fs::read_dir(path)
+            .with_context(|| format!("failed to read {}", path.display()))?
+            .next()
+            .is_none()
+        {
+            fs::remove_dir(path).with_context(|| format!("failed to remove {}", path.display()))?;
+        }
+        return Ok(());
+    }
+    let relative = path.strip_prefix(cache_path).with_context(|| {
+        format!(
+            "share cache path {} is outside cache {}",
+            path.display(),
+            cache_path.display()
+        )
+    })?;
+    if allowed_share_cache_file(relative) {
+        Ok(())
+    } else {
+        remove_file_if_exists(path)
+    }
 }
 
 /// Builds the exact cache-relative file set that may be published.
@@ -5704,6 +5749,64 @@ mod tests {
         assert_eq!(reused.exported_turn_count, first.exported_turn_count);
         assert_eq!(reused.exported_session_count, first.exported_session_count);
         assert!(reused.objects.is_empty());
+    }
+
+    #[test]
+    fn unchanged_empty_export_reuses_manifest_without_turn_rebuild() {
+        let workspace = unique_test_dir("share-empty-export-reuse");
+        let cache = workspace.join("cache");
+        let age_identity = Identity::generate();
+        let signing_key = test_signing_key(&age_identity);
+        let identity = test_share_identity(&age_identity);
+        let recipient_fingerprint = encryption_recipient_fingerprint(
+            &encryption_recipient_strings(&identity, &ShareSettings::default()),
+        );
+        let context = ShareProjectContext {
+            root: workspace.clone(),
+            index_db_path: workspace.join("index.sqlite"),
+            project_id: "repo".to_owned(),
+            project_name: "repo".to_owned(),
+            local_path: workspace.join("repo"),
+            git_upstream: Some("https://example.invalid/team/repo.git".to_owned()),
+        };
+        let turns: Vec<ShareTurnExport> = Vec::new();
+        let export_fingerprint = share_export_fingerprint(&turns).unwrap();
+        let selected_sessions: Vec<ShareSessionExportState> = Vec::new();
+        let first = build_export_artifact(ExportBuildRequest {
+            context: &context,
+            settings: &ShareSettings::default(),
+            project_key: "git:https://example.invalid/team/repo",
+            identity: &identity,
+            signing_key: &signing_key,
+            branch: "team",
+            turns,
+        })
+        .unwrap();
+        write_export_artifact(&cache, &first).unwrap();
+
+        let reused = unchanged_previous_export_artifact(
+            &cache,
+            Some(&first.project),
+            Some(&first.manifest),
+            "git:https://example.invalid/team/repo",
+            "repo",
+            "team",
+            &recipient_fingerprint,
+            &export_fingerprint,
+            &identity,
+            &age_identity,
+            &selected_sessions,
+        )
+        .unwrap()
+        .expect("unchanged empty export should be reusable");
+
+        assert!(reused.manifest.turns.is_empty());
+        assert!(reused.manifest.chunks.is_empty());
+        assert_eq!(reused.project, first.project);
+        assert_eq!(reused.manifest, first.manifest);
+        assert_eq!(reused.object_paths, first.object_paths);
+        assert_eq!(reused.exported_turn_count, 0);
+        assert_eq!(reused.exported_session_count, 0);
     }
 
     #[test]
@@ -8816,6 +8919,96 @@ mod tests {
         assert!(!nested_git.exists());
         assert!(outside_worktree.join("keep.txt").exists());
         let merge = merge_share_branch(&target_context, &settings, "team", Some("share")).unwrap();
+        assert_eq!(merge.imported_turn_count, 1);
+        assert_eq!(merge.warning_count, 0);
+    }
+
+    #[test]
+    fn fetch_and_merge_prune_tracked_non_artifacts_before_lfs_hydration() {
+        let workspace = unique_test_dir("share-prunes-lfs-config");
+        let remote_path = workspace.join("share.git");
+        init_bare_remote(&remote_path);
+        let source_root = workspace.join("source-root");
+        let source_repo = workspace.join("source-repo");
+        let target_root = workspace.join("target-root");
+        let target_repo = workspace.join("target-repo");
+        fs::create_dir_all(&source_root).unwrap();
+        fs::create_dir_all(&target_root).unwrap();
+        init_test_git_repo(&source_repo);
+        init_test_git_repo(&target_repo);
+        let target_key = ensure_share_key(&target_root).unwrap();
+        let remote_url = remote_path.to_string_lossy().into_owned();
+        let project_upstream = "https://example.invalid/team/repo.git".to_owned();
+        let source_context = ShareProjectContext {
+            root: source_root.clone(),
+            index_db_path: source_root.join("index.sqlite"),
+            project_id: "source-repo".to_owned(),
+            project_name: "source-repo".to_owned(),
+            local_path: source_repo,
+            git_upstream: Some(project_upstream.clone()),
+        };
+        let target_context = ShareProjectContext {
+            root: target_root.clone(),
+            index_db_path: target_root.join("index.sqlite"),
+            project_id: "target-repo".to_owned(),
+            project_name: "target-repo".to_owned(),
+            local_path: target_repo,
+            git_upstream: Some(project_upstream),
+        };
+        seed_share_export_session(
+            &source_context.index_db_path,
+            "source-repo",
+            "00000000-0000-4000-8000-000000000303",
+        );
+        update_share_policy(&source_context, SharePolicy::All).unwrap();
+        let settings = ShareSettings {
+            remotes: vec![ShareRemote {
+                name: "share".to_owned(),
+                url: remote_url.clone(),
+            }],
+            recipients: vec![ShareRecipient {
+                recipient: target_key.public_key,
+            }],
+        };
+
+        push_share_branch(&source_context, &settings, "team", Some("share")).unwrap();
+        let source_cache = cache_repo_path(&source_root, &remote_url, "darc/team");
+        fs::write(
+            source_cache.join(".lfsconfig"),
+            "[lfs]\nurl = https://example.invalid/lfs\n",
+        )
+        .unwrap();
+        run_cache_git(
+            &source_cache,
+            ["add", ".lfsconfig"],
+            "failed to stage synthetic LFS config",
+        )
+        .unwrap();
+        run_cache_git(
+            &source_cache,
+            ["commit", "--no-gpg-sign", "-m", "test: add lfs config"],
+            "failed to commit synthetic LFS config",
+        )
+        .unwrap();
+        run_cache_git(
+            &source_cache,
+            [
+                "push",
+                DEFAULT_REMOTE_NAME,
+                "refs/heads/darc/team:refs/heads/darc/team",
+            ],
+            "failed to push synthetic LFS config",
+        )
+        .unwrap();
+
+        fetch_share_branch(&target_context, &settings, "team", Some("share")).unwrap();
+        let target_cache = cache_repo_path(&target_root, &remote_url, "darc/team");
+        assert!(!target_cache.join(".lfsconfig").exists());
+        assert!(target_cache.join(ARTIFACT_ROOT).join(PROJECT_FILE).exists());
+
+        let merge = merge_share_branch(&target_context, &settings, "team", Some("share")).unwrap();
+
+        assert!(!target_cache.join(".lfsconfig").exists());
         assert_eq!(merge.imported_turn_count, 1);
         assert_eq!(merge.warning_count, 0);
     }
