@@ -105,6 +105,54 @@ Or skim the surrounding session first:
 darc list turns 11111111 --view oneline --limit 20
 ```
 
+## Share Encrypted Team Context
+
+Darc is local-first, but teams can opt in to sharing project context. Each teammate selects which sessions to export;
+Darc redacts the index projection, encrypts it for configured age recipients, and pushes only encrypted artifacts to a
+Git branch. Darc does not publish your raw SQLite index or plaintext session archives.
+
+Quick setup:
+
+```sh
+# Show or create your public recipient, then add teammates.
+darc share key
+darc share recipient add age1...
+
+# Choose what this project exports.
+darc share include <SESSION_ID>
+darc share include --all
+darc share exclude <SESSION_ID>
+
+# Publish and import the team index.
+darc push team
+darc pull team
+```
+
+Read commands stay local unless you ask for shared history:
+
+```sh
+darc search "migration decision" --shared
+darc list sessions --scope all
+darc show session <SESSION_ID> --shared
+```
+
+By default, `darc push team` uses the active project's Git upstream or `origin` and writes to `darc/team`. To use a
+separate index-only repository:
+
+```sh
+darc remote add team-index git@github.com:example/darc-index.git
+darc push team --remote team-index
+darc pull team --remote team-index
+```
+
+Notes:
+
+- Configure Git authentication ahead of time; Darc uses the local `git` executable and disables interactive credential
+  prompts.
+- Encrypted share objects are stored as normal Git blobs by default. Set `DARC_SHARE_ENABLE_LFS=1` for larger exports.
+- Author filters accept stable Darc share user ids. Display names and emails are convenience labels from each exporter's
+  local Git config, not authenticated identity.
+
 ## Why Darc?
 
 Coding agents often uncover useful context once, then lose it across sessions.
@@ -202,72 +250,6 @@ darc search \
 darc resolve session <SESSION_PREFIX> --pick-one
 darc show session <SESSION_ID> --turn-limit 5 --step-limit 10
 ```
-
-### Share an Encrypted Team Index
-
-Darc can share selected, redacted index rows through a Git backend. Shared payload objects are redacted, gzip-compressed,
-encrypted with age recipients, grouped into large V1 chunks, and pushed to Git branches named `darc/<name>`. By default,
-Darc stores encrypted `.age` objects as normal Git blobs; set `DARC_SHARE_ENABLE_LFS=1` when you want Git LFS publishing.
-Share fetches and pushes use the local `git` executable, so Darc relies on the same SSH keys, credential helpers, SSO,
-proxy settings, and host configuration as commands like `git fetch` and `git push`. When the selected session set is
-unchanged, Darc reuses the previous signed V1 manifest and encrypted objects instead of re-reading and re-redacting every
-turn. Interactive `darc push` runs show stderr progress for export preparation, encrypted object generation, and Git/LFS
-upload.
-
-```sh
-# Each teammate shares their public recipient.
-darc share key
-darc share recipient add age1...
-
-# Choose what this project exports.
-darc share include <SESSION_ID>
-darc share include --all
-darc share exclude <SESSION_ID>
-
-# Push, fetch, and import through Git-like commands.
-darc push team
-darc pull team
-```
-
-By default, `darc push team` uses the active project's Git upstream or `origin`. For a separate index-only repository:
-
-```sh
-darc remote add team-index git@github.com:example/darc-index.git
-darc push team --remote team-index
-darc pull team --remote team-index
-```
-
-For private remotes, configure non-interactive Git authentication first. Darc disables Git terminal/askpass prompts,
-forces SSH batch mode, and does not ask for GitHub usernames, passwords, or tokens. Do not store tokens in remote URLs.
-A quick preflight is:
-
-```sh
-git ls-remote git@github.com:example/darc-index.git
-git ls-remote https://github.com/example/darc-index.git
-```
-
-By default, Darc stores encrypted share objects as regular Git blobs. For larger exports, install Git LFS and opt in for
-the push process:
-
-```sh
-git lfs version
-DARC_SHARE_ENABLE_LFS=1 darc push team
-```
-
-LFS only changes where Git stores encrypted blob bytes. Darc still uses age encryption because GitHub and other Git hosts
-must not receive plaintext session content.
-
-Read commands stay local-only unless you explicitly ask for shared sessions:
-
-```sh
-darc search "migration decision" --shared
-darc list sessions --scope all
-darc show session <session-id> --shared
-darc search "auth fallback" --author usr-0123456789abcdef
-```
-
-Author filters accept the stable Darc share user id. Recorded email and display-name labels are also searchable for
-ergonomics, but they come from each exporter's local Git config and are not authenticated identity.
 
 ## Why Not Just `rg` the Raw Logs?
 
