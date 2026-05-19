@@ -5,24 +5,11 @@ All notable Darc release changes should be summarized here.
 ## Unreleased
 
 - Add Git-backed encrypted shared indexes with `darc share`, `darc remote`, `darc push/fetch/merge/pull`, and explicit shared query filters.
-- Show interactive `darc push` progress for export preparation, encrypted object generation, and Git/LFS upload.
-- Store shared-index payloads as compressed encrypted V1 chunks and use Git LFS for encrypted share objects when available.
-- Use the system `git` executable for shared-index fetches and pushes so Darc honors existing local Git authentication.
-- Harden shared indexes so branch tips retain all exporters, visible metadata avoids credential/local-path leaks, and explicit share selections survive re-indexing.
-- Authenticate shared index payloads, isolate bad exporter artifacts during pull, and redact share remote URLs in CLI output.
-- Keep shared index pulls and pushes isolated from malformed manifests, unauthenticated branch artifacts, unexpected branch files, and oversized cached exports.
-- Bound shared-index manifest discovery, reject unsupported artifact versions and invalid share branch names, and apply author filters when resolving search session prefixes.
-- Keep share cache cleanup inside real cache directories, store imported provenance by canonical remote identity, and reject manifest turns missing from the signed sync payload.
-- Prevent imported shared sessions from replacing another exporter's session with the same id.
-- Keep shared imports tied to fetched branch tips, normalize common share remote URL aliases for provenance, and re-encrypt exports for the current recipient set.
-- Reject symlinked share artifact ancestors before manifest or payload reads and prevent invalid duplicate manifests from masking a valid exporter import.
-- Strip query and fragment secrets from Git URLs, reset tracked cache changes before merge, and defensively redact share exports.
-- Preserve shared index state across rebuilds, reject unaddressable imported session ids, and redact credentialed pathless remotes.
-- Reuse trusted encrypted share objects for unchanged exports and keep unaddressable provider child sessions local.
-- Reuse previous signed share exports for unchanged selected session sets to speed up incremental pushes.
-- Authenticate shared manifest object metadata in sync payloads and bound exporter-directory scans.
-- Require signed sync entries to match visible manifests exactly and reject symlinked share key files.
-- Prune stale shared turns when replacement imports fail and batch pull imports in one SQLite transaction.
+- Store shared-index payloads as compressed encrypted V1 chunks, use Git LFS when available, and reuse unchanged signed exports for faster incremental pushes.
+- Use the system `git` executable for shared-index fetches and pushes, and show interactive `darc push` progress for export preparation, encrypted object generation, and Git/LFS upload.
+- Harden shared-index sync by authenticating manifests and payload metadata, retaining all exporters at branch tips, rejecting malformed artifacts, and isolating bad exporter imports.
+- Keep shared imports consistent by preserving share selections across rebuilds, canonicalizing remote provenance, re-encrypting exports for current recipients, and preventing cross-exporter session replacement.
+- Redact share-visible metadata, Git URL secrets, credentialed or local paths, share remotes, bulky blobs, and exported payloads before storing or displaying them.
 - Redact common secrets, credential material, local home paths, and bulky data blobs before storing or migrating indexed session data.
 - Reduce false-positive redaction of indexed examples, CLI help text, boolean config values, search patterns, and comparison code.
 
