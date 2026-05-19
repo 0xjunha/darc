@@ -467,6 +467,59 @@ fn parses_canonical_list_show_search_stats_and_resolve_commands() {
         }) if session_id_arg.as_deref() == Some("11111111") && turn_limit == 3
     ));
 
+    let shared_session_reads = [
+        Cli::try_parse_from(["darc", "list", "files", "--session", "11111111", "--shared"])
+            .unwrap(),
+        Cli::try_parse_from(["darc", "list", "turns", "11111111", "--shared"]).unwrap(),
+        Cli::try_parse_from(["darc", "show", "session", "11111111", "--shared"]).unwrap(),
+        Cli::try_parse_from(["darc", "show", "turn", "11111111", "0", "--shared"]).unwrap(),
+    ];
+    assert!(matches!(
+        &shared_session_reads[0].command,
+        Commands::List(super::ListArgs {
+            command: super::ListCommands::Files(super::ListFilesArgs {
+                session: Some(session),
+                shared: true,
+                ..
+            }),
+            ..
+        }) if session == "11111111"
+    ));
+    assert!(matches!(
+        &shared_session_reads[1].command,
+        Commands::List(super::ListArgs {
+            command: super::ListCommands::Turns(super::QueryTurnsArgs {
+                session_id_arg: Some(session),
+                shared: true,
+                ..
+            }),
+            ..
+        }) if session == "11111111"
+    ));
+    assert!(matches!(
+        &shared_session_reads[2].command,
+        Commands::Show(super::ShowArgs {
+            command: super::ShowCommands::Session(super::QuerySessionBundleArgs {
+                session_id_arg: Some(session),
+                shared: true,
+                ..
+            }),
+            ..
+        }) if session == "11111111"
+    ));
+    assert!(matches!(
+        &shared_session_reads[3].command,
+        Commands::Show(super::ShowArgs {
+            command: super::ShowCommands::Turn(super::QueryTurnArgs {
+                session_id_arg: Some(session),
+                turn_ordinal_arg: Some(turn),
+                shared: true,
+                ..
+            }),
+            ..
+        }) if session == "11111111" && turn == "0"
+    ));
+
     let search = Cli::try_parse_from([
         "darc",
         "search",

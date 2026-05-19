@@ -2377,7 +2377,9 @@ fn import_from_cache_with_progress(
             session_progress.finish_manifest(&manifest, progress);
             continue;
         }
-        if !imported_exporters.insert(exporter_id) {
+        if imported_exporters.contains(&exporter_id) {
+            skipped_turn_count += u64::try_from(manifest.turns.len())
+                .context("skipped turn count exceeds u64 range")?;
             warnings.push(format!(
                 "skipped duplicate share manifest {} for exporter {}",
                 cached.relative_path, sync_payload.exporter.user_id
@@ -2402,6 +2404,8 @@ fn import_from_cache_with_progress(
             .iter()
             .map(sync_turn_prune_key)
             .collect::<BTreeSet<_>>();
+        let skipped_turn_count_before_manifest = skipped_turn_count;
+        let warning_count_before_manifest = warnings.len();
         let imported_at = current_utc_timestamp();
         let user = ShareUserRecord {
             user_id: sync_payload.exporter.user_id.clone(),
@@ -2476,6 +2480,11 @@ fn import_from_cache_with_progress(
             &sync_payload.exporter.user_id,
             &keep_turns,
         )?;
+        if skipped_turn_count == skipped_turn_count_before_manifest
+            && warnings.len() == warning_count_before_manifest
+        {
+            imported_exporters.insert(exporter_id);
+        }
     }
     Ok(ShareMergeReport {
         branch: branch.to_owned(),
@@ -4535,6 +4544,8 @@ fn noninteractive_ssh_command(command: Option<OsString>) -> OsString {
     let command_string = command.to_string_lossy();
     if command_string.contains("BatchMode=yes") {
         command
+    } else if let Some((program, args)) = command_string.split_once(' ') {
+        OsString::from(format!("{program} -o BatchMode=yes {args}"))
     } else {
         OsString::from(format!("{command_string} -o BatchMode=yes"))
     }
@@ -6444,6 +6455,49 @@ mod tests {
         assert!(
             report.warnings[0].contains("signature"),
             "warning should reject forged signature: {:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn merge_uses_valid_legacy_manifest_after_invalid_exporter_manifest() {
+        let TestShareArtifact {
+            cache,
+            target_context,
+            source_identity,
+            mut artifact,
+            ..
+        } = build_single_turn_test_artifact("share-invalid-exporter-valid-legacy");
+        write_export_artifact(&cache, &artifact).unwrap();
+        write_json_file(
+            &cache.join(ARTIFACT_ROOT).join(LEGACY_MANIFEST_FILE),
+            &artifact.manifest,
+        )
+        .unwrap();
+        artifact.manifest.turns[0].payload_hash = "invalid-visible-hash".to_owned();
+        write_json_file(
+            &cache.join(exporter_manifest_relative_path(&source_identity)),
+            &artifact.manifest,
+        )
+        .unwrap();
+
+        let report = import_from_cache(
+            &target_context,
+            "team",
+            "darc/team",
+            "origin",
+            "https://example.invalid/team/share.git",
+            "git:https://example.invalid/team/repo",
+            &cache,
+        )
+        .unwrap();
+
+        assert_eq!(report.imported_turn_count, 1);
+        assert_eq!(report.skipped_turn_count, 1);
+        assert_eq!(report.warning_count, 1);
+        assert!(
+            report.warnings[0].contains("signed sync entries"),
+            "warning should reject the invalid exporter manifest before importing legacy fallback: {:?}",
             report.warnings
         );
     }
@@ -9581,7 +9635,7 @@ mod tests {
         );
         assert_eq!(
             noninteractive_ssh_command(Some(OsString::from("ssh -F config"))),
-            OsString::from("ssh -F config -o BatchMode=yes")
+            OsString::from("ssh -o BatchMode=yes -F config")
         );
         assert_eq!(
             noninteractive_ssh_command(Some(OsString::from("ssh -o BatchMode=yes"))),
@@ -9589,7 +9643,7 @@ mod tests {
         );
         assert_eq!(
             noninteractive_ssh_command(Some(OsString::from("ssh -o BatchMode=no"))),
-            OsString::from("ssh -o BatchMode=no -o BatchMode=yes")
+            OsString::from("ssh -o BatchMode=yes -o BatchMode=no")
         );
     }
 
