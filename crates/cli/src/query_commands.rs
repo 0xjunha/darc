@@ -193,6 +193,7 @@ pub(crate) fn run_query_resolve_session(
             query: &args.input,
             project_id: args.project_id.as_deref(),
             provider: args.provider.map(provider_arg_to_source_kind),
+            origin_scope: query_origin_scope(args.shared, args.scope, None),
             limit: DEFAULT_RESOLVE_SESSION_MATCH_LIMIT,
         },
     )?;

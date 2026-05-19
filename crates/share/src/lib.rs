@@ -1624,6 +1624,11 @@ fn write_export_chunk(
     };
     let chunk_json =
         serde_json::to_vec(&chunk_payload).context("failed to serialize share chunk payload")?;
+    if u64::try_from(chunk_json.len()).unwrap_or(u64::MAX) > MAX_SHARE_CHUNK_DECOMPRESSED_BYTES {
+        bail!(
+            "share chunk exceeds maximum supported decompressed size of {MAX_SHARE_CHUNK_DECOMPRESSED_BYTES} bytes"
+        );
+    }
     let compressed_plaintext = gzip_compress(&chunk_json)?;
     let plaintext_hash = sha256_hex(&compressed_plaintext);
     let object_path =
@@ -3839,10 +3844,11 @@ fn reset_cached_checkout(path: &Path) -> Result<()> {
     if !head.status.success() {
         return Ok(());
     }
-    run_cache_git(
+    run_cache_git_with_lfs_filter_override(
         path,
         ["reset", "--hard", "HEAD"],
         "failed to reset share cache checkout",
+        true,
     )?;
     Ok(())
 }
@@ -4582,10 +4588,12 @@ fn noninteractive_ssh_command(command: Option<OsString>) -> OsString {
     let command_string = command.to_string_lossy();
     if command_string.contains("BatchMode=yes") {
         command
-    } else if let Some((program, args)) = command_string.split_once(' ') {
-        OsString::from(format!("{program} -o BatchMode=yes {args}"))
+    } else if let Some(args) = command_string.strip_prefix("ssh ") {
+        OsString::from(format!("ssh -o BatchMode=yes {args}"))
+    } else if command_string == "ssh" {
+        OsString::from("ssh -o BatchMode=yes")
     } else {
-        OsString::from(format!("{command_string} -o BatchMode=yes"))
+        command
     }
 }
 
@@ -5421,6 +5429,43 @@ mod tests {
         assert_eq!(
             sha256_hex(&plaintext),
             second.manifest.chunks[0].plaintext_hash
+        );
+    }
+
+    #[test]
+    fn export_rejects_single_turn_chunk_over_pull_size_limit() {
+        let workspace = unique_test_dir("share-oversize-single-turn");
+        let age_identity = Identity::generate();
+        let signing_key = test_signing_key(&age_identity);
+        let identity = test_share_identity(&age_identity);
+        let context = ShareProjectContext {
+            root: workspace.clone(),
+            index_db_path: workspace.join("index.sqlite"),
+            project_id: "repo".to_owned(),
+            project_name: "repo".to_owned(),
+            local_path: workspace.join("repo"),
+            git_upstream: Some("https://example.invalid/team/repo.git".to_owned()),
+        };
+        let mut turn = synthetic_share_turn("repo", "00000000-0000-4000-8000-000000000303", 1);
+        let oversized_message_len = usize::try_from(MAX_SHARE_CHUNK_DECOMPRESSED_BYTES).unwrap();
+        turn.user_message = "x".repeat(oversized_message_len);
+
+        let error = build_export_artifact(ExportBuildRequest {
+            context: &context,
+            settings: &ShareSettings::default(),
+            project_key: "git:https://example.invalid/team/repo",
+            identity: &identity,
+            signing_key: &signing_key,
+            branch: "team",
+            turns: vec![turn],
+        })
+        .err()
+        .expect("oversized single-turn chunk should fail before push");
+
+        assert!(
+            error
+                .to_string()
+                .contains("share chunk exceeds maximum supported decompressed size")
         );
     }
 
@@ -8883,6 +8928,37 @@ mod tests {
     }
 
     #[test]
+    fn exclude_all_clears_previous_session_inclusions() {
+        let workspace = unique_test_dir("share-exclude-all-clears-inclusions");
+        let context = ShareProjectContext {
+            root: workspace.clone(),
+            index_db_path: workspace.join("index.sqlite"),
+            project_id: "repo".to_owned(),
+            project_name: "repo".to_owned(),
+            local_path: workspace.join("repo"),
+            git_upstream: Some("https://example.invalid/team/repo.git".to_owned()),
+        };
+        let session_id = "00000000-0000-4000-8000-000000000303";
+        seed_share_export_session(&context.index_db_path, "repo", session_id);
+        update_session_share_state(
+            &context,
+            SourceKind::Codex,
+            session_id,
+            ShareState::Included,
+        )
+        .unwrap();
+
+        exclude_all_sessions(&context).unwrap();
+
+        let connection = open_index_database_writer(&context.index_db_path).unwrap();
+        let status = query_share_status(&connection, "repo").unwrap();
+        let turns = query_share_export_turns(&connection, "repo").unwrap();
+        assert_eq!(status.included_session_count, 0);
+        assert_eq!(status.selected_session_count, 0);
+        assert!(turns.is_empty());
+    }
+
+    #[test]
     fn missing_remote_branch_drops_stale_cache_parent() {
         let workspace = unique_test_dir("share-missing-remote-branch");
         let remote_path = workspace.join("share.git");
@@ -9670,6 +9746,56 @@ mod tests {
     }
 
     #[test]
+    fn reset_cached_checkout_disables_lfs_smudge_filters() {
+        let workspace = unique_test_dir("share-reset-disables-lfs-smudge");
+        init_test_git_repo(&workspace);
+        fs::write(workspace.join(".gitattributes"), "*.bin filter=lfs\n").unwrap();
+        fs::write(workspace.join("object.bin"), "synthetic payload").unwrap();
+        run_git(
+            &workspace,
+            ["config", "filter.lfs.clean", "cat"],
+            "failed to configure synthetic LFS clean filter",
+        )
+        .unwrap();
+        run_git(
+            &workspace,
+            [
+                "config",
+                "filter.lfs.smudge",
+                "darc-synthetic-missing-smudge",
+            ],
+            "failed to configure synthetic LFS smudge filter",
+        )
+        .unwrap();
+        run_git(
+            &workspace,
+            ["config", "filter.lfs.required", "true"],
+            "failed to configure synthetic LFS required filter",
+        )
+        .unwrap();
+        run_git(
+            &workspace,
+            ["add", ".gitattributes", "object.bin"],
+            "failed to stage synthetic LFS file",
+        )
+        .unwrap();
+        run_git(
+            &workspace,
+            ["commit", "-m", "test: add synthetic file"],
+            "failed to commit synthetic LFS file",
+        )
+        .unwrap();
+        fs::remove_file(workspace.join("object.bin")).unwrap();
+
+        reset_cached_checkout(&workspace).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(workspace.join("object.bin")).unwrap(),
+            "synthetic payload"
+        );
+    }
+
+    #[test]
     fn ssh_command_runs_in_batch_mode() {
         assert_eq!(
             noninteractive_ssh_command(None),
@@ -9686,6 +9812,14 @@ mod tests {
         assert_eq!(
             noninteractive_ssh_command(Some(OsString::from("ssh -o BatchMode=no"))),
             OsString::from("ssh -o BatchMode=yes -o BatchMode=no")
+        );
+        assert_eq!(
+            noninteractive_ssh_command(Some(OsString::from("DARC_SSH_OPTION=1 ssh -F config"))),
+            OsString::from("DARC_SSH_OPTION=1 ssh -F config")
+        );
+        assert_eq!(
+            noninteractive_ssh_command(Some(OsString::from("\"/tmp/synthetic ssh\" -F config"))),
+            OsString::from("\"/tmp/synthetic ssh\" -F config")
         );
     }
 

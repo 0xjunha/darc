@@ -321,14 +321,36 @@ fn sharing_state_table_columns_match(connection: &Connection) -> Result<bool> {
     Ok(true)
 }
 
-/// Returns ordered SQLite column names for one trusted table.
-fn sqlite_table_columns(connection: &Connection, schema: &str, table: &str) -> Result<Vec<String>> {
+/// Describes one SQLite table column contract used for rebuild preservation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SqliteColumnContract {
+    name: String,
+    declared_type: String,
+    not_null: i64,
+    default_value: Option<String>,
+    primary_key_position: i64,
+}
+
+/// Returns ordered SQLite column contracts for one trusted table.
+fn sqlite_table_columns(
+    connection: &Connection,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<SqliteColumnContract>> {
     let sql = format!("PRAGMA {schema}.table_info({table})");
     let mut statement = connection
         .prepare(&sql)
         .with_context(|| format!("failed to inspect SQLite table `{schema}.{table}`"))?;
     let rows = statement
-        .query_map([], |row| row.get::<_, String>(1))
+        .query_map([], |row| {
+            Ok(SqliteColumnContract {
+                name: row.get(1)?,
+                declared_type: row.get(2)?,
+                not_null: row.get(3)?,
+                default_value: row.get(4)?,
+                primary_key_position: row.get(5)?,
+            })
+        })
         .with_context(|| format!("failed to read SQLite table info for `{schema}.{table}`"))?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .with_context(|| format!("failed to read SQLite columns for `{schema}.{table}`"))
@@ -881,7 +903,7 @@ mod tests {
         INDEX_DB_SCHEMA_VERSION, IndexDatabaseRebuildRecommendation,
         count_project_index_rows_read_only, migrations, open_existing_index_database,
         open_index_database, open_index_database_writer, preserve_index_sharing_state,
-        remove_index_database, schema,
+        remove_index_database, schema, sqlite_table_columns,
     };
     use crate::test_support::{
         IndexedSessionFixture, IndexedTurnFixture, create_pre_analytics_index_schema,
@@ -1425,6 +1447,29 @@ mod tests {
                 .to_string()
                 .contains("sharing-state schema does not match")
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn sqlite_table_columns_include_column_contract_details() -> Result<()> {
+        let connection = Connection::open_in_memory()?;
+        connection.execute(
+            "CREATE TABLE left_contract (id TEXT NOT NULL PRIMARY KEY, value INTEGER DEFAULT 1)",
+            [],
+        )?;
+        connection.execute(
+            "CREATE TABLE right_contract (id TEXT NOT NULL PRIMARY KEY, value TEXT DEFAULT 1)",
+            [],
+        )?;
+
+        let left = sqlite_table_columns(&connection, "main", "left_contract")?;
+        let right = sqlite_table_columns(&connection, "main", "right_contract")?;
+
+        assert_ne!(left, right);
+        assert_eq!(left[1].name, "value");
+        assert_eq!(left[1].declared_type, "INTEGER");
+        assert_eq!(right[1].declared_type, "TEXT");
 
         Ok(())
     }

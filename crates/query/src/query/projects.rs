@@ -291,12 +291,12 @@ const RESOLVE_SESSIONS_SQL: &str = "
     WHERE (?1 IS NULL OR project_id = ?1)
         AND (?2 IS NULL OR provider = ?2)
         AND session_id LIKE ?3 || '%' COLLATE NOCASE
-        AND origin_kind = 'local'
+        AND (?4 = 'all' OR origin_kind = ?4)
     ORDER BY
         project_id ASC,
         provider ASC,
         session_id ASC
-    LIMIT ?4
+    LIMIT ?5
 ";
 
 const RESOLVE_SESSIONS_COUNT_SQL: &str = "
@@ -310,7 +310,7 @@ const RESOLVE_SESSIONS_COUNT_SQL: &str = "
         WHERE (?1 IS NULL OR project_id = ?1)
             AND (?2 IS NULL OR provider = ?2)
             AND session_id LIKE ?3 || '%' COLLATE NOCASE
-            AND origin_kind = 'local'
+            AND (?4 = 'all' OR origin_kind = ?4)
     )
 ";
 
@@ -972,14 +972,26 @@ fn build_resolve_sessions_query(
     let limit =
         i64::try_from(request.limit).context("resolve-session limit exceeds SQLite range")?;
     let provider = request.provider.map(SourceKind::directory_name);
-    let total =
-        query_resolve_sessions_total(connection, request.project_id, provider, request.query)?;
+    let origin_scope = request.origin_scope.sql_filter_value();
+    let total = query_resolve_sessions_total(
+        connection,
+        request.project_id,
+        provider,
+        request.query,
+        origin_scope,
+    )?;
     let mut statement = connection
         .prepare(RESOLVE_SESSIONS_SQL)
         .context("failed to prepare resolve-session query")?;
     let rows = statement
         .query_map(
-            params![request.project_id, provider, request.query, limit],
+            params![
+                request.project_id,
+                provider,
+                request.query,
+                origin_scope,
+                limit
+            ],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -1017,11 +1029,12 @@ fn query_resolve_sessions_total(
     project_id: Option<&str>,
     provider: Option<&str>,
     query: &str,
+    origin_scope: &str,
 ) -> Result<u64> {
     let total = connection
         .query_row(
             RESOLVE_SESSIONS_COUNT_SQL,
-            params![project_id, provider, query],
+            params![project_id, provider, query, origin_scope],
             |row| row.get::<_, i64>(0),
         )
         .context("failed to query session resolution match count")?;

@@ -2092,6 +2092,27 @@ fn project_wide_file_and_insight_queries_default_to_local_sessions() -> Result<(
             project_id: Some("repo-a"),
             provider: Some(SourceKind::Codex),
             query: "00000000-0000-4000-8000-00000000050",
+            origin_scope: SessionOriginScope::Local,
+            limit: 10,
+        },
+    )?;
+    let shared_resolved = query_resolve_sessions(
+        &index_path,
+        ResolveSessionQueryRequest {
+            project_id: Some("repo-a"),
+            provider: Some(SourceKind::Codex),
+            query: "00000000-0000-4000-8000-00000000050",
+            origin_scope: SessionOriginScope::Shared,
+            limit: 10,
+        },
+    )?;
+    let all_resolved = query_resolve_sessions(
+        &index_path,
+        ResolveSessionQueryRequest {
+            project_id: Some("repo-a"),
+            provider: Some(SourceKind::Codex),
+            query: "00000000-0000-4000-8000-00000000050",
+            origin_scope: SessionOriginScope::All,
             limit: 10,
         },
     )?;
@@ -2119,6 +2140,17 @@ fn project_wide_file_and_insight_queries_default_to_local_sessions() -> Result<(
     );
     assert_eq!(resolved.total, 1);
     assert_eq!(resolved.matches[0].session_id, local_session);
+    assert_eq!(shared_resolved.total, 1);
+    assert_eq!(shared_resolved.matches[0].session_id, shared_session);
+    assert_eq!(all_resolved.total, 2);
+    assert_eq!(
+        all_resolved
+            .matches
+            .iter()
+            .map(|resolved| resolved.session_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![local_session, shared_session]
+    );
     assert_eq!(
         project
             .most_read_files

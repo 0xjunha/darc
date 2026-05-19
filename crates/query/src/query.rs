@@ -266,6 +266,7 @@ pub struct ResolveSessionQueryRequest<'a> {
     pub query: &'a str,
     pub project_id: Option<&'a str>,
     pub provider: Option<SourceKind>,
+    pub origin_scope: SessionOriginScope,
     pub limit: usize,
 }
 

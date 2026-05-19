@@ -1063,6 +1063,22 @@ pub(crate) struct QueryResolveSessionArgs {
 
     #[arg(
         long,
+        conflicts_with = "scope",
+        help_heading = "Scope",
+        help = "Resolve only imported shared sessions"
+    )]
+    pub(crate) shared: bool,
+
+    #[arg(
+        long,
+        value_enum,
+        help_heading = "Scope",
+        help = "Choose local, shared, or all sessions"
+    )]
+    pub(crate) scope: Option<SessionScopeArg>,
+
+    #[arg(
+        long,
         help_heading = "Output",
         help = "Require exactly one match and return it as one convenience object"
     )]

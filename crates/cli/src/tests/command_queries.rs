@@ -570,12 +570,16 @@ fn parses_canonical_list_show_search_stats_and_resolve_commands() {
         }) if turn_limit == 5
     ));
 
-    let resolve = Cli::try_parse_from(["darc", "resolve", "session", "11111111"]).unwrap();
+    let resolve = Cli::try_parse_from([
+        "darc", "resolve", "session", "11111111", "--scope", "shared",
+    ])
+    .unwrap();
     assert!(matches!(
         resolve.command,
         Commands::Resolve(super::ResolveArgs {
             command: super::ResolveCommands::Session(super::QueryResolveSessionArgs {
                 input,
+                scope: Some(super::SessionScopeArg::Shared),
                 ..
             }),
             ..
