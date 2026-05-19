@@ -96,8 +96,9 @@ darc-share/v1/objects/sync-<recipient-fingerprint>-<payload-sha256>.age
 ```
 
 Object paths are direct files under `darc-share/v1/objects/`; nested object directories are not valid V1 artifacts.
-`.gitattributes` marks `darc-share/v1/objects/*.age` for Git LFS. Darc runs `git lfs install --local`, `git lfs pull`,
-and `git lfs push` when `git-lfs` is installed; otherwise the same encrypted objects are committed through regular Git.
+`.gitattributes` can mark `darc-share/v1/objects/*.age` for Git LFS. Darc hydrates existing LFS objects when `git-lfs` is
+available, and publishes through LFS only when `DARC_SHARE_ENABLE_LFS=1`; otherwise the same encrypted objects are
+committed through regular Git.
 
 `project.json` is visible and contains only routing metadata:
 
@@ -368,8 +369,8 @@ push, where preserving correctness matters more than creating a new commit.
    - Integration test export/fetch/pull against a local bare Git repository.
    - Query tests for local default, shared scope, all scope, and author filters.
 6. Performance validation:
-   - Benchmark share export/push against a temporary root copied from a real Darc index with
-     `scripts/bench-share-export.sh`.
+   - Benchmark share export/push against a temporary root copied from a synthetic or scrubbed Darc root with
+     `scripts/bench-share-export.sh --root <synthetic-or-scrubbed-root>`.
    - Compare regular-Git and Git-LFS modes for the same selected session count.
    - Keep benchmark artifacts under `tmp/agent-runs/` rather than committing generated share caches.
 

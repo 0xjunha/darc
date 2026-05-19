@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, ErrorCode, OpenFlags, params};
 
 use self::{
@@ -250,7 +250,9 @@ pub fn preserve_index_sharing_state(source: &Path, destination: &Path) -> Result
         destination_connection
             .execute_batch("DETACH DATABASE old_index;")
             .context("failed to detach old index after schema mismatch")?;
-        return Ok(false);
+        bail!(
+            "old index sharing-state schema does not match rebuilt index; refusing to drop existing shared sessions during rebuild"
+        );
     }
     let transaction = destination_connection
         .transaction()
@@ -878,7 +880,8 @@ mod tests {
     use super::{
         INDEX_DB_SCHEMA_VERSION, IndexDatabaseRebuildRecommendation,
         count_project_index_rows_read_only, migrations, open_existing_index_database,
-        open_index_database, remove_index_database, schema,
+        open_index_database, open_index_database_writer, preserve_index_sharing_state,
+        remove_index_database, schema,
     };
     use crate::test_support::{
         IndexedSessionFixture, IndexedTurnFixture, create_pre_analytics_index_schema,
@@ -1401,6 +1404,27 @@ mod tests {
         for candidate in [&path, &wal_path, &shm_path, &journal_path] {
             assert!(!candidate.exists());
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn preserve_index_sharing_state_errors_on_schema_mismatch() -> Result<()> {
+        let source = unique_db_path("index-db-preserve-source-mismatch");
+        let destination = unique_db_path("index-db-preserve-destination-mismatch");
+        let source_connection = open_index_database_writer(&source)?;
+        source_connection.execute("ALTER TABLE users ADD COLUMN legacy_extra TEXT", [])?;
+        drop(source_connection);
+        drop(open_index_database_writer(&destination)?);
+
+        let error = preserve_index_sharing_state(&source, &destination)
+            .expect_err("schema mismatch should not silently skip sharing-state preservation");
+
+        assert!(
+            error
+                .to_string()
+                .contains("sharing-state schema does not match")
+        );
 
         Ok(())
     }

@@ -60,6 +60,11 @@ case "$mode" in
     ;;
 esac
 
+if [[ "$mode" != "plain" ]] && ! git lfs version >/dev/null 2>&1; then
+  echo "--mode $mode requires git-lfs on PATH for LFS benchmark runs" >&2
+  exit 2
+fi
+
 if ! [[ "$sessions" =~ ^[0-9]+$ ]] || [[ "$sessions" -lt 1 ]]; then
   echo "--sessions must be a positive integer" >&2
   exit 2
@@ -161,7 +166,7 @@ PY
     if [[ "$run_mode" == "plain" ]]; then
       push_output="$(DARC_SHARE_DISABLE_LFS=1 "$darc_bin" push "$branch" --remote bench --root "$root")"
     else
-      push_output="$("$darc_bin" push "$branch" --remote bench --root "$root")"
+      push_output="$(DARC_SHARE_ENABLE_LFS=1 "$darc_bin" push "$branch" --remote bench --root "$root")"
     fi
     ended="$(python3 - <<'PY'
 import time

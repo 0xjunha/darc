@@ -206,13 +206,13 @@ darc show session <SESSION_ID> --turn-limit 5 --step-limit 10
 ### Share an Encrypted Team Index
 
 Darc can share selected, redacted index rows through a Git backend. Shared payload objects are redacted, gzip-compressed,
-encrypted with age recipients, grouped into large V1 chunks, and pushed to Git branches named `darc/<name>`. When
-`git-lfs` is installed, Darc marks encrypted `.age` objects for Git LFS automatically; otherwise it falls back to normal
-Git objects. Share fetches and pushes use the local `git` executable, so Darc relies on the same SSH keys, credential
-helpers, SSO, proxy settings, and host configuration as commands like `git fetch` and `git push`. When the selected
-session set is unchanged, Darc reuses the previous signed V1 manifest and encrypted objects instead of re-reading and
-re-redacting every turn. Interactive `darc push` runs show stderr progress for export preparation, encrypted object
-generation, and Git/LFS upload.
+encrypted with age recipients, grouped into large V1 chunks, and pushed to Git branches named `darc/<name>`. By default,
+Darc stores encrypted `.age` objects as normal Git blobs; set `DARC_SHARE_ENABLE_LFS=1` when you want Git LFS publishing.
+Share fetches and pushes use the local `git` executable, so Darc relies on the same SSH keys, credential helpers, SSO,
+proxy settings, and host configuration as commands like `git fetch` and `git push`. When the selected session set is
+unchanged, Darc reuses the previous signed V1 manifest and encrypted objects instead of re-reading and re-redacting every
+turn. Interactive `darc push` runs show stderr progress for export preparation, encrypted object generation, and Git/LFS
+upload.
 
 ```sh
 # Each teammate shares their public recipient.
@@ -406,10 +406,10 @@ cargo +stable test --locked --workspace
 cargo +stable check --locked --workspace --all-targets --all-features --profile dist
 ```
 
-Shared-index export benchmarks use a temporary Darc root copied from your real local index and push to local bare Git
-remotes:
+Shared-index export benchmarks use a temporary Darc root copied from an explicit synthetic or scrubbed root and push to
+local bare Git remotes:
 
 ```sh
 cargo build --release -p darc
-scripts/bench-share-export.sh --sessions 50 --repeat 2 --mode both --darc ./target/release/darc
+scripts/bench-share-export.sh --root /tmp/darc-synthetic-root --sessions 50 --repeat 2 --mode both --darc ./target/release/darc
 ```

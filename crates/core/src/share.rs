@@ -112,6 +112,7 @@ pub fn add_share_remote(root: Option<PathBuf>, name: String, url: String) -> Res
     if url.trim().is_empty() {
         bail!("remote URL must not be empty");
     }
+    darc_share::validate_share_remote_url(&url)?;
     let mut resolved = resolve_share_config(root)?;
     let mut settings = share_settings_from_config(&resolved.config.share);
     darc_share::upsert_remote(

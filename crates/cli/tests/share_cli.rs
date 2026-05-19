@@ -1,4 +1,4 @@
-use std::process::Command;
+use std::{fs, process::Command};
 
 use anyhow::{Context, Result};
 use darc_test_utils::{unique_test_dir, write_file};
@@ -38,7 +38,7 @@ fn assert_redacted_remote_output(output: &str) {
 }
 
 #[test]
-fn remote_add_and_list_redact_credentialed_urls() -> Result<()> {
+fn remote_add_rejects_credentialed_urls() -> Result<()> {
     let root = unique_test_dir("cli-share-remote-redaction");
     write_config_fixture(&root)?;
     let root_arg = root.to_str().context("test root is not UTF-8")?;
@@ -56,13 +56,35 @@ fn remote_add_and_list_redact_credentialed_urls() -> Result<()> {
         ])
         .output()
         .context("failed to run darc remote add")?;
+    assert!(!add_output.status.success());
+    let add_stderr = String::from_utf8(add_output.stderr)?;
+    assert!(add_stderr.contains("must not include"));
+    assert_redacted_remote_output(&add_stderr);
+    let config = fs::read_to_string(root.join("config.toml"))?;
+    assert!(!config.contains("user:token"));
+    assert!(!config.contains("access_token"));
+
+    Ok(())
+}
+
+#[test]
+fn remote_add_and_list_display_urls_without_credentials() -> Result<()> {
+    let root = unique_test_dir("cli-share-remote-display");
+    write_config_fixture(&root)?;
+    let root_arg = root.to_str().context("test root is not UTF-8")?;
+    let remote_url = "https://example.invalid/team/share.git";
+
+    let add_output = Command::new(darc_binary())
+        .args(["remote", "--root", root_arg, "add", "team", remote_url])
+        .output()
+        .context("failed to run darc remote add")?;
     assert!(
         add_output.status.success(),
         "remote add failed: {}",
         String::from_utf8_lossy(&add_output.stderr)
     );
     let add_stdout = String::from_utf8(add_output.stdout)?;
-    assert_redacted_remote_output(&add_stdout);
+    assert!(add_stdout.contains(remote_url));
 
     let list_output = Command::new(darc_binary())
         .args(["remote", "--root", root_arg, "list"])
@@ -74,7 +96,7 @@ fn remote_add_and_list_redact_credentialed_urls() -> Result<()> {
         String::from_utf8_lossy(&list_output.stderr)
     );
     let list_stdout = String::from_utf8(list_output.stdout)?;
-    assert_redacted_remote_output(&list_stdout);
+    assert!(list_stdout.contains(remote_url));
 
     Ok(())
 }

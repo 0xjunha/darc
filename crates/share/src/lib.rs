@@ -2936,6 +2936,7 @@ fn resolve_remote(
             .iter()
             .find(|remote| remote.name == remote_name)
             .with_context(|| format!("Darc share remote `{remote_name}` is not configured"))?;
+        validate_share_remote_url(&remote.url)?;
         return Ok(ResolvedRemote {
             name: remote.name.clone(),
             display_url: sanitize_git_url_for_display(&remote.url),
@@ -2944,6 +2945,7 @@ fn resolve_remote(
         });
     }
     if let Some(url) = context.git_upstream.clone() {
+        validate_share_remote_url(&url)?;
         return Ok(ResolvedRemote {
             name: DEFAULT_REMOTE_NAME.to_owned(),
             display_url: sanitize_git_url_for_display(&url),
@@ -2953,6 +2955,7 @@ fn resolve_remote(
     }
     let url = origin_configured_remote_url(&context.local_path)
         .context("active project has no git_upstream and no origin remote")?;
+    validate_share_remote_url(&url)?;
     Ok(ResolvedRemote {
         name: DEFAULT_REMOTE_NAME.to_owned(),
         display_url: sanitize_git_url_for_display(&url),
@@ -3006,7 +3009,12 @@ fn normalize_scp_like_git_url(url: &str) -> Option<String> {
         return None;
     }
     let (user_host, path) = url.split_once(':')?;
-    let (_, host) = user_host.rsplit_once('@')?;
+    let host = user_host
+        .rsplit_once('@')
+        .map_or(user_host, |(_, host)| host);
+    if host.is_empty() || path.is_empty() {
+        return None;
+    }
     Some(format!(
         "https://{}/{}",
         host.to_ascii_lowercase(),
@@ -3050,6 +3058,34 @@ pub fn sanitize_git_url_for_display(url: &str) -> String {
         return format!("{user}@{host}:{path}");
     }
     trimmed.to_owned()
+}
+
+/// Rejects share remote URLs that would persist credential-bearing URL parts.
+pub fn validate_share_remote_url(url: &str) -> Result<()> {
+    let trimmed = url.trim();
+    let display_url = sanitize_git_url_for_display(trimmed);
+    if trimmed.contains(['?', '#']) {
+        bail!(
+            "share remote URL `{display_url}` must not include query strings or fragments; configure Git credentials outside the URL"
+        );
+    }
+    let Some((scheme, rest)) = trimmed.split_once("://") else {
+        return Ok(());
+    };
+    let authority = rest.split('/').next().unwrap_or(rest);
+    let scheme = scheme.to_ascii_lowercase();
+    let userinfo = authority.rsplit_once('@').map(|(userinfo, _)| userinfo);
+    if matches!(scheme.as_str(), "http" | "https") && userinfo.is_some() {
+        bail!(
+            "share remote URL `{display_url}` must not include HTTP credentials; configure Git credentials outside the URL"
+        );
+    }
+    if scheme == "ssh" && userinfo.is_some_and(|userinfo| userinfo.contains(':')) {
+        bail!(
+            "share remote URL `{display_url}` must not include SSH password credentials; configure Git credentials outside the URL"
+        );
+    }
+    Ok(())
 }
 
 /// Reads and parses one age identity file.
@@ -5025,6 +5061,10 @@ mod tests {
             "https://github.com/Example/Darc"
         );
         assert_eq!(
+            normalize_git_url("github.com:Example/Darc.git").unwrap(),
+            "https://github.com/Example/Darc"
+        );
+        assert_eq!(
             normalize_git_url("https://github.com/Example/Darc.git/").unwrap(),
             "https://github.com/Example/Darc"
         );
@@ -5066,6 +5106,21 @@ mod tests {
                 "https://github.com/Example/Darc.git?access_token=secret",
                 "darc/team"
             )
+        );
+    }
+
+    #[test]
+    fn share_remote_urls_reject_persisted_credentials() {
+        validate_share_remote_url("git@github.com:Example/Darc.git").unwrap();
+        validate_share_remote_url("github.com:Example/Darc.git").unwrap();
+        validate_share_remote_url("ssh://git@github.com/Example/Darc.git").unwrap();
+        assert!(validate_share_remote_url("https://user@example.invalid/team/share.git").is_err());
+        assert!(
+            validate_share_remote_url("https://example.invalid/team/share.git?token=secret")
+                .is_err()
+        );
+        assert!(
+            validate_share_remote_url("ssh://user:pass@example.invalid/team/share.git").is_err()
         );
     }
 
@@ -5803,7 +5858,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_remote_sanitizes_credentialed_display_url() {
+    fn resolve_remote_rejects_credentialed_url() {
         let workspace = unique_test_dir("share-sanitized-remote-report");
         let repo = workspace.join("repo");
         init_test_git_repo(&repo);
@@ -5823,13 +5878,9 @@ mod tests {
             recipients: Vec::new(),
         };
 
-        let remote = resolve_remote(&context, &settings, Some("team")).unwrap();
+        let error = resolve_remote(&context, &settings, Some("team")).unwrap_err();
 
-        assert_eq!(
-            remote.url,
-            "https://user:token@example.invalid/team/share.git"
-        );
-        assert_eq!(remote.display_url, "https://example.invalid/team/share.git");
+        assert!(format!("{error:#}").contains("must not include HTTP credentials"));
     }
 
     #[test]
