@@ -203,6 +203,10 @@ pub enum SharePushProgress {
         exported_turns: u64,
         total_turns: u64,
     },
+    ExportingSessions {
+        exported_sessions: u64,
+        total_sessions: u64,
+    },
     WritingMetadata {
         object_count: u64,
     },
@@ -216,6 +220,30 @@ pub enum SharePushProgress {
     },
     Finished {
         commit_id: String,
+    },
+}
+
+/// Describes one progress event emitted while pulling a share branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SharePullProgress {
+    Started {
+        git_branch: String,
+        remote_name: String,
+        remote_url: String,
+    },
+    PreparingCache,
+    FetchingRemote,
+    HydratingLfs,
+    ReadingCache,
+    ImportingSessions {
+        processed_sessions: u64,
+        total_sessions: u64,
+    },
+    Finished {
+        imported_turn_count: u64,
+        skipped_turn_count: u64,
+        warning_count: u64,
     },
 }
 
@@ -401,6 +429,18 @@ fn sync_session_entry_from_state(state: &ShareSessionExportState) -> Option<Sync
         source_size: state.source_size?,
         source_mtime_ms: state.source_mtime_ms?,
     })
+}
+
+/// Returns the progress key for one visible manifest session entry.
+fn manifest_session_progress_key(
+    manifest: &ManifestArtifact,
+    entry: &TurnManifestEntry,
+) -> ManifestSessionProgressKey {
+    (
+        exporter_manifest_id(&manifest.exporter),
+        entry.provider,
+        entry.session_id.clone(),
+    )
 }
 
 /// Returns the canonical Git branch for one Darc share branch shorthand.
@@ -740,14 +780,33 @@ pub fn fetch_share_branch(
     branch: &str,
     remote_name: Option<&str>,
 ) -> Result<ShareFetchReport> {
+    fetch_share_branch_impl(context, settings, branch, remote_name, &mut |_| {})
+}
+
+/// Fetches one share branch while reporting pull progress.
+fn fetch_share_branch_impl(
+    context: &ShareProjectContext,
+    settings: &ShareSettings,
+    branch: &str,
+    remote_name: Option<&str>,
+    progress: &mut impl FnMut(SharePullProgress),
+) -> Result<ShareFetchReport> {
     let git_branch = share_git_branch(branch)?;
     let remote = resolve_remote(context, settings, remote_name)?;
+    progress(SharePullProgress::Started {
+        git_branch: git_branch.clone(),
+        remote_name: remote.name.clone(),
+        remote_url: remote.display_url.clone(),
+    });
     let identity = local_share_identity(context)?;
     let cache_path = cache_repo_path(&context.root, &remote.resolved_url, &git_branch);
+    progress(SharePullProgress::PreparingCache);
     prepare_cache_repository(&cache_path, &remote.url, &identity)?;
+    progress(SharePullProgress::FetchingRemote);
     fetch_branch(&cache_path, &git_branch)?;
     checkout_share_branch(&cache_path, &git_branch)?;
     clean_untracked_cache_worktree(&cache_path)?;
+    progress(SharePullProgress::HydratingLfs);
     hydrate_lfs_objects(&cache_path)?;
     Ok(ShareFetchReport {
         branch: branch.to_owned(),
@@ -765,20 +824,35 @@ pub fn merge_share_branch(
     branch: &str,
     remote_name: Option<&str>,
 ) -> Result<ShareMergeReport> {
+    merge_share_branch_impl(context, settings, branch, remote_name, &mut |_| {})
+}
+
+/// Imports one previously fetched share branch while reporting pull progress.
+fn merge_share_branch_impl(
+    context: &ShareProjectContext,
+    settings: &ShareSettings,
+    branch: &str,
+    remote_name: Option<&str>,
+    progress: &mut impl FnMut(SharePullProgress),
+) -> Result<ShareMergeReport> {
     let git_branch = share_git_branch(branch)?;
     let remote = resolve_remote(context, settings, remote_name)?;
     let project_key = project_key(context)?;
     let cache_path = cache_repo_path(&context.root, &remote.resolved_url, &git_branch);
+    progress(SharePullProgress::ReadingCache);
     clean_cached_checkout(&cache_path)?;
     hydrate_lfs_objects(&cache_path)?;
-    import_from_cache(
-        context,
-        branch,
-        &git_branch,
-        &remote.name,
-        &remote.resolved_url,
-        &project_key,
-        &cache_path,
+    import_from_cache_with_progress(
+        ImportCacheRequest {
+            context,
+            branch,
+            git_branch: &git_branch,
+            remote_name: &remote.name,
+            remote_url: &remote.resolved_url,
+            expected_project_key: &project_key,
+            cache_path: &cache_path,
+        },
+        progress,
     )
 }
 
@@ -789,8 +863,41 @@ pub fn pull_share_branch(
     branch: &str,
     remote_name: Option<&str>,
 ) -> Result<SharePullReport> {
-    let fetch = fetch_share_branch(context, settings, branch, remote_name)?;
-    let merge = merge_share_branch(context, settings, branch, remote_name)?;
+    pull_share_branch_impl(context, settings, branch, remote_name, &mut |_| {})
+}
+
+/// Fetches and imports one share branch while emitting progress events.
+pub fn pull_share_branch_with_progress<F>(
+    context: &ShareProjectContext,
+    settings: &ShareSettings,
+    branch: &str,
+    remote_name: Option<&str>,
+    progress: F,
+) -> Result<SharePullReport>
+where
+    F: FnMut(SharePullProgress),
+{
+    pull_share_branch_impl(context, settings, branch, remote_name, progress)
+}
+
+/// Fetches and imports one share branch with optional progress emission.
+fn pull_share_branch_impl<F>(
+    context: &ShareProjectContext,
+    settings: &ShareSettings,
+    branch: &str,
+    remote_name: Option<&str>,
+    mut progress: F,
+) -> Result<SharePullReport>
+where
+    F: FnMut(SharePullProgress),
+{
+    let fetch = fetch_share_branch_impl(context, settings, branch, remote_name, &mut progress)?;
+    let merge = merge_share_branch_impl(context, settings, branch, remote_name, &mut progress)?;
+    progress(SharePullProgress::Finished {
+        imported_turn_count: merge.imported_turn_count,
+        skipped_turn_count: merge.skipped_turn_count,
+        warning_count: merge.warning_count,
+    });
     Ok(SharePullReport { fetch, merge })
 }
 
@@ -909,6 +1016,17 @@ struct ImportEntryContext<'a> {
     chunks: &'a DecodedChunks,
 }
 
+/// Stores immutable inputs for importing one share cache checkout.
+struct ImportCacheRequest<'a> {
+    context: &'a ShareProjectContext,
+    branch: &'a str,
+    git_branch: &'a str,
+    remote_name: &'a str,
+    remote_url: &'a str,
+    expected_project_key: &'a str,
+    cache_path: &'a Path,
+}
+
 /// Stores decoded share chunks plus per-chunk failures.
 #[derive(Clone, Default)]
 struct DecodedChunks {
@@ -922,6 +1040,87 @@ struct DecodedChunkTurn {
     object_path: String,
     payload_hash: String,
     turn: ShareTurnExport,
+}
+
+/// Keys one manifest session for pull import progress accounting.
+type ManifestSessionProgressKey = (String, darc_paths::SourceKind, String);
+
+/// Tracks completed manifest sessions while importing a share branch.
+struct ImportSessionProgress {
+    remaining_turns_by_session: BTreeMap<ManifestSessionProgressKey, usize>,
+    processed_sessions: u64,
+    total_sessions: u64,
+}
+
+impl ImportSessionProgress {
+    /// Builds import progress accounting for all visible manifest sessions.
+    fn new(manifests: &[CachedManifest]) -> Result<Self> {
+        let mut remaining_turns_by_session = BTreeMap::new();
+        for cached in manifests {
+            for entry in &cached.manifest.turns {
+                *remaining_turns_by_session
+                    .entry(manifest_session_progress_key(&cached.manifest, entry))
+                    .or_insert(0) += 1;
+            }
+        }
+        let total_sessions = u64::try_from(remaining_turns_by_session.len())
+            .context("session count exceeds u64 range")?;
+        Ok(Self {
+            remaining_turns_by_session,
+            processed_sessions: 0,
+            total_sessions,
+        })
+    }
+
+    /// Emits the current import progress count.
+    fn emit(&self, progress: &mut impl FnMut(SharePullProgress)) {
+        progress(SharePullProgress::ImportingSessions {
+            processed_sessions: self.processed_sessions,
+            total_sessions: self.total_sessions,
+        });
+    }
+
+    /// Marks every session in a skipped manifest as processed.
+    fn finish_manifest(
+        &mut self,
+        manifest: &ManifestArtifact,
+        progress: &mut impl FnMut(SharePullProgress),
+    ) {
+        for entry in &manifest.turns {
+            self.finish_entry(manifest, entry, progress);
+        }
+    }
+
+    /// Marks every session represented by a processed entry set as processed.
+    fn finish_entries(
+        &mut self,
+        manifest: &ManifestArtifact,
+        entries: &[&TurnManifestEntry],
+        progress: &mut impl FnMut(SharePullProgress),
+    ) {
+        for entry in entries {
+            self.finish_entry(manifest, entry, progress);
+        }
+    }
+
+    /// Marks one manifest turn entry as processed for session progress.
+    fn finish_entry(
+        &mut self,
+        manifest: &ManifestArtifact,
+        entry: &TurnManifestEntry,
+        progress: &mut impl FnMut(SharePullProgress),
+    ) {
+        let key = manifest_session_progress_key(manifest, entry);
+        let Some(remaining_turns) = self.remaining_turns_by_session.get_mut(&key) else {
+            return;
+        };
+        *remaining_turns = remaining_turns.saturating_sub(1);
+        if *remaining_turns == 0 {
+            self.remaining_turns_by_session.remove(&key);
+            self.processed_sessions += 1;
+            self.emit(progress);
+        }
+    }
 }
 
 /// Stores one completed system Git command result.
@@ -941,10 +1140,80 @@ struct PushBranchCommand {
     context: String,
 }
 
+/// Tracks completed export sessions independent of turn ordering.
+struct ExportSessionProgress {
+    remaining_turns_by_session: BTreeMap<(darc_paths::SourceKind, String), usize>,
+    exported_sessions: usize,
+    total_sessions: usize,
+}
+
+impl ExportSessionProgress {
+    /// Builds export progress accounting for all selected turns.
+    fn new(turns: &[ShareTurnExport]) -> Self {
+        let mut remaining_turns_by_session = BTreeMap::new();
+        for turn in turns {
+            *remaining_turns_by_session
+                .entry(share_turn_session_key(turn))
+                .or_insert(0) += 1;
+        }
+        let total_sessions = remaining_turns_by_session.len();
+        Self {
+            remaining_turns_by_session,
+            exported_sessions: 0,
+            total_sessions,
+        }
+    }
+
+    /// Emits the current export progress count.
+    fn emit(&self, progress: &mut impl FnMut(SharePushProgress)) -> Result<()> {
+        emit_export_session_progress(progress, self.exported_sessions, self.total_sessions)
+    }
+
+    /// Marks one exported turn and emits when its session is complete.
+    fn finish_turn(
+        &mut self,
+        session_key: &(darc_paths::SourceKind, String),
+        progress: &mut impl FnMut(SharePushProgress),
+    ) -> Result<()> {
+        let Some(remaining_turns) = self.remaining_turns_by_session.get_mut(session_key) else {
+            bail!("export session progress saw an unknown session");
+        };
+        *remaining_turns = remaining_turns
+            .checked_sub(1)
+            .context("export session progress underflow")?;
+        if *remaining_turns == 0 {
+            self.remaining_turns_by_session.remove(session_key);
+            self.exported_sessions += 1;
+            self.emit(progress)?;
+        }
+        Ok(())
+    }
+}
+
 /// Builds all share artifacts for the current export.
 #[cfg(test)]
 fn build_export_artifact(request: ExportBuildRequest<'_>) -> Result<BuiltExportArtifact> {
     build_export_artifact_with_reuse(request, ExportReuseContext::default())
+}
+
+/// Builds all share artifacts while exposing export progress events to tests.
+#[cfg(test)]
+fn build_export_artifact_with_progress(
+    request: ExportBuildRequest<'_>,
+    progress: &mut impl FnMut(SharePushProgress),
+) -> Result<BuiltExportArtifact> {
+    let mut objects = BTreeMap::new();
+    let mut target = ExportObjectTarget::Memory {
+        objects: &mut objects,
+    };
+    let mut artifact = build_export_artifact_with_target(
+        request,
+        ExportReuseContext::default(),
+        &mut target,
+        progress,
+    )?;
+    artifact.objects = objects;
+    Ok(artifact)
 }
 
 /// Builds share artifacts into the provided encrypted object target.
@@ -968,8 +1237,13 @@ fn build_export_artifact_with_target(
     let mut chunk_plaintext_bytes = 0_usize;
     let mut chunk_index = 0_u64;
     let total_turns = request.turns.len();
+    let mut session_progress = ExportSessionProgress::new(&request.turns);
+    if session_progress.total_sessions > 0 {
+        session_progress.emit(progress)?;
+    }
     for (turn_index, turn) in request.turns.into_iter().enumerate() {
-        session_ids.insert((turn.session.provider, turn.session.session_id.clone()));
+        let session_key = share_turn_session_key(&turn);
+        session_ids.insert(session_key.clone());
         if let Some(sync_session) = sync_session_entry_from_turn(&turn) {
             sync_sessions.insert(sync_session);
         }
@@ -1020,6 +1294,7 @@ fn build_export_artifact_with_target(
                 total_turns: u64::try_from(total_turns).context("turn count exceeds u64 range")?,
             });
         }
+        session_progress.finish_turn(&session_key, progress)?;
     }
     if !chunk_turns.is_empty() {
         write_export_chunk(
@@ -1124,6 +1399,25 @@ fn build_export_artifact_with_target(
 #[allow(clippy::manual_is_multiple_of)]
 fn should_emit_export_turn_progress(exported_turns: usize, total_turns: usize) -> bool {
     exported_turns == 1 || exported_turns == total_turns || exported_turns % 100 == 0
+}
+
+/// Returns the stable session identity for one exported turn.
+fn share_turn_session_key(turn: &ShareTurnExport) -> (darc_paths::SourceKind, String) {
+    (turn.session.provider, turn.session.session_id.clone())
+}
+
+/// Emits one session export progress update after checked count conversion.
+fn emit_export_session_progress(
+    progress: &mut impl FnMut(SharePushProgress),
+    exported_sessions: usize,
+    total_sessions: usize,
+) -> Result<()> {
+    progress(SharePushProgress::ExportingSessions {
+        exported_sessions: u64::try_from(exported_sessions)
+            .context("exported session count exceeds u64 range")?,
+        total_sessions: u64::try_from(total_sessions).context("session count exceeds u64 range")?,
+    });
+    Ok(())
 }
 
 /// Reuses the previous signed export when selected source sessions are unchanged.
@@ -1927,6 +2221,7 @@ fn verify_cached_turn_payload(
 }
 
 /// Imports all valid encrypted payloads from one cache workdir.
+#[cfg(test)]
 fn import_from_cache(
     context: &ShareProjectContext,
     branch: &str,
@@ -1936,6 +2231,34 @@ fn import_from_cache(
     expected_project_key: &str,
     cache_path: &Path,
 ) -> Result<ShareMergeReport> {
+    import_from_cache_with_progress(
+        ImportCacheRequest {
+            context,
+            branch,
+            git_branch,
+            remote_name,
+            remote_url,
+            expected_project_key,
+            cache_path,
+        },
+        &mut |_| {},
+    )
+}
+
+/// Imports all valid encrypted payloads while reporting session progress.
+fn import_from_cache_with_progress(
+    request: ImportCacheRequest<'_>,
+    progress: &mut impl FnMut(SharePullProgress),
+) -> Result<ShareMergeReport> {
+    let ImportCacheRequest {
+        context,
+        branch,
+        git_branch,
+        remote_name,
+        remote_url,
+        expected_project_key,
+        cache_path,
+    } = request;
     let CachedManifestRead {
         manifests,
         mut warnings,
@@ -1963,6 +2286,10 @@ fn import_from_cache(
             warnings,
         });
     }
+    let mut session_progress = ImportSessionProgress::new(&manifests)?;
+    if session_progress.total_sessions > 0 {
+        session_progress.emit(progress);
+    }
     let identity_key = ensure_share_key(&context.root)?;
     let identity = read_share_identity_key(&identity_key.key_path)?;
     let mut connection = open_index_database_writer(&context.index_db_path)?;
@@ -1981,6 +2308,7 @@ fn import_from_cache(
                 manifest.exporter.user_id,
                 manifest.schema
             ));
+            session_progress.finish_manifest(&manifest, progress);
             continue;
         }
         if manifest.version != 1 {
@@ -1992,6 +2320,7 @@ fn import_from_cache(
                 manifest.exporter.user_id,
                 manifest.version
             ));
+            session_progress.finish_manifest(&manifest, progress);
             continue;
         }
         if manifest.project_key != expected_project_key {
@@ -2004,6 +2333,7 @@ fn import_from_cache(
                 manifest.project_key,
                 expected_project_key
             ));
+            session_progress.finish_manifest(&manifest, progress);
             continue;
         }
         let sync_payload =
@@ -2016,6 +2346,7 @@ fn import_from_cache(
                         "skipped share manifest {} for exporter {}: {error:#}",
                         cached.relative_path, manifest.exporter.user_id
                     ));
+                    session_progress.finish_manifest(&manifest, progress);
                     continue;
                 }
             };
@@ -2027,6 +2358,7 @@ fn import_from_cache(
                 "skipped share manifest {} for exporter {}: manifest path does not match exporter identity",
                 cached.relative_path, sync_payload.exporter.user_id
             ));
+            session_progress.finish_manifest(&manifest, progress);
             continue;
         }
         if !imported_exporters.insert(exporter_id) {
@@ -2034,6 +2366,7 @@ fn import_from_cache(
                 "skipped duplicate share manifest {} for exporter {}",
                 cached.relative_path, sync_payload.exporter.user_id
             ));
+            session_progress.finish_manifest(&manifest, progress);
             continue;
         }
         if let Err(error) = authenticated_manifest_turns(&manifest, &sync_payload) {
@@ -2043,6 +2376,7 @@ fn import_from_cache(
                 "skipped share manifest {} for exporter {}: {error:#}",
                 cached.relative_path, sync_payload.exporter.user_id
             ));
+            session_progress.finish_manifest(&manifest, progress);
             continue;
         }
         let imported_at = current_utc_timestamp();
@@ -2078,6 +2412,7 @@ fn import_from_cache(
                         ));
                     }
                 }
+                session_progress.finish_entry(&manifest, entry, progress);
             }
             import_decoded_turns(
                 &mut connection,
@@ -2108,6 +2443,8 @@ fn import_from_cache(
                 &mut imported_turn_count,
                 &mut skipped_turn_count,
                 &mut warnings,
+                &mut session_progress,
+                progress,
             )?;
         }
         prune_shared_turns(
@@ -2198,6 +2535,8 @@ fn import_chunked_manifest_turns(
     imported_turn_count: &mut u64,
     skipped_turn_count: &mut u64,
     warnings: &mut Vec<String>,
+    session_progress: &mut ImportSessionProgress,
+    progress: &mut impl FnMut(SharePullProgress),
 ) -> Result<()> {
     let mut entries_by_chunk = BTreeMap::<String, Vec<&TurnManifestEntry>>::new();
     for entry in &manifest.turns {
@@ -2214,6 +2553,7 @@ fn import_chunked_manifest_turns(
                 entry.session_id,
                 entry.turn_ordinal
             ));
+            session_progress.finish_entry(manifest, entry, progress);
         }
     }
 
@@ -2250,6 +2590,7 @@ fn import_chunked_manifest_turns(
                 Vec::new()
             }
         };
+        session_progress.finish_entries(manifest, &entries, progress);
         import_decoded_turns(
             connection,
             context,
@@ -7681,6 +8022,15 @@ mod tests {
         assert!(events.iter().any(|event| {
             matches!(
                 event,
+                SharePushProgress::ExportingSessions {
+                    exported_sessions: 1,
+                    total_sessions: 1
+                }
+            )
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
                 SharePushProgress::ExportingTurns {
                     exported_turns: 1,
                     total_turns: 1
@@ -7698,6 +8048,187 @@ mod tests {
         assert!(events.iter().any(|event| {
             matches!(event, SharePushProgress::Finished { commit_id } if commit_id == &report.commit_id)
         }));
+    }
+
+    #[test]
+    fn export_session_progress_counts_completed_sessions_without_grouped_turns() {
+        let workspace = unique_test_dir("share-export-progress-ungrouped");
+        let index_db_path = workspace.join("index.sqlite");
+        let session_a = "00000000-0000-4000-8000-000000000901";
+        let session_b = "00000000-0000-4000-8000-000000000902";
+        let context = ShareProjectContext {
+            root: workspace.clone(),
+            index_db_path: index_db_path.clone(),
+            project_id: "source-repo".to_owned(),
+            project_name: "source-repo".to_owned(),
+            local_path: workspace.join("source-repo"),
+            git_upstream: Some("https://example.invalid/team/repo.git".to_owned()),
+        };
+        seed_share_export_session(&index_db_path, "source-repo", session_a);
+        seed_share_export_session(&index_db_path, "source-repo", session_b);
+        let connection = open_index_database_writer(&index_db_path).unwrap();
+        insert_indexed_turn(
+            &connection,
+            IndexedTurnFixture {
+                user_message: "synthetic second prompt",
+                final_answer_text: Some("synthetic second answer"),
+                has_final_answer: true,
+                ..IndexedTurnFixture::new(
+                    "source-repo",
+                    SourceKind::Codex,
+                    session_a,
+                    2,
+                    "2026-05-15T12:01:00Z",
+                    "completed",
+                    "[]",
+                )
+            },
+        )
+        .unwrap();
+        update_share_policy(&context, SharePolicy::All).unwrap();
+        let turns = query_share_export_turns(&connection, "source-repo").unwrap();
+        let turn_a1 = turns
+            .iter()
+            .find(|turn| turn.session.session_id == session_a && turn.turn_ordinal == 1)
+            .unwrap()
+            .clone();
+        let turn_a2 = turns
+            .iter()
+            .find(|turn| turn.session.session_id == session_a && turn.turn_ordinal == 2)
+            .unwrap()
+            .clone();
+        let turn_b1 = turns
+            .iter()
+            .find(|turn| turn.session.session_id == session_b && turn.turn_ordinal == 1)
+            .unwrap()
+            .clone();
+        let age_identity = Identity::generate();
+        let signing_key = test_signing_key(&age_identity);
+        let identity = test_share_identity(&age_identity);
+        let mut events = Vec::new();
+
+        let artifact = build_export_artifact_with_progress(
+            ExportBuildRequest {
+                context: &context,
+                settings: &ShareSettings::default(),
+                project_key: "git:https://example.invalid/team/repo",
+                identity: &identity,
+                signing_key: &signing_key,
+                branch: "team",
+                turns: vec![turn_a1, turn_b1, turn_a2],
+            },
+            &mut |event| events.push(event),
+        )
+        .unwrap();
+
+        assert_eq!(artifact.exported_session_count, 2);
+        let session_events = events
+            .iter()
+            .filter_map(|event| match event {
+                SharePushProgress::ExportingSessions {
+                    exported_sessions,
+                    total_sessions,
+                } => Some((*exported_sessions, *total_sessions)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            session_events,
+            vec![(0_u64, 2_u64), (1_u64, 2_u64), (2_u64, 2_u64)]
+        );
+    }
+
+    #[test]
+    fn pull_share_branch_with_progress_emits_session_events() {
+        let workspace = unique_test_dir("share-pull-progress-events");
+        let remote_path = workspace.join("share.git");
+        init_bare_remote(&remote_path);
+        let source_root = workspace.join("source-root");
+        let source_repo = workspace.join("source-repo");
+        let target_root = workspace.join("target-root");
+        let target_repo = workspace.join("target-repo");
+        fs::create_dir_all(&source_root).unwrap();
+        fs::create_dir_all(&target_root).unwrap();
+        init_test_git_repo(&source_repo);
+        init_test_git_repo(&target_repo);
+        let target_key = ensure_share_key(&target_root).unwrap();
+        let project_upstream = "https://example.invalid/team/repo.git".to_owned();
+        let source_context = ShareProjectContext {
+            root: source_root.clone(),
+            index_db_path: source_root.join("index.sqlite"),
+            project_id: "source-repo".to_owned(),
+            project_name: "source-repo".to_owned(),
+            local_path: source_repo,
+            git_upstream: Some(project_upstream.clone()),
+        };
+        let target_context = ShareProjectContext {
+            root: target_root.clone(),
+            index_db_path: target_root.join("index.sqlite"),
+            project_id: "target-repo".to_owned(),
+            project_name: "target-repo".to_owned(),
+            local_path: target_repo,
+            git_upstream: Some(project_upstream),
+        };
+        seed_share_export_session(
+            &source_context.index_db_path,
+            "source-repo",
+            "00000000-0000-4000-8000-000000000909",
+        );
+        update_share_policy(&source_context, SharePolicy::All).unwrap();
+        let settings = ShareSettings {
+            remotes: vec![ShareRemote {
+                name: "share".to_owned(),
+                url: remote_path.to_string_lossy().into_owned(),
+            }],
+            recipients: vec![ShareRecipient {
+                recipient: target_key.public_key,
+            }],
+        };
+        push_share_branch(&source_context, &settings, "team", Some("share")).unwrap();
+        let mut events = Vec::new();
+
+        let report = pull_share_branch_with_progress(
+            &target_context,
+            &settings,
+            "team",
+            Some("share"),
+            |event| events.push(event),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            events.first(),
+            Some(SharePullProgress::Started { .. })
+        ));
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                SharePullProgress::ImportingSessions {
+                    processed_sessions: 0,
+                    total_sessions: 1
+                }
+            )
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                SharePullProgress::ImportingSessions {
+                    processed_sessions: 1,
+                    total_sessions: 1
+                }
+            )
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                SharePullProgress::Finished {
+                    imported_turn_count: 1,
+                    skipped_turn_count: 0,
+                    warning_count: 0
+                }
+            )
+        }));
+        assert_eq!(report.merge.imported_turn_count, 1);
     }
 
     #[test]

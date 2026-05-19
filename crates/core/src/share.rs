@@ -2,8 +2,8 @@ use std::{env, fs, path::PathBuf};
 
 use anyhow::{Context, Result, bail};
 pub use darc_share::{
-    ShareFetchReport, ShareIdentity, ShareKeyInfo, ShareMergeReport, SharePullReport,
-    SharePushProgress, SharePushReport, ShareUploadKind,
+    ShareFetchReport, ShareIdentity, ShareKeyInfo, ShareMergeReport, SharePullProgress,
+    SharePullReport, SharePushProgress, SharePushReport, ShareUploadKind,
 };
 use darc_share::{ShareProjectContext, ShareRecipient, ShareRemote, ShareSettings};
 pub use darc_store::{SharePolicy, ShareState, ShareStatus};
@@ -217,6 +217,27 @@ pub fn pull_share_branch(
     let resolved = resolve_share_project(root)?;
     let settings = share_settings_from_config(&resolved.config.share);
     darc_share::pull_share_branch(&resolved.context, &settings, branch, remote_name)
+}
+
+/// Fetches and imports one Darc share branch while emitting progress events.
+pub fn pull_share_branch_with_progress<F>(
+    root: Option<PathBuf>,
+    branch: &str,
+    remote_name: Option<&str>,
+    progress: F,
+) -> Result<SharePullReport>
+where
+    F: FnMut(SharePullProgress),
+{
+    let resolved = resolve_share_project(root)?;
+    let settings = share_settings_from_config(&resolved.config.share);
+    darc_share::pull_share_branch_with_progress(
+        &resolved.context,
+        &settings,
+        branch,
+        remote_name,
+        progress,
+    )
 }
 
 /// Resolves the active project and adapts it to the share crate context.
