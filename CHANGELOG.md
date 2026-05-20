@@ -4,6 +4,8 @@ All notable Darc release changes should be summarized here.
 
 ## Unreleased
 
+## [0.2.1] - 2026-05-20
+
 - Print post-upgrade auto-refresh restart guidance after `darc upgrade`.
 
 ## [0.2.0] - 2026-05-20
