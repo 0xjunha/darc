@@ -5089,10 +5089,11 @@ fn reset_cached_checkout_disables_lfs_smudge_filters() {
         "failed to configure synthetic LFS required filter",
     )
     .unwrap();
-    run_git(
+    run_cache_git_with_lfs_filter_override(
         &workspace,
         ["add", ".gitattributes", "object.bin"],
         "failed to stage synthetic LFS file",
+        true,
     )
     .unwrap();
     run_git(
