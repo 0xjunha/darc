@@ -5,6 +5,7 @@ All notable Darc release changes should be summarized here.
 ## Unreleased
 
 - Show live refresh progress with spinner steps and session/project progress bars.
+- Speed up cold refresh redaction while preserving the existing redacted index output.
 
 ## [0.2.1] - 2026-05-20
 

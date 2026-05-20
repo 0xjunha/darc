@@ -509,6 +509,7 @@ dependencies = [
 name = "darc-store"
 version = "0.2.1"
 dependencies = [
+ "aho-corasick",
  "anyhow",
  "darc-paths",
  "darc-rollout",

@@ -1,5 +1,6 @@
-use std::sync::LazyLock;
+use std::{borrow::Cow, sync::LazyLock};
 
+use aho_corasick::{AhoCorasick, AhoCorasickBuilder};
 use darc_rollout::model::{NormalizedTurn, NormalizedTurnStep};
 use regex::Regex;
 use serde_json::Value;
@@ -8,8 +9,122 @@ const REDACTED_BLOB: &str = "[REDACTED_BLOB]";
 const REDACTED_CREDENTIALS: &str = "[REDACTED_CREDENTIALS]";
 const REDACTED_HOME: &str = "[REDACTED_HOME]";
 const REDACTED_SECRET: &str = "[REDACTED_SECRET]";
+#[cfg(test)]
 const SECRET_KEY_REGEX_FRAGMENT: &str = r"(?i-u:(?:[A-Za-z0-9]+[_-])*(?:openai[_-]?api[_-]?key|anthropic[_-]?api[_-]?key|aws[_-]?secret[_-]?access[_-]?key|aws[_-]?access[_-]?key(?:[_-]?id)?|aws[_-]?session[_-]?token|github[_-]?token|personal[_-]?access[_-]?token|api[_-]?token|auth[_-]?token|bearer[_-]?token|session[_-]?token|api[_-]?key|access[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|private[_-]?key|client[_-]?secret|secret[_-]?key|proxy[_-]?authorization|authorization|credentials?|password|passwd|secret|token|cookie)|[A-Za-z0-9]*(?:apiKey|privateKey|clientSecret|accessKey|accessToken|refreshToken|idToken|authToken|bearerToken|sessionToken|personalAccessToken|secretKey|proxyAuthorization|authorization|credentials?|password|passwd|secret|token|cookie))";
 const SECRET_FLAG_REGEX_FRAGMENT: &str = r"(?i-u:(?:[A-Za-z0-9]+-)*(?:openai-api-key|anthropic-api-key|aws-secret-access-key|aws-access-key(?:-id)?|aws-session-token|github-token|personal-access-token|api-token|auth-token|bearer-token|session-token|api-key|access-key|access-token|refresh-token|id-token|private-key|client-secret|secret-key|proxy-authorization|authorization|credentials?|password|passwd|secret|token|cookie))";
+const SIGNED_QUERY_PARAMETER_NAMES: &[&str] = &[
+    "x-amz-signature",
+    "x-amz-credential",
+    "x-amz-security-token",
+    "signature",
+    "sig",
+    "access_token",
+    "access-token",
+    "accesstoken",
+    "refresh_token",
+    "refresh-token",
+    "refreshtoken",
+    "id_token",
+    "id-token",
+    "idtoken",
+    "token",
+    "api_key",
+    "api-key",
+    "apikey",
+    "key",
+    "password",
+    "client_secret",
+    "client-secret",
+    "clientsecret",
+];
+const DELIMITED_SECRET_KEY_PATTERNS: &[&[&str]] = &[
+    &["openai", "api", "key"],
+    &["anthropic", "api", "key"],
+    &["aws", "secret", "access", "key"],
+    &["aws", "access", "key"],
+    &["aws", "access", "key", "id"],
+    &["aws", "session", "token"],
+    &["github", "token"],
+    &["personal", "access", "token"],
+    &["api", "token"],
+    &["auth", "token"],
+    &["bearer", "token"],
+    &["session", "token"],
+    &["api", "key"],
+    &["access", "key"],
+    &["access", "token"],
+    &["refresh", "token"],
+    &["id", "token"],
+    &["private", "key"],
+    &["client", "secret"],
+    &["secret", "key"],
+    &["proxy", "authorization"],
+    &["authorization"],
+    &["credential"],
+    &["credentials"],
+    &["password"],
+    &["passwd"],
+    &["secret"],
+    &["token"],
+    &["cookie"],
+];
+const COMPACT_SECRET_KEY_SUFFIXES: &[&str] = &[
+    "apikey",
+    "privatekey",
+    "clientsecret",
+    "accesskey",
+    "accesstoken",
+    "refreshtoken",
+    "idtoken",
+    "authtoken",
+    "bearertoken",
+    "sessiontoken",
+    "personalaccesstoken",
+    "secretkey",
+    "proxyauthorization",
+    "authorization",
+    "credential",
+    "credentials",
+    "password",
+    "passwd",
+    "secret",
+    "token",
+    "cookie",
+];
+const TEXT_REDACTION_PREFILTER_PATTERNS: &[&str] = &[
+    "private key",
+    "data:",
+    "base64,",
+    "sk-",
+    "akia",
+    "asia",
+    "ghp_",
+    "gho_",
+    "ghu_",
+    "ghs_",
+    "ghr_",
+    "github_pat_",
+    "npm_",
+    "xox",
+    "eyj",
+    "bearer",
+    "basic",
+    "authorization",
+    "proxy-authorization",
+    "header",
+    "key",
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "credential",
+    "cookie",
+    "--",
+    "://",
+    "/users/",
+    "/home/",
+    ":\\users\\",
+];
 
 static PRIVATE_KEY_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     compile_regex(
@@ -19,8 +134,6 @@ static PRIVATE_KEY_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 static DATA_URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     compile_regex(r"[dD][aA][tT][aA]:[A-Za-z0-9.+/-]+/[^;\s]+;[bB][aA][sS][eE]64,[A-Za-z0-9+/=_-]+")
 });
-static BASE64_BLOB_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| compile_regex(r"[A-Za-z0-9+/=_-]{512,}"));
 static OPENAI_KEY_REGEX: LazyLock<Regex> =
     LazyLock::new(|| compile_regex(r"\bsk-[A-Za-z0-9_-]{16,}\b"));
 static ANTHROPIC_KEY_REGEX: LazyLock<Regex> =
@@ -44,16 +157,19 @@ static BASIC_AUTH_CONTEXT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
         r#"(?i-u)((?:(?:-H|--header)\s+["']?(?:authorization|proxy-authorization):\s*|["']?(?:authorization|proxy-authorization)["']?\s*[:=]\s*["']?|headers?\s*(?:\.\s*(?:authorization|proxy-authorization)|\[\s*["'](?:authorization|proxy-authorization)["']\s*\])\s*[:=]\s*["']?)Basic\s+)([A-Za-z0-9+/=]{4,})"#,
     )
 });
+#[cfg(test)]
 static SECRET_ASSIGNMENT_DOUBLE_QUOTED_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     compile_regex(&format!(
         r#"\b({SECRET_KEY_REGEX_FRAGMENT})\b(\s*[:=]\s*)"([^\s"\r\n][^"\r\n]{{3,}})""#
     ))
 });
+#[cfg(test)]
 static SECRET_ASSIGNMENT_SINGLE_QUOTED_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     compile_regex(&format!(
         r#"\b({SECRET_KEY_REGEX_FRAGMENT})\b(\s*[:=]\s*)'([^\s'\r\n][^'\r\n]{{3,}})'"#
     ))
 });
+#[cfg(test)]
 static SECRET_ASSIGNMENT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     compile_regex(&format!(
         r#"\b({SECRET_KEY_REGEX_FRAGMENT})\b(\s*[:=]\s*)([^\s"',;`}}{{]{{4,}})"#
@@ -100,6 +216,154 @@ static POSIX_HOME_PATH_REGEX: LazyLock<Regex> =
     LazyLock::new(|| compile_regex(r#"(?s)(^|.)/(Users|home)/[^/\s:'")\[\]}]+"#));
 static WINDOWS_HOME_PATH_REGEX: LazyLock<Regex> =
     LazyLock::new(|| compile_regex(r#"\b([A-Za-z]:\\Users\\)[^\\\s:'")\[\]}]+"#));
+static TEXT_REDACTION_PREFILTER: LazyLock<AhoCorasick> = LazyLock::new(|| {
+    AhoCorasickBuilder::new()
+        .ascii_case_insensitive(true)
+        .build(TEXT_REDACTION_PREFILTER_PATTERNS)
+        .expect("valid text redaction prefilter patterns")
+});
+
+/// Lowercases one ASCII byte without changing other bytes.
+fn ascii_lower(byte: u8) -> u8 {
+    if byte.is_ascii_uppercase() {
+        byte + 32
+    } else {
+        byte
+    }
+}
+
+/// Returns whether haystack starts with needle case-insensitively at one byte index.
+fn starts_with_ascii_case_insensitive_at(haystack: &[u8], index: usize, needle: &[u8]) -> bool {
+    haystack
+        .get(index..index.saturating_add(needle.len()))
+        .is_some_and(|candidate| {
+            candidate
+                .iter()
+                .zip(needle.iter())
+                .all(|(left, right)| ascii_lower(*left) == ascii_lower(*right))
+        })
+}
+
+/// Returns whether one string starts with an ASCII needle ignoring case.
+fn starts_with_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
+    starts_with_ascii_case_insensitive_at(haystack.as_bytes(), 0, needle.as_bytes())
+}
+
+/// Returns whether one string ends with an ASCII needle ignoring case.
+fn ends_with_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
+    let haystack = haystack.as_bytes();
+    let needle = needle.as_bytes();
+    haystack
+        .len()
+        .checked_sub(needle.len())
+        .is_some_and(|start| starts_with_ascii_case_insensitive_at(haystack, start, needle))
+}
+
+/// Records which redaction detectors can possibly match one text payload.
+#[derive(Debug, Default, Clone, Copy)]
+struct TextRedactionPlan {
+    private_key: bool,
+    data_url: bool,
+    openai_or_anthropic_key: bool,
+    aws_access_key_id: bool,
+    github_token: bool,
+    npm_token: bool,
+    slack_token: bool,
+    jwt: bool,
+    bearer_token: bool,
+    basic_auth: bool,
+    secret_assignment: bool,
+    secret_flag: bool,
+    url_credentials: bool,
+    signed_query_param: bool,
+    base64_blob: bool,
+    posix_home: bool,
+    windows_home: bool,
+}
+
+impl TextRedactionPlan {
+    /// Builds a conservative detector plan with cheap literal scans.
+    fn inspect(input: &str) -> Self {
+        let bytes = input.as_bytes();
+        let mut plan = Self {
+            base64_blob: bytes.len() >= 512,
+            ..Self::default()
+        };
+        let mut has_basic = false;
+        let mut has_auth_context = false;
+        let mut has_assignment_separator = false;
+        let mut has_double_dash = false;
+        let mut has_query_separator = false;
+        let mut has_secret_trigger = false;
+        let mut has_base64_marker = false;
+
+        for byte in bytes {
+            match byte {
+                b':' | b'=' => has_assignment_separator = true,
+                b'?' | b'&' => has_query_separator = true,
+                _ => {}
+            }
+        }
+
+        for mat in TEXT_REDACTION_PREFILTER.find_iter(input) {
+            match mat.pattern().as_usize() {
+                0 => plan.private_key = true,
+                1 => plan.data_url = true,
+                2 => has_base64_marker = true,
+                3 => plan.openai_or_anthropic_key = true,
+                4 | 5 => plan.aws_access_key_id = true,
+                6..=11 => plan.github_token = true,
+                12 => plan.npm_token = true,
+                13 => plan.slack_token = true,
+                14 => plan.jwt = true,
+                15 => plan.bearer_token = true,
+                16 => has_basic = true,
+                17 | 18 => {
+                    has_auth_context = true;
+                    has_secret_trigger = true;
+                }
+                19 => has_auth_context = true,
+                20..=26 => has_secret_trigger = true,
+                27 => has_double_dash = true,
+                28 => plan.url_credentials = true,
+                29 | 30 => plan.posix_home = true,
+                31 => plan.windows_home = true,
+                _ => {}
+            }
+        }
+
+        plan.data_url = plan.data_url && has_base64_marker;
+        plan.jwt = plan.jwt && bytes.contains(&b'.');
+        plan.basic_auth = has_basic && has_auth_context;
+        plan.secret_assignment = has_assignment_separator && has_secret_trigger;
+        plan.secret_flag = has_double_dash && has_secret_trigger;
+        plan.signed_query_param = has_assignment_separator
+            && has_query_separator
+            && may_contain_signed_query_parameter(input);
+        plan
+    }
+
+    /// Returns whether any redaction detector should run.
+    fn has_work(self) -> bool {
+        self.private_key
+            || self.data_url
+            || self.openai_or_anthropic_key
+            || self.aws_access_key_id
+            || self.github_token
+            || self.npm_token
+            || self.slack_token
+            || self.jwt
+            || self.bearer_token
+            || self.basic_auth
+            || self.secret_assignment
+            || self.secret_flag
+            || self.url_credentials
+            || self.signed_query_param
+            || self.base64_blob
+            || self.posix_home
+            || self.windows_home
+    }
+}
 
 /// Redacts sensitive values from one normalized turn before it is indexed.
 pub(crate) fn redact_normalized_turn(turn: &mut NormalizedTurn) {
@@ -119,70 +383,461 @@ pub(crate) fn redact_normalized_steps(steps: &mut [NormalizedTurnStep]) {
 
 /// Redacts sensitive values from one plain text payload.
 pub(crate) fn redact_text(input: &str) -> String {
-    let redacted = PRIVATE_KEY_REGEX.replace_all(input, REDACTED_SECRET);
-    let redacted = DATA_URL_REGEX.replace_all(&redacted, REDACTED_BLOB);
-    let redacted = OPENAI_KEY_REGEX.replace_all(&redacted, REDACTED_SECRET);
-    let redacted = ANTHROPIC_KEY_REGEX.replace_all(&redacted, REDACTED_SECRET);
-    let redacted = AWS_ACCESS_KEY_ID_REGEX.replace_all(&redacted, REDACTED_SECRET);
-    let redacted = GITHUB_TOKEN_REGEX.replace_all(&redacted, REDACTED_SECRET);
-    let redacted = NPM_TOKEN_REGEX.replace_all(&redacted, REDACTED_SECRET);
-    let redacted = SLACK_TOKEN_REGEX.replace_all(&redacted, REDACTED_SECRET);
-    let redacted = JWT_REGEX.replace_all(&redacted, REDACTED_SECRET);
-    let redacted = BEARER_TOKEN_REGEX.replace_all(&redacted, "Bearer [REDACTED_SECRET]");
-    let redacted = redact_basic_auth(&redacted);
-    let redacted = redact_secret_assignment(
-        &redacted,
+    let plan = TextRedactionPlan::inspect(input);
+    if !plan.has_work() {
+        return input.to_owned();
+    }
+
+    let mut redacted = None;
+    if plan.private_key {
+        apply_regex_replacement(&mut redacted, input, &PRIVATE_KEY_REGEX, REDACTED_SECRET);
+    }
+    if plan.data_url {
+        apply_regex_replacement(&mut redacted, input, &DATA_URL_REGEX, REDACTED_BLOB);
+    }
+    if plan.openai_or_anthropic_key {
+        apply_regex_replacement(&mut redacted, input, &OPENAI_KEY_REGEX, REDACTED_SECRET);
+        apply_regex_replacement(&mut redacted, input, &ANTHROPIC_KEY_REGEX, REDACTED_SECRET);
+    }
+    if plan.aws_access_key_id {
+        apply_regex_replacement(
+            &mut redacted,
+            input,
+            &AWS_ACCESS_KEY_ID_REGEX,
+            REDACTED_SECRET,
+        );
+    }
+    if plan.github_token {
+        apply_regex_replacement(&mut redacted, input, &GITHUB_TOKEN_REGEX, REDACTED_SECRET);
+    }
+    if plan.npm_token {
+        apply_regex_replacement(&mut redacted, input, &NPM_TOKEN_REGEX, REDACTED_SECRET);
+    }
+    if plan.slack_token {
+        apply_regex_replacement(&mut redacted, input, &SLACK_TOKEN_REGEX, REDACTED_SECRET);
+    }
+    if plan.jwt {
+        apply_regex_replacement(&mut redacted, input, &JWT_REGEX, REDACTED_SECRET);
+    }
+    if plan.bearer_token {
+        apply_regex_replacement(
+            &mut redacted,
+            input,
+            &BEARER_TOKEN_REGEX,
+            "Bearer [REDACTED_SECRET]",
+        );
+    }
+    if plan.basic_auth {
+        apply_computed_redaction(&mut redacted, input, redact_basic_auth);
+    }
+    if plan.secret_assignment {
+        apply_computed_redaction(&mut redacted, input, redact_secret_assignments);
+    }
+    if plan.secret_flag {
+        apply_computed_redaction(&mut redacted, input, |current| {
+            redact_quoted_secret_flag(current, &SECRET_FLAG_EQUALS_DOUBLE_QUOTED_REGEX, '"')
+        });
+        apply_computed_redaction(&mut redacted, input, |current| {
+            redact_quoted_secret_flag(current, &SECRET_FLAG_EQUALS_SINGLE_QUOTED_REGEX, '\'')
+        });
+        apply_computed_redaction(&mut redacted, input, |current| {
+            redact_unquoted_secret_flag(current, &SECRET_FLAG_EQUALS_REGEX)
+        });
+        apply_computed_redaction(&mut redacted, input, |current| {
+            redact_quoted_secret_flag(current, &SECRET_FLAG_VALUE_DOUBLE_QUOTED_REGEX, '"')
+        });
+        apply_computed_redaction(&mut redacted, input, |current| {
+            redact_quoted_secret_flag(current, &SECRET_FLAG_VALUE_SINGLE_QUOTED_REGEX, '\'')
+        });
+        apply_computed_redaction(&mut redacted, input, |current| {
+            redact_unquoted_secret_flag(current, &SECRET_FLAG_VALUE_REGEX)
+        });
+    }
+    if plan.url_credentials {
+        let credentials_replacement = format!("$1{REDACTED_CREDENTIALS}@");
+        apply_regex_replacement(
+            &mut redacted,
+            input,
+            &URL_CREDENTIALS_REGEX,
+            credentials_replacement.as_str(),
+        );
+    }
+    if plan.signed_query_param {
+        apply_regex_replacement(
+            &mut redacted,
+            input,
+            &SIGNED_QUERY_PARAM_REGEX,
+            "$1[REDACTED_SECRET]",
+        );
+    }
+    if plan.base64_blob {
+        apply_computed_redaction(&mut redacted, input, redact_base64_blobs);
+    }
+    if plan.posix_home {
+        apply_computed_redaction(&mut redacted, input, redact_posix_home_paths);
+    }
+    if plan.windows_home {
+        let windows_home_replacement = format!("$1{REDACTED_HOME}");
+        apply_regex_replacement(
+            &mut redacted,
+            input,
+            &WINDOWS_HOME_PATH_REGEX,
+            windows_home_replacement.as_str(),
+        );
+    }
+    redacted.unwrap_or_else(|| input.to_owned())
+}
+
+/// Returns the current redaction buffer or the original input when unchanged.
+fn current_text<'a>(input: &'a str, redacted: &'a Option<String>) -> &'a str {
+    redacted.as_deref().unwrap_or(input)
+}
+
+/// Stores one optional redaction result.
+fn apply_redaction(redacted: &mut Option<String>, value: Option<String>) {
+    if let Some(value) = value {
+        *redacted = Some(value);
+    }
+}
+
+/// Applies a callback redaction against the current text buffer.
+fn apply_computed_redaction(
+    redacted: &mut Option<String>,
+    input: &str,
+    redaction: impl FnOnce(&str) -> Option<String>,
+) {
+    let value = {
+        let current = current_text(input, redacted);
+        redaction(current)
+    };
+    apply_redaction(redacted, value);
+}
+
+/// Applies one simple regex replacement only when it changes the current text.
+fn apply_regex_replacement(
+    redacted: &mut Option<String>,
+    input: &str,
+    regex: &Regex,
+    replacement: &str,
+) {
+    let replacement = {
+        let current = current_text(input, redacted);
+        match regex.replace_all(current, replacement) {
+            Cow::Borrowed(_) => None,
+            Cow::Owned(value) => Some(value),
+        }
+    };
+    apply_redaction(redacted, replacement);
+}
+
+/// Redacts Basic auth credentials only when they appear in header contexts.
+fn redact_basic_auth(input: &str) -> Option<String> {
+    match BASIC_AUTH_CONTEXT_REGEX.replace_all(input, |captures: &regex::Captures<'_>| {
+        let Some(prefix) = captures.get(1) else {
+            return captures[0].to_owned();
+        };
+        let Some(payload) = captures.get(2) else {
+            return captures[0].to_owned();
+        };
+        if !looks_like_basic_auth_payload(payload.as_str()) {
+            return captures[0].to_owned();
+        }
+        format!("{}{REDACTED_SECRET}", prefix.as_str())
+    }) {
+        Cow::Borrowed(_) => None,
+        Cow::Owned(value) => Some(value),
+    }
+}
+
+/// Redacts generic secret assignments unless a long CLI flag should handle them.
+fn redact_secret_assignments(input: &str) -> Option<String> {
+    let bytes = input.as_bytes();
+    let mut output = String::new();
+    let mut last = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        if !matches!(bytes[index], b':' | b'=') {
+            index += 1;
+            continue;
+        }
+        match scan_secret_assignment(input, index) {
+            Some(SecretAssignmentScan::Redact(redaction_match)) => {
+                if redaction_match.key_start < last {
+                    index += 1;
+                    continue;
+                }
+                output.push_str(&input[last..redaction_match.key_start]);
+                output.push_str(redaction_match.key);
+                output.push_str(redaction_match.separator);
+                if let Some(quote) = redaction_match.quote {
+                    output.push(quote);
+                    output.push_str(REDACTED_SECRET);
+                    output.push(quote);
+                } else {
+                    output.push_str(REDACTED_SECRET);
+                }
+                last = redaction_match.full_end;
+                index = redaction_match.full_end;
+            }
+            Some(SecretAssignmentScan::Skip { full_end }) => {
+                index = full_end;
+            }
+            None => {
+                index += 1;
+            }
+        }
+    }
+
+    if last == 0 {
+        return None;
+    }
+    output.push_str(&input[last..]);
+    Some(output)
+}
+
+/// Describes how a parsed secret assignment candidate should affect scanning.
+#[derive(Debug, Clone, Copy)]
+enum SecretAssignmentScan<'a> {
+    Redact(SecretAssignmentMatch<'a>),
+    Skip { full_end: usize },
+}
+
+/// Stores one parsed secret assignment redaction.
+#[derive(Debug, Clone, Copy)]
+struct SecretAssignmentMatch<'a> {
+    key_start: usize,
+    full_end: usize,
+    key: &'a str,
+    separator: &'a str,
+    quote: Option<char>,
+}
+
+/// Parses one secret assignment around a known `:` or `=` byte position.
+fn scan_secret_assignment(input: &str, separator_index: usize) -> Option<SecretAssignmentScan<'_>> {
+    let bytes = input.as_bytes();
+    let mut key_end = separator_index;
+    while key_end > 0 && bytes[key_end - 1].is_ascii_whitespace() {
+        key_end -= 1;
+    }
+
+    let mut key_start = key_end;
+    while key_start > 0 && is_assignment_key_byte(bytes[key_start - 1]) {
+        key_start -= 1;
+    }
+    if key_start == key_end || !has_word_boundary_before(input, key_start) {
+        return None;
+    }
+    if is_embedded_long_flag_assignment(input, key_start) {
+        return None;
+    }
+
+    let key = &input[key_start..key_end];
+    if !matches_secret_assignment_key(key) {
+        return None;
+    }
+
+    let mut value_start = separator_index + 1;
+    while value_start < bytes.len() && bytes[value_start].is_ascii_whitespace() {
+        value_start += 1;
+    }
+    if value_start >= bytes.len() {
+        return None;
+    }
+
+    let (value, full_end, quote) = parse_assignment_value(input, value_start)?;
+    let separator = &input[key_end..value_start];
+    if is_comparison_operator_assignment(input, separator_index, value)
+        || is_authorization_scheme_assignment(key, separator, value)
+        || is_authorization_search_pattern_assignment(key, separator, value)
+        || is_non_secret_literal_assignment_value(value)
+    {
+        return Some(SecretAssignmentScan::Skip { full_end });
+    }
+
+    Some(SecretAssignmentScan::Redact(SecretAssignmentMatch {
+        key_start,
+        full_end,
+        key,
+        separator,
+        quote,
+    }))
+}
+
+/// Parses one quoted or unquoted assignment value.
+fn parse_assignment_value(input: &str, value_start: usize) -> Option<(&str, usize, Option<char>)> {
+    let bytes = input.as_bytes();
+    match bytes[value_start] {
+        b'"' | b'\'' => parse_quoted_assignment_value(input, value_start),
+        byte if is_unquoted_assignment_value_byte(byte) => {
+            let mut value_end = value_start;
+            for (relative_index, ch) in input[value_start..].char_indices() {
+                if !is_unquoted_assignment_value_char(ch) {
+                    break;
+                }
+                value_end = value_start + relative_index + ch.len_utf8();
+            }
+            let value = &input[value_start..value_end];
+            (value.len() >= 4).then_some((value, value_end, None))
+        }
+        _ => None,
+    }
+}
+
+/// Parses one quoted assignment value and returns its unquoted content.
+fn parse_quoted_assignment_value(
+    input: &str,
+    value_start: usize,
+) -> Option<(&str, usize, Option<char>)> {
+    let bytes = input.as_bytes();
+    let quote = bytes[value_start];
+    let content_start = value_start + 1;
+    let mut content_end = content_start;
+    while content_end < bytes.len() && bytes[content_end] != quote {
+        if matches!(bytes[content_end], b'\r' | b'\n') {
+            return None;
+        }
+        content_end += 1;
+    }
+    if content_end >= bytes.len() || bytes[content_end] != quote {
+        return None;
+    }
+
+    let value = &input[content_start..content_end];
+    let first = value.chars().next()?;
+    if value.len() < 4 || first.is_whitespace() || first == char::from(quote) {
+        return None;
+    }
+    Some((value, content_end + 1, Some(char::from(quote))))
+}
+
+/// Returns whether one byte can appear in an assignment key.
+fn is_assignment_key_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
+}
+
+/// Returns whether one byte can be part of an unquoted assignment value.
+fn is_unquoted_assignment_value_byte(byte: u8) -> bool {
+    !matches!(byte, b'"' | b'\'' | b',' | b';' | b'`' | b'}' | b'{') && !byte.is_ascii_whitespace()
+}
+
+/// Returns whether one char can be part of an unquoted assignment value.
+fn is_unquoted_assignment_value_char(ch: char) -> bool {
+    !ch.is_whitespace() && !matches!(ch, '"' | '\'' | ',' | ';' | '`' | '}' | '{')
+}
+
+/// Returns whether a byte index starts at a regex word boundary.
+fn has_word_boundary_before(input: &str, index: usize) -> bool {
+    let Some(previous) = input[..index].chars().next_back() else {
+        return true;
+    };
+    let Some(current) = input[index..].chars().next() else {
+        return true;
+    };
+    is_regex_word_char(previous) != is_regex_word_char(current)
+}
+
+/// Returns whether one char is a regex word char for ASCII keys.
+fn is_regex_word_char(ch: char) -> bool {
+    ch == '_' || ch.is_alphanumeric()
+}
+
+/// Returns whether one key matches the generic secret-assignment regex key grammar.
+fn matches_secret_assignment_key(key: &str) -> bool {
+    key.bytes().all(is_assignment_key_byte)
+        && (matches_delimited_secret_assignment_key(key)
+            || matches_compact_secret_assignment_key(key))
+}
+
+/// Returns whether one key matches the delimited branch of the assignment regex key grammar.
+fn matches_delimited_secret_assignment_key(key: &str) -> bool {
+    if key.starts_with(['_', '-']) || key.ends_with(['_', '-']) {
+        return false;
+    }
+
+    let mut terminal_start = 0;
+    loop {
+        if valid_assignment_key_prefix(&key[..terminal_start])
+            && matches_delimited_secret_terminal(&key[terminal_start..])
+        {
+            return true;
+        }
+        let Some(relative_separator) = key[terminal_start..].find(['_', '-']) else {
+            break;
+        };
+        terminal_start += relative_separator + 1;
+    }
+    false
+}
+
+/// Returns whether one prefix is zero or more nonempty alnum segments with separators.
+fn valid_assignment_key_prefix(prefix: &str) -> bool {
+    if prefix.is_empty() {
+        return true;
+    }
+    if !prefix.ends_with(['_', '-']) {
+        return false;
+    }
+    prefix
+        .trim_end_matches(['_', '-'])
+        .split(['_', '-'])
+        .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_alphanumeric()))
+}
+
+/// Returns whether one suffix matches a terminal secret key phrase with optional separators.
+fn matches_delimited_secret_terminal(terminal: &str) -> bool {
+    DELIMITED_SECRET_KEY_PATTERNS
+        .iter()
+        .any(|pattern| matches_optional_separator_sequence(terminal, pattern))
+}
+
+/// Returns whether input equals a case-insensitive sequence with optional separators.
+fn matches_optional_separator_sequence(mut input: &str, sequence: &[&str]) -> bool {
+    for (index, part) in sequence.iter().enumerate() {
+        if !starts_with_ascii_case_insensitive(input, part) {
+            return false;
+        }
+        input = &input[part.len()..];
+        if index + 1 == sequence.len() {
+            return input.is_empty();
+        }
+        if input.starts_with(['_', '-']) {
+            input = &input[1..];
+        }
+    }
+    input.is_empty()
+}
+
+/// Returns whether one key matches the compact branch of the assignment regex key grammar.
+fn matches_compact_secret_assignment_key(key: &str) -> bool {
+    key.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        && COMPACT_SECRET_KEY_SUFFIXES
+            .iter()
+            .any(|suffix| ends_with_ascii_case_insensitive(key, suffix))
+}
+
+/// Redacts generic assignments with the legacy regex path for scanner equivalence tests.
+#[cfg(test)]
+fn redact_secret_assignments_with_regex_oracle(input: &str) -> String {
+    let redacted = redact_secret_assignment_with_regex(
+        input,
         &SECRET_ASSIGNMENT_DOUBLE_QUOTED_REGEX,
         "\"[REDACTED_SECRET]\"",
     );
-    let redacted = redact_secret_assignment(
+    let redacted = redact_secret_assignment_with_regex(
         &redacted,
         &SECRET_ASSIGNMENT_SINGLE_QUOTED_REGEX,
         "'[REDACTED_SECRET]'",
     );
-    let redacted =
-        redact_secret_assignment(&redacted, &SECRET_ASSIGNMENT_REGEX, "[REDACTED_SECRET]");
-    let redacted =
-        redact_quoted_secret_flag(&redacted, &SECRET_FLAG_EQUALS_DOUBLE_QUOTED_REGEX, '"');
-    let redacted =
-        redact_quoted_secret_flag(&redacted, &SECRET_FLAG_EQUALS_SINGLE_QUOTED_REGEX, '\'');
-    let redacted = redact_unquoted_secret_flag(&redacted, &SECRET_FLAG_EQUALS_REGEX);
-    let redacted =
-        redact_quoted_secret_flag(&redacted, &SECRET_FLAG_VALUE_DOUBLE_QUOTED_REGEX, '"');
-    let redacted =
-        redact_quoted_secret_flag(&redacted, &SECRET_FLAG_VALUE_SINGLE_QUOTED_REGEX, '\'');
-    let redacted = redact_unquoted_secret_flag(&redacted, &SECRET_FLAG_VALUE_REGEX);
-    let credentials_replacement = format!("$1{REDACTED_CREDENTIALS}@");
-    let redacted = URL_CREDENTIALS_REGEX.replace_all(&redacted, credentials_replacement.as_str());
-    let redacted = SIGNED_QUERY_PARAM_REGEX.replace_all(&redacted, "$1[REDACTED_SECRET]");
-    let redacted = BASE64_BLOB_REGEX.replace_all(&redacted, REDACTED_BLOB);
-    let redacted = redact_posix_home_paths(&redacted);
-    let windows_home_replacement = format!("$1{REDACTED_HOME}");
-    let redacted =
-        WINDOWS_HOME_PATH_REGEX.replace_all(&redacted, windows_home_replacement.as_str());
-    redacted.to_string()
+    redact_secret_assignment_with_regex(&redacted, &SECRET_ASSIGNMENT_REGEX, REDACTED_SECRET)
 }
 
-/// Redacts Basic auth credentials only when they appear in header contexts.
-fn redact_basic_auth(input: &str) -> String {
-    BASIC_AUTH_CONTEXT_REGEX
-        .replace_all(input, |captures: &regex::Captures<'_>| {
-            let Some(prefix) = captures.get(1) else {
-                return captures[0].to_owned();
-            };
-            let Some(payload) = captures.get(2) else {
-                return captures[0].to_owned();
-            };
-            if !looks_like_basic_auth_payload(payload.as_str()) {
-                return captures[0].to_owned();
-            }
-            format!("{}{REDACTED_SECRET}", prefix.as_str())
-        })
-        .into_owned()
-}
-
-/// Redacts generic secret assignments unless a long CLI flag should handle them.
-fn redact_secret_assignment(input: &str, regex: &Regex, replacement_value: &str) -> String {
+/// Redacts one legacy regex assignment shape for scanner equivalence tests.
+#[cfg(test)]
+fn redact_secret_assignment_with_regex(
+    input: &str,
+    regex: &Regex,
+    replacement_value: &str,
+) -> String {
     regex
         .replace_all(input, |captures: &regex::Captures<'_>| {
             let Some(secret_key) = captures.get(1) else {
@@ -200,7 +855,7 @@ fn redact_secret_assignment(input: &str, regex: &Regex, replacement_value: &str)
             if is_embedded_long_flag_assignment(input, full_match.start()) {
                 return captures[0].to_owned();
             }
-            if is_comparison_operator_assignment(input, separator, value) {
+            if is_regex_comparison_operator_assignment(input, separator, value) {
                 return captures[0].to_owned();
             }
             if is_authorization_scheme_assignment(
@@ -229,16 +884,9 @@ fn redact_secret_assignment(input: &str, regex: &Regex, replacement_value: &str)
         .into_owned()
 }
 
-/// Returns whether an assignment match is the key suffix of a `--flag=value`.
-fn is_embedded_long_flag_assignment(input: &str, match_start: usize) -> bool {
-    let bytes = input.as_bytes();
-    match_start >= 2
-        && bytes.get(match_start - 1).is_some_and(|byte| *byte == b'-')
-        && bytes.get(match_start - 2).is_some_and(|byte| *byte == b'-')
-}
-
-/// Returns whether an assignment match is part of comparison or arrow syntax.
-fn is_comparison_operator_assignment(
+/// Returns whether a legacy regex match is comparison or arrow syntax.
+#[cfg(test)]
+fn is_regex_comparison_operator_assignment(
     input: &str,
     separator: regex::Match<'_>,
     value: regex::Match<'_>,
@@ -255,9 +903,28 @@ fn is_comparison_operator_assignment(
         return false;
     }
 
-    let operator_index = separator.start() + relative_operator_index;
+    is_comparison_operator_assignment(
+        input,
+        separator.start() + relative_operator_index,
+        value.as_str(),
+    )
+}
+
+/// Returns whether an assignment match is the key suffix of a `--flag=value`.
+fn is_embedded_long_flag_assignment(input: &str, match_start: usize) -> bool {
     let bytes = input.as_bytes();
-    value.as_str().starts_with('=')
+    match_start >= 2
+        && bytes.get(match_start - 1).is_some_and(|byte| *byte == b'-')
+        && bytes.get(match_start - 2).is_some_and(|byte| *byte == b'-')
+}
+
+/// Returns whether an assignment match is part of comparison or arrow syntax.
+fn is_comparison_operator_assignment(input: &str, operator_index: usize, value: &str) -> bool {
+    if input.as_bytes().get(operator_index) != Some(&b'=') {
+        return false;
+    }
+    let bytes = input.as_bytes();
+    value.starts_with('=')
         || matches!(bytes.get(operator_index + 1), Some(b'=') | Some(b'>'))
         || operator_index
             .checked_sub(1)
@@ -310,39 +977,41 @@ fn is_non_secret_json_literal(value: &Value) -> bool {
 }
 
 /// Redacts quoted CLI secret flag values while leaving wildcard-only examples intact.
-fn redact_quoted_secret_flag(input: &str, regex: &Regex, quote: char) -> String {
-    regex
-        .replace_all(input, |captures: &regex::Captures<'_>| {
-            let Some(prefix) = captures.get(1) else {
-                return captures[0].to_owned();
-            };
-            let Some(value) = captures.get(2) else {
-                return captures[0].to_owned();
-            };
-            if is_wildcard_only_secret_value(value.as_str()) {
-                return captures[0].to_owned();
-            }
-            format!("{}{quote}{REDACTED_SECRET}{quote}", prefix.as_str())
-        })
-        .into_owned()
+fn redact_quoted_secret_flag(input: &str, regex: &Regex, quote: char) -> Option<String> {
+    match regex.replace_all(input, |captures: &regex::Captures<'_>| {
+        let Some(prefix) = captures.get(1) else {
+            return captures[0].to_owned();
+        };
+        let Some(value) = captures.get(2) else {
+            return captures[0].to_owned();
+        };
+        if is_wildcard_only_secret_value(value.as_str()) {
+            return captures[0].to_owned();
+        }
+        format!("{}{quote}{REDACTED_SECRET}{quote}", prefix.as_str())
+    }) {
+        Cow::Borrowed(_) => None,
+        Cow::Owned(value) => Some(value),
+    }
 }
 
 /// Redacts unquoted CLI secret flag values while leaving wildcard-only examples intact.
-fn redact_unquoted_secret_flag(input: &str, regex: &Regex) -> String {
-    regex
-        .replace_all(input, |captures: &regex::Captures<'_>| {
-            let Some(prefix) = captures.get(1) else {
-                return captures[0].to_owned();
-            };
-            let Some(value) = captures.get(2) else {
-                return captures[0].to_owned();
-            };
-            if is_wildcard_only_secret_value(value.as_str()) {
-                return captures[0].to_owned();
-            }
-            format!("{}{REDACTED_SECRET}", prefix.as_str())
-        })
-        .into_owned()
+fn redact_unquoted_secret_flag(input: &str, regex: &Regex) -> Option<String> {
+    match regex.replace_all(input, |captures: &regex::Captures<'_>| {
+        let Some(prefix) = captures.get(1) else {
+            return captures[0].to_owned();
+        };
+        let Some(value) = captures.get(2) else {
+            return captures[0].to_owned();
+        };
+        if is_wildcard_only_secret_value(value.as_str()) {
+            return captures[0].to_owned();
+        }
+        format!("{}{REDACTED_SECRET}", prefix.as_str())
+    }) {
+        Cow::Borrowed(_) => None,
+        Cow::Owned(value) => Some(value),
+    }
 }
 
 /// Returns whether a secret-looking flag value is only a shell, SQL, or glob wildcard.
@@ -353,20 +1022,94 @@ fn is_wildcard_only_secret_value(value: &str) -> bool {
             .all(|byte| matches!(byte, b'%' | b'_' | b'*' | b'?'))
 }
 
-/// Redacts POSIX home path usernames without treating relative synthetic paths as homes.
-fn redact_posix_home_paths(input: &str) -> String {
-    POSIX_HOME_PATH_REGEX
-        .replace_all(input, |captures: &regex::Captures<'_>| {
-            let prefix = captures.get(1).map_or("", |value| value.as_str());
-            if is_synthetic_posix_home_prefix(prefix) {
-                return captures[0].to_owned();
+/// Returns whether text could contain a signed or credential query parameter.
+fn may_contain_signed_query_parameter(input: &str) -> bool {
+    let bytes = input.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if !matches!(bytes[index], b'?' | b'&') {
+            index += 1;
+            continue;
+        }
+
+        let key_start = index + 1;
+        let mut key_end = key_start;
+        while key_end < bytes.len()
+            && !matches!(
+                bytes[key_end],
+                b'=' | b'&' | b'#' | b' ' | b'\t' | b'\r' | b'\n'
+            )
+        {
+            key_end += 1;
+        }
+        if bytes.get(key_end) == Some(&b'=') {
+            let key = &input[key_start..key_end];
+            if is_signed_query_parameter_name(key) {
+                return true;
             }
-            let Some(root) = captures.get(2) else {
-                return captures[0].to_owned();
-            };
-            format!("{prefix}/{}/{REDACTED_HOME}", root.as_str())
-        })
-        .into_owned()
+        }
+        index = key_end.saturating_add(1);
+    }
+    false
+}
+
+/// Returns whether one query parameter name is matched by the signed-query regex.
+fn is_signed_query_parameter_name(name: &str) -> bool {
+    SIGNED_QUERY_PARAMETER_NAMES
+        .iter()
+        .any(|candidate| name.eq_ignore_ascii_case(candidate))
+}
+
+/// Redacts long base64-like byte runs without invoking a regex over every large payload.
+fn redact_base64_blobs(input: &str) -> Option<String> {
+    let bytes = input.as_bytes();
+    let mut output = String::new();
+    let mut last = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        if !is_base64_blob_byte(bytes[index]) {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while index < bytes.len() && is_base64_blob_byte(bytes[index]) {
+            index += 1;
+        }
+        if index - start < 512 {
+            continue;
+        }
+        output.push_str(&input[last..start]);
+        output.push_str(REDACTED_BLOB);
+        last = index;
+    }
+
+    if last == 0 {
+        return None;
+    }
+    output.push_str(&input[last..]);
+    Some(output)
+}
+
+/// Returns whether one byte belongs to the base64-like blob regex class.
+fn is_base64_blob_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=' | b'_' | b'-')
+}
+
+/// Redacts POSIX home path usernames without treating relative synthetic paths as homes.
+fn redact_posix_home_paths(input: &str) -> Option<String> {
+    match POSIX_HOME_PATH_REGEX.replace_all(input, |captures: &regex::Captures<'_>| {
+        let prefix = captures.get(1).map_or("", |value| value.as_str());
+        if is_synthetic_posix_home_prefix(prefix) {
+            return captures[0].to_owned();
+        }
+        let Some(root) = captures.get(2) else {
+            return captures[0].to_owned();
+        };
+        format!("{prefix}/{}/{REDACTED_HOME}", root.as_str())
+    }) {
+        Cow::Borrowed(_) => None,
+        Cow::Owned(value) => Some(value),
+    }
 }
 
 /// Returns whether the character before `/home` or `/Users` makes the path relative.
@@ -784,10 +1527,38 @@ mod tests {
             "--with-api-key\n          Read the API key from stdin ",
             "persist-credentials: false token: null password=none secret=true ",
             "`persist-credentials: false`... ",
+            "signature=abcdefghi ",
             r#"if token == \"fmt\" { continue; } if token=> \"fmt\" { continue; }"#
         );
 
         assert_eq!(redact_text(input), input);
+    }
+
+    #[test]
+    fn secret_assignment_scanner_matches_regex_oracle() {
+        let cases = [
+            "TOKEN=secretvalue API_TOKEN=supersecret",
+            "mytoken=legacy-token-secret serviceapikey=legacy-key-secret",
+            "STRIPE_SECRET_KEY=stripe-secret AUTHORIZATION=opaque-secret",
+            "Authorization:\"Token abcdef\" password=\"quoted secret\"",
+            "TOKEN:=make-secret clientSecret = 'quoted secret'",
+            "tokenize='unicode61' apiKeySource: \"ANTHROPIC_API_KEY\"",
+            "query LIKE '%--token=%' rg -n -S 'token='",
+            "--token=flag-secret --password=p%40ssword",
+            "persist-credentials: false token: null password=none secret=true",
+            r#"rg -n "Authorization:|password=false|secret=false|token: false|token=PRIVATE KEY""#,
+            r#"if token == \"fmt\" { continue; } if token=> \"fmt\" { continue; }"#,
+            "proxyAuthorization:\\|PRIVATE KEY Authorization: Basic",
+            "credential='non ascii 값' cookie=abcd",
+        ];
+
+        for case in cases {
+            assert_eq!(
+                redact_secret_assignments(case).unwrap_or_else(|| case.to_owned()),
+                redact_secret_assignments_with_regex_oracle(case),
+                "{case}"
+            );
+        }
     }
 
     #[test]
@@ -796,7 +1567,7 @@ mod tests {
             "TOKEN=secretvalue API_TOKEN=supersecret SLACK_BOT_TOKEN=xoxb-secret \
              STRIPE_SECRET_KEY=stripe-secret AUTHORIZATION=opaque-secret \
              Authorization:\"Token abcdef\" password=\"quoted secret\" \
-             TOKEN:=make-secret \
+             TOKEN:=make-secret mytoken=legacy-token-secret serviceapikey=legacy-key-secret \
              --password=p%40ssword --token abc%2Fdef --token flagsecret \
              --github-token=github-secret --with-api-key stdin-secret \
              --openai-api-key=\"openai-secret\" \
@@ -811,6 +1582,8 @@ mod tests {
         assert!(!redacted.contains("Token abcdef"));
         assert!(!redacted.contains("quoted secret"));
         assert!(!redacted.contains("make-secret"));
+        assert!(!redacted.contains("legacy-token-secret"));
+        assert!(!redacted.contains("legacy-key-secret"));
         assert!(!redacted.contains("p%40ssword"));
         assert!(!redacted.contains("abc%2Fdef"));
         assert!(!redacted.contains("%40ssword"));
@@ -825,6 +1598,22 @@ mod tests {
         assert!(redacted.contains("--token [REDACTED_SECRET]"));
         assert!(redacted.contains("--openai-api-key=\"[REDACTED_SECRET]\""));
         assert!(redacted.contains("--passwd='[REDACTED_SECRET]'"));
+    }
+
+    #[test]
+    fn redact_text_redacts_signed_query_parameters_after_prefilter() {
+        for name in SIGNED_QUERY_PARAMETER_NAMES {
+            let secret = "synthetic-secret-value";
+            let input = format!("https://example.test/callback?{name}={secret}");
+
+            let redacted = redact_text(&input);
+
+            assert!(!redacted.contains(secret), "{name}");
+            assert!(
+                redacted.contains(&format!("?{name}=[REDACTED_SECRET]")),
+                "{name}: {redacted}"
+            );
+        }
     }
 
     #[test]
