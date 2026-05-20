@@ -8,7 +8,7 @@ Accepted for V1 implementation.
 
 Darc is local-first: it syncs local Claude and Codex session archives, indexes redacted normalized session data into
 SQLite, and exposes read/query commands over that local index. Team sharing should let a project reuse useful agent
-session context from teammates without introducing a Darc-hosted cloud service and without uploading raw provider logs.
+session context from team members without introducing a Darc-hosted cloud service and without uploading raw provider logs.
 
 The accepted product direction is:
 
@@ -121,7 +121,7 @@ Each exporter manifest is visible and contains only sync metadata:
 
 The branch tip preserves one manifest namespace per exporter. A push replaces only the current exporter's manifest and
 objects that are no longer referenced by another exporter. This keeps a team branch usable for fresh pullers: the latest
-tree can expose every teammate's current export instead of only the most recent pusher.
+tree can expose each member's current export instead of only the most recent pusher.
 
 Merge bounds visible manifest discovery by exporter directory count and aggregate manifest bytes. V1 import rejects
 artifacts whose visible manifest or encrypted turn payload version is not exactly `1`, and whose encrypted sync payload
@@ -246,7 +246,7 @@ It also auto-generates a persistent Ed25519 signing key under:
 <darc-root>/keys/share.signingkey
 ```
 
-The public recipient is shown by `darc share key` and included in visible manifests so teammates can add it as a
+The public recipient is shown by `darc share key` and included in visible manifests so team members can add it as a
 recipient. V1 encrypts every payload object to:
 
 - the local user's public recipient
@@ -267,7 +267,7 @@ Merge decrypts and validates the encrypted sync payload signature before destruc
 visible manifest turn set exactly matches the signed sync payload, prunes stale imported turns only for the authenticated
 exporter identity contained in that decrypted payload, and then removes empty imported sessions for that exporter.
 Malformed, mismatched, undecryptable, unauthenticated, schema-incompatible, or foreign exporter manifests, sync payloads,
-and turn objects are skipped with warnings. Valid objects continue to import. This keeps one bad teammate chunk from
+and turn objects are skipped with warnings. Valid objects continue to import. This keeps a single member's bad chunk from
 blocking the whole team index while preserving rigorous warning and test coverage.
 
 Writes are isolated by content-addressed objects and manifest entries. Concurrent pushes may still have Git-level

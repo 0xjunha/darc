@@ -124,7 +124,7 @@ pub(crate) fn harden_share_key_permissions(path: &Path) -> Result<()> {
     harden_private_key_permissions(path)
 }
 
-/// Builds sorted encryption recipient strings from local identity and configured teammates.
+/// Builds sorted encryption recipient strings from local identity and configured team members.
 pub(crate) fn encryption_recipient_strings(
     identity: &ShareIdentity,
     settings: &ShareSettings,

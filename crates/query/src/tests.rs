@@ -113,7 +113,7 @@ fn mark_session_shared(
     connection.execute(
         "
         INSERT OR IGNORE INTO users (user_id, display_name, email, public_key, source, updated_at)
-        VALUES ('usr-teammate', 'Team Mate', 'teammate@example.invalid', 'age1synthetic', 'test', '2026-05-15T12:00:00Z')
+        VALUES ('usr-member', 'Team Member', 'member@example.invalid', 'age1synthetic', 'test', '2026-05-15T12:00:00Z')
         ",
         [],
     )?;
@@ -121,7 +121,7 @@ fn mark_session_shared(
         "
         UPDATE sessions
         SET origin_kind = 'shared',
-            origin_user_id = 'usr-teammate',
+            origin_user_id = 'usr-member',
             origin_remote = 'origin',
             imported_at = '2026-05-15T12:00:00Z'
         WHERE project_id = ?1 AND session_id = ?2
@@ -5566,7 +5566,7 @@ fn session_and_search_queries_respect_shared_scope_and_author() -> Result<()> {
             until: None,
             touched_path: None,
             origin_scope: SessionOriginScope::Shared,
-            author: Some("teammate@example.invalid"),
+            author: Some("member@example.invalid"),
             view: SessionsView::Full,
             limit: 10,
             offset: 0,
@@ -5576,7 +5576,7 @@ fn session_and_search_queries_respect_shared_scope_and_author() -> Result<()> {
     assert_eq!(shared_sessions.sessions[0].session_id, shared_session);
     assert_eq!(
         shared_sessions.sessions[0].provenance.user_email.as_deref(),
-        Some("teammate@example.invalid")
+        Some("member@example.invalid")
     );
 
     let all_sessions = query_project_sessions(
@@ -5614,7 +5614,7 @@ fn session_and_search_queries_respect_shared_scope_and_author() -> Result<()> {
             until: None,
             touched_path: None,
             origin_scope: SessionOriginScope::All,
-            author: Some("teammate@example.invalid"),
+            author: Some("member@example.invalid"),
             view: SessionsView::Full,
             limit: 10,
             offset: 0,
@@ -5663,7 +5663,7 @@ fn session_and_search_queries_respect_shared_scope_and_author() -> Result<()> {
             since: None,
             until: None,
             origin_scope: SessionOriginScope::Shared,
-            author: Some("teammate@example.invalid"),
+            author: Some("member@example.invalid"),
             limit: 10,
             offset: 0,
             matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
@@ -5719,7 +5719,7 @@ fn session_and_search_queries_respect_shared_scope_and_author() -> Result<()> {
             since: None,
             until: None,
             origin_scope: SessionOriginScope::All,
-            author: Some("teammate@example.invalid"),
+            author: Some("member@example.invalid"),
             limit: 10,
             offset: 0,
             matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
@@ -5751,7 +5751,7 @@ fn session_and_search_queries_respect_shared_scope_and_author() -> Result<()> {
                 since: None,
                 until: None,
                 origin_scope: SessionOriginScope::Shared,
-                author: Some("teammate@example.invalid"),
+                author: Some("member@example.invalid"),
                 limit: 10,
                 offset: 0,
                 matched_path_limit: Some(DEFAULT_MATCHED_PATH_LIMIT),
@@ -5821,7 +5821,7 @@ fn exact_touched_path_sessions_apply_shared_scope_before_pagination() -> Result<
             until: None,
             touched_path: Some("src/shared.rs"),
             origin_scope: SessionOriginScope::Shared,
-            author: Some("teammate@example.invalid"),
+            author: Some("member@example.invalid"),
             view: SessionsView::Full,
             limit: 1,
             offset: 0,

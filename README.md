@@ -105,18 +105,20 @@ Or skim the surrounding session first:
 darc list turns 11111111 --view oneline --limit 20
 ```
 
-## Share Encrypted Team Context
+## Team Sharing
 
-Darc is local-first, but teams can opt in to sharing project context. Each teammate selects which sessions to export;
+Teams can share encrypted Darc session indexes with the Git backend of their choice.
+
+Each team member selects which sessions to export;
 Darc redacts the index projection, encrypts it for configured age recipients, and pushes only encrypted artifacts to a
 Git branch. Darc does not publish your raw SQLite index or plaintext session archives.
 
 Quick setup:
 
 ```sh
-# Show or create your public recipient, then add teammates.
+# Show or create your public recipient, then add a team member's age public key.
 darc share key
-darc share recipient add age1...
+darc share recipient add <AGE_PUBLIC_KEY>
 
 # Choose what this project exports.
 darc share include <SESSION_ID>
@@ -124,8 +126,8 @@ darc share include --all
 darc share exclude <SESSION_ID>
 
 # Publish and import the team index.
-darc push team
-darc pull team
+darc push <SHARE_BRANCH>
+darc pull <SHARE_BRANCH>
 ```
 
 Read commands stay local unless you ask for shared history:
@@ -136,11 +138,25 @@ darc list sessions --scope all
 darc show session <SESSION_ID> --shared
 ```
 
-By default, `darc push team` uses the active project's Git upstream or `origin` and writes to `darc/team`. To use a
+By default, `darc push <SHARE_BRANCH>` uses the active project's Git upstream or `origin` and writes to `darc/<SHARE_BRANCH>` branch.
+
+To use a
 separate index-only repository:
 
 ```sh
-darc remote add team-index git@github.com:example/darc-index.git
+darc remote add <REMOTE_NAME> <REMOTE_URL>
+darc push <SHARE_BRANCH> --remote <REMOTE_NAME>
+darc pull <SHARE_BRANCH> --remote <REMOTE_NAME>
+```
+
+Example:
+```sh
+darc share key
+darc share recipient add age1...
+darc share include --all
+
+# Publish encrypted session indexes to `darc/team` branch of `exmaple/darc-index` GitHub repo.
+darc remote add team-index https://github.com/example/darc-index.git
 darc push team --remote team-index
 darc pull team --remote team-index
 ```
