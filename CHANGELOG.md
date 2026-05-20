@@ -4,6 +4,8 @@ All notable Darc release changes should be summarized here.
 
 ## Unreleased
 
+- Print post-upgrade auto-refresh restart guidance after `darc upgrade`.
+
 ## [0.2.0] - 2026-05-20
 
 - Add Git-backed encrypted team sharing for selected Darc session context with `darc share`, `darc remote`,

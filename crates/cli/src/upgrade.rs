@@ -316,9 +316,25 @@ fn run_darc_upgrade(status: UpgradeStatus) -> Result<()> {
         .status()
         .with_context(|| format!("failed to run updater {}", updater_path.display()))?;
     if result.success() {
+        print_post_upgrade_background_refresh_note(style);
         return Ok(());
     }
     bail!("updater exited with status {result}")
+}
+
+/// Prints follow-up guidance for users with a running auto-refresh service.
+fn print_post_upgrade_background_refresh_note(style: HumanStyle) {
+    println!();
+    print_section(style, "Background refresh");
+    print_line(2, post_upgrade_background_refresh_note(style));
+}
+
+/// Formats the post-upgrade auto-refresh restart guidance.
+pub(crate) fn post_upgrade_background_refresh_note(style: HumanStyle) -> String {
+    format!(
+        "If Darc auto-refresh was running, run {} to restart it with the new version.",
+        style.bold("darc refresh --auto")
+    )
 }
 
 /// Checks GitHub Releases for the latest Darc CLI release.
