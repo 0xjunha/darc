@@ -4,6 +4,8 @@ All notable Darc release changes should be summarized here.
 
 ## Unreleased
 
+## [0.2.0] - 2026-05-20
+
 - Add Git-backed encrypted team sharing for selected Darc session context with `darc share`, `darc remote`,
   `darc push/fetch/merge/pull`, and explicit shared query scopes.
 - Make large shared-index transfers faster with compressed encrypted chunks, optional Git LFS, reused unchanged exports,
