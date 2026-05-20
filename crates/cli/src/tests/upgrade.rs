@@ -148,6 +148,21 @@ fn upgrade_check_json_uses_current_install_command() {
 }
 
 #[test]
+fn post_upgrade_background_refresh_note_bolds_restart_command() {
+    let note = super::post_upgrade_background_refresh_note(HumanStyle::new(
+        true,
+        false,
+        Some("xterm-256color"),
+    ));
+
+    assert!(note.contains("\x1b[1mdarc refresh --auto\x1b[0m"));
+    assert_eq!(
+        strip_ansi_text(&note),
+        "If Darc auto-refresh was running, run darc refresh --auto to restart it with the new version."
+    );
+}
+
+#[test]
 fn upgrade_http_error_detail_is_bounded_and_single_line() {
     let detail = super::upgrade_http_error_detail("  first line\nsecond\tline  ").unwrap();
     assert_eq!(detail, "first line second line");
