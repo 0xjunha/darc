@@ -17,6 +17,7 @@ use super::{
     types::{DetectedRolloutSource, InitDraft},
     write_init,
 };
+use crate::config::{ShareConfig, ShareRecipientConfig, ShareRemoteConfig};
 use crate::{
     SourceKind,
     config::{ProjectConfig, SharedConfig, SourcesConfig, WatchConfig},
@@ -210,6 +211,7 @@ fn build_config_preserves_existing_update_check_opt_out() -> Result<()> {
         ExistingConfig {
             projects: Vec::new(),
             check_for_update_on_startup: false,
+            ..ExistingConfig::default()
         },
         project,
         &[],
@@ -238,6 +240,7 @@ fn build_config_preserves_existing_update_check_opt_in() -> Result<()> {
         ExistingConfig {
             projects: Vec::new(),
             check_for_update_on_startup: true,
+            ..ExistingConfig::default()
         },
         project,
         &[],
@@ -245,6 +248,44 @@ fn build_config_preserves_existing_update_check_opt_in() -> Result<()> {
     );
 
     assert!(config.check_for_update_on_startup);
+
+    Ok(())
+}
+
+#[test]
+fn build_config_preserves_existing_share_config() -> Result<()> {
+    let workspace_root = unique_test_dir("preserve-share-config");
+    let project_root = workspace_root.join("repo");
+    let project = ProjectConfig {
+        id: "repo-abc123".into(),
+        name: "repo".into(),
+        local_path: project_root,
+        git_upstream: None,
+        sessions_root: workspace_root.join("projects/repo-abc123/sessions"),
+        known_paths: Vec::new(),
+    };
+    let share = ShareConfig {
+        remotes: vec![ShareRemoteConfig {
+            name: "team".to_owned(),
+            url: "https://example.invalid/team/share.git".to_owned(),
+        }],
+        recipients: vec![ShareRecipientConfig {
+            recipient: "age1syntheticrecipient0000000000000000000000000000000000".to_owned(),
+        }],
+    };
+
+    let config = build_config(
+        ExistingConfig {
+            projects: Vec::new(),
+            share: share.clone(),
+            ..ExistingConfig::default()
+        },
+        project,
+        &[],
+        workspace_root,
+    );
+
+    assert_eq!(config.share, share);
 
     Ok(())
 }

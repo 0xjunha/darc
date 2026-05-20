@@ -24,6 +24,8 @@ pub struct SharedConfig {
     pub sources: SourcesConfig,
     #[serde(default, skip_serializing_if = "WatchConfig::is_default")]
     pub watch: WatchConfig,
+    #[serde(default, skip_serializing_if = "ShareConfig::is_default")]
+    pub share: ShareConfig,
 }
 
 fn default_config_version() -> u32 {
@@ -40,6 +42,7 @@ impl SharedConfig {
             projects,
             sources,
             watch: WatchConfig::default(),
+            share: ShareConfig::default(),
         }
     }
 }
@@ -97,6 +100,35 @@ impl WatchConfig {
 /// Returns whether a boolean is false for default-skipping serialization.
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+/// Stores workspace-level settings for Git-backed shared indexes.
+#[derive(Debug, Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ShareConfig {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remotes: Vec<ShareRemoteConfig>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recipients: Vec<ShareRecipientConfig>,
+}
+
+impl ShareConfig {
+    /// Returns whether the share config has no explicit settings.
+    pub fn is_default(config: &Self) -> bool {
+        config == &Self::default()
+    }
+}
+
+/// Stores one named Darc share remote.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ShareRemoteConfig {
+    pub name: String,
+    pub url: String,
+}
+
+/// Stores one age recipient configured for Darc sharing.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ShareRecipientConfig {
+    pub recipient: String,
 }
 
 /// Stores Claude-specific source settings in the shared config.

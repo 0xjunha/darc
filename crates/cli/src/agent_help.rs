@@ -51,6 +51,15 @@ Skip Darc for fresh, self-contained tasks where current files, tests, docs, or t
 - `darc list sessions --touching <glob> --limit 5`: find sessions that touched a file or path pattern.
 - `darc search --mode file-path <glob> --limit 5`: find turns associated with touched file paths.
 
+## Query Scope
+
+Session-oriented reads default to local sessions. Where supported:
+- `--shared` reads imported shared sessions.
+- `--scope local|shared|all` selects local sessions, imported shared sessions, or both.
+- `--author <user-id-or-label>` filters imported shared sessions by recorded provenance; user ids are stable, while names and emails are labels from the exporter's Git config.
+
+Use output provenance such as `origin_kind`, `user_id`, and `origin_remote` to distinguish local evidence from imported shared evidence.
+
 ## Task Recipes
 
 Decision or rationale:
@@ -85,6 +94,7 @@ When Darc materially shapes your answer, briefly separate prior-session evidence
 - Current source/tests confirmed: what is true in the repository now.
 
 When exact prior evidence matters, include the `session_id` and `turn_ordinal` so another agent can inspect the same turn. Do not list Darc commands unless they help reproduce the evidence.
+When shared evidence is part of the result, include the relevant provenance fields if they affect interpretation.
 
 ## Output Discipline
 
@@ -98,5 +108,7 @@ When exact prior evidence matters, include the `session_id` and `turn_ordinal` s
 Read surfaces such as `status --json`, `list`, `show`, `search`, `stats`, and `resolve` are safe for investigation.
 
 `darc refresh`, `darc sync`, `darc index`, `darc init`, `darc project ...`, and service/upgrade commands can write local Darc state or config. Run them only when freshness or setup is part of the task.
+
+Sharing surfaces can also write state: `darc share ...` can update share selections, recipients, and keys; `darc remote add` updates config; `darc fetch`, `darc merge`, and `darc pull` update the local share cache or index; `darc push` writes encrypted share artifacts to a Git branch.
 "#
 }

@@ -166,6 +166,18 @@ Shared options:
 - `--since` is an inclusive lower bound and `--until` is an exclusive upper bound
 - relative time filters use `<days>d`, such as `7d`; absolute filters use ISO 8601 timestamps
 
+Shared-index scope:
+
+- Session-oriented reads are local-only by default. This includes `darc list sessions`, `darc search`, `darc list turns`,
+  `darc list files --session`, `darc show session`, `darc show turn`, and `darc stats turn`.
+- `--shared` is shorthand for `--scope shared` where supported.
+- `--scope local|shared|all` chooses local sessions, imported shared sessions, or both.
+- `--author <user-id|email|display-name>` restricts imported shared sessions by their recorded provenance author and
+  implies shared scope when no explicit `--scope` is supplied. The stable `user_id` is derived from the export signing
+  key; recorded emails and display names are convenience labels from the exporter's Git config, not authenticated
+  identity.
+- Project-wide file pivots and workspace/project stats are aggregate surfaces and do not yet expose shared scope flags.
+
 Field conventions:
 
 - field names are `snake_case`
@@ -227,6 +239,16 @@ caller-controlled limits:
 
 Session and turn list payloads expose best-effort model, token, runtime, and patch-count fields for lightweight clients.
 These fields may be `null` when older or provider-specific transcripts did not report stable values.
+
+Session summary payloads include `provenance`:
+
+- `origin_kind`: `local` or `shared`
+- `user_id`, `user_name`, and `user_email`: author metadata for imported shared sessions, otherwise `null`
+- `origin_remote`: canonical non-secret remote/branch provenance key for imported shared sessions
+- `imported_at`: UTC import timestamp for imported shared sessions
+
+Session-list and search payloads include `origin_scope` and `author` so clients can distinguish local-only, shared-only,
+and mixed result sets.
 
 Token fields preserve provider semantics where possible. `reasoning_token_count` is a subset of output tokens, not an
 additional token bucket to add on top of `output_token_count`.

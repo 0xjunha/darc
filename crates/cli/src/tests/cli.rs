@@ -78,6 +78,7 @@ fn agent_help_renders_operating_guide() {
             "# Darc Agent Help",
             "## When to Use Darc",
             "## Safe First Commands",
+            "## Query Scope",
             "## Task Recipes",
             "## Evidence Ladder",
             "## Reporting Darc Evidence",
@@ -87,12 +88,18 @@ fn agent_help_renders_operating_guide() {
     );
     assert!(guide.contains("`darc status --json`"));
     assert!(guide.contains("`darc search --mode file-path <glob> --limit 5`"));
+    assert!(guide.contains("Session-oriented reads default to local sessions."));
+    assert!(guide.contains("`--scope local|shared|all`"));
+    assert!(guide.contains("`origin_kind`, `user_id`, and `origin_remote`"));
     assert!(guide.contains("`darc list files --co-touched-with <path> --limit 10`"));
     assert!(guide.contains("Treat historical churn as a map, not a verdict."));
     assert!(guide.contains("Darc showed:"));
     assert!(guide.contains("Current source/tests confirmed:"));
     assert!(guide.contains("Do not list Darc commands unless they help reproduce the evidence."));
+    assert!(guide.contains("When shared evidence is part of the result"));
     assert!(guide.contains("`darc refresh`, `darc sync`, `darc index`"));
+    assert!(guide.contains("`darc fetch`, `darc merge`, and `darc pull`"));
+    assert!(guide.contains("`darc push` writes encrypted share artifacts"));
     assert!(!guide.contains("AGENTS.md trigger"));
     assert!(!guide.contains("darc agent-help --agents-md-line >> AGENTS.md"));
 }

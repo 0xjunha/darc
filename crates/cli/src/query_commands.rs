@@ -5,11 +5,12 @@ use darc_core::query::{
     DEFAULT_SEARCH_MATCH_LIMIT, ProjectFilesQueryRequest, ProjectSearchTurnsQueryRequest,
     ProjectSessionBundleQueryRequest, ProjectSessionsQueryRequest, ProjectTurnsQueryRequest,
     QueryProtocolError, ResolveSessionQueryRequest, ResolvedQueryProject, ResolvedSessionMatch,
-    SearchEvidenceField, SearchMode, SessionBundleView, SessionsView, TurnDetailOptions, TurnsView,
-    query_project_insight_report_for_project, query_resolve_sessions,
+    SearchEvidenceField, SearchMode, SessionBundleView, SessionOriginScope, SessionsView,
+    TurnDetailOptions, TurnsView, query_project_insight_report_for_project, query_resolve_sessions,
     query_session_files_for_project, query_turn_for_project, query_turn_insight_report_for_project,
     query_workspace, query_workspace_insight_report, resolve_query_project,
-    resolve_query_search_session_id_for_project, resolve_query_session_for_project,
+    resolve_query_search_session_id_for_project_with_scope_and_author,
+    resolve_query_session_for_project_with_scope,
 };
 use darc_paths::resolve_query_time_bound as resolve_shared_query_time_bound;
 use serde::Serialize;
@@ -19,8 +20,8 @@ use crate::args::{
     QueryProjectInsightsArgs, QueryResolveSessionArgs, QuerySearchTurnsArgs,
     QuerySessionBundleArgs, QuerySessionFilesArgs, QuerySessionsArgs, QueryTurnArgs,
     QueryTurnInsightsArgs, QueryTurnsArgs, QueryWorkspaceArgs, QueryWorkspaceInsightsArgs,
-    ResolveArgs, ResolveCommands, SearchArgs, SearchModeArg, SessionListViewArg, ShowArgs,
-    ShowCommands, StatsArgs, StatsCommands, TurnListViewArg, ViewArg,
+    ResolveArgs, ResolveCommands, SearchArgs, SearchModeArg, SessionListViewArg, SessionScopeArg,
+    ShowArgs, ShowCommands, StatsArgs, StatsCommands, TurnListViewArg, ViewArg,
 };
 use crate::output::{
     QueryOutput, ReadValidationError, print_json_envelope, print_search_turns_json_envelope,
@@ -136,6 +137,8 @@ pub(crate) fn run_list_files(output: &QueryOutput, args: ListFilesArgs) -> Resul
                 root: args.root,
                 project_id: args.project_id,
                 provider: args.provider,
+                shared: args.shared,
+                scope: args.scope,
                 session_id_arg: None,
                 session_id: Some(session_id),
                 limit: args.limit.unwrap_or(DEFAULT_QUERY_PAGE_LIMIT),
@@ -145,6 +148,9 @@ pub(crate) fn run_list_files(output: &QueryOutput, args: ListFilesArgs) -> Resul
     }
     if path.is_none() && (args.matched_path_limit.is_some() || args.include_all_matched_paths) {
         bail!("list files matched-path controls require PATH or --path");
+    }
+    if args.shared || args.scope.is_some() {
+        bail!("list files shared scope controls require --session");
     }
     run_query_files(
         output,
@@ -187,6 +193,7 @@ pub(crate) fn run_query_resolve_session(
             query: &args.input,
             project_id: args.project_id.as_deref(),
             provider: args.provider.map(provider_arg_to_source_kind),
+            origin_scope: query_origin_scope(args.shared, args.scope, None),
             limit: DEFAULT_RESOLVE_SESSION_MATCH_LIMIT,
         },
     )?;
@@ -232,6 +239,8 @@ pub(crate) fn run_query_sessions(output: &QueryOutput, args: QuerySessionsArgs) 
         since: since.as_deref(),
         until: until.as_deref(),
         touched_path: args.touched_path.as_deref(),
+        origin_scope: query_origin_scope(args.shared, args.scope, args.author.as_deref()),
+        author: args.author.as_deref(),
         view: session_list_view_arg_to_view(args.view),
         limit: args.limit,
         offset: args.offset,
@@ -291,10 +300,12 @@ pub(crate) fn run_query_session_files(
         args.session_id_arg.as_deref(),
     )?;
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
-    let session = resolve_query_session_for_project(
+    let origin_scope = query_origin_scope(args.shared, args.scope, None);
+    let session = resolve_query_session_for_project_with_scope(
         &project,
         args.provider.map(provider_arg_to_source_kind),
         session_id,
+        origin_scope,
     )?;
     let data = query_session_files_for_project(
         &project,
@@ -319,10 +330,12 @@ pub(crate) fn run_query_session_bundle(
         args.session_id_arg.as_deref(),
     )?;
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
-    let session = resolve_query_session_for_project(
+    let origin_scope = query_origin_scope(args.shared, args.scope, None);
+    let session = resolve_query_session_for_project_with_scope(
         &project,
         args.provider.map(provider_arg_to_source_kind),
         session_id,
+        origin_scope,
     )?;
     let data = project.query_session_bundle(ProjectSessionBundleQueryRequest {
         provider: session.provider,
@@ -357,10 +370,12 @@ pub(crate) fn run_query_turns(output: &QueryOutput, args: QueryTurnsArgs) -> Res
         .map(resolve_query_time_bound)
         .transpose()?;
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
-    let session = resolve_query_session_for_project(
+    let origin_scope = query_origin_scope(args.shared, args.scope, None);
+    let session = resolve_query_session_for_project_with_scope(
         &project,
         args.provider.map(provider_arg_to_source_kind),
         session_id,
+        origin_scope,
     )?;
     let data = project.query_turns(ProjectTurnsQueryRequest {
         provider: session.provider,
@@ -383,10 +398,12 @@ pub(crate) fn run_query_turn(output: &QueryOutput, args: QueryTurnArgs) -> Resul
         args.turn_ordinal_arg.as_deref(),
     )?;
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
-    let session = resolve_query_session_for_project(
+    let origin_scope = query_origin_scope(args.shared, args.scope, None);
+    let session = resolve_query_session_for_project_with_scope(
         &project,
         args.provider.map(provider_arg_to_source_kind),
         session_id,
+        origin_scope,
     )?;
     let view = match (args.view, args.include_raw) {
         (Some(ViewArg::Narrative), true) => {
@@ -435,14 +452,17 @@ pub(crate) fn run_query_search_turns(
         .map(resolve_query_time_bound)
         .transpose()?;
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
+    let origin_scope = query_origin_scope(args.shared, args.scope, args.author.as_deref());
     let session_id = args
         .session_id
         .as_deref()
         .map(|session_id| {
-            resolve_query_search_session_id_for_project(
+            resolve_query_search_session_id_for_project_with_scope_and_author(
                 &project,
                 args.provider.map(provider_arg_to_source_kind),
                 session_id,
+                origin_scope,
+                args.author.as_deref(),
             )
         })
         .transpose()?;
@@ -457,6 +477,8 @@ pub(crate) fn run_query_search_turns(
         session_id: session_id.as_deref(),
         since: since.as_deref(),
         until: until.as_deref(),
+        origin_scope,
+        author: args.author.as_deref(),
         limit: args.limit,
         offset: args.offset,
         matched_path_limit: matched_path_limit_arg(
@@ -508,10 +530,12 @@ pub(crate) fn run_query_turn_insights(
         args.turn_ordinal_arg.as_deref(),
     )?;
     let project = resolve_database_query_project_target(&args.root, args.project_id.as_deref())?;
-    let session = resolve_query_session_for_project(
+    let origin_scope = query_origin_scope(args.shared, args.scope, None);
+    let session = resolve_query_session_for_project_with_scope(
         &project,
         args.provider.map(provider_arg_to_source_kind),
         session_id,
+        origin_scope,
     )?;
     let data = query_turn_insight_report_for_project(
         &project,
@@ -644,6 +668,9 @@ impl From<ListSessionsArgs> for QuerySessionsArgs {
             since: args.since,
             until: args.until,
             touched_path: args.touching,
+            shared: args.shared,
+            scope: args.scope,
+            author: args.author,
             limit: args.limit,
             offset: args.offset,
         }
@@ -666,6 +693,9 @@ impl SearchArgs {
             project_id: self.project_id,
             provider: self.provider,
             session_id: self.session_id,
+            shared: self.shared,
+            scope: self.scope,
+            author: self.author,
             mode: self.mode,
             query_arg: Some(query),
             query: None,
@@ -776,6 +806,22 @@ pub(crate) fn provider_arg_to_source_kind(provider: ProviderArg) -> SourceKind {
     match provider {
         ProviderArg::Claude => SourceKind::Claude,
         ProviderArg::Codex => SourceKind::Codex,
+    }
+}
+
+/// Converts parsed shared-scope flags into the query origin scope.
+pub(crate) fn query_origin_scope(
+    shared: bool,
+    scope: Option<SessionScopeArg>,
+    author: Option<&str>,
+) -> SessionOriginScope {
+    if shared || (scope.is_none() && author.is_some()) {
+        return SessionOriginScope::Shared;
+    }
+    match scope {
+        Some(SessionScopeArg::Local) | None => SessionOriginScope::Local,
+        Some(SessionScopeArg::Shared) => SessionOriginScope::Shared,
+        Some(SessionScopeArg::All) => SessionOriginScope::All,
     }
 }
 

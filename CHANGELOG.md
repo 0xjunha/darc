@@ -4,8 +4,15 @@ All notable Darc release changes should be summarized here.
 
 ## Unreleased
 
-- Redact common secrets, credential material, local home paths, and bulky data blobs before storing or migrating indexed session data.
-- Reduce false-positive redaction of indexed examples, CLI help text, boolean config values, search patterns, and comparison code.
+- Add Git-backed encrypted team sharing for selected Darc session context with `darc share`, `darc remote`,
+  `darc push/fetch/merge/pull`, and explicit shared query scopes.
+- Make large shared-index transfers faster with compressed encrypted chunks, optional Git LFS, reused unchanged exports,
+  and visible push/pull progress.
+- Make shared sync safer by authenticating manifests and payload metadata, rejecting unsafe artifacts, keeping last-good
+  imports when replacement data fails, and redacting share-visible secrets, local paths, remotes, metadata, and bulky
+  blobs.
+- Redact common secrets, credential material, local home paths, and bulky blobs before storing or migrating indexed data,
+  while reducing false positives for examples, help text, boolean config values, search patterns, and comparison code.
 
 ## [0.1.6] - 2026-05-13
 

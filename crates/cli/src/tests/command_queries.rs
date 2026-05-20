@@ -216,6 +216,122 @@ fn canonical_read_commands_accept_shared_options_around_subcommands() {
 }
 
 #[test]
+fn parses_share_command_surface() {
+    let remote_add = Cli::try_parse_from([
+        "darc",
+        "remote",
+        "--root",
+        "/tmp/darc-root",
+        "add",
+        "team",
+        "https://example.invalid/team/share.git",
+    ])
+    .unwrap();
+    assert!(matches!(
+        remote_add.command,
+        Commands::Remote(super::RemoteArgs {
+            root,
+            command: super::RemoteCommands::Add(super::RemoteAddArgs {
+                name,
+                url,
+            }),
+        }) if root.as_path() == Path::new("/tmp/darc-root")
+            && name == "team"
+            && url == "https://example.invalid/team/share.git"
+    ));
+
+    let remote_list = Cli::try_parse_from(["darc", "remote", "list"]).unwrap();
+    assert!(matches!(
+        remote_list.command,
+        Commands::Remote(super::RemoteArgs {
+            command: super::RemoteCommands::List,
+            ..
+        })
+    ));
+
+    let include_all = Cli::try_parse_from([
+        "darc",
+        "share",
+        "--root",
+        "/tmp/darc-root",
+        "include",
+        "--all",
+    ])
+    .unwrap();
+    assert!(matches!(
+        include_all.command,
+        Commands::Share(super::ShareArgs {
+            root,
+            command: super::ShareCommands::Include(super::ShareSessionSelectionArgs {
+                all: true,
+                ..
+            }),
+        }) if root.as_path() == Path::new("/tmp/darc-root")
+    ));
+
+    let recipient_add = Cli::try_parse_from([
+        "darc",
+        "share",
+        "recipient",
+        "add",
+        "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+    ])
+    .unwrap();
+    assert!(matches!(
+        recipient_add.command,
+        Commands::Share(super::ShareArgs {
+            command: super::ShareCommands::Recipient(super::ShareRecipientArgs {
+                command: super::ShareRecipientCommands::Add(super::ShareRecipientValueArgs {
+                    recipient,
+                }),
+            }),
+            ..
+        }) if recipient.starts_with("age1")
+    ));
+
+    let push = Cli::try_parse_from([
+        "darc",
+        "push",
+        "team",
+        "--remote",
+        "share",
+        "--root",
+        "/tmp/darc-root",
+    ])
+    .unwrap();
+    assert!(matches!(
+        push.command,
+        Commands::Push(super::ShareBranchArgs {
+            branch,
+            remote: Some(remote),
+            root,
+        }) if branch == "team" && remote == "share" && root.as_path() == Path::new("/tmp/darc-root")
+    ));
+
+    let fetch = Cli::try_parse_from(["darc", "fetch", "team", "--remote", "share"]).unwrap();
+    assert!(matches!(
+        fetch.command,
+        Commands::Fetch(super::ShareBranchArgs {
+            branch,
+            remote: Some(remote),
+            ..
+        }) if branch == "team" && remote == "share"
+    ));
+
+    let merge = Cli::try_parse_from(["darc", "merge", "team"]).unwrap();
+    assert!(matches!(
+        merge.command,
+        Commands::Merge(super::ShareBranchArgs { branch, .. }) if branch == "team"
+    ));
+
+    let pull = Cli::try_parse_from(["darc", "pull", "team"]).unwrap();
+    assert!(matches!(
+        pull.command,
+        Commands::Pull(super::ShareBranchArgs { branch, .. }) if branch == "team"
+    ));
+}
+
+#[test]
 fn parses_canonical_list_show_search_stats_and_resolve_commands() {
     let sessions = Cli::try_parse_from([
         "darc",
@@ -252,6 +368,7 @@ fn parses_canonical_list_show_search_stats_and_resolve_commands() {
         "11111111",
         "--provider",
         "codex",
+        "--shared",
     ])
     .unwrap();
     assert!(matches!(
@@ -260,12 +377,46 @@ fn parses_canonical_list_show_search_stats_and_resolve_commands() {
             command: super::ListCommands::Files(super::ListFilesArgs {
                 session,
                 provider,
+                shared,
                 ..
             }),
             ..
         }) if session.as_deref() == Some("11111111")
             && matches!(provider, Some(super::ProviderArg::Codex))
+            && shared
     ));
+
+    let all_scope_search =
+        Cli::try_parse_from(["darc", "search", "needle", "--scope", "all"]).unwrap();
+    assert!(matches!(
+        all_scope_search.command,
+        Commands::Search(super::SearchArgs {
+            scope: Some(super::SessionScopeArg::All),
+            ..
+        })
+    ));
+    assert_eq!(
+        query_origin_scope(false, Some(super::SessionScopeArg::All), None),
+        darc_core::query::SessionOriginScope::All
+    );
+
+    let shared_scope_search =
+        Cli::try_parse_from(["darc", "search", "needle", "--scope", "shared"]).unwrap();
+    assert!(matches!(
+        shared_scope_search.command,
+        Commands::Search(super::SearchArgs {
+            scope: Some(super::SessionScopeArg::Shared),
+            ..
+        })
+    ));
+    assert_eq!(
+        query_origin_scope(false, Some(super::SessionScopeArg::Shared), None),
+        darc_core::query::SessionOriginScope::Shared
+    );
+    assert_eq!(
+        query_origin_scope(false, None, Some("synthetic-author")),
+        darc_core::query::SessionOriginScope::Shared
+    );
 
     let path_files = Cli::try_parse_from([
         "darc",
@@ -314,6 +465,59 @@ fn parses_canonical_list_show_search_stats_and_resolve_commands() {
             }),
             ..
         }) if session_id_arg.as_deref() == Some("11111111") && turn_limit == 3
+    ));
+
+    let shared_session_reads = [
+        Cli::try_parse_from(["darc", "list", "files", "--session", "11111111", "--shared"])
+            .unwrap(),
+        Cli::try_parse_from(["darc", "list", "turns", "11111111", "--shared"]).unwrap(),
+        Cli::try_parse_from(["darc", "show", "session", "11111111", "--shared"]).unwrap(),
+        Cli::try_parse_from(["darc", "show", "turn", "11111111", "0", "--shared"]).unwrap(),
+    ];
+    assert!(matches!(
+        &shared_session_reads[0].command,
+        Commands::List(super::ListArgs {
+            command: super::ListCommands::Files(super::ListFilesArgs {
+                session: Some(session),
+                shared: true,
+                ..
+            }),
+            ..
+        }) if session == "11111111"
+    ));
+    assert!(matches!(
+        &shared_session_reads[1].command,
+        Commands::List(super::ListArgs {
+            command: super::ListCommands::Turns(super::QueryTurnsArgs {
+                session_id_arg: Some(session),
+                shared: true,
+                ..
+            }),
+            ..
+        }) if session == "11111111"
+    ));
+    assert!(matches!(
+        &shared_session_reads[2].command,
+        Commands::Show(super::ShowArgs {
+            command: super::ShowCommands::Session(super::QuerySessionBundleArgs {
+                session_id_arg: Some(session),
+                shared: true,
+                ..
+            }),
+            ..
+        }) if session == "11111111"
+    ));
+    assert!(matches!(
+        &shared_session_reads[3].command,
+        Commands::Show(super::ShowArgs {
+            command: super::ShowCommands::Turn(super::QueryTurnArgs {
+                session_id_arg: Some(session),
+                turn_ordinal_arg: Some(turn),
+                shared: true,
+                ..
+            }),
+            ..
+        }) if session == "11111111" && turn == "0"
     ));
 
     let search = Cli::try_parse_from([
@@ -366,12 +570,16 @@ fn parses_canonical_list_show_search_stats_and_resolve_commands() {
         }) if turn_limit == 5
     ));
 
-    let resolve = Cli::try_parse_from(["darc", "resolve", "session", "11111111"]).unwrap();
+    let resolve = Cli::try_parse_from([
+        "darc", "resolve", "session", "11111111", "--scope", "shared",
+    ])
+    .unwrap();
     assert!(matches!(
         resolve.command,
         Commands::Resolve(super::ResolveArgs {
             command: super::ResolveCommands::Session(super::QueryResolveSessionArgs {
                 input,
+                scope: Some(super::SessionScopeArg::Shared),
                 ..
             }),
             ..

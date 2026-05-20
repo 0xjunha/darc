@@ -16,6 +16,7 @@ use darc_paths::SourceKind;
 use darc_rollout::model::{NormalizedTokenUsage, NormalizedTurnStatus, NormalizedTurnStep};
 pub use darc_store::evidence::EvidenceField as SearchEvidenceField;
 use darc_store::open_existing_index_database as open_existing_store_index_database;
+use darc_store::{OriginKind, SessionProvenance};
 pub use files::{display_path_for_access, query_project_files, query_project_session_files};
 #[cfg(test)]
 pub(crate) use insights::{build_project_insights, build_workspace_insights};
@@ -146,6 +147,27 @@ pub enum SessionKind {
     Subagent,
 }
 
+/// Identifies which session origins a query should include.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionOriginScope {
+    #[default]
+    Local,
+    Shared,
+    All,
+}
+
+impl SessionOriginScope {
+    /// Returns the stable SQLite filter value for one origin scope.
+    pub(crate) fn sql_filter_value(self) -> &'static str {
+        match self {
+            Self::Local => OriginKind::Local.as_sql_text(),
+            Self::Shared => OriginKind::Shared.as_sql_text(),
+            Self::All => "all",
+        }
+    }
+}
+
 /// Stores one indexed session summary for one project.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SessionSummary {
@@ -174,6 +196,7 @@ pub struct SessionSummary {
     pub final_agent_message_truncated: bool,
     pub final_agent_message_chars: Option<u64>,
     pub final_agent_message_total_chars: Option<u64>,
+    pub provenance: SessionProvenance,
     pub aborted_turn_count: u64,
     pub edited_files: Vec<String>,
 }
@@ -195,6 +218,8 @@ pub struct SessionsQueryData {
     pub since: Option<String>,
     pub until: Option<String>,
     pub touched_path: Option<String>,
+    pub origin_scope: SessionOriginScope,
+    pub author: Option<String>,
     pub view: SessionsView,
     pub limit: u64,
     pub offset: u64,
@@ -211,6 +236,8 @@ pub struct SessionsQueryRequest<'a> {
     pub since: Option<&'a str>,
     pub until: Option<&'a str>,
     pub touched_path: Option<&'a str>,
+    pub origin_scope: SessionOriginScope,
+    pub author: Option<&'a str>,
     pub view: SessionsView,
     pub limit: usize,
     pub offset: usize,
@@ -239,6 +266,7 @@ pub struct ResolveSessionQueryRequest<'a> {
     pub query: &'a str,
     pub project_id: Option<&'a str>,
     pub provider: Option<SourceKind>,
+    pub origin_scope: SessionOriginScope,
     pub limit: usize,
 }
 
@@ -470,6 +498,8 @@ pub struct SearchTurnsQueryData {
     pub session_id: Option<String>,
     pub since: Option<String>,
     pub until: Option<String>,
+    pub origin_scope: SessionOriginScope,
+    pub author: Option<String>,
     pub limit: u64,
     pub offset: u64,
     pub has_more: bool,
@@ -492,6 +522,8 @@ pub struct SearchTurnsRequest<'a> {
     pub session_id: Option<&'a str>,
     pub since: Option<&'a str>,
     pub until: Option<&'a str>,
+    pub origin_scope: SessionOriginScope,
+    pub author: Option<&'a str>,
     pub limit: usize,
     pub offset: usize,
     pub matched_path_limit: Option<usize>,

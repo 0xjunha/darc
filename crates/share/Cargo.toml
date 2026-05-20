@@ -1,19 +1,22 @@
 [package]
-name = "darc-store"
+name = "darc-share"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
-[features]
-test-support = []
-
 [dependencies]
 darc-paths = { workspace = true }
-darc-rollout = { workspace = true }
+darc-store = { workspace = true }
+age = { workspace = true }
 anyhow = { workspace = true }
-regex = { workspace = true }
+ed25519-dalek = { workspace = true }
+flate2 = { workspace = true }
 rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+darc-test-utils = { workspace = true }

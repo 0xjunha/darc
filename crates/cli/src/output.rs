@@ -199,6 +199,11 @@ impl HumanStyle {
     }
 }
 
+/// Returns whether stderr should render interactive progress updates.
+pub(crate) fn stderr_progress_enabled() -> bool {
+    io::stderr().is_terminal() && env::var("TERM").ok().as_deref() != Some("dumb")
+}
+
 /// Prints a plain section heading.
 pub(crate) fn print_section(style: HumanStyle, title: &str) {
     println!("{}", style.bold(title));

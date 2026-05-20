@@ -31,7 +31,7 @@ use darc_store::{
     StoredSessionKind, StoredSessionRecord, StoredTurnRecord, insert_session_record,
     insert_turn_record, open_index_database,
 };
-use rusqlite::{Connection, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use thiserror::Error;
 use walkdir::WalkDir;
 
@@ -1084,6 +1084,12 @@ fn index_archived_rollout_candidate(
     project_id: &str,
     archived: &ArchivedRolloutCandidate,
 ) -> std::result::Result<(), CandidateIndexError> {
+    let share_state = local_session_share_state(
+        connection,
+        project_id,
+        archived.provider,
+        &archived.session_id,
+    )?;
     delete_indexed_session(
         connection,
         project_id,
@@ -1103,6 +1109,69 @@ fn index_archived_rollout_candidate(
             writer.write_rollout(rollout)?;
         }
     }
+    if let Some(share_state) = share_state {
+        restore_local_session_share_state(
+            connection,
+            project_id,
+            archived.provider,
+            &archived.session_id,
+            &share_state,
+        )?;
+    }
+    Ok(())
+}
+
+/// Reads an explicit local share state before replacing one indexed session.
+fn local_session_share_state(
+    connection: &Connection,
+    project_id: &str,
+    provider: SourceKind,
+    session_id: &str,
+) -> Result<Option<String>> {
+    connection
+        .query_row(
+            "
+            SELECT share_state
+            FROM sessions
+            WHERE project_id = ?1
+                AND provider = ?2
+                AND session_id = ?3
+                AND origin_kind = 'local'
+                AND share_state <> 'unset'
+            ",
+            params![project_id, provider.directory_name(), session_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .context("failed to read existing session share state")
+}
+
+/// Restores an explicit local share state after replacing one indexed session.
+fn restore_local_session_share_state(
+    connection: &Connection,
+    project_id: &str,
+    provider: SourceKind,
+    session_id: &str,
+    share_state: &str,
+) -> Result<()> {
+    connection
+        .execute(
+            "
+            UPDATE sessions
+            SET share_state = ?1
+            WHERE project_id = ?2
+                AND provider = ?3
+                AND session_id = ?4
+                AND origin_kind = 'local'
+            ",
+            params![
+                share_state,
+                project_id,
+                provider.directory_name(),
+                session_id
+            ],
+        )
+        .context("failed to restore session share state")?;
     Ok(())
 }
 
@@ -1249,6 +1318,7 @@ fn load_indexed_session_snapshots(
             SELECT provider, session_id, archive_path, determinism, source_size, source_mtime_ms
             FROM sessions
             WHERE project_id = ?1
+                AND origin_kind = 'local'
             ",
         )
         .context("failed to prepare indexed session snapshot query")?;
@@ -1308,7 +1378,9 @@ fn delete_indexed_session(
         .execute(
             "
             DELETE FROM sessions
-            WHERE project_id = ?1 AND provider = ?2 AND session_id = ?3
+            WHERE project_id = ?1
+                AND provider = ?2
+                AND session_id = ?3
             ",
             params![project_id, provider.directory_name(), session_id],
         )
@@ -1335,7 +1407,9 @@ fn project_session_count(
                 "
                 SELECT COUNT(*)
                 FROM sessions
-                WHERE project_id = ?1 AND provider = ?2
+                WHERE project_id = ?1
+                    AND provider = ?2
+                    AND origin_kind = 'local'
                 ",
                 params![project_id, provider.directory_name()],
                 |row| row.get(0),
@@ -1360,7 +1434,13 @@ fn project_turn_count(
                 "
                 SELECT COUNT(*)
                 FROM turns
-                WHERE project_id = ?1 AND provider = ?2
+                JOIN sessions
+                    ON sessions.project_id = turns.project_id
+                    AND sessions.provider = turns.provider
+                    AND sessions.session_id = turns.session_id
+                WHERE turns.project_id = ?1
+                    AND turns.provider = ?2
+                    AND sessions.origin_kind = 'local'
                 ",
                 params![project_id, provider.directory_name()],
                 |row| row.get(0),
@@ -1384,8 +1464,13 @@ fn optional_sql_i64_to_u64(value: Option<i64>, column_name: &str) -> Result<Opti
 
 #[cfg(test)]
 mod classification_tests {
-    use std::io;
+    use std::{
+        env, fs, io,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
+    use darc_store::open_index_database_writer;
+    use rusqlite::params;
     use serde_json::Value;
 
     use super::*;
@@ -1393,6 +1478,17 @@ mod classification_tests {
     /// Builds one reusable JSON error for classification tests.
     fn json_error() -> serde_json::Error {
         serde_json::from_str::<Value>("{").expect_err("invalid JSON fixture")
+    }
+
+    /// Builds one unique temporary database path for engine tests.
+    fn test_db_path(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after epoch")
+            .as_nanos();
+        let dir = env::temp_dir().join(format!("darc-{prefix}-{}-{nanos}", std::process::id()));
+        fs::create_dir_all(&dir).expect("failed to create test directory");
+        dir.join("index.sqlite")
     }
 
     /// Builds one archived candidate for snapshot matching tests.
@@ -1413,6 +1509,44 @@ mod classification_tests {
             size: 100,
             mtime_ms: 200,
         }
+    }
+
+    #[test]
+    fn delete_indexed_session_removes_shared_rows_for_local_promotion() {
+        let connection =
+            open_index_database_writer(test_db_path("promote-shared").as_path()).unwrap();
+        connection
+            .execute(
+                "
+                INSERT INTO sessions (
+                    project_id,
+                    provider,
+                    session_id,
+                    session_kind,
+                    archive_path,
+                    cwd,
+                    origin_kind,
+                    origin_user_id,
+                    origin_remote,
+                    imported_at
+                ) VALUES (?1, ?2, ?3, 'primary', ?4, ?5, 'shared', 'usr-remote', 'origin:darc/team', '2026-05-15T00:00:00Z')
+                ",
+                params![
+                    "repo",
+                    SourceKind::Codex.directory_name(),
+                    "session-promote",
+                    "shared://origin/usr-remote/codex/session-promote",
+                    "/tmp/repo",
+                ],
+            )
+            .unwrap();
+
+        delete_indexed_session(&connection, "repo", SourceKind::Codex, "session-promote").unwrap();
+
+        let count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
     }
 
     /// Builds one indexed snapshot for snapshot matching tests.

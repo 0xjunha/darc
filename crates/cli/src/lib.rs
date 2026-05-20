@@ -9,6 +9,7 @@ mod query_commands;
 mod refresh;
 mod schema_audit;
 mod service;
+mod share;
 mod status;
 mod sync_index;
 #[cfg(test)]
@@ -43,6 +44,7 @@ use schema_audit::{run_claude_schema_audit_command, run_codex_schema_audit_comma
 use service::run_service;
 #[cfg(test)]
 use service::*;
+use share::{run_fetch, run_merge, run_pull, run_push, run_remote, run_share};
 use status::run_status;
 use sync_index::{run_index, run_sync};
 #[cfg(test)]
@@ -86,6 +88,12 @@ fn run_cli(cli: Cli) -> i32 {
         Commands::Stats(args) => query_exit(run_stats(args)),
         Commands::Resolve(args) => query_exit(run_resolve(args)),
         Commands::Project(args) => standard_exit(run_project(args)),
+        Commands::Remote(args) => standard_exit(run_remote(args)),
+        Commands::Share(args) => standard_exit(run_share(args)),
+        Commands::Push(args) => standard_exit(run_push(args)),
+        Commands::Fetch(args) => standard_exit(run_fetch(args)),
+        Commands::Merge(args) => standard_exit(run_merge(args)),
+        Commands::Pull(args) => standard_exit(run_pull(args)),
         Commands::Upgrade(args) if args.json => json_exit(run_upgrade(args)),
         Commands::Upgrade(args) => standard_exit(run_upgrade(args)),
         Commands::Link(args) => standard_exit(run_link(args)),

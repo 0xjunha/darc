@@ -1,7 +1,7 @@
 use std::{
-    env, fs,
+    fs,
     fs::{File, OpenOptions},
-    io::{self, IsTerminal, Seek, SeekFrom, Write},
+    io::{self, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::mpsc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -19,7 +19,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 use crate::args::{ProviderArg, RefreshArgs};
-use crate::output::{HumanStyle, print_field, print_line, print_project_warning, print_section};
+use crate::output::{
+    HumanStyle, print_field, print_line, print_project_warning, print_section,
+    stderr_progress_enabled,
+};
 use crate::service::run_refresh_auto;
 use crate::sync_index::{
     add_init_hint_for_unconfigured_project, format_skipped_rollout, format_sources,
@@ -37,11 +40,10 @@ pub(crate) struct RefreshProgressPrinter<W> {
 impl RefreshProgressPrinter<io::Stderr> {
     /// Builds one refresh progress printer for the current stderr stream.
     pub(crate) fn stderr() -> Self {
-        let term = env::var("TERM").ok();
         Self::new(
             io::stderr(),
             HumanStyle::stderr(),
-            io::stderr().is_terminal() && term.as_deref() != Some("dumb"),
+            stderr_progress_enabled(),
         )
     }
 }

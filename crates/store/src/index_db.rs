@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, ErrorCode, OpenFlags, params};
 
 use self::{
@@ -29,7 +29,7 @@ use self::{
 pub const INDEX_DB_FILE_NAME: &str = "index.sqlite";
 
 /// Tracks one-shot SQLite migrations for normalized index tables.
-const INDEX_DB_SCHEMA_VERSION: i32 = 14;
+const INDEX_DB_SCHEMA_VERSION: i32 = 15;
 
 /// Describes an existing index database that should be rebuilt from archived sessions.
 #[derive(Debug)]
@@ -217,6 +217,539 @@ pub fn replace_index_database(replacement: &Path, destination: &Path) -> Result<
     }
     Ok(())
 }
+
+/// Copies SQLite-only sharing state from an existing index into a rebuilt index.
+pub fn preserve_index_sharing_state(source: &Path, destination: &Path) -> Result<bool> {
+    preserve_index_sharing_state_impl(source, destination, None)
+}
+
+/// Copies sharing state for configured projects from an existing index into a rebuilt index.
+pub fn preserve_index_sharing_state_for_projects(
+    source: &Path,
+    destination: &Path,
+    project_ids: &[String],
+) -> Result<bool> {
+    preserve_index_sharing_state_impl(source, destination, Some(project_ids))
+}
+
+/// Copies filtered SQLite-only sharing state from an existing index into a rebuilt index.
+fn preserve_index_sharing_state_impl(
+    source: &Path,
+    destination: &Path,
+    project_ids: Option<&[String]>,
+) -> Result<bool> {
+    if !source.exists() {
+        return Ok(false);
+    }
+    if project_ids.is_some_and(|project_ids| project_ids.is_empty()) {
+        return Ok(false);
+    }
+    let source_connection =
+        match Connection::open_with_flags(source, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+            Ok(connection) => connection,
+            Err(_) => return Ok(false),
+        };
+    let source_has_tables = source_has_sharing_state_tables(&source_connection).unwrap_or(false);
+    if !source_has_tables {
+        return Ok(false);
+    }
+    drop(source_connection);
+
+    let mut destination_connection = Connection::open(destination)
+        .with_context(|| format!("failed to open rebuilt index {}", destination.display()))?;
+    if !source_has_sharing_state_tables(&destination_connection)? {
+        return Ok(false);
+    }
+    let source_path = source.to_string_lossy();
+    destination_connection
+        .execute(
+            "ATTACH DATABASE ?1 AS old_index",
+            params![source_path.as_ref()],
+        )
+        .with_context(|| format!("failed to attach old index {}", source.display()))?;
+    if !sharing_state_table_columns_match(&destination_connection)? {
+        destination_connection
+            .execute_batch("DETACH DATABASE old_index;")
+            .context("failed to detach old index after schema mismatch")?;
+        bail!(
+            "old index sharing-state schema does not match rebuilt index; refusing to drop existing shared sessions during rebuild"
+        );
+    }
+    create_preserved_projects_table(&destination_connection, project_ids)?;
+    let transaction = destination_connection
+        .transaction()
+        .context("failed to begin sharing state preservation transaction")?;
+    transaction
+        .execute_batch(PRESERVE_SHARING_STATE_SQL)
+        .context("failed to preserve sharing state during index rebuild")?;
+    transaction
+        .commit()
+        .context("failed to commit sharing state preservation")?;
+    destination_connection
+        .execute_batch("DETACH DATABASE old_index;")
+        .context("failed to detach old index after preserving sharing state")?;
+    Ok(true)
+}
+
+/// Creates the temporary project allowlist used by sharing-state preservation SQL.
+fn create_preserved_projects_table(
+    connection: &Connection,
+    project_ids: Option<&[String]>,
+) -> Result<()> {
+    connection
+        .execute_batch(
+            "
+            DROP TABLE IF EXISTS temp.preserved_projects;
+            CREATE TEMP TABLE preserved_projects (
+                project_id TEXT PRIMARY KEY
+            ) WITHOUT ROWID;
+            ",
+        )
+        .context("failed to create sharing-state project filter")?;
+    if let Some(project_ids) = project_ids {
+        for project_id in project_ids {
+            connection
+                .execute(
+                    "INSERT OR IGNORE INTO preserved_projects (project_id) VALUES (?1)",
+                    params![project_id],
+                )
+                .with_context(|| {
+                    format!("failed to preserve sharing-state project `{project_id}`")
+                })?;
+        }
+    } else {
+        connection
+            .execute_batch(
+                "
+                INSERT OR IGNORE INTO preserved_projects (project_id)
+                SELECT project_id FROM old_index.project_share_policies;
+                INSERT OR IGNORE INTO preserved_projects (project_id)
+                SELECT DISTINCT project_id FROM old_index.sessions;
+                INSERT OR IGNORE INTO preserved_projects (project_id)
+                SELECT DISTINCT project_id FROM sessions;
+                ",
+            )
+            .context("failed to populate sharing-state project filter")?;
+    }
+    Ok(())
+}
+
+/// Returns whether one SQLite database has every current sharing-state table.
+fn source_has_sharing_state_tables(connection: &Connection) -> Result<bool> {
+    for table in [
+        "users",
+        "project_share_policies",
+        "sessions",
+        "turns",
+        "tool_calls",
+        "file_accesses",
+        "turn_evidence",
+        "turn_search",
+    ] {
+        if !sqlite_table_exists(connection, table)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Returns whether one SQLite table exists.
+fn sqlite_table_exists(connection: &Connection, table: &str) -> Result<bool> {
+    let count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [table],
+            |row| row.get(0),
+        )
+        .with_context(|| format!("failed to inspect SQLite table `{table}`"))?;
+    Ok(count > 0)
+}
+
+/// Returns whether old and rebuilt sharing-state tables have matching column shapes.
+fn sharing_state_table_columns_match(connection: &Connection) -> Result<bool> {
+    for table in [
+        "users",
+        "project_share_policies",
+        "sessions",
+        "turns",
+        "tool_calls",
+        "file_accesses",
+        "turn_evidence",
+        "turn_search",
+    ] {
+        if sqlite_table_columns(connection, "main", table)?
+            != sqlite_table_columns(connection, "old_index", table)?
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Describes one SQLite table column contract used for rebuild preservation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SqliteColumnContract {
+    name: String,
+    declared_type: String,
+    not_null: i64,
+    default_value: Option<String>,
+    primary_key_position: i64,
+}
+
+/// Returns ordered SQLite column contracts for one trusted table.
+fn sqlite_table_columns(
+    connection: &Connection,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<SqliteColumnContract>> {
+    let sql = format!("PRAGMA {schema}.table_info({table})");
+    let mut statement = connection
+        .prepare(&sql)
+        .with_context(|| format!("failed to inspect SQLite table `{schema}.{table}`"))?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(SqliteColumnContract {
+                name: row.get(1)?,
+                declared_type: row.get(2)?,
+                not_null: row.get(3)?,
+                default_value: row.get(4)?,
+                primary_key_position: row.get(5)?,
+            })
+        })
+        .with_context(|| format!("failed to read SQLite table info for `{schema}.{table}`"))?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .with_context(|| format!("failed to read SQLite columns for `{schema}.{table}`"))
+}
+
+const PRESERVE_SHARING_STATE_SQL: &str = "
+    INSERT OR REPLACE INTO users (
+        user_id,
+        display_name,
+        email,
+        public_key,
+        source,
+        updated_at
+    )
+    SELECT
+        user_id,
+        display_name,
+        email,
+        public_key,
+        source,
+        updated_at
+    FROM old_index.users AS users
+    WHERE EXISTS (
+        SELECT 1
+        FROM old_index.sessions AS sessions
+        WHERE sessions.origin_kind = 'shared'
+            AND sessions.origin_user_id = users.user_id
+            AND sessions.project_id IN (SELECT project_id FROM preserved_projects)
+    );
+
+    INSERT OR REPLACE INTO project_share_policies (
+        project_id,
+        default_policy,
+        updated_at
+    )
+    SELECT
+        project_id,
+        default_policy,
+        updated_at
+    FROM old_index.project_share_policies AS project_share_policies
+    WHERE project_id IN (SELECT project_id FROM preserved_projects);
+
+    UPDATE sessions
+    SET share_state = (
+        SELECT old_sessions.share_state
+        FROM old_index.sessions AS old_sessions
+        WHERE old_sessions.project_id = sessions.project_id
+            AND old_sessions.provider = sessions.provider
+            AND old_sessions.session_id = sessions.session_id
+            AND old_sessions.origin_kind = 'local'
+    )
+    WHERE sessions.origin_kind = 'local'
+        AND sessions.project_id IN (SELECT project_id FROM preserved_projects)
+        AND EXISTS (
+            SELECT 1
+            FROM old_index.sessions AS old_sessions
+            WHERE old_sessions.project_id = sessions.project_id
+                AND old_sessions.provider = sessions.provider
+                AND old_sessions.session_id = sessions.session_id
+                AND old_sessions.origin_kind = 'local'
+                AND old_sessions.project_id IN (SELECT project_id FROM preserved_projects)
+        );
+
+    INSERT OR IGNORE INTO sessions (
+        project_id,
+        provider,
+        session_id,
+        parent_session_id,
+        session_kind,
+        archive_path,
+        cwd,
+        cli_version,
+        schema_id,
+        determinism,
+        source_size,
+        source_mtime_ms,
+        origin_kind,
+        origin_user_id,
+        origin_remote,
+        imported_at,
+        share_state
+    )
+    SELECT
+        project_id,
+        provider,
+        session_id,
+        parent_session_id,
+        session_kind,
+        archive_path,
+        cwd,
+        cli_version,
+        schema_id,
+        determinism,
+        source_size,
+        source_mtime_ms,
+        origin_kind,
+        origin_user_id,
+        origin_remote,
+        imported_at,
+        share_state
+    FROM old_index.sessions
+    WHERE origin_kind = 'shared'
+        AND project_id IN (SELECT project_id FROM preserved_projects);
+
+    INSERT OR IGNORE INTO turns (
+        project_id,
+        provider,
+        session_id,
+        turn_ordinal,
+        turn_id,
+        started_at,
+        completed_at,
+        status,
+        user_message,
+        final_answer_at,
+        final_answer_text,
+        steps_json,
+        step_count,
+        tool_call_count,
+        tool_output_count,
+        attachment_count,
+        delegation_count,
+        hook_summary_count,
+        has_final_answer,
+        duration_ms,
+        effective_agent_runtime_ms,
+        provider_total_token_count,
+        input_uncached_token_count,
+        cache_read_token_count,
+        cache_write_token_count,
+        output_token_count,
+        reasoning_token_count,
+        total_token_count,
+        primary_model,
+        changed_file_count,
+        added_line_count,
+        removed_line_count
+    )
+    SELECT
+        turns.project_id,
+        turns.provider,
+        turns.session_id,
+        turns.turn_ordinal,
+        turns.turn_id,
+        turns.started_at,
+        turns.completed_at,
+        turns.status,
+        turns.user_message,
+        turns.final_answer_at,
+        turns.final_answer_text,
+        turns.steps_json,
+        turns.step_count,
+        turns.tool_call_count,
+        turns.tool_output_count,
+        turns.attachment_count,
+        turns.delegation_count,
+        turns.hook_summary_count,
+        turns.has_final_answer,
+        turns.duration_ms,
+        turns.effective_agent_runtime_ms,
+        turns.provider_total_token_count,
+        turns.input_uncached_token_count,
+        turns.cache_read_token_count,
+        turns.cache_write_token_count,
+        turns.output_token_count,
+        turns.reasoning_token_count,
+        turns.total_token_count,
+        turns.primary_model,
+        turns.changed_file_count,
+        turns.added_line_count,
+        turns.removed_line_count
+    FROM old_index.turns AS turns
+    JOIN old_index.sessions AS sessions
+        ON sessions.project_id = turns.project_id
+        AND sessions.provider = turns.provider
+        AND sessions.session_id = turns.session_id
+    WHERE sessions.origin_kind = 'shared'
+        AND EXISTS (
+            SELECT 1
+            FROM sessions AS target_sessions
+            WHERE target_sessions.project_id = turns.project_id
+                AND target_sessions.provider = turns.provider
+                AND target_sessions.session_id = turns.session_id
+                AND target_sessions.origin_kind = 'shared'
+        );
+
+    INSERT OR IGNORE INTO tool_calls (
+        project_id,
+        provider,
+        session_id,
+        turn_ordinal,
+        call_ordinal,
+        call_id,
+        timestamp,
+        tool_name,
+        arguments_text,
+        output_text,
+        status,
+        is_error
+    )
+    SELECT
+        tool_calls.project_id,
+        tool_calls.provider,
+        tool_calls.session_id,
+        tool_calls.turn_ordinal,
+        tool_calls.call_ordinal,
+        tool_calls.call_id,
+        tool_calls.timestamp,
+        tool_calls.tool_name,
+        tool_calls.arguments_text,
+        tool_calls.output_text,
+        tool_calls.status,
+        tool_calls.is_error
+    FROM old_index.tool_calls AS tool_calls
+    JOIN old_index.sessions AS sessions
+        ON sessions.project_id = tool_calls.project_id
+        AND sessions.provider = tool_calls.provider
+        AND sessions.session_id = tool_calls.session_id
+    WHERE sessions.origin_kind = 'shared'
+        AND EXISTS (
+            SELECT 1
+            FROM sessions AS target_sessions
+            WHERE target_sessions.project_id = tool_calls.project_id
+                AND target_sessions.provider = tool_calls.provider
+                AND target_sessions.session_id = tool_calls.session_id
+                AND target_sessions.origin_kind = 'shared'
+        );
+
+    INSERT OR IGNORE INTO file_accesses (
+        project_id,
+        provider,
+        session_id,
+        turn_ordinal,
+        call_ordinal,
+        call_id,
+        timestamp,
+        tool_name,
+        access_type,
+        path,
+        repo_relative_path,
+        file_name
+    )
+    SELECT
+        file_accesses.project_id,
+        file_accesses.provider,
+        file_accesses.session_id,
+        file_accesses.turn_ordinal,
+        file_accesses.call_ordinal,
+        file_accesses.call_id,
+        file_accesses.timestamp,
+        file_accesses.tool_name,
+        file_accesses.access_type,
+        file_accesses.path,
+        file_accesses.repo_relative_path,
+        file_accesses.file_name
+    FROM old_index.file_accesses AS file_accesses
+    JOIN old_index.sessions AS sessions
+        ON sessions.project_id = file_accesses.project_id
+        AND sessions.provider = file_accesses.provider
+        AND sessions.session_id = file_accesses.session_id
+    WHERE sessions.origin_kind = 'shared'
+        AND EXISTS (
+            SELECT 1
+            FROM sessions AS target_sessions
+            WHERE target_sessions.project_id = file_accesses.project_id
+                AND target_sessions.provider = file_accesses.provider
+                AND target_sessions.session_id = file_accesses.session_id
+                AND target_sessions.origin_kind = 'shared'
+        );
+
+    INSERT OR IGNORE INTO turn_evidence (
+        project_id,
+        provider,
+        session_id,
+        turn_ordinal,
+        evidence_ordinal,
+        field,
+        text
+    )
+    SELECT
+        turn_evidence.project_id,
+        turn_evidence.provider,
+        turn_evidence.session_id,
+        turn_evidence.turn_ordinal,
+        turn_evidence.evidence_ordinal,
+        turn_evidence.field,
+        turn_evidence.text
+    FROM old_index.turn_evidence AS turn_evidence
+    JOIN old_index.sessions AS sessions
+        ON sessions.project_id = turn_evidence.project_id
+        AND sessions.provider = turn_evidence.provider
+        AND sessions.session_id = turn_evidence.session_id
+    WHERE sessions.origin_kind = 'shared'
+        AND EXISTS (
+            SELECT 1
+            FROM sessions AS target_sessions
+            WHERE target_sessions.project_id = turn_evidence.project_id
+                AND target_sessions.provider = turn_evidence.provider
+                AND target_sessions.session_id = turn_evidence.session_id
+                AND target_sessions.origin_kind = 'shared'
+        );
+
+    INSERT OR IGNORE INTO turn_search (
+        project_id,
+        provider,
+        session_id,
+        turn_ordinal,
+        user_message_text,
+        final_answer_text,
+        tool_text
+    )
+    SELECT
+        turn_search.project_id,
+        turn_search.provider,
+        turn_search.session_id,
+        turn_search.turn_ordinal,
+        turn_search.user_message_text,
+        turn_search.final_answer_text,
+        turn_search.tool_text
+    FROM old_index.turn_search AS turn_search
+    JOIN old_index.sessions AS sessions
+        ON sessions.project_id = turn_search.project_id
+        AND sessions.provider = turn_search.provider
+        AND sessions.session_id = turn_search.session_id
+    WHERE sessions.origin_kind = 'shared'
+        AND EXISTS (
+            SELECT 1
+            FROM sessions AS target_sessions
+            WHERE target_sessions.project_id = turn_search.project_id
+                AND target_sessions.provider = turn_search.provider
+                AND target_sessions.session_id = turn_search.session_id
+                AND target_sessions.origin_kind = 'shared'
+        );
+";
 
 /// Replaces one SQLite database file after the replacement has been fully built.
 fn replace_index_database_file(replacement: &Path, destination: &Path) -> Result<()> {
@@ -445,7 +978,8 @@ mod tests {
     use super::{
         INDEX_DB_SCHEMA_VERSION, IndexDatabaseRebuildRecommendation,
         count_project_index_rows_read_only, migrations, open_existing_index_database,
-        open_index_database, remove_index_database, schema,
+        open_index_database, open_index_database_writer, preserve_index_sharing_state,
+        remove_index_database, schema, sqlite_table_columns,
     };
     use crate::test_support::{
         IndexedSessionFixture, IndexedTurnFixture, create_pre_analytics_index_schema,
@@ -968,6 +1502,50 @@ mod tests {
         for candidate in [&path, &wal_path, &shm_path, &journal_path] {
             assert!(!candidate.exists());
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn preserve_index_sharing_state_errors_on_schema_mismatch() -> Result<()> {
+        let source = unique_db_path("index-db-preserve-source-mismatch");
+        let destination = unique_db_path("index-db-preserve-destination-mismatch");
+        let source_connection = open_index_database_writer(&source)?;
+        source_connection.execute("ALTER TABLE users ADD COLUMN legacy_extra TEXT", [])?;
+        drop(source_connection);
+        drop(open_index_database_writer(&destination)?);
+
+        let error = preserve_index_sharing_state(&source, &destination)
+            .expect_err("schema mismatch should not silently skip sharing-state preservation");
+
+        assert!(
+            error
+                .to_string()
+                .contains("sharing-state schema does not match")
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn sqlite_table_columns_include_column_contract_details() -> Result<()> {
+        let connection = Connection::open_in_memory()?;
+        connection.execute(
+            "CREATE TABLE left_contract (id TEXT NOT NULL PRIMARY KEY, value INTEGER DEFAULT 1)",
+            [],
+        )?;
+        connection.execute(
+            "CREATE TABLE right_contract (id TEXT NOT NULL PRIMARY KEY, value TEXT DEFAULT 1)",
+            [],
+        )?;
+
+        let left = sqlite_table_columns(&connection, "main", "left_contract")?;
+        let right = sqlite_table_columns(&connection, "main", "right_contract")?;
+
+        assert_ne!(left, right);
+        assert_eq!(left[1].name, "value");
+        assert_eq!(left[1].declared_type, "INTEGER");
+        assert_eq!(right[1].declared_type, "TEXT");
 
         Ok(())
     }

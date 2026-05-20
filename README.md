@@ -1,24 +1,32 @@
-# Darc
+# Darc: grep-like team memory for coding agents
 
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![CI](https://github.com/0xjunha/darc/actions/workflows/ci.yml/badge.svg)](https://github.com/0xjunha/darc/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/github/0xjunha/darc/graph/badge.svg)](https://codecov.io/github/0xjunha/darc)
+[![platform](https://img.shields.io/badge/platform-macOS/Linux-blue)](platform)
+[![agents](https://img.shields.io/badge/agents-Codex/ClaudeCode-blue)](agents)
 
-> Darc indexes your agent sessions so you can grep them like code, then open exact evidence from prior work.
+Darc does not summarize prior work, decide what matters, or choose which memories to inject.
 
-A local CLI for searching Claude Code and Codex session history.
+It indexes prior agent sessions so agents can retrieve past decisions with exact evidence on demand.
 
-Use it to recover the rationale, cautions, touched files, and rejected approaches behind previous agent work before
-making the next change.
+---
 
-Darc gives agents the equivalent of asking the engineer who last touched the code what they learned and what to watch
-out for.
+#### Demo 1: Let your agent recover past bug fixes with Darc
 
-Supports: **macOS/Linux** | **Claude Code/Codex**
+https://github.com/user-attachments/assets/9dc89da1-45d5-4d9c-9169-5887f62976eb
 
-_Demo: search prior agent history, open the exact turn, and list files touched in that session._
+#### Demo 2: Share agent session indexes with your team via GitHub
 
-https://github.com/user-attachments/assets/f38317a4-bcc8-438a-8a81-0315b5c8a4e9
+https://github.com/user-attachments/assets/09b91e62-6698-44c1-bf32-8ee6c674e5e0
+
+## How Darc Works
+
+![How Darc works: raw Codex and Claude Code logs are incrementally synced into a local SQLite index, queried through a read API, and used by agents for on-demand context builds.](assets/darc-architecture.png)
+
+Darc indexes your agent sessions so you can grep them like code, then open exact evidence from prior work.
+
+The indexed sessions can be shared with others via Git backend. See [Team Sharing](#team-sharing) section.
 
 ## Quickstart
 
@@ -104,6 +112,70 @@ Or skim the surrounding session first:
 ```sh
 darc list turns 11111111 --view oneline --limit 20
 ```
+
+## Team Sharing
+
+Teams can share encrypted Darc session indexes with the Git backend of their choice.
+
+Each team member selects which sessions to export;
+Darc redacts the index projection, encrypts it for configured age recipients, and pushes only encrypted artifacts to a
+Git branch. Darc does not publish your raw SQLite index or plaintext session archives.
+
+Quick setup:
+
+```sh
+# Show or create your public recipient, then add a team member's age public key.
+darc share key
+darc share recipient add <AGE_PUBLIC_KEY>
+
+# Choose what this project exports.
+darc share include <SESSION_ID>
+darc share include --all
+darc share exclude <SESSION_ID>
+
+# Publish and import the team index.
+darc push <SHARE_BRANCH>
+darc pull <SHARE_BRANCH>
+```
+
+Read commands stay local unless you ask for shared history:
+
+```sh
+darc search "migration decision" --shared
+darc list sessions --scope all
+darc show session <SESSION_ID> --shared
+```
+
+By default, `darc push <SHARE_BRANCH>` uses the active project's Git upstream or `origin` and writes to `darc/<SHARE_BRANCH>` branch.
+
+To use a
+separate index-only repository:
+
+```sh
+darc remote add <REMOTE_NAME> <REMOTE_URL>
+darc push <SHARE_BRANCH> --remote <REMOTE_NAME>
+darc pull <SHARE_BRANCH> --remote <REMOTE_NAME>
+```
+
+Example:
+```sh
+darc share key
+darc share recipient add age1...
+darc share include --all
+
+# Publish encrypted session indexes to `darc/team` branch of `exmaple/darc-index` GitHub repo.
+darc remote add team-index https://github.com/example/darc-index.git
+darc push team --remote team-index
+darc pull team --remote team-index
+```
+
+Notes:
+
+- Configure Git authentication ahead of time; Darc uses the local `git` executable and disables interactive credential
+  prompts.
+- Encrypted share objects are stored as normal Git blobs by default. Set `DARC_SHARE_ENABLE_LFS=1` for larger exports.
+- Author filters accept stable Darc share user ids. Display names and emails are convenience labels from each exporter's
+  local Git config, not authenticated identity.
 
 ## Why Darc?
 
@@ -240,30 +312,6 @@ Use Darc with:
 The goal is not "remember everything forever." The goal is to let agents ask narrow questions, retrieve bounded
 evidence, and avoid repeating old work.
 
-## How Darc Works
-
-![How Darc works: raw Codex and Claude Code logs are incrementally synced into a local SQLite index, queried through a read API, and used by agents for on-demand context builds.](assets/darc-architecture.png)
-
-Darc keeps one local workspace at `~/.darc`.
-
-A workspace contains many projects, one per registered checkout. Each project has its own archive of synced sessions,
-and a workspace-wide SQLite index normalizes those archives for query.
-
-Core concepts:
-
-- A **session** is one run of Claude Code or Codex.
-- A **turn** is one user-message-and-agent-response pair within a session.
-- A **project** is a registered checkout Darc can resolve from your current directory.
-- An **evidence handle** is the combination of `session_id`, `turn_ordinal`, paths, timestamps, and schema-tagged JSON
-  output needed to find the same evidence again later.
-
-Most read commands infer the active project from your current working directory.
-
-```sh
-cd /path/to/project
-darc search "query"
-```
-
 ## Core Commands
 
 | Need | Command |
@@ -300,12 +348,11 @@ Run `darc --help` or `darc help <command>` for the current CLI surface.
 
 Darc reads local agent rollouts and writes archive/query state under `~/.darc`.
 
-- No Darc cloud account is required.
 - Session archives and query indexes stay local.
 - Indexed data is best-effort redacted before it is stored, including common secrets, credential-shaped values, local
   home-directory prefixes, and bulky data blobs.
-- Raw SQLite index files are local cache artifacts, not sharing artifacts; future sharing should export fresh redacted
-  projections from the index.
+- Raw SQLite index files are local cache artifacts, not sharing artifacts; `darc share` exports fresh encrypted,
+  redacted projections from the index instead of publishing the SQLite database.
 - Read commands query your local SQLite index.
 - Optional upgrade checks contact GitHub only for release metadata and require explicit opt-in.
 

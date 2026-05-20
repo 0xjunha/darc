@@ -18,6 +18,7 @@ use darc_rollout::{
         NormalizedTurnStatus as CodexTurnStatus, NormalizedTurnStep as CodexTurnStep,
     },
 };
+use darc_store::open_index_database_writer;
 use rusqlite::Connection;
 use serde_json::Value;
 
@@ -868,6 +869,17 @@ fn index_project_rewrites_existing_indexed_turns() -> Result<()> {
         ),
     )?;
     index_project_codex_turns_from(&project_root, darc_root.clone())?;
+    let connection = Connection::open(darc_root.join(INDEX_DB_FILE_NAME))?;
+    connection.execute(
+        "
+        UPDATE sessions
+        SET share_state = 'excluded'
+        WHERE project_id = 'repo-abc123'
+            AND provider = 'codex'
+            AND session_id = '22222222-2222-4222-8222-22222222223f'
+        ",
+        [],
+    )?;
 
     write_file(
         &rollout_path,
@@ -886,24 +898,109 @@ fn index_project_rewrites_existing_indexed_turns() -> Result<()> {
     )?;
 
     let report = index_project_codex_turns_from(&project_root, darc_root.clone())?;
-    let connection = Connection::open(darc_root.join(INDEX_DB_FILE_NAME))?;
     let indexed_turns = indexed_codex_turn_count(&connection, "repo-abc123")?;
-    let first_turn: (String, String) = connection.query_row(
+    let first_turn: (String, String, String) = connection.query_row(
         "
-        SELECT user_message, final_answer_text
+        SELECT turns.user_message, turns.final_answer_text, sessions.share_state
         FROM turns
-        WHERE project_id = ?1 AND provider = 'codex' AND session_id = ?2 AND turn_ordinal = 0
+        JOIN sessions
+            ON sessions.project_id = turns.project_id
+            AND sessions.provider = turns.provider
+            AND sessions.session_id = turns.session_id
+        WHERE turns.project_id = ?1
+            AND turns.provider = 'codex'
+            AND turns.session_id = ?2
+            AND turns.turn_ordinal = 0
         ",
         ["repo-abc123", "22222222-2222-4222-8222-22222222223f"],
-        |row| Ok((row.get(0)?, row.get(1)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )?;
 
     assert_eq!(report.turns_currently_indexed, 2);
     assert_eq!(indexed_turns, 2);
     assert_eq!(first_turn.0, "Updated task");
     assert_eq!(first_turn.1, "Updated reply");
+    assert_eq!(first_turn.2, "excluded");
     assert!(report.skipped_rollouts.is_empty());
 
+    Ok(())
+}
+
+#[test]
+fn index_project_promotes_shared_session_to_local_archive() -> Result<()> {
+    let darc_root = unique_test_dir("parse-promote-shared");
+    let project_root = darc_root.join("repo");
+    let sessions_root = darc_root.join("projects/repo-abc123/sessions");
+    let codex_root = sessions_root.join("codex");
+    let session_id = "22222222-2222-4222-8222-22222222224f";
+    let rollout_path =
+        codex_root.join("rollout-2026-04-01T10-00-00-22222222-2222-4222-8222-22222222224f.jsonl");
+    fs::create_dir_all(&project_root)?;
+    write_parse_config(&darc_root, &project_root, &sessions_root)?;
+    let connection = open_index_database_writer(&darc_root.join(INDEX_DB_FILE_NAME))?;
+    connection.execute(
+        "
+        INSERT INTO sessions (
+            project_id,
+            provider,
+            session_id,
+            session_kind,
+            archive_path,
+            cwd,
+            origin_kind,
+            origin_user_id,
+            origin_remote,
+            imported_at
+        ) VALUES (?1, 'codex', ?2, 'primary', ?3, ?4, 'shared', 'usr-remote', 'origin:darc/team', '2026-05-15T00:00:00Z')
+        ",
+        rusqlite::params![
+            "repo-abc123",
+            session_id,
+            format!("shared://origin/usr-remote/codex/{session_id}"),
+            project_root.display().to_string(),
+        ],
+    )?;
+    drop(connection);
+    write_file(
+        &rollout_path,
+        &format!(
+            concat!(
+                "{{\"timestamp\":\"2026-04-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{}\",\"cwd\":\"{}\",\"cli_version\":\"0.118.0\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:02Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Local task\"}}}}\n",
+                "{{\"timestamp\":\"2026-04-01T10:00:03Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Local reply\"}}]}}}}\n"
+            ),
+            session_id,
+            project_root.display()
+        ),
+    )?;
+
+    let report = index_project_codex_turns_from(&project_root, darc_root.clone())?;
+    let connection = Connection::open(darc_root.join(INDEX_DB_FILE_NAME))?;
+    let promoted: (String, Option<String>, Option<String>, String) = connection.query_row(
+        "
+        SELECT sessions.origin_kind, sessions.origin_user_id, sessions.origin_remote, turns.user_message
+        FROM sessions
+        JOIN turns
+            ON turns.project_id = sessions.project_id
+            AND turns.provider = sessions.provider
+            AND turns.session_id = sessions.session_id
+        WHERE sessions.project_id = 'repo-abc123'
+            AND sessions.provider = 'codex'
+            AND sessions.session_id = ?1
+            AND turns.turn_ordinal = 0
+        ",
+        [session_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )?;
+
+    assert_eq!(report.sessions_currently_indexed, 1);
+    assert_eq!(report.turns_currently_indexed, 1);
+    assert_eq!(promoted.0, "local");
+    assert_eq!(promoted.1, None);
+    assert_eq!(promoted.2, None);
+    assert_eq!(promoted.3, "Local task");
+    assert!(report.skipped_rollouts.is_empty());
     Ok(())
 }
 

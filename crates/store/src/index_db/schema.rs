@@ -161,6 +161,30 @@ pub(crate) const FILE_ACCESS_COLUMNS: &[TableColumn] = &[TableColumn {
     sql_type: "TEXT",
 }];
 
+/// Lists the sharing provenance columns required by the current schema.
+pub(crate) const SESSION_SHARING_COLUMNS: &[TableColumn] = &[
+    TableColumn {
+        name: "origin_kind",
+        sql_type: "TEXT NOT NULL DEFAULT 'local'",
+    },
+    TableColumn {
+        name: "origin_user_id",
+        sql_type: "TEXT",
+    },
+    TableColumn {
+        name: "origin_remote",
+        sql_type: "TEXT",
+    },
+    TableColumn {
+        name: "imported_at",
+        sql_type: "TEXT",
+    },
+    TableColumn {
+        name: "share_state",
+        sql_type: "TEXT NOT NULL DEFAULT 'unset'",
+    },
+];
+
 /// Lists the additive columns that older schema snapshots may need during reopen.
 pub(crate) const COMPAT_COLUMN_SETS: &[CompatColumnSet] = &[
     CompatColumnSet {
@@ -172,6 +196,11 @@ pub(crate) const COMPAT_COLUMN_SETS: &[CompatColumnSet] = &[
         table: SchemaTable::FileAccesses,
         label: "file_accesses",
         columns: FILE_ACCESS_COLUMNS,
+    },
+    CompatColumnSet {
+        table: SchemaTable::Sessions,
+        label: "sessions",
+        columns: SESSION_SHARING_COLUMNS,
     },
     CompatColumnSet {
         table: SchemaTable::CodexSessions,
@@ -325,6 +354,11 @@ const CREATE_BASE_SCHEMA_SQL: &str = "
         determinism TEXT,
         source_size INTEGER,
         source_mtime_ms INTEGER,
+        origin_kind TEXT NOT NULL DEFAULT 'local',
+        origin_user_id TEXT,
+        origin_remote TEXT,
+        imported_at TEXT,
+        share_state TEXT NOT NULL DEFAULT 'unset',
         PRIMARY KEY (project_id, provider, session_id),
         UNIQUE (project_id, archive_path)
     );
@@ -418,6 +452,21 @@ const CREATE_BASE_SCHEMA_SQL: &str = "
                 call_ordinal
             )
             ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS users (
+        user_id TEXT PRIMARY KEY,
+        display_name TEXT,
+        email TEXT,
+        public_key TEXT,
+        source TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS project_share_policies (
+        project_id TEXT PRIMARY KEY,
+        default_policy TEXT NOT NULL,
+        updated_at TEXT NOT NULL
     );
 ";
 

@@ -18,11 +18,11 @@ pub use darc_query::{
     ResolvedSessionMatch, RootAvailability, RootInfo, SearchEvidenceField, SearchMode,
     SearchSnippetMatcher, SearchTurnHit, SearchTurnMatch, SearchTurnsQueryData, SearchTurnsRequest,
     SessionBundleQueryData, SessionBundleQueryRequest, SessionBundleView, SessionFileSummary,
-    SessionFilesQueryData, SessionFilesQueryRequest, SessionKind, SessionRuntimeStat,
-    SessionSummary, SessionsQueryData, SessionsQueryRequest, SessionsView, ShellCommandSummary,
-    ToolUsageStat, TurnDetail, TurnDetailInsights, TurnDetailOptions, TurnInsights, TurnSummary,
-    TurnsQueryData, TurnsQueryRequest, TurnsView, WorkspaceDailyTimeStat, WorkspaceInsights,
-    WorkspaceQueryData, search_snippet_match_range,
+    SessionFilesQueryData, SessionFilesQueryRequest, SessionKind, SessionOriginScope,
+    SessionRuntimeStat, SessionSummary, SessionsQueryData, SessionsQueryRequest, SessionsView,
+    ShellCommandSummary, ToolUsageStat, TurnDetail, TurnDetailInsights, TurnDetailOptions,
+    TurnInsights, TurnSummary, TurnsQueryData, TurnsQueryRequest, TurnsView,
+    WorkspaceDailyTimeStat, WorkspaceInsights, WorkspaceQueryData, search_snippet_match_range,
 };
 use darc_query::{
     ProjectIndexAggregate, list_project_index_aggregates, lookup_project_session_matches,
@@ -180,6 +180,8 @@ pub struct ProjectSessionsQueryRequest<'a> {
     pub since: Option<&'a str>,
     pub until: Option<&'a str>,
     pub touched_path: Option<&'a str>,
+    pub origin_scope: SessionOriginScope,
+    pub author: Option<&'a str>,
     pub view: SessionsView,
     pub limit: usize,
     pub offset: usize,
@@ -235,6 +237,8 @@ pub struct ProjectSearchTurnsQueryRequest<'a> {
     pub session_id: Option<&'a str>,
     pub since: Option<&'a str>,
     pub until: Option<&'a str>,
+    pub origin_scope: SessionOriginScope,
+    pub author: Option<&'a str>,
     pub limit: usize,
     pub offset: usize,
     pub matched_path_limit: Option<usize>,
@@ -257,6 +261,8 @@ impl ResolvedQueryProject {
                 since: request.since,
                 until: request.until,
                 touched_path: request.touched_path,
+                origin_scope: request.origin_scope,
+                author: request.author,
                 view: request.view,
                 limit: request.limit,
                 offset: request.offset,
@@ -351,6 +357,8 @@ impl ResolvedQueryProject {
                 session_id: request.session_id,
                 since: request.since,
                 until: request.until,
+                origin_scope: request.origin_scope,
+                author: request.author,
                 limit: request.limit,
                 offset: request.offset,
                 matched_path_limit: request.matched_path_limit,
@@ -388,6 +396,8 @@ pub fn query_sessions_for_project(
         since: request.since,
         until: request.until,
         touched_path: request.touched_path,
+        origin_scope: request.origin_scope,
+        author: request.author,
         view: request.view,
         limit: request.limit,
         offset: request.offset,
@@ -460,12 +470,28 @@ pub fn resolve_query_session_id_for_project(
     provider: Option<SourceKind>,
     session_id: &str,
 ) -> Result<String> {
+    resolve_query_session_id_for_project_with_scope(
+        project,
+        provider,
+        session_id,
+        SessionOriginScope::Local,
+    )
+}
+
+/// Resolves one read-command session id or UUID prefix against one scoped project.
+pub fn resolve_query_session_id_for_project_with_scope(
+    project: &ResolvedQueryProject,
+    provider: Option<SourceKind>,
+    session_id: &str,
+    origin_scope: SessionOriginScope,
+) -> Result<String> {
     let context = &project.context;
     validate_project_session_id(
         &context.root.database_path,
         &context.project.id,
         provider,
         session_id,
+        origin_scope,
     )
 }
 
@@ -475,12 +501,46 @@ pub fn resolve_query_search_session_id_for_project(
     provider: Option<SourceKind>,
     session_id: &str,
 ) -> Result<String> {
+    resolve_query_search_session_id_for_project_with_scope(
+        project,
+        provider,
+        session_id,
+        SessionOriginScope::Local,
+    )
+}
+
+/// Resolves one search session-id filter against one scoped project.
+pub fn resolve_query_search_session_id_for_project_with_scope(
+    project: &ResolvedQueryProject,
+    provider: Option<SourceKind>,
+    session_id: &str,
+    origin_scope: SessionOriginScope,
+) -> Result<String> {
+    resolve_query_search_session_id_for_project_with_scope_and_author(
+        project,
+        provider,
+        session_id,
+        origin_scope,
+        None,
+    )
+}
+
+/// Resolves one search session-id filter against one scoped and author-filtered project.
+pub fn resolve_query_search_session_id_for_project_with_scope_and_author(
+    project: &ResolvedQueryProject,
+    provider: Option<SourceKind>,
+    session_id: &str,
+    origin_scope: SessionOriginScope,
+    author: Option<&str>,
+) -> Result<String> {
     let context = &project.context;
     validate_project_search_session_filter_id(
         &context.root.database_path,
         &context.project.id,
         provider,
         session_id,
+        origin_scope,
+        author,
     )
 }
 
@@ -490,12 +550,28 @@ pub fn resolve_query_session_for_project(
     provider: Option<SourceKind>,
     session_id: &str,
 ) -> Result<ResolvedQuerySession> {
+    resolve_query_session_for_project_with_scope(
+        project,
+        provider,
+        session_id,
+        SessionOriginScope::Local,
+    )
+}
+
+/// Resolves one read-command session id or UUID prefix plus provider against one scoped project.
+pub fn resolve_query_session_for_project_with_scope(
+    project: &ResolvedQueryProject,
+    provider: Option<SourceKind>,
+    session_id: &str,
+    origin_scope: SessionOriginScope,
+) -> Result<ResolvedQuerySession> {
     let context = &project.context;
     validate_project_session_ref(
         &context.root.database_path,
         &context.project.id,
         provider,
         session_id,
+        origin_scope,
     )
 }
 
@@ -688,6 +764,8 @@ pub fn query_search_turns_for_project(
         session_id: request.session_id,
         since: request.since,
         until: request.until,
+        origin_scope: request.origin_scope,
+        author: request.author,
         limit: request.limit,
         offset: request.offset,
         matched_path_limit: request.matched_path_limit,
@@ -1132,8 +1210,16 @@ fn validate_project_session_id(
     project_id: &str,
     provider: Option<SourceKind>,
     session_id: &str,
+    origin_scope: SessionOriginScope,
 ) -> Result<String> {
-    Ok(validate_project_session_ref(index_db_path, project_id, provider, session_id)?.session_id)
+    Ok(validate_project_session_ref(
+        index_db_path,
+        project_id,
+        provider,
+        session_id,
+        origin_scope,
+    )?
+    .session_id)
 }
 
 /// Validates one search session-id filter and resolves a canonical stored session id.
@@ -1142,6 +1228,8 @@ fn validate_project_search_session_filter_id(
     project_id: &str,
     provider: Option<SourceKind>,
     session_id: &str,
+    origin_scope: SessionOriginScope,
+    author: Option<&str>,
 ) -> Result<String> {
     let session_id = session_id.trim();
     match classify_resolve_session_input(session_id) {
@@ -1151,8 +1239,14 @@ fn validate_project_search_session_filter_id(
         SessionIdShape::FullUuid | SessionIdShape::Prefix => {}
     }
     let is_full_uuid = is_full_uuid_text(session_id);
-    let (matches, truncated) =
-        lookup_project_session_matches_for_error(index_db_path, project_id, provider, session_id)?;
+    let (matches, truncated) = lookup_project_session_matches_for_error(
+        index_db_path,
+        project_id,
+        provider,
+        session_id,
+        origin_scope,
+        author,
+    )?;
     match matches.as_slice() {
         [] => Err(QueryProtocolError::unknown_data_session(session_id, !is_full_uuid).into()),
         [resolved] => Ok(resolved.session_id.clone()),
@@ -1179,6 +1273,7 @@ fn validate_project_session_ref(
     project_id: &str,
     provider: Option<SourceKind>,
     session_id: &str,
+    origin_scope: SessionOriginScope,
 ) -> Result<ResolvedQuerySession> {
     let session_id = session_id.trim();
     match classify_resolve_session_input(session_id) {
@@ -1187,8 +1282,14 @@ fn validate_project_session_ref(
         }
         SessionIdShape::FullUuid | SessionIdShape::Prefix => {}
     }
-    let (matches, truncated) =
-        lookup_project_session_matches_for_error(index_db_path, project_id, provider, session_id)?;
+    let (matches, truncated) = lookup_project_session_matches_for_error(
+        index_db_path,
+        project_id,
+        provider,
+        session_id,
+        origin_scope,
+        None,
+    )?;
     match matches.as_slice() {
         [] => Err(QueryProtocolError::unknown_data_session(
             session_id,
@@ -1209,12 +1310,21 @@ fn lookup_project_session_matches_for_error(
     project_id: &str,
     provider: Option<SourceKind>,
     session_id: &str,
+    origin_scope: SessionOriginScope,
+    author: Option<&str>,
 ) -> Result<(Vec<ResolvedSessionMatch>, bool)> {
     let limit = DEFAULT_RESOLVE_SESSION_MATCH_LIMIT
         .checked_add(1)
         .context("session match limit exceeds usize range")?;
-    let mut matches =
-        lookup_project_session_matches(index_db_path, project_id, provider, session_id, limit)?;
+    let mut matches = lookup_project_session_matches(
+        index_db_path,
+        project_id,
+        provider,
+        session_id,
+        origin_scope,
+        author,
+        limit,
+    )?;
     let truncated = matches.len() > DEFAULT_RESOLVE_SESSION_MATCH_LIMIT;
     if truncated {
         matches.truncate(DEFAULT_RESOLVE_SESSION_MATCH_LIMIT);
@@ -1272,9 +1382,11 @@ mod tests {
     use std::fs;
 
     use anyhow::Result;
+    use darc_paths::SourceKind;
+    use darc_store::open_index_database_writer;
     use darc_test_utils::{unique_test_dir, write_file};
 
-    use super::query_workspace;
+    use super::{SessionOriginScope, query_workspace, validate_project_search_session_filter_id};
     use crate::{
         config::{ProjectConfig, SharedConfig, SourcesConfig},
         constants::CONFIG_FILE_NAME,
@@ -1321,6 +1433,102 @@ mod tests {
         )));
         assert!(issue.contains(&workspace.root.database_path.display().to_string()));
         assert_eq!(workspace.projects.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn search_session_prefix_resolution_applies_author_filter() -> Result<()> {
+        let root = unique_test_dir("search-author-session-prefix");
+        let index_db_path = root.join(darc_store::INDEX_DB_FILE_NAME);
+        let connection = open_index_database_writer(&index_db_path)?;
+        for (user_id, display_name, email) in [
+            ("usr-alice", "Alice Example", "alice@example.invalid"),
+            ("usr-bob", "Bob Example", "bob@example.invalid"),
+        ] {
+            connection.execute(
+                "
+                INSERT INTO users (
+                    user_id,
+                    display_name,
+                    email,
+                    public_key,
+                    source,
+                    updated_at
+                ) VALUES (?1, ?2, ?3, ?4, 'test', '2026-05-15T00:00:00Z')
+                ",
+                rusqlite::params![user_id, display_name, email, format!("age1{user_id}")],
+            )?;
+        }
+        for (session_id, user_id) in [
+            ("00000000-0000-4000-8000-000000000701", "usr-alice"),
+            ("00000000-0000-4000-8000-000000000702", "usr-bob"),
+        ] {
+            connection.execute(
+                "
+                INSERT INTO sessions (
+                    project_id,
+                    provider,
+                    session_id,
+                    parent_session_id,
+                    session_kind,
+                    archive_path,
+                    cwd,
+                    cli_version,
+                    schema_id,
+                    determinism,
+                    source_size,
+                    source_mtime_ms,
+                    origin_kind,
+                    origin_user_id,
+                    origin_remote,
+                    imported_at
+                ) VALUES (
+                    'repo',
+                    'codex',
+                    ?1,
+                    NULL,
+                    'primary',
+                    ?2,
+                    '/tmp/repo',
+                    '0.1.0',
+                    'codex:test',
+                    'exact',
+                    1,
+                    1,
+                    'shared',
+                    ?3,
+                    'origin:darc/team',
+                    '2026-05-15T00:00:00Z'
+                )
+                ",
+                rusqlite::params![
+                    session_id,
+                    format!("shared://{user_id}/{session_id}"),
+                    user_id
+                ],
+            )?;
+        }
+        let prefix = "00000000-0000-4000-8000-00000000070";
+
+        let ambiguous = validate_project_search_session_filter_id(
+            &index_db_path,
+            "repo",
+            Some(SourceKind::Codex),
+            prefix,
+            SessionOriginScope::Shared,
+            None,
+        );
+        let resolved = validate_project_search_session_filter_id(
+            &index_db_path,
+            "repo",
+            Some(SourceKind::Codex),
+            prefix,
+            SessionOriginScope::Shared,
+            Some("alice@example.invalid"),
+        )?;
+
+        assert!(ambiguous.is_err());
+        assert_eq!(resolved, "00000000-0000-4000-8000-000000000701");
         Ok(())
     }
 }
