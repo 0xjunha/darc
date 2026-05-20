@@ -22,6 +22,8 @@ use crate::{
     utils::{copy_file_atomically, file_snapshot, format_system_time_utc, write_json_atomically},
 };
 
+const SESSION_PROGRESS_EMIT_INTERVAL: usize = 128;
+
 /// Describes a prepared sync before any writes happen.
 #[derive(Debug, Clone)]
 pub struct SyncPlan {
@@ -73,6 +75,15 @@ pub struct SyncReport {
     pub new_known_paths: Vec<PathBuf>,
     pub warnings: Vec<String>,
     pub manifest_written: bool,
+}
+
+/// Describes one observable sync transition for progress UIs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncProgress {
+    CopyingSessions {
+        copied_sessions: usize,
+        total_sessions: usize,
+    },
 }
 
 /// Plans a sync from explicit project and source inputs.
@@ -164,6 +175,15 @@ pub fn prepare_sync(request: SyncRequest) -> Result<SyncPlan> {
 
 /// Executes a prepared sync by copying files and atomically updating metadata.
 pub fn execute_sync(plan: SyncPlan) -> Result<SyncReport> {
+    let mut progress = |_| {};
+    execute_sync_with_progress(plan, &mut progress)
+}
+
+/// Executes a prepared sync while reporting copied session progress.
+pub fn execute_sync_with_progress(
+    plan: SyncPlan,
+    mut progress: impl FnMut(SyncProgress),
+) -> Result<SyncReport> {
     let SyncPlan {
         project_name,
         project_root,
@@ -184,7 +204,18 @@ pub fn execute_sync(plan: SyncPlan) -> Result<SyncReport> {
         auxiliary_copies,
     } = writes;
 
-    for copy in session_copies.iter().chain(&auxiliary_copies) {
+    let total_sessions = session_copies.len();
+    for (index, copy) in session_copies.iter().enumerate() {
+        copy_file_atomically(&copy.source_path, &copy.destination_path)?;
+        let copied_sessions = index + 1;
+        if should_emit_session_progress(copied_sessions, total_sessions) {
+            progress(SyncProgress::CopyingSessions {
+                copied_sessions,
+                total_sessions,
+            });
+        }
+    }
+    for copy in &auxiliary_copies {
         copy_file_atomically(&copy.source_path, &copy.destination_path)?;
     }
     if manifest_written {
@@ -204,6 +235,11 @@ pub fn execute_sync(plan: SyncPlan) -> Result<SyncReport> {
         warnings,
         manifest_written,
     })
+}
+
+/// Returns whether one session-count progress event should be emitted.
+fn should_emit_session_progress(current: usize, total: usize) -> bool {
+    current >= total || current.is_multiple_of(SESSION_PROGRESS_EMIT_INTERVAL)
 }
 
 /// Captures supported Claude discovery results.

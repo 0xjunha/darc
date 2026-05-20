@@ -1,12 +1,6 @@
 use std::{
     io::{self, Write},
     path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    thread::{self, JoinHandle},
-    time::Duration,
 };
 
 use anyhow::{Result, bail};
@@ -25,229 +19,14 @@ use crate::args::{
     ShareRecipientCommands, ShareSessionSelectionArgs,
 };
 use crate::output::{HumanStyle, stderr_progress_enabled};
+use crate::progress::ProgressOutput;
+#[cfg(test)]
+use crate::progress::render_progress_step_line;
 use crate::query_commands::provider_arg_to_source_kind;
-
-const SHARE_PROGRESS_BAR_WIDTH: usize = 24;
-const SHARE_PROGRESS_LABEL_WIDTH: usize = 18;
-const SHARE_PROGRESS_SPINNER_FRAMES: [&str; 10] =
-    ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const CLEAR_ACTIVE_LINE: &str = "\x1b[K";
-
-/// Renders common share progress lines for interactive terminals.
-struct ShareProgressOutput<W> {
-    writer: W,
-    style: HumanStyle,
-    enabled: bool,
-    live_spinner: bool,
-    active_line: bool,
-    active_step: Option<ActiveShareStep>,
-    step_index: usize,
-}
-
-impl<W: Write> ShareProgressOutput<W> {
-    /// Builds one common share progress output from resolved terminal facts.
-    #[cfg(test)]
-    fn new(writer: W, style: HumanStyle, enabled: bool) -> Self {
-        Self::new_with_live_spinner(writer, style, enabled, false)
-    }
-
-    /// Builds one common share progress output with optional live step animation.
-    fn new_with_live_spinner(
-        writer: W,
-        style: HumanStyle,
-        enabled: bool,
-        live_spinner: bool,
-    ) -> Self {
-        Self {
-            writer,
-            style,
-            enabled,
-            live_spinner: enabled && live_spinner,
-            active_line: false,
-            active_step: None,
-            step_index: 0,
-        }
-    }
-
-    /// Returns whether this output will render progress.
-    fn enabled(&self) -> bool {
-        self.enabled
-    }
-
-    /// Flushes the configured progress stream.
-    fn flush(&mut self) -> io::Result<()> {
-        self.writer.flush()
-    }
-
-    /// Finishes any active progress row before the caller prints another message.
-    fn finish(&mut self) -> io::Result<()> {
-        if self.enabled {
-            self.finish_active_line()?;
-            self.flush()?;
-        }
-        Ok(())
-    }
-
-    /// Writes one operation heading and resets numbered steps.
-    fn heading(&mut self, message: &str) -> io::Result<()> {
-        self.finish_active_line()?;
-        self.step_index = 0;
-        writeln!(self.writer, "{message}")
-    }
-
-    /// Writes one numbered step.
-    fn step(&mut self, message: &str) -> io::Result<()> {
-        self.finish_active_line()?;
-        self.step_index += 1;
-        if self.live_spinner {
-            let message = message.to_owned();
-            write!(
-                self.writer,
-                "\r{}{}",
-                render_share_step_line(
-                    self.style,
-                    self.step_index,
-                    Some(SHARE_PROGRESS_SPINNER_FRAMES[0]),
-                    &message
-                ),
-                CLEAR_ACTIVE_LINE
-            )?;
-            self.writer.flush()?;
-            let spinner = LiveShareStepSpinner::start(self.style, self.step_index, message.clone());
-            self.active_step = Some(ActiveShareStep {
-                index: self.step_index,
-                message,
-                spinner: Some(spinner),
-            });
-            Ok(())
-        } else {
-            writeln!(
-                self.writer,
-                "{}",
-                render_share_step_line(self.style, self.step_index, None, message)
-            )
-        }
-    }
-
-    /// Writes one in-place progress bar.
-    fn write_bar(&mut self, label: &str, current: u64, total: u64) -> io::Result<()> {
-        self.finish_active_step()?;
-        let bar = render_share_progress_bar(current, total, SHARE_PROGRESS_BAR_WIDTH, self.style);
-        let count = render_share_progress_count(current, total, self.style);
-        let percent = render_share_progress_percent(current, total, self.style);
-        write!(
-            self.writer,
-            "\r      {label:<SHARE_PROGRESS_LABEL_WIDTH$} {bar} {count} {percent}{CLEAR_ACTIVE_LINE}"
-        )?;
-        self.active_line = true;
-        Ok(())
-    }
-
-    /// Writes one in-place percent progress bar.
-    fn write_percent_bar(&mut self, label: &str, percent: u8) -> io::Result<()> {
-        self.finish_active_step()?;
-        let bar = render_share_progress_bar(
-            u64::from(percent),
-            100,
-            SHARE_PROGRESS_BAR_WIDTH,
-            self.style,
-        );
-        let percent = render_share_percent(u64::from(percent), self.style);
-        write!(
-            self.writer,
-            "\r      {label:<SHARE_PROGRESS_LABEL_WIDTH$} {bar} {percent}{CLEAR_ACTIVE_LINE}"
-        )?;
-        self.active_line = true;
-        Ok(())
-    }
-
-    /// Finishes any active live step before rendering another progress shape.
-    fn finish_active_step(&mut self) -> io::Result<()> {
-        if let Some(mut step) = self.active_step.take() {
-            if let Some(spinner) = &mut step.spinner {
-                spinner.stop();
-            }
-            writeln!(
-                self.writer,
-                "\r{}{}",
-                render_share_step_line(self.style, step.index, None, &step.message),
-                CLEAR_ACTIVE_LINE
-            )?;
-        }
-        Ok(())
-    }
-
-    /// Finishes any in-place progress line before writing regular output.
-    fn finish_active_line(&mut self) -> io::Result<()> {
-        self.finish_active_step()?;
-        if self.active_line {
-            writeln!(self.writer)?;
-            self.active_line = false;
-        }
-        Ok(())
-    }
-}
-
-/// Stores one active share step currently animated by a spinner.
-struct ActiveShareStep {
-    index: usize,
-    message: String,
-    spinner: Option<LiveShareStepSpinner>,
-}
-
-/// Animates one active share step on stderr while blocking work runs.
-struct LiveShareStepSpinner {
-    stop: Arc<AtomicBool>,
-    handle: Option<JoinHandle<()>>,
-}
-
-impl LiveShareStepSpinner {
-    /// Starts one live share step spinner on stderr.
-    fn start(style: HumanStyle, step_index: usize, message: String) -> Self {
-        let stop = Arc::new(AtomicBool::new(false));
-        let worker_stop = Arc::clone(&stop);
-        let handle = thread::spawn(move || {
-            let mut frame_index = 1;
-            let mut writer = io::stderr();
-            while !worker_stop.load(Ordering::Relaxed) {
-                let frame = SHARE_PROGRESS_SPINNER_FRAMES
-                    [frame_index % SHARE_PROGRESS_SPINNER_FRAMES.len()];
-                let _ = write!(
-                    writer,
-                    "\r{}{}",
-                    render_share_step_line(style, step_index, Some(frame), &message),
-                    CLEAR_ACTIVE_LINE
-                );
-                let _ = writer.flush();
-                frame_index += 1;
-                thread::sleep(Duration::from_millis(80));
-            }
-        });
-        Self {
-            stop,
-            handle: Some(handle),
-        }
-    }
-
-    /// Stops the spinner thread and waits for it to exit.
-    fn stop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
-    }
-}
-
-impl Drop for LiveShareStepSpinner {
-    /// Stops the spinner if its owner is dropped before normal completion.
-    fn drop(&mut self) {
-        self.stop();
-    }
-}
 
 /// Renders Darc share push progress for interactive terminals.
 pub(crate) struct SharePushProgressPrinter<W> {
-    output: ShareProgressOutput<W>,
+    output: ProgressOutput<W>,
     rendering_session_progress: bool,
 }
 
@@ -256,7 +35,7 @@ impl SharePushProgressPrinter<io::Stderr> {
     pub(crate) fn stderr() -> Self {
         let enabled = stderr_progress_enabled();
         Self {
-            output: ShareProgressOutput::new_with_live_spinner(
+            output: ProgressOutput::new_with_live_spinner(
                 io::stderr(),
                 HumanStyle::stderr(),
                 enabled,
@@ -272,7 +51,7 @@ impl<W: Write> SharePushProgressPrinter<W> {
     #[cfg(test)]
     pub(crate) fn new(writer: W, style: HumanStyle, enabled: bool) -> Self {
         Self {
-            output: ShareProgressOutput::new(writer, style, enabled),
+            output: ProgressOutput::new(writer, style, enabled),
             rendering_session_progress: false,
         }
     }
@@ -289,62 +68,77 @@ impl<W: Write> SharePushProgressPrinter<W> {
 
     /// Records one share push progress event, ignoring presentation write failures.
     pub(crate) fn record(&mut self, event: SharePushProgress) {
-        if self.output.enabled() {
-            let _ = self.write_event(event);
+        if self.output.enabled() && self.write_event(event).unwrap_or(false) {
             let _ = self.output.flush();
         }
     }
 
     /// Writes one share push progress event to the configured stream.
-    pub(crate) fn write_event(&mut self, event: SharePushProgress) -> io::Result<()> {
+    pub(crate) fn write_event(&mut self, event: SharePushProgress) -> io::Result<bool> {
         match event {
             SharePushProgress::Started {
                 git_branch,
                 remote_name,
                 remote_url,
             } => {
+                let style = self.output.style();
                 self.rendering_session_progress = false;
                 let message = format!(
                     "Pushing {} to {} ({})",
-                    self.output.style.bold(git_branch),
-                    self.output.style.bold(remote_name),
+                    style.bold(git_branch),
+                    style.bold(remote_name),
                     remote_url
                 );
-                self.output.heading(&message)
+                self.output.heading(&message)?;
+                Ok(true)
             }
-            SharePushProgress::PreparingCache => self.output.step("Preparing share cache..."),
-            SharePushProgress::FetchingRemote => self.output.step("Fetching remote branch..."),
-            SharePushProgress::HydratingLfs => self.output.step("Hydrating Git LFS objects..."),
+            SharePushProgress::PreparingCache => {
+                self.output.step("Preparing share cache...")?;
+                Ok(true)
+            }
+            SharePushProgress::FetchingRemote => {
+                self.output.step("Fetching remote branch...")?;
+                Ok(true)
+            }
+            SharePushProgress::HydratingLfs => {
+                self.output.step("Hydrating Git LFS objects...")?;
+                Ok(true)
+            }
             SharePushProgress::ReadingCache => {
-                self.output.step("Reading cached share artifacts...")
+                self.output.step("Reading cached share artifacts...")?;
+                Ok(true)
             }
             SharePushProgress::ReusingPreviousExport {
                 exported_turn_count,
                 exported_session_count,
             } => {
+                let style = self.output.style();
                 let message = format!(
                     "Reusing previous signed export ({} turns, {} sessions).",
-                    self.output.style.count(exported_turn_count),
-                    self.output.style.count(exported_session_count)
+                    style.count(exported_turn_count),
+                    style.count(exported_session_count)
                 );
-                self.output.step(&message)
+                self.output.step(&message)?;
+                Ok(true)
             }
             SharePushProgress::BuildingExport { total_turns } => {
+                let style = self.output.style();
                 let message = format!(
                     "Building encrypted export ({} turns)...",
-                    self.output.style.count(total_turns)
+                    style.count(total_turns)
                 );
-                self.output.step(&message)
+                self.output.step(&message)?;
+                Ok(true)
             }
             SharePushProgress::ExportingTurns {
                 exported_turns,
                 total_turns,
             } => {
                 if self.rendering_session_progress {
-                    Ok(())
+                    Ok(false)
                 } else {
                     self.output
-                        .write_bar("Exporting turns", exported_turns, total_turns)
+                        .write_throttled_bar("Exporting turns", exported_turns, total_turns)
                 }
             }
             SharePushProgress::ExportingSessions {
@@ -352,54 +146,66 @@ impl<W: Write> SharePushProgressPrinter<W> {
                 total_sessions,
             } => {
                 self.rendering_session_progress = true;
-                self.output
-                    .write_bar("Exporting sessions", exported_sessions, total_sessions)
+                self.output.write_throttled_bar(
+                    "Exporting sessions",
+                    exported_sessions,
+                    total_sessions,
+                )
             }
             SharePushProgress::WritingMetadata { object_count } => {
+                let style = self.output.style();
                 let message = format!(
                     "Writing share metadata ({} objects)...",
-                    self.output.style.count(object_count)
+                    style.count(object_count)
                 );
-                self.output.step(&message)
+                self.output.step(&message)?;
+                Ok(true)
             }
-            SharePushProgress::Committing => self.output.step("Committing share artifacts..."),
+            SharePushProgress::Committing => {
+                self.output.step("Committing share artifacts...")?;
+                Ok(true)
+            }
             SharePushProgress::Uploading { kind } => self.upload_step(kind),
             SharePushProgress::GitProgress { kind: _, message } => {
                 self.write_git_progress(&message)
             }
             SharePushProgress::Finished { commit_id } => {
                 self.output.finish_active_line()?;
-                let done = self.output.style.ok("done");
-                let commit_id = self.output.style.muted(commit_id);
-                writeln!(self.output.writer, "  {} {}", done, commit_id)?;
-                writeln!(self.output.writer)
+                let style = self.output.style();
+                let done = style.ok("done");
+                let commit_id = style.muted(commit_id);
+                writeln!(self.output.writer_mut(), "  {} {}", done, commit_id)?;
+                writeln!(self.output.writer_mut()).map(|()| true)
             }
-            _ => Ok(()),
+            _ => Ok(false),
         }
     }
 
     /// Writes one upload phase step.
-    fn upload_step(&mut self, kind: ShareUploadKind) -> io::Result<()> {
+    fn upload_step(&mut self, kind: ShareUploadKind) -> io::Result<bool> {
         let message = match kind {
             ShareUploadKind::Lfs => "Uploading encrypted LFS objects...",
             ShareUploadKind::Git => "Uploading share branch...",
             _ => "Uploading share data...",
         };
-        self.output.step(message)
+        self.output.step(message)?;
+        Ok(true)
     }
 
     /// Writes one streamed Git progress fragment.
-    fn write_git_progress(&mut self, message: &str) -> io::Result<()> {
+    fn write_git_progress(&mut self, message: &str) -> io::Result<bool> {
         if let Some(percent) = git_progress_percent(message) {
-            self.output.write_percent_bar("Uploading", percent)?;
+            return self
+                .output
+                .write_throttled_percent_bar("Uploading", percent);
         }
-        Ok(())
+        Ok(false)
     }
 }
 
 /// Renders Darc share pull progress for interactive terminals.
 pub(crate) struct SharePullProgressPrinter<W> {
-    output: ShareProgressOutput<W>,
+    output: ProgressOutput<W>,
 }
 
 impl SharePullProgressPrinter<io::Stderr> {
@@ -407,7 +213,7 @@ impl SharePullProgressPrinter<io::Stderr> {
     pub(crate) fn stderr() -> Self {
         let enabled = stderr_progress_enabled();
         Self {
-            output: ShareProgressOutput::new_with_live_spinner(
+            output: ProgressOutput::new_with_live_spinner(
                 io::stderr(),
                 HumanStyle::stderr(),
                 enabled,
@@ -422,7 +228,7 @@ impl<W: Write> SharePullProgressPrinter<W> {
     #[cfg(test)]
     pub(crate) fn new(writer: W, style: HumanStyle, enabled: bool) -> Self {
         Self {
-            output: ShareProgressOutput::new(writer, style, enabled),
+            output: ProgressOutput::new(writer, style, enabled),
         }
     }
 
@@ -438,119 +244,88 @@ impl<W: Write> SharePullProgressPrinter<W> {
 
     /// Records one share pull progress event, ignoring presentation write failures.
     pub(crate) fn record(&mut self, event: SharePullProgress) {
-        if self.output.enabled() {
-            let _ = self.write_event(event);
+        if self.output.enabled() && self.write_event(event).unwrap_or(false) {
             let _ = self.output.flush();
         }
     }
 
     /// Writes one share pull progress event to the configured stream.
-    pub(crate) fn write_event(&mut self, event: SharePullProgress) -> io::Result<()> {
+    pub(crate) fn write_event(&mut self, event: SharePullProgress) -> io::Result<bool> {
         match event {
             SharePullProgress::Started {
                 git_branch,
                 remote_name,
                 remote_url,
             } => {
+                let style = self.output.style();
                 let message = format!(
                     "Pulling {} from {} ({})",
-                    self.output.style.bold(git_branch),
-                    self.output.style.bold(remote_name),
+                    style.bold(git_branch),
+                    style.bold(remote_name),
                     remote_url
                 );
-                self.output.heading(&message)
+                self.output.heading(&message)?;
+                Ok(true)
             }
-            SharePullProgress::PreparingCache => self.output.step("Preparing share cache..."),
-            SharePullProgress::FetchingRemote => self.output.step("Fetching remote branch..."),
-            SharePullProgress::HydratingLfs => self.output.step("Hydrating Git LFS objects..."),
+            SharePullProgress::PreparingCache => {
+                self.output.step("Preparing share cache...")?;
+                Ok(true)
+            }
+            SharePullProgress::FetchingRemote => {
+                self.output.step("Fetching remote branch...")?;
+                Ok(true)
+            }
+            SharePullProgress::HydratingLfs => {
+                self.output.step("Hydrating Git LFS objects...")?;
+                Ok(true)
+            }
             SharePullProgress::ReadingCache => {
-                self.output.step("Reading cached share artifacts...")
+                self.output.step("Reading cached share artifacts...")?;
+                Ok(true)
             }
             SharePullProgress::ImportingSessions {
                 processed_sessions,
                 total_sessions,
-            } => self
-                .output
-                .write_bar("Importing sessions", processed_sessions, total_sessions),
+            } => self.output.write_throttled_bar(
+                "Importing sessions",
+                processed_sessions,
+                total_sessions,
+            ),
             SharePullProgress::Finished {
                 imported_turn_count,
                 skipped_turn_count,
                 warning_count,
             } => {
                 self.output.finish_active_line()?;
-                let done = self.output.style.ok("done");
-                let imported_turn_count = self.output.style.count(imported_turn_count);
-                let skipped_turn_count = self.output.style.count(skipped_turn_count);
-                let warning_count = self.output.style.count(warning_count);
+                let style = self.output.style();
+                let done = style.ok("done");
+                let imported_turn_count = style.count(imported_turn_count);
+                let skipped_turn_count = style.count(skipped_turn_count);
+                let warning_count = style.count(warning_count);
                 writeln!(
-                    self.output.writer,
+                    self.output.writer_mut(),
                     "  {} imported {} turns, skipped {}, warnings {}",
-                    done, imported_turn_count, skipped_turn_count, warning_count
+                    done,
+                    imported_turn_count,
+                    skipped_turn_count,
+                    warning_count
                 )?;
-                writeln!(self.output.writer)
+                writeln!(self.output.writer_mut()).map(|()| true)
             }
-            _ => Ok(()),
+            _ => Ok(false),
         }
     }
 }
 
 /// Renders one numbered share step with an optional spinner frame.
+#[cfg(test)]
 pub(crate) fn render_share_step_line(
     style: HumanStyle,
     step_index: usize,
     spinner: Option<&str>,
     message: &str,
 ) -> String {
-    let step = format!("[{}]", style.count(step_index));
-    if let Some(spinner) = spinner {
-        format!("  {} {step} {message}", style.path(spinner))
-    } else {
-        format!("  {step} {message}")
-    }
-}
-
-/// Renders a fixed-width progress bar with a styled terminal variant.
-fn render_share_progress_bar(current: u64, total: u64, width: usize, style: HumanStyle) -> String {
-    let filled = if total == 0 {
-        width
-    } else {
-        let bounded = current.min(total);
-        let width = u64::try_from(width).unwrap_or(u64::MAX);
-        let scaled = (u128::from(bounded) * u128::from(width)) / u128::from(total);
-        usize::try_from(scaled).unwrap_or(usize::MAX)
-    };
-    let filled = filled.min(width);
-    let empty = width.saturating_sub(filled);
-    if style.enabled {
-        format!(
-            "{}{}",
-            style.ok("━".repeat(filled)),
-            style.muted("─".repeat(empty))
-        )
-    } else {
-        format!("[{}{}]", "#".repeat(filled), "-".repeat(empty))
-    }
-}
-
-/// Renders a fixed-width current/total progress count.
-fn render_share_progress_count(current: u64, total: u64, style: HumanStyle) -> String {
-    let width = current.max(total).max(1).to_string().len();
-    style.count(format!("{current:>width$}/{total}"))
-}
-
-/// Renders the percentage for one current/total progress pair.
-fn render_share_progress_percent(current: u64, total: u64, style: HumanStyle) -> String {
-    let percent = current
-        .min(total)
-        .saturating_mul(100)
-        .checked_div(total)
-        .unwrap_or(100);
-    render_share_percent(percent, style)
-}
-
-/// Renders one right-aligned percentage.
-fn render_share_percent(percent: u64, style: HumanStyle) -> String {
-    style.count(format!("{percent:>3}%"))
+    render_progress_step_line(style, step_index, spinner, message)
 }
 
 /// Extracts the last integer percentage from one Git progress fragment.

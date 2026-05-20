@@ -4,6 +4,8 @@ All notable Darc release changes should be summarized here.
 
 ## Unreleased
 
+- Show live refresh progress with spinner steps and session/project progress bars.
+
 ## [0.2.1] - 2026-05-20
 
 - Print post-upgrade auto-refresh restart guidance after `darc upgrade`.

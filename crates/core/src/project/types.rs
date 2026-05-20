@@ -69,11 +69,21 @@ pub enum RefreshProgress {
     SyncStarted {
         project_name: String,
     },
+    SyncingSessions {
+        project_name: String,
+        synced_sessions: usize,
+        total_sessions: usize,
+    },
     SyncFinished {
         project_name: String,
     },
     IndexStarted {
         project_name: String,
+    },
+    IndexingSessions {
+        project_name: String,
+        indexed_sessions: usize,
+        total_sessions: usize,
     },
     IndexFinished {
         project_name: String,

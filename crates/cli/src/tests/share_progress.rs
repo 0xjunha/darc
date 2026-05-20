@@ -1,4 +1,7 @@
-use std::{cell::Cell, io::Write};
+use std::{
+    cell::Cell,
+    io::{self, Write},
+};
 
 use darc_core::{
     ShareFetchReport, ShareMergeReport, SharePullProgress, SharePullReport, SharePushProgress,
@@ -6,6 +9,24 @@ use darc_core::{
 };
 
 use super::*;
+
+#[derive(Default)]
+struct FlushCountingWriter {
+    bytes: Vec<u8>,
+    flushes: usize,
+}
+
+impl Write for FlushCountingWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.bytes.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.flushes += 1;
+        Ok(())
+    }
+}
 
 fn sample_share_push_report() -> SharePushReport {
     SharePushReport {
@@ -42,6 +63,74 @@ fn sample_share_pull_report() -> SharePullReport {
             warnings: Vec::new(),
         },
     }
+}
+
+#[test]
+fn share_push_progress_printer_throttles_hot_session_updates() {
+    let mut output = FlushCountingWriter::default();
+    {
+        let style = super::HumanStyle::new(false, false, None);
+        let mut printer = super::share::SharePushProgressPrinter::new(&mut output, style, true);
+        printer.record(SharePushProgress::ExportingSessions {
+            exported_sessions: 0,
+            total_sessions: 10_000,
+        });
+        for exported_sessions in 1..10_000 {
+            printer.record(SharePushProgress::ExportingSessions {
+                exported_sessions,
+                total_sessions: 10_000,
+            });
+        }
+        printer.record(SharePushProgress::ExportingSessions {
+            exported_sessions: 10_000,
+            total_sessions: 10_000,
+        });
+    }
+
+    assert_eq!(output.flushes, 2);
+}
+
+#[test]
+fn share_pull_progress_printer_throttles_hot_session_updates() {
+    let mut output = FlushCountingWriter::default();
+    {
+        let style = super::HumanStyle::new(false, false, None);
+        let mut printer = super::share::SharePullProgressPrinter::new(&mut output, style, true);
+        printer.record(SharePullProgress::ImportingSessions {
+            processed_sessions: 0,
+            total_sessions: 10_000,
+        });
+        for processed_sessions in 1..10_000 {
+            printer.record(SharePullProgress::ImportingSessions {
+                processed_sessions,
+                total_sessions: 10_000,
+            });
+        }
+        printer.record(SharePullProgress::ImportingSessions {
+            processed_sessions: 10_000,
+            total_sessions: 10_000,
+        });
+    }
+
+    assert_eq!(output.flushes, 2);
+}
+
+#[test]
+fn share_push_progress_printer_ignores_unrendered_git_fragments_without_flush() {
+    let mut output = FlushCountingWriter::default();
+    {
+        let style = super::HumanStyle::new(false, false, None);
+        let mut printer = super::share::SharePushProgressPrinter::new(&mut output, style, true);
+        for _ in 0..100 {
+            printer.record(SharePushProgress::GitProgress {
+                kind: ShareUploadKind::Git,
+                message: "Counting objects: synthetic diagnostic".to_owned(),
+            });
+        }
+    }
+
+    assert_eq!(output.flushes, 0);
+    assert!(output.bytes.is_empty());
 }
 
 #[test]

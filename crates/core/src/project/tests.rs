@@ -899,12 +899,22 @@ fn refresh_all_projects_best_effort_reports_progress_events() -> Result<()> {
                 RefreshProgress::SyncStarted { project_name } => {
                     format!("sync-start:{project_name}")
                 }
+                RefreshProgress::SyncingSessions {
+                    project_name,
+                    synced_sessions,
+                    total_sessions,
+                } => format!("sync-sessions:{project_name}:{synced_sessions}/{total_sessions}"),
                 RefreshProgress::SyncFinished { project_name } => {
                     format!("sync-finish:{project_name}")
                 }
                 RefreshProgress::IndexStarted { project_name } => {
                     format!("index-start:{project_name}")
                 }
+                RefreshProgress::IndexingSessions {
+                    project_name,
+                    indexed_sessions,
+                    total_sessions,
+                } => format!("index-sessions:{project_name}:{indexed_sessions}/{total_sessions}"),
                 RefreshProgress::IndexFinished { project_name } => {
                     format!("index-finish:{project_name}")
                 }
@@ -928,8 +938,12 @@ fn refresh_all_projects_best_effort_reports_progress_events() -> Result<()> {
             "project-failed:broken-repo",
             "project-start:2/2:healthy-repo",
             "sync-start:healthy-repo",
+            "sync-sessions:healthy-repo:0/1",
+            "sync-sessions:healthy-repo:1/1",
             "sync-finish:healthy-repo",
             "index-start:healthy-repo",
+            "index-sessions:healthy-repo:0/1",
+            "index-sessions:healthy-repo:1/1",
             "index-finish:healthy-repo",
             "project-finish:healthy-repo",
         ]

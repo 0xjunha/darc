@@ -22,8 +22,13 @@ use crate::{
     active_project::{ActiveProject, load_active_project},
     config::ProjectConfig,
     default_root_path,
-    index::{index_project_sessions_for_active_project, selected_index_providers},
-    sync::{SyncOptions, execute_sync, prepare_sync_for_active_project},
+    index::{
+        IndexProgress, index_project_sessions_for_active_project_with_progress,
+        selected_index_providers,
+    },
+    sync::{
+        SyncOptions, SyncProgress, execute_sync_with_progress, prepare_sync_for_active_project,
+    },
 };
 
 /// Stores display identity for one project refresh progress entry.
@@ -407,12 +412,29 @@ fn refresh_loaded_project_from(
     progress(RefreshProgress::SyncStarted {
         project_name: project_name.to_owned(),
     });
-    let sync = execute_sync(prepare_sync_for_active_project(
+    let sync_plan = prepare_sync_for_active_project(
         active_project,
         SyncOptions {
             provider_filter: options.provider_filter.clone(),
         },
-    )?)?;
+    )?;
+    let sync_unchanged_sessions = sync_plan.sessions_unchanged;
+    let sync_total_sessions = sync_unchanged_sessions + sync_plan.sessions_to_copy();
+    progress(RefreshProgress::SyncingSessions {
+        project_name: project_name.to_owned(),
+        synced_sessions: sync_unchanged_sessions,
+        total_sessions: sync_total_sessions,
+    });
+    let sync = execute_sync_with_progress(sync_plan, |event| {
+        let SyncProgress::CopyingSessions {
+            copied_sessions, ..
+        } = event;
+        progress(RefreshProgress::SyncingSessions {
+            project_name: project_name.to_owned(),
+            synced_sessions: sync_unchanged_sessions + copied_sessions,
+            total_sessions: sync_total_sessions,
+        });
+    })?;
     progress(RefreshProgress::SyncFinished {
         project_name: project_name.to_owned(),
     });
@@ -420,10 +442,21 @@ fn refresh_loaded_project_from(
     progress(RefreshProgress::IndexStarted {
         project_name: project_name.to_owned(),
     });
-    let index = index_project_sessions_for_active_project(
+    let index = index_project_sessions_for_active_project_with_progress(
         index_project,
         root,
         &selected_index_providers(&options.provider_filter),
+        |event| {
+            let IndexProgress::IndexingSessions {
+                indexed_sessions,
+                total_sessions,
+            } = event;
+            progress(RefreshProgress::IndexingSessions {
+                project_name: project_name.to_owned(),
+                indexed_sessions,
+                total_sessions,
+            });
+        },
     )?;
     progress(RefreshProgress::IndexFinished {
         project_name: project_name.to_owned(),

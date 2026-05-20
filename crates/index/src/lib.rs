@@ -9,6 +9,7 @@ pub use darc_store::{
     open_existing_index_database, open_index_database, open_index_database_read_only, policy,
 };
 pub use engine::{
-    IndexReport, ProjectIndexRequest, SkippedCodexRollout, SkippedRollout,
+    IndexProgress, IndexReport, ProjectIndexRequest, SkippedCodexRollout, SkippedRollout,
     index_project_archived_codex_turns, index_project_archived_sessions,
+    index_project_archived_sessions_with_progress,
 };

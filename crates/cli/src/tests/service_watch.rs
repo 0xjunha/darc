@@ -1,4 +1,24 @@
+use std::io::{self, Write};
+
 use super::*;
+
+#[derive(Default)]
+struct FlushCountingWriter {
+    bytes: Vec<u8>,
+    flushes: usize,
+}
+
+impl Write for FlushCountingWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.bytes.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.flushes += 1;
+        Ok(())
+    }
+}
 
 #[test]
 fn refresh_command_accepts_provider_filters_and_all() {
@@ -975,7 +995,23 @@ fn refresh_progress_printer_writes_interactive_steps() {
         printer.record(RefreshProgress::SyncStarted {
             project_name: "repo-a".to_owned(),
         });
+        printer.record(RefreshProgress::SyncingSessions {
+            project_name: "repo-a".to_owned(),
+            synced_sessions: 2,
+            total_sessions: 4,
+        });
+        printer.record(RefreshProgress::SyncFinished {
+            project_name: "repo-a".to_owned(),
+        });
         printer.record(RefreshProgress::IndexStarted {
+            project_name: "repo-a".to_owned(),
+        });
+        printer.record(RefreshProgress::IndexingSessions {
+            project_name: "repo-a".to_owned(),
+            indexed_sessions: 3,
+            total_sessions: 4,
+        });
+        printer.record(RefreshProgress::IndexFinished {
             project_name: "repo-a".to_owned(),
         });
         printer.record(RefreshProgress::ProjectFinished {
@@ -986,9 +1022,12 @@ fn refresh_progress_printer_writes_interactive_steps() {
     let output = String::from_utf8(output).unwrap();
     assert!(output.contains("Refreshing workspace (2 projects)"));
     assert!(output.contains("  [1/2] repo-a"));
-    assert!(output.contains("    [1/2] Syncing archive..."));
-    assert!(output.contains("    [2/2] Indexing sessions..."));
+    assert!(output.contains("    [1] Syncing archive..."));
+    assert!(output.contains("        Syncing sessions   [############------------] 2/4  50%"));
+    assert!(output.contains("    [2] Indexing sessions..."));
+    assert!(output.contains("        Indexing sessions  [##################------] 3/4  75%"));
     assert!(output.contains("    done"));
+    assert!(output.contains("Projects           [############------------] 1/2  50%"));
 }
 
 #[test]
@@ -1009,6 +1048,32 @@ fn refresh_progress_printer_stays_silent_when_disabled() {
     }
 
     assert!(output.is_empty());
+}
+
+#[test]
+fn refresh_progress_printer_does_not_flush_skipped_session_updates() {
+    let mut output = FlushCountingWriter::default();
+    {
+        let style = super::HumanStyle::new(false, false, None);
+        let mut printer = super::RefreshProgressPrinter::new(&mut output, style, true);
+        printer.record(RefreshProgress::IndexStarted {
+            project_name: "repo-a".to_owned(),
+        });
+        printer.record(RefreshProgress::IndexingSessions {
+            project_name: "repo-a".to_owned(),
+            indexed_sessions: 0,
+            total_sessions: 1_000,
+        });
+        for indexed_sessions in 1..100 {
+            printer.record(RefreshProgress::IndexingSessions {
+                project_name: "repo-a".to_owned(),
+                indexed_sessions,
+                total_sessions: 1_000,
+            });
+        }
+    }
+
+    assert_eq!(output.flushes, 2);
 }
 
 #[test]
