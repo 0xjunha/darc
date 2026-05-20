@@ -3,12 +3,12 @@
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![CI](https://github.com/0xjunha/darc/actions/workflows/ci.yml/badge.svg)](https://github.com/0xjunha/darc/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/github/0xjunha/darc/graph/badge.svg)](https://codecov.io/github/0xjunha/darc)
+[![platform](https://img.shields.io/badge/platform-macOS/Linux-blue)](platform)
+[![agents](https://img.shields.io/badge/agents-Codex/ClaudeCode-blue)](agents)
 
 Darc does not summarize prior work, decide what matters, or choose which memories to inject.
 
 It indexes prior agent sessions so agents can retrieve past decisions with exact evidence on demand.
-
-Supports: **macOS/Linux** | **Claude Code/Codex**
 
 ---
 
