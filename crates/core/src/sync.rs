@@ -9,6 +9,7 @@ use darc_paths::{
     normalize_project_path, normalized_known_paths, project_path_set,
     project_path_set_text_aliases, project_path_text_aliases, try_git_output,
 };
+pub(crate) use darc_sync::SyncProgress;
 use darc_sync::{ClaudeSource, CodexSource, SyncRequest};
 
 use crate::{
@@ -98,6 +99,15 @@ pub fn prepare_sync(root: Option<PathBuf>, options: SyncOptions) -> Result<SyncP
 
 /// Executes a prepared sync by copying files and then persisting config updates.
 pub fn execute_sync(plan: SyncPlan) -> Result<SyncReport> {
+    let mut progress = |_| {};
+    execute_sync_with_progress(plan, &mut progress)
+}
+
+/// Executes a prepared sync while reporting copied session progress.
+pub(crate) fn execute_sync_with_progress(
+    plan: SyncPlan,
+    mut progress: impl FnMut(SyncProgress),
+) -> Result<SyncReport> {
     let SyncPlan {
         project_name,
         project_root,
@@ -115,7 +125,7 @@ pub fn execute_sync(plan: SyncPlan) -> Result<SyncReport> {
         config,
     } = writes;
 
-    let report = darc_sync::execute_sync(engine_plan)?;
+    let report = darc_sync::execute_sync_with_progress(engine_plan, &mut progress)?;
     if let Some(config) = &config {
         write_shared_config(&config_path, config)?;
     }

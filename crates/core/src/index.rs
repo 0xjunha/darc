@@ -7,8 +7,12 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+pub(crate) use darc_index::IndexProgress;
 pub use darc_index::{IndexReport, SkippedCodexRollout, SkippedRollout};
-use darc_index::{ProjectIndexRequest, index_project_archived_sessions};
+use darc_index::{
+    ProjectIndexRequest, index_project_archived_sessions,
+    index_project_archived_sessions_with_progress,
+};
 use darc_paths::SourceKind;
 use darc_store::{
     INDEX_DB_FILE_NAME, preserve_index_sharing_state_for_projects, remove_index_database,
@@ -183,6 +187,22 @@ pub(crate) fn index_project_sessions_for_active_project(
     root: PathBuf,
     providers: &[SourceKind],
 ) -> Result<IndexReport> {
+    let mut progress = |_| {};
+    index_project_sessions_for_active_project_with_progress(
+        active_project,
+        root,
+        providers,
+        &mut progress,
+    )
+}
+
+/// Indexes archived provider rollouts while reporting session progress.
+pub(crate) fn index_project_sessions_for_active_project_with_progress(
+    active_project: ActiveProject,
+    root: PathBuf,
+    providers: &[SourceKind],
+    progress: impl FnMut(IndexProgress),
+) -> Result<IndexReport> {
     let request = ProjectIndexRequest {
         project_id: active_project.project.id,
         project_name: active_project.project.name,
@@ -190,7 +210,7 @@ pub(crate) fn index_project_sessions_for_active_project(
         sessions_root: active_project.project.sessions_root,
         index_db_path: root.join(INDEX_DB_FILE_NAME),
     };
-    index_project_archived_sessions(&request, providers)
+    index_project_archived_sessions_with_progress(&request, providers, progress)
 }
 
 /// Resolves the selected provider list for one indexing run.

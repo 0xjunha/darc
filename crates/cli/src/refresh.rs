@@ -23,6 +23,7 @@ use crate::output::{
     HumanStyle, print_field, print_line, print_project_warning, print_section,
     stderr_progress_enabled,
 };
+use crate::progress::ProgressOutput;
 use crate::service::run_refresh_auto;
 use crate::sync_index::{
     add_init_hint_for_unconfigured_project, format_skipped_rollout, format_sources,
@@ -31,53 +32,69 @@ use crate::sync_index::{
 
 /// Renders refresh progress events for interactive terminals.
 pub(crate) struct RefreshProgressPrinter<W> {
-    pub(crate) writer: W,
-    pub(crate) style: HumanStyle,
-    pub(crate) enabled: bool,
-    pub(crate) total_projects: usize,
+    output: ProgressOutput<W>,
+    total_projects: usize,
+    current_project_index: usize,
 }
 
 impl RefreshProgressPrinter<io::Stderr> {
     /// Builds one refresh progress printer for the current stderr stream.
     pub(crate) fn stderr() -> Self {
-        Self::new(
+        Self::new_with_live_spinner(
             io::stderr(),
             HumanStyle::stderr(),
             stderr_progress_enabled(),
+            true,
         )
     }
 }
 
 impl<W: Write> RefreshProgressPrinter<W> {
     /// Builds one refresh progress printer from resolved terminal facts.
+    #[cfg(test)]
     pub(crate) fn new(writer: W, style: HumanStyle, enabled: bool) -> Self {
+        Self::new_with_live_spinner(writer, style, enabled, false)
+    }
+
+    /// Builds one refresh progress printer with optional live step animation.
+    fn new_with_live_spinner(
+        writer: W,
+        style: HumanStyle,
+        enabled: bool,
+        live_spinner: bool,
+    ) -> Self {
         Self {
-            writer,
-            style,
-            enabled,
+            output: ProgressOutput::new_with_live_spinner(writer, style, enabled, live_spinner),
             total_projects: 1,
+            current_project_index: 0,
         }
+    }
+
+    /// Finishes any active progress row before the caller prints another message.
+    pub(crate) fn finish(&mut self) {
+        let _ = self.output.finish();
     }
 
     /// Records one refresh progress event, ignoring presentation write failures.
     pub(crate) fn record(&mut self, event: RefreshProgress) {
-        if self.enabled {
-            let _ = self.write_event(event);
-            let _ = self.writer.flush();
+        if self.output.enabled() && self.write_event(event).unwrap_or(false) {
+            let _ = self.output.flush();
         }
     }
 
     /// Writes one refresh progress event to the configured stream.
-    pub(crate) fn write_event(&mut self, event: RefreshProgress) -> io::Result<()> {
+    pub(crate) fn write_event(&mut self, event: RefreshProgress) -> io::Result<bool> {
         match event {
             RefreshProgress::WorkspaceStarted { total_projects } => {
                 self.total_projects = total_projects;
-                writeln!(
-                    self.writer,
+                let style = self.output.style();
+                let message = format!(
                     "Refreshing workspace ({} project{})",
-                    self.style.count(total_projects),
+                    style.count(total_projects),
                     if total_projects == 1 { "" } else { "s" }
-                )
+                );
+                self.output.heading(&message)?;
+                Ok(true)
             }
             RefreshProgress::ProjectStarted {
                 project_name,
@@ -86,38 +103,66 @@ impl<W: Write> RefreshProgressPrinter<W> {
                 total_projects,
             } => {
                 self.total_projects = total_projects;
+                self.current_project_index = project_index;
+                let style = self.output.style();
                 if total_projects > 1 {
-                    writeln!(
-                        self.writer,
+                    let message = format!(
                         "  [{}/{}] {}",
-                        self.style.count(project_index),
-                        self.style.count(total_projects),
-                        self.style.bold(project_name)
-                    )
+                        style.count(project_index),
+                        style.count(total_projects),
+                        style.bold(project_name)
+                    );
+                    self.output.heading(&message)?;
                 } else {
-                    writeln!(self.writer, "Refreshing {}", self.style.bold(project_name))
+                    let message = format!("Refreshing {}", style.bold(project_name));
+                    self.output.heading(&message)?;
                 }
+                Ok(true)
             }
             RefreshProgress::SyncStarted { project_name: _ } => {
-                writeln!(self.writer, "{}[1/2] Syncing archive...", self.indent())
+                let indent = self.indent();
+                self.output.step_with_indent(indent, "Syncing archive...")?;
+                Ok(true)
             }
-            RefreshProgress::SyncFinished { project_name: _ } => Ok(()),
+            RefreshProgress::SyncingSessions {
+                project_name: _,
+                synced_sessions,
+                total_sessions,
+            } => self.write_session_progress("Syncing sessions", synced_sessions, total_sessions),
+            RefreshProgress::SyncFinished { project_name: _ } => Ok(false),
             RefreshProgress::IndexStarted { project_name: _ } => {
-                writeln!(self.writer, "{}[2/2] Indexing sessions...", self.indent())
+                let indent = self.indent();
+                self.output
+                    .step_with_indent(indent, "Indexing sessions...")?;
+                Ok(true)
             }
-            RefreshProgress::IndexFinished { project_name: _ } => Ok(()),
+            RefreshProgress::IndexingSessions {
+                project_name: _,
+                indexed_sessions,
+                total_sessions,
+            } => self.write_session_progress("Indexing sessions", indexed_sessions, total_sessions),
+            RefreshProgress::IndexFinished { project_name: _ } => Ok(false),
             RefreshProgress::ProjectFinished { project_name: _ } => {
-                writeln!(self.writer, "{}{}", self.indent(), self.style.ok("done"))?;
-                writeln!(self.writer)
+                self.output.finish_active_line()?;
+                let style = self.output.style();
+                let indent = self.indent();
+                writeln!(self.output.writer_mut(), "{}{}", indent, style.ok("done"))?;
+                self.write_workspace_project_bar()?;
+                writeln!(self.output.writer_mut())?;
+                Ok(true)
             }
             RefreshProgress::ProjectFailed { project_name: _ } => {
+                self.output.finish_active_line()?;
+                let style = self.output.style();
+                let indent = self.indent();
                 writeln!(
-                    self.writer,
+                    self.output.writer_mut(),
                     "{}{}",
-                    self.indent(),
-                    self.style.error("failed")
+                    indent,
+                    style.error("failed")
                 )?;
-                writeln!(self.writer)
+                writeln!(self.output.writer_mut())?;
+                Ok(true)
             }
         }
     }
@@ -129,6 +174,32 @@ impl<W: Write> RefreshProgressPrinter<W> {
         } else {
             "  "
         }
+    }
+
+    /// Writes the workspace-level project bar after one project finishes.
+    fn write_workspace_project_bar(&mut self) -> io::Result<()> {
+        if self.total_projects <= 1 {
+            return Ok(());
+        }
+        self.output.write_bar(
+            "Projects",
+            self.current_project_index as u64,
+            self.total_projects as u64,
+        )?;
+        self.output.finish_active_line()
+    }
+
+    /// Writes a throttled session-count progress bar.
+    fn write_session_progress(
+        &mut self,
+        label: &'static str,
+        current: usize,
+        total: usize,
+    ) -> io::Result<bool> {
+        let current = current.min(total);
+        let indent = self.indent();
+        self.output
+            .write_throttled_bar_with_indent(indent, label, current as u64, total as u64)
     }
 }
 
@@ -362,6 +433,7 @@ pub(crate) fn run_refresh_once(request: &RefreshRunRequest) -> Result<()> {
             options,
             |event| progress.record(event),
         )?;
+        progress.finish();
         print_refresh_all_report(&report);
         let result = refresh_all_exit_status(&report);
         return result;
@@ -371,6 +443,7 @@ pub(crate) fn run_refresh_once(request: &RefreshRunRequest) -> Result<()> {
         progress.record(event);
     })
     .map_err(add_init_hint_for_unconfigured_project)?;
+    progress.finish();
     print_refresh_report(&report);
     Ok(())
 }

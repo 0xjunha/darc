@@ -35,6 +35,8 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use thiserror::Error;
 use walkdir::WalkDir;
 
+const SESSION_PROGRESS_EMIT_INTERVAL: usize = 128;
+
 /// Parses one Codex rollout file into user-visible turns.
 #[cfg(test)]
 pub(crate) fn parse_codex_rollout(path: &Path) -> Result<CodexRollout> {
@@ -54,6 +56,15 @@ pub struct IndexReport {
     pub sessions_currently_indexed: usize,
     pub turns_currently_indexed: usize,
     pub skipped_rollouts: Vec<SkippedRollout>,
+}
+
+/// Describes one observable indexing transition for progress UIs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexProgress {
+    IndexingSessions {
+        indexed_sessions: usize,
+        total_sessions: usize,
+    },
 }
 
 /// Describes one archived rollout file that darc skipped during indexing.
@@ -429,8 +440,23 @@ pub fn index_project_archived_sessions(
     request: &ProjectIndexRequest,
     providers: &[SourceKind],
 ) -> Result<IndexReport> {
+    let mut progress = |_| {};
+    index_project_archived_sessions_with_progress(request, providers, &mut progress)
+}
+
+/// Indexes archived provider rollouts while reporting session progress.
+pub fn index_project_archived_sessions_with_progress(
+    request: &ProjectIndexRequest,
+    providers: &[SourceKind],
+    mut progress: impl FnMut(IndexProgress),
+) -> Result<IndexReport> {
     let discovered_rollouts = discover_archived_rollouts(&request.sessions_root, providers)?;
     let mut connection = open_index_database(&request.index_db_path)?;
+    let total_sessions = discovered_rollouts.groups.len();
+    progress(IndexProgress::IndexingSessions {
+        indexed_sessions: 0,
+        total_sessions,
+    });
 
     let index_outcome = update_project_turns(
         &mut connection,
@@ -438,6 +464,7 @@ pub fn index_project_archived_sessions(
         providers,
         &discovered_rollouts.groups,
         &discovered_rollouts.discovered_session_ids,
+        &mut progress,
     )?;
     let mut skipped_rollouts = discovered_rollouts.skipped_rollouts;
     skipped_rollouts.extend(index_outcome.skipped_rollouts);
@@ -985,6 +1012,7 @@ fn update_project_turns(
     providers: &[SourceKind],
     archived_rollouts: &[ArchivedRolloutGroup],
     discovered_session_ids: &BTreeSet<IndexedSessionKey>,
+    progress: &mut impl FnMut(IndexProgress),
 ) -> Result<IndexedIndexOutcome> {
     let provider_set = providers.iter().copied().collect::<BTreeSet<_>>();
     let mut transaction = connection
@@ -1001,7 +1029,8 @@ fn update_project_turns(
 
     let mut sessions_succeeded = 0;
     let mut skipped_rollouts = Vec::new();
-    for archived_group in archived_rollouts {
+    let total_sessions = archived_rollouts.len();
+    for (index, archived_group) in archived_rollouts.iter().enumerate() {
         let group_outcome = update_archived_rollout_group(
             &mut transaction,
             project_id,
@@ -1010,6 +1039,13 @@ fn update_project_turns(
         )?;
         sessions_succeeded += usize::from(group_outcome.session_succeeded);
         skipped_rollouts.extend(group_outcome.skipped_rollouts);
+        let indexed_sessions = index + 1;
+        if should_emit_session_progress(indexed_sessions, total_sessions) {
+            progress(IndexProgress::IndexingSessions {
+                indexed_sessions,
+                total_sessions,
+            });
+        }
     }
 
     transaction
@@ -1022,6 +1058,11 @@ fn update_project_turns(
         skipped_rollouts,
         turns_currently_indexed: project_turn_count(connection, project_id, &provider_set)?,
     })
+}
+
+/// Returns whether one session-count progress event should be emitted.
+fn should_emit_session_progress(current: usize, total: usize) -> bool {
+    current >= total || current.is_multiple_of(SESSION_PROGRESS_EMIT_INTERVAL)
 }
 
 /// Describes how one archived duplicate group affected the SQLite index.
