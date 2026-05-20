@@ -1,24 +1,22 @@
-# Darc
+# Darc: grep-like team memory for coding agents
 
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![CI](https://github.com/0xjunha/darc/actions/workflows/ci.yml/badge.svg)](https://github.com/0xjunha/darc/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/github/0xjunha/darc/graph/badge.svg)](https://codecov.io/github/0xjunha/darc)
 
-> Darc indexes your agent sessions so you can grep them like code, then open exact evidence from prior work.
+Darc does not summarize prior work, decide what matters, or choose which memories to inject.
 
-A local CLI for searching Claude Code and Codex session history.
-
-Use it to recover the rationale, cautions, touched files, and rejected approaches behind previous agent work before
-making the next change.
-
-Darc gives agents the equivalent of asking the engineer who last touched the code what they learned and what to watch
-out for.
+It indexes prior agent sessions so agents can retrieve past decisions with exact evidence on demand.
 
 Supports: **macOS/Linux** | **Claude Code/Codex**
 
-_Demo: search prior agent history, open the exact turn, and list files touched in that session._
+## How Darc Works
 
-https://github.com/user-attachments/assets/f38317a4-bcc8-438a-8a81-0315b5c8a4e9
+![How Darc works: raw Codex and Claude Code logs are incrementally synced into a local SQLite index, queried through a read API, and used by agents for on-demand context builds.](assets/darc-architecture.png)
+
+Darc indexes your agent sessions so you can grep them like code, then open exact evidence from prior work.
+
+The indexed sessions can be shared with others via Git backend. See [Team Sharing](#team-sharing) section.
 
 ## Quickstart
 
@@ -303,30 +301,6 @@ Use Darc with:
 
 The goal is not "remember everything forever." The goal is to let agents ask narrow questions, retrieve bounded
 evidence, and avoid repeating old work.
-
-## How Darc Works
-
-![How Darc works: raw Codex and Claude Code logs are incrementally synced into a local SQLite index, queried through a read API, and used by agents for on-demand context builds.](assets/darc-architecture.png)
-
-Darc keeps one local workspace at `~/.darc`.
-
-A workspace contains many projects, one per registered checkout. Each project has its own archive of synced sessions,
-and a workspace-wide SQLite index normalizes those archives for query.
-
-Core concepts:
-
-- A **session** is one run of Claude Code or Codex.
-- A **turn** is one user-message-and-agent-response pair within a session.
-- A **project** is a registered checkout Darc can resolve from your current directory.
-- An **evidence handle** is the combination of `session_id`, `turn_ordinal`, paths, timestamps, and schema-tagged JSON
-  output needed to find the same evidence again later.
-
-Most read commands infer the active project from your current working directory.
-
-```sh
-cd /path/to/project
-darc search "query"
-```
 
 ## Core Commands
 
