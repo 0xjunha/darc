@@ -10,6 +10,16 @@ It indexes prior agent sessions so agents can retrieve past decisions with exact
 
 Supports: **macOS/Linux** | **Claude Code/Codex**
 
+---
+
+#### Demo 1: Let your agent recover past bug fixes with Darc
+
+https://github.com/user-attachments/assets/9dc89da1-45d5-4d9c-9169-5887f62976eb
+
+#### Demo 2: Share agent session indexes with your team via GitHub
+
+https://github.com/user-attachments/assets/09b91e62-6698-44c1-bf32-8ee6c674e5e0
+
 ## How Darc Works
 
 ![How Darc works: raw Codex and Claude Code logs are incrementally synced into a local SQLite index, queried through a read API, and used by agents for on-demand context builds.](assets/darc-architecture.png)
