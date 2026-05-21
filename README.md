@@ -1,16 +1,16 @@
-# Darc: grep-like shared memory for coding agents
+# Darc: grep-like memory search tool for coding agents
 
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![CI](https://github.com/0xjunha/darc/actions/workflows/ci.yml/badge.svg)](https://github.com/0xjunha/darc/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/github/0xjunha/darc/graph/badge.svg)](https://codecov.io/github/0xjunha/darc)
-[![platform](https://img.shields.io/badge/platform-macOS/Linux-blue)](platform)
-[![agents](https://img.shields.io/badge/agents-Codex/ClaudeCode-blue)](agents)
+[![platform](https://img.shields.io/badge/platform-macOS_|_Linux-blue)](platform)
+[![agents](https://img.shields.io/badge/agents-Codex_|_ClaudeCode-blue)](agents)
 
-A CLI search tool over past agent work.
+**A CLI search tool over past agent work + Git-backed sharing**
 
-Darc does not summarize prior work, decide what matters, or choose which memories to inject.
+Darc does NOT summarize prior work, decide what matters, or choose which memories to inject.
 
-It indexes prior agent sessions so agents can recover past decisions on demand, backed by exact evidence.
+It indexes prior agent sessions so your agents can do iterative search and recover past decisions on demand, backed by exact evidence.
 
 ---
 
