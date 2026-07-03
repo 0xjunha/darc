@@ -4,8 +4,9 @@ use std::{
     fs::{self, File},
     io::{self, Read},
     path::{Path, PathBuf},
-    process::Command,
-    time::{SystemTime, UNIX_EPOCH},
+    process::{Command, Output, Stdio},
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, bail, ensure};
@@ -31,6 +32,8 @@ const GITHUB_RELEASE_SOURCE: &str = "GitHub Releases (openai/codex)";
 const RELEASE_TAG_PREFIX: &str = "rust-v";
 /// Stores the rollout schema file name exported from released Codex binaries.
 const ROLLOUT_SCHEMA_FILE_NAME: &str = "RolloutLine.json";
+/// Stores the timeout used for released Codex schema export commands.
+const CODEX_SCHEMA_EXPORT_TIMEOUT: Duration = Duration::from_secs(180);
 /// Lists the Darc files most likely to need updates after Codex schema drift.
 const LIKELY_UPDATE_PATHS: &[&str] = &[
     "crates/rollout/src/codex/version.rs",
@@ -415,12 +418,13 @@ impl CodexSchemaAuditProvider for GitHubCodexSchemaAuditProvider {
             sanitize_for_path(tag_name),
             unique_suffix()
         ));
-        let output = build_released_binary_command(&binary_path, working_dir, &runtime_root)?
+        let mut command = build_released_binary_command(&binary_path, working_dir, &runtime_root)?;
+        command
             .arg("app-server")
             .arg("generate-internal-json-schema")
             .arg("-o")
-            .arg(&schema_dir)
-            .output()
+            .arg(&schema_dir);
+        let output = run_command_with_timeout(&mut command, CODEX_SCHEMA_EXPORT_TIMEOUT)
             .with_context(|| {
                 format!(
                     "failed to run released Codex binary for `{tag_name}` at {}",
@@ -447,6 +451,82 @@ impl CodexSchemaAuditProvider for GitHubCodexSchemaAuditProvider {
                 schema_path.display()
             )
         })
+    }
+}
+
+/// Runs one process with a hard timeout and returns its captured output.
+fn run_command_with_timeout(command: &mut Command, timeout: Duration) -> Result<Output> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("failed to spawn command")?;
+    let stdout_reader = spawn_output_reader(
+        child
+            .stdout
+            .take()
+            .context("failed to capture child stdout")?,
+    );
+    let stderr_reader = spawn_output_reader(
+        child
+            .stderr
+            .take()
+            .context("failed to capture child stderr")?,
+    );
+    let started = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().context("failed to poll child process")? {
+            return collect_command_output(status, stdout_reader, stderr_reader);
+        }
+        if started.elapsed() >= timeout {
+            let _ = child.kill();
+            let status = child
+                .wait()
+                .context("failed to wait for timed out child process")?;
+            let output = collect_command_output(status, stdout_reader, stderr_reader)?;
+            bail!(
+                "command timed out after {}s: {}",
+                timeout.as_secs(),
+                command_output_summary(&output.stderr)
+            );
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Spawns one background reader that drains one child output pipe into memory.
+fn spawn_output_reader(
+    mut reader: impl Read + Send + 'static,
+) -> thread::JoinHandle<io::Result<Vec<u8>>> {
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    })
+}
+
+/// Collects the completed child status plus drained stdout/stderr bytes into one `Output`.
+fn collect_command_output(
+    status: std::process::ExitStatus,
+    stdout_reader: thread::JoinHandle<io::Result<Vec<u8>>>,
+    stderr_reader: thread::JoinHandle<io::Result<Vec<u8>>>,
+) -> Result<Output> {
+    Ok(Output {
+        status,
+        stdout: join_output_reader(stdout_reader, "stdout")?,
+        stderr: join_output_reader(stderr_reader, "stderr")?,
+    })
+}
+
+/// Joins one background pipe reader and returns the captured bytes.
+fn join_output_reader(
+    handle: thread::JoinHandle<io::Result<Vec<u8>>>,
+    label: &str,
+) -> Result<Vec<u8>> {
+    match handle.join() {
+        Ok(result) => result.with_context(|| format!("failed to read child {label}")),
+        Err(_panic) => anyhow::bail!("child {label} reader panicked"),
     }
 }
 
@@ -1019,6 +1099,8 @@ mod tests {
         ffi::OsString,
         fs::File,
         path::{Path, PathBuf},
+        process::Command,
+        time::Duration,
     };
 
     use anyhow::anyhow;
@@ -1033,7 +1115,7 @@ mod tests {
         extract_verified_binary_package, host_platform_from_parts,
         latest_exact_supported_codex_cli_version, parse_stable_release_tag,
         run_codex_schema_audit_with_provider, run_codex_schema_audit_with_provider_and_progress,
-        select_audited_release_tags,
+        run_command_with_timeout, select_audited_release_tags,
     };
 
     struct FakeSchemaAuditProvider {
@@ -1116,8 +1198,8 @@ mod tests {
     #[test]
     fn parses_and_filters_stable_codex_release_tags() {
         let tags = collect_stable_release_tags(vec![
-            "rust-v0.128.0".to_owned(),
-            "rust-v0.129.0-alpha.1".to_owned(),
+            "rust-v0.142.5".to_owned(),
+            "rust-v0.142.6-alpha.1".to_owned(),
             "rust-v0.127.0".to_owned(),
             "rust-vrust-v0.99.0-alpha.16".to_owned(),
             "not-a-codex-tag".to_owned(),
@@ -1125,29 +1207,29 @@ mod tests {
 
         assert_eq!(
             raw_tags(&tags),
-            vec!["rust-v0.128.0".to_owned(), "rust-v0.127.0".to_owned()]
+            vec!["rust-v0.142.5".to_owned(), "rust-v0.127.0".to_owned()]
         );
         assert_eq!(
-            parse_stable_release_tag("rust-v0.128.0")
+            parse_stable_release_tag("rust-v0.142.5")
                 .unwrap()
                 .version
                 .to_string(),
-            "0.128.0"
+            "0.142.5"
         );
-        assert!(parse_stable_release_tag("rust-v0.128.0-alpha.1").is_none());
+        assert!(parse_stable_release_tag("rust-v0.142.5-alpha.1").is_none());
     }
 
     #[test]
     fn selects_audited_range_from_latest_stable_down_to_exact_cutoff() {
         assert_eq!(
             latest_exact_supported_codex_cli_version().to_string(),
-            "0.128.0"
+            "0.142.5"
         );
 
         let tags = collect_stable_release_tags(vec![
-            "rust-v0.130.0".to_owned(),
-            "rust-v0.129.0".to_owned(),
-            "rust-v0.128.0".to_owned(),
+            "rust-v0.143.0".to_owned(),
+            "rust-v0.142.6".to_owned(),
+            "rust-v0.142.5".to_owned(),
             "rust-v0.127.0".to_owned(),
         ]);
 
@@ -1156,20 +1238,49 @@ mod tests {
         assert_eq!(
             raw_tags(&selected),
             vec![
-                "rust-v0.130.0".to_owned(),
-                "rust-v0.129.0".to_owned(),
-                "rust-v0.128.0".to_owned(),
+                "rust-v0.143.0".to_owned(),
+                "rust-v0.142.6".to_owned(),
+                "rust-v0.142.5".to_owned(),
             ]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn timeout_helper_drains_large_child_output() {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(
+            "i=0; while [ \"$i\" -lt 4096 ]; do printf '0123456789abcdef0123456789abcdef'; i=$((i + 1)); done; printf stderr-ok >&2",
+        );
+
+        let output = run_command_with_timeout(&mut command, Duration::from_secs(5)).unwrap();
+
+        assert!(output.status.success());
+        assert!(output.stdout.len() > 64 * 1024);
+        assert_eq!(String::from_utf8_lossy(&output.stderr), "stderr-ok");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn timeout_helper_closes_child_stdin() {
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("if read _line; then printf open; else printf closed; fi");
+
+        let output = run_command_with_timeout(&mut command, Duration::from_secs(5)).unwrap();
+
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "closed");
     }
 
     #[test]
     fn reports_compatibility_when_normalized_schemas_match() {
         let provider = FakeSchemaAuditProvider::new(
-            &["rust-v0.130.0", "rust-v0.129.0", "rust-v0.128.0"],
+            &["rust-v0.143.0", "rust-v0.142.6", "rust-v0.142.5"],
             &[
                 (
-                    "rust-v0.130.0",
+                    "rust-v0.143.0",
                     json!({
                         "type": ["null", "object"],
                         "definitions": {
@@ -1181,7 +1292,7 @@ mod tests {
                     }),
                 ),
                 (
-                    "rust-v0.129.0",
+                    "rust-v0.142.6",
                     json!({
                         "definitions": {
                             "RolloutItem": {
@@ -1193,7 +1304,7 @@ mod tests {
                     }),
                 ),
                 (
-                    "rust-v0.128.0",
+                    "rust-v0.142.5",
                     json!({
                         "type": ["object", "null"],
                         "definitions": {
@@ -1218,13 +1329,13 @@ mod tests {
             report.outcome,
             CodexSchemaAuditOutcome::Compatible
         ));
-        assert_eq!(report.latest_stable_release_tag, "rust-v0.130.0");
+        assert_eq!(report.latest_stable_release_tag, "rust-v0.143.0");
         assert_eq!(
             report.audited_tags,
             vec![
-                "rust-v0.130.0".to_owned(),
-                "rust-v0.129.0".to_owned(),
-                "rust-v0.128.0".to_owned(),
+                "rust-v0.143.0".to_owned(),
+                "rust-v0.142.6".to_owned(),
+                "rust-v0.142.5".to_owned(),
             ]
         );
     }
@@ -1232,24 +1343,24 @@ mod tests {
     #[test]
     fn detects_drift_at_the_first_newer_stable_tag() {
         let provider = FakeSchemaAuditProvider::new(
-            &["rust-v0.130.0", "rust-v0.129.0", "rust-v0.128.0"],
+            &["rust-v0.143.0", "rust-v0.142.6", "rust-v0.142.5"],
             &[
                 (
-                    "rust-v0.130.0",
+                    "rust-v0.143.0",
                     json!({
                         "type": "object",
                         "required": ["timestamp", "item", "trace_id"],
                     }),
                 ),
                 (
-                    "rust-v0.129.0",
+                    "rust-v0.142.6",
                     json!({
                         "type": "object",
                         "required": ["timestamp", "item", "trace_id"],
                     }),
                 ),
                 (
-                    "rust-v0.128.0",
+                    "rust-v0.142.5",
                     json!({
                         "type": "object",
                         "required": ["timestamp", "item"],
@@ -1268,7 +1379,7 @@ mod tests {
         let CodexSchemaAuditOutcome::Drift(drift) = report.outcome else {
             panic!("expected schema drift");
         };
-        assert_eq!(drift.first_drift_tag, "rust-v0.129.0");
+        assert_eq!(drift.first_drift_tag, "rust-v0.142.6");
         assert!(
             drift
                 .difference_summary
@@ -1280,24 +1391,24 @@ mod tests {
     #[test]
     fn reports_progress_for_compatible_audits() {
         let provider = FakeSchemaAuditProvider::new(
-            &["rust-v0.130.0", "rust-v0.129.0", "rust-v0.128.0"],
+            &["rust-v0.143.0", "rust-v0.142.6", "rust-v0.142.5"],
             &[
                 (
-                    "rust-v0.130.0",
+                    "rust-v0.143.0",
                     json!({
                         "type": "object",
                         "required": ["timestamp", "item"],
                     }),
                 ),
                 (
-                    "rust-v0.129.0",
+                    "rust-v0.142.6",
                     json!({
                         "type": "object",
                         "required": ["item", "timestamp"],
                     }),
                 ),
                 (
-                    "rust-v0.128.0",
+                    "rust-v0.142.5",
                     json!({
                         "required": ["timestamp", "item"],
                         "type": "object",
@@ -1327,12 +1438,12 @@ mod tests {
             progress
                 .iter()
                 .any(|line| line
-                    .contains("Exporting baseline RolloutLine schema from rust-v0.128.0"))
+                    .contains("Exporting baseline RolloutLine schema from rust-v0.142.5"))
         );
         assert!(
             progress
                 .iter()
-                .any(|line| line.contains("Comparing rust-v0.129.0 against baseline (1/2)"))
+                .any(|line| line.contains("Comparing rust-v0.142.6 against baseline (1/2)"))
         );
         assert!(progress.last().is_some_and(|line| {
             line.contains("No schema drift detected across 3 audited stable tag(s).")
@@ -1342,10 +1453,10 @@ mod tests {
     #[test]
     fn detects_order_sensitive_prefix_items_drift() {
         let provider = FakeSchemaAuditProvider::new(
-            &["rust-v0.130.0", "rust-v0.129.0", "rust-v0.128.0"],
+            &["rust-v0.143.0", "rust-v0.142.6", "rust-v0.142.5"],
             &[
                 (
-                    "rust-v0.130.0",
+                    "rust-v0.143.0",
                     json!({
                         "type": "array",
                         "prefixItems": [
@@ -1355,7 +1466,7 @@ mod tests {
                     }),
                 ),
                 (
-                    "rust-v0.129.0",
+                    "rust-v0.142.6",
                     json!({
                         "type": "array",
                         "prefixItems": [
@@ -1365,7 +1476,7 @@ mod tests {
                     }),
                 ),
                 (
-                    "rust-v0.128.0",
+                    "rust-v0.142.5",
                     json!({
                         "type": "array",
                         "prefixItems": [
@@ -1387,7 +1498,7 @@ mod tests {
         let CodexSchemaAuditOutcome::Drift(drift) = report.outcome else {
             panic!("expected schema drift");
         };
-        assert_eq!(drift.first_drift_tag, "rust-v0.129.0");
+        assert_eq!(drift.first_drift_tag, "rust-v0.142.6");
         assert!(
             drift
                 .difference_summary
@@ -1399,10 +1510,10 @@ mod tests {
     #[test]
     fn ignores_order_only_one_of_reorders() {
         let provider = FakeSchemaAuditProvider::new(
-            &["rust-v0.130.0", "rust-v0.129.0", "rust-v0.128.0"],
+            &["rust-v0.143.0", "rust-v0.142.6", "rust-v0.142.5"],
             &[
                 (
-                    "rust-v0.130.0",
+                    "rust-v0.143.0",
                     json!({
                         "oneOf": [
                             {
@@ -1425,7 +1536,7 @@ mod tests {
                     }),
                 ),
                 (
-                    "rust-v0.129.0",
+                    "rust-v0.142.6",
                     json!({
                         "oneOf": [
                             {
@@ -1448,7 +1559,7 @@ mod tests {
                     }),
                 ),
                 (
-                    "rust-v0.128.0",
+                    "rust-v0.142.5",
                     json!({
                         "oneOf": [
                             {
@@ -1489,10 +1600,10 @@ mod tests {
     #[test]
     fn ignores_order_only_all_of_reorders() {
         let provider = FakeSchemaAuditProvider::new(
-            &["rust-v0.130.0", "rust-v0.129.0", "rust-v0.128.0"],
+            &["rust-v0.143.0", "rust-v0.142.6", "rust-v0.142.5"],
             &[
                 (
-                    "rust-v0.130.0",
+                    "rust-v0.143.0",
                     json!({
                         "allOf": [
                             { "properties": { "kind": { "const": "x" } }, "type": "object" },
@@ -1501,7 +1612,7 @@ mod tests {
                     }),
                 ),
                 (
-                    "rust-v0.129.0",
+                    "rust-v0.142.6",
                     json!({
                         "allOf": [
                             { "properties": { "kind": { "const": "x" } }, "type": "object" },
@@ -1510,7 +1621,7 @@ mod tests {
                     }),
                 ),
                 (
-                    "rust-v0.128.0",
+                    "rust-v0.142.5",
                     json!({
                         "allOf": [
                             { "properties": { "value": { "type": "string" } }, "type": "object" },
@@ -1538,8 +1649,8 @@ mod tests {
     fn resolves_expected_release_asset_names_for_supported_platforms() {
         let mac = host_platform_from_parts("macos", "aarch64").unwrap();
         assert_eq!(
-            mac.release_asset_name("0.128.0"),
-            "codex-npm-darwin-arm64-0.128.0.tgz"
+            mac.release_asset_name("0.142.5"),
+            "codex-npm-darwin-arm64-0.142.5.tgz"
         );
         assert_eq!(
             mac.package_binary_path(),
@@ -1548,8 +1659,8 @@ mod tests {
 
         let linux = host_platform_from_parts("linux", "x86_64").unwrap();
         assert_eq!(
-            linux.release_asset_name("0.128.0"),
-            "codex-npm-linux-x64-0.128.0.tgz"
+            linux.release_asset_name("0.142.5"),
+            "codex-npm-linux-x64-0.142.5.tgz"
         );
         assert_eq!(
             linux.package_binary_path(),

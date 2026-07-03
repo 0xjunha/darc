@@ -111,7 +111,7 @@ pub fn resolve_codex_parse_determinism(cli_version: &str) -> SchemaResult<ParseD
 
 /// Returns the latest Codex CLI version covered exactly by darc.
 pub const fn latest_exact_supported_codex_cli_version() -> CodexCliVersion {
-    CodexCliVersion::stable(0, 128, 0)
+    CodexCliVersion::stable(0, 142, 5)
 }
 
 /// Returns whether one `response_item.type` variant is expected for the given Codex CLI version.
@@ -123,6 +123,10 @@ pub const fn latest_exact_supported_codex_cli_version() -> CodexCliVersion {
 /// - `compaction` appears in `>=0.59.0`
 /// - `image_generation_call` appears in `>=0.108.0`
 /// - `tool_search_call` and `tool_search_output` appear in `>=0.115.0`
+/// - `other` is present by the `0.128.0` exact schema boundary
+/// - `context_compaction` appears in `>=0.129.0`
+/// - `compaction_trigger` appears in `>=0.131.0`
+/// - `agent_message` appears in `>=0.138.0`
 pub(crate) fn supports_response_item(version: &CodexCliVersion, kind: &str) -> bool {
     match kind {
         "message"
@@ -137,6 +141,10 @@ pub(crate) fn supports_response_item(version: &CodexCliVersion, kind: &str) -> b
         "compaction" => version >= &CodexCliVersion::stable(0, 59, 0),
         "image_generation_call" => version >= &CodexCliVersion::stable(0, 108, 0),
         "tool_search_call" | "tool_search_output" => version >= &CodexCliVersion::stable(0, 115, 0),
+        "other" => version >= &CodexCliVersion::stable(0, 128, 0),
+        "context_compaction" => version >= &CodexCliVersion::stable(0, 129, 0),
+        "compaction_trigger" => version >= &CodexCliVersion::stable(0, 131, 0),
+        "agent_message" => version >= &CodexCliVersion::stable(0, 138, 0),
         _ => false,
     }
 }
@@ -247,10 +255,7 @@ pub enum CodexSchemaId {
     StructuredToolOutput,
     /// Current rollout family used for modern Codex sessions.
     ///
-    /// Supported Codex CLI versions: `>=0.104.0-alpha.1, <=0.128.0`.
-    ///
-    /// Versions newer than `0.128.0` currently map here in `BestEffortForward` mode until a newer
-    /// exact family is added.
+    /// Supported Codex CLI versions: `>=0.104.0-alpha.1, <=0.142.5`.
     TurnLifecycle,
 }
 
@@ -376,7 +381,7 @@ mod tests {
             }
         );
         assert_eq!(
-            resolve_codex_schema("0.128.0").unwrap(),
+            resolve_codex_schema("0.142.5").unwrap(),
             super::CodexSchemaResolution {
                 schema_id: CodexSchemaId::TurnLifecycle,
                 determinism: ParseDeterminism::Exact,
@@ -387,7 +392,7 @@ mod tests {
     #[test]
     fn resolves_newer_versions_as_best_effort_forward() {
         assert_eq!(
-            resolve_codex_schema("0.129.0").unwrap(),
+            resolve_codex_schema("0.143.0").unwrap(),
             super::CodexSchemaResolution {
                 schema_id: CodexSchemaId::TurnLifecycle,
                 determinism: ParseDeterminism::BestEffortForward,
@@ -399,7 +404,7 @@ mod tests {
     fn exposes_latest_exact_supported_codex_cli_version() {
         assert_eq!(
             latest_exact_supported_codex_cli_version().to_string(),
-            "0.128.0"
+            "0.142.5"
         );
     }
 
@@ -410,7 +415,11 @@ mod tests {
             ParseDeterminism::Exact
         );
         assert_eq!(
-            resolve_codex_parse_determinism("0.129.0").unwrap(),
+            resolve_codex_parse_determinism("0.142.5").unwrap(),
+            ParseDeterminism::Exact
+        );
+        assert_eq!(
+            resolve_codex_parse_determinism("0.143.0").unwrap(),
             ParseDeterminism::BestEffortForward
         );
     }
@@ -422,6 +431,13 @@ mod tests {
         let v108 = CodexCliVersion::parse("0.108.0").unwrap();
         let v114 = CodexCliVersion::parse("0.114.0").unwrap();
         let v115 = CodexCliVersion::parse("0.115.0").unwrap();
+        let v127 = CodexCliVersion::parse("0.127.0").unwrap();
+        let v128 = CodexCliVersion::parse("0.128.0").unwrap();
+        let v129 = CodexCliVersion::parse("0.129.0").unwrap();
+        let v130 = CodexCliVersion::parse("0.130.0").unwrap();
+        let v131 = CodexCliVersion::parse("0.131.0").unwrap();
+        let v137 = CodexCliVersion::parse("0.137.0").unwrap();
+        let v138 = CodexCliVersion::parse("0.138.0").unwrap();
 
         assert!(supports_response_item(&v094, "web_search_call"));
         assert!(!supports_response_item(&v094, "tool_search_call"));
@@ -430,6 +446,14 @@ mod tests {
         assert!(supports_response_item(&v108, "image_generation_call"));
         assert!(!supports_response_item(&v114, "tool_search_output"));
         assert!(supports_response_item(&v115, "tool_search_output"));
+        assert!(!supports_response_item(&v127, "other"));
+        assert!(supports_response_item(&v128, "other"));
+        assert!(!supports_response_item(&v128, "context_compaction"));
+        assert!(supports_response_item(&v129, "context_compaction"));
+        assert!(!supports_response_item(&v130, "compaction_trigger"));
+        assert!(supports_response_item(&v131, "compaction_trigger"));
+        assert!(!supports_response_item(&v137, "agent_message"));
+        assert!(supports_response_item(&v138, "agent_message"));
     }
 
     #[test]

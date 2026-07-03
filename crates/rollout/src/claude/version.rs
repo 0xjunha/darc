@@ -101,13 +101,21 @@ pub(crate) enum ClaudeSchemaEpoch {
     ///
     /// Observed Claude CLI versions: `2.1.84 ..= 2.1.89`.
     V2_1_84To2_1_89,
-    /// Current late-modern Claude transcript family beginning at the refined `attachment` drift.
+    /// Late-modern Claude transcript family beginning at the refined `attachment` drift.
     ///
-    /// Observed Claude CLI versions: `>= 2.1.90`.
+    /// Observed Claude CLI versions: `2.1.90 ..= 2.1.160`.
+    V2_1_90To2_1_160,
+    /// Claude transcript family observed after user lines gained `promptSource`.
+    ///
+    /// Observed Claude CLI versions: `2.1.161 ..= 2.1.197`.
+    V2_1_161To2_1_197,
+    /// Current Claude transcript family observed with modern hook summary and origin metadata.
+    ///
+    /// Observed Claude CLI versions: `>= 2.1.198`.
     ///
     /// Versions newer than the latest exact-supported release currently map here in
     /// `BestEffortForward` mode until a narrower modern family is carved out.
-    V2_1_90ToLatest,
+    V2_1_198ToLatest,
 }
 
 impl ClaudeSchemaEpoch {
@@ -124,7 +132,9 @@ impl ClaudeSchemaEpoch {
                 Self::V2_1_38To2_1_61 => "claude.primary_transcript.2_1_38_to_2_1_61",
                 Self::V2_1_62To2_1_83 => "claude.primary_transcript.2_1_62_to_2_1_83",
                 Self::V2_1_84To2_1_89 => "claude.primary_transcript.2_1_84_to_2_1_89",
-                Self::V2_1_90ToLatest => "claude.primary_transcript.2_1_90_to_latest",
+                Self::V2_1_90To2_1_160 => "claude.primary_transcript.2_1_90_to_2_1_160",
+                Self::V2_1_161To2_1_197 => "claude.primary_transcript.2_1_161_to_2_1_197",
+                Self::V2_1_198ToLatest => "claude.primary_transcript.2_1_198_to_latest",
             },
             ClaudeSessionKind::Subagent => match self {
                 Self::V1_0_88To2_0_5 => "claude.subagent_transcript.1_0_88_to_2_0_5",
@@ -136,19 +146,30 @@ impl ClaudeSchemaEpoch {
                 Self::V2_1_38To2_1_61 => "claude.subagent_transcript.2_1_38_to_2_1_61",
                 Self::V2_1_62To2_1_83 => "claude.subagent_transcript.2_1_62_to_2_1_83",
                 Self::V2_1_84To2_1_89 => "claude.subagent_transcript.2_1_84_to_2_1_89",
-                Self::V2_1_90ToLatest => "claude.subagent_transcript.2_1_90_to_latest",
+                Self::V2_1_90To2_1_160 => "claude.subagent_transcript.2_1_90_to_2_1_160",
+                Self::V2_1_161To2_1_197 => "claude.subagent_transcript.2_1_161_to_2_1_197",
+                Self::V2_1_198ToLatest => "claude.subagent_transcript.2_1_198_to_latest",
             },
         }
     }
 
     /// Returns whether this epoch relies on historical text-only completion fallback.
     pub(crate) const fn uses_text_completion_fallback(self) -> bool {
-        !matches!(self, Self::V2_1_84To2_1_89 | Self::V2_1_90ToLatest)
+        !matches!(
+            self,
+            Self::V2_1_84To2_1_89
+                | Self::V2_1_90To2_1_160
+                | Self::V2_1_161To2_1_197
+                | Self::V2_1_198ToLatest
+        )
     }
 
     /// Returns whether this epoch recognizes top-level `attachment` lines natively.
     pub(crate) const fn supports_attachment_line(self) -> bool {
-        matches!(self, Self::V2_1_90ToLatest)
+        matches!(
+            self,
+            Self::V2_1_90To2_1_160 | Self::V2_1_161To2_1_197 | Self::V2_1_198ToLatest
+        )
     }
 }
 
@@ -178,14 +199,14 @@ pub fn resolve_claude_parse_determinism(cli_version: Option<&str>) -> ParseDeter
 pub(crate) fn resolve_claude_schema(cli_version: Option<&str>) -> ClaudeSchemaResolution {
     let Some(cli_version) = cli_version else {
         return ClaudeSchemaResolution {
-            epoch: ClaudeSchemaEpoch::V2_1_90ToLatest,
+            epoch: ClaudeSchemaEpoch::V2_1_198ToLatest,
             determinism: ParseDeterminism::BestEffortForward,
         };
     };
 
     let Ok(version) = ClaudeCliVersion::parse(cli_version) else {
         return ClaudeSchemaResolution {
-            epoch: ClaudeSchemaEpoch::V2_1_90ToLatest,
+            epoch: ClaudeSchemaEpoch::V2_1_198ToLatest,
             determinism: ParseDeterminism::BestEffortForward,
         };
     };
@@ -222,8 +243,12 @@ fn resolve_claude_epoch(version: &ClaudeCliVersion) -> ClaudeSchemaEpoch {
         ClaudeSchemaEpoch::V2_1_62To2_1_83
     } else if version < &ClaudeCliVersion::stable(2, 1, 90) {
         ClaudeSchemaEpoch::V2_1_84To2_1_89
+    } else if version < &ClaudeCliVersion::stable(2, 1, 161) {
+        ClaudeSchemaEpoch::V2_1_90To2_1_160
+    } else if version < &ClaudeCliVersion::stable(2, 1, 198) {
+        ClaudeSchemaEpoch::V2_1_161To2_1_197
     } else {
-        ClaudeSchemaEpoch::V2_1_90ToLatest
+        ClaudeSchemaEpoch::V2_1_198ToLatest
     }
 }
 
@@ -255,6 +280,64 @@ const EXACT_SUPPORTED_CLAUDE_STABLE_VERSIONS: &[(u32, u32, u32)] = &[
     (2, 1, 124),
     (2, 1, 126),
     (2, 1, 128),
+    (2, 1, 129),
+    (2, 1, 131),
+    (2, 1, 132),
+    (2, 1, 133),
+    (2, 1, 136),
+    (2, 1, 137),
+    (2, 1, 138),
+    (2, 1, 139),
+    (2, 1, 140),
+    (2, 1, 141),
+    (2, 1, 142),
+    (2, 1, 143),
+    (2, 1, 144),
+    (2, 1, 145),
+    (2, 1, 146),
+    (2, 1, 147),
+    (2, 1, 148),
+    (2, 1, 149),
+    (2, 1, 150),
+    (2, 1, 152),
+    (2, 1, 153),
+    (2, 1, 154),
+    (2, 1, 156),
+    (2, 1, 157),
+    (2, 1, 158),
+    (2, 1, 159),
+    (2, 1, 160),
+    (2, 1, 161),
+    (2, 1, 162),
+    (2, 1, 163),
+    (2, 1, 165),
+    (2, 1, 166),
+    (2, 1, 167),
+    (2, 1, 168),
+    (2, 1, 169),
+    (2, 1, 170),
+    (2, 1, 172),
+    (2, 1, 173),
+    (2, 1, 174),
+    (2, 1, 175),
+    (2, 1, 176),
+    (2, 1, 177),
+    (2, 1, 178),
+    (2, 1, 179),
+    (2, 1, 181),
+    (2, 1, 182),
+    (2, 1, 183),
+    (2, 1, 185),
+    (2, 1, 186),
+    (2, 1, 187),
+    (2, 1, 190),
+    (2, 1, 191),
+    (2, 1, 193),
+    (2, 1, 195),
+    (2, 1, 196),
+    (2, 1, 197),
+    (2, 1, 198),
+    (2, 1, 199),
 ];
 
 /// Returns one exact-supported Claude version from the canonical table.
@@ -434,35 +517,70 @@ mod tests {
         assert_eq!(
             resolve_claude_schema(Some("2.1.92")),
             super::ClaudeSchemaResolution {
-                epoch: ClaudeSchemaEpoch::V2_1_90ToLatest,
+                epoch: ClaudeSchemaEpoch::V2_1_90To2_1_160,
                 determinism: ParseDeterminism::BestEffortForward,
             }
         );
         assert_eq!(
             resolve_claude_schema(Some("2.1.100")),
             super::ClaudeSchemaResolution {
-                epoch: ClaudeSchemaEpoch::V2_1_90ToLatest,
+                epoch: ClaudeSchemaEpoch::V2_1_90To2_1_160,
                 determinism: ParseDeterminism::Exact,
             }
         );
         assert_eq!(
             resolve_claude_schema(Some("2.1.126")),
             super::ClaudeSchemaResolution {
-                epoch: ClaudeSchemaEpoch::V2_1_90ToLatest,
+                epoch: ClaudeSchemaEpoch::V2_1_90To2_1_160,
                 determinism: ParseDeterminism::Exact,
             }
         );
         assert_eq!(
             resolve_claude_schema(Some("2.1.128")),
             super::ClaudeSchemaResolution {
-                epoch: ClaudeSchemaEpoch::V2_1_90ToLatest,
+                epoch: ClaudeSchemaEpoch::V2_1_90To2_1_160,
+                determinism: ParseDeterminism::Exact,
+            }
+        );
+        assert_eq!(
+            resolve_claude_schema(Some("2.1.160")),
+            super::ClaudeSchemaResolution {
+                epoch: ClaudeSchemaEpoch::V2_1_90To2_1_160,
+                determinism: ParseDeterminism::Exact,
+            }
+        );
+        assert_eq!(
+            resolve_claude_schema(Some("2.1.161")),
+            super::ClaudeSchemaResolution {
+                epoch: ClaudeSchemaEpoch::V2_1_161To2_1_197,
+                determinism: ParseDeterminism::Exact,
+            }
+        );
+        assert_eq!(
+            resolve_claude_schema(Some("2.1.178")),
+            super::ClaudeSchemaResolution {
+                epoch: ClaudeSchemaEpoch::V2_1_161To2_1_197,
+                determinism: ParseDeterminism::Exact,
+            }
+        );
+        assert_eq!(
+            resolve_claude_schema(Some("2.1.198")),
+            super::ClaudeSchemaResolution {
+                epoch: ClaudeSchemaEpoch::V2_1_198ToLatest,
+                determinism: ParseDeterminism::Exact,
+            }
+        );
+        assert_eq!(
+            resolve_claude_schema(Some("2.1.199")),
+            super::ClaudeSchemaResolution {
+                epoch: ClaudeSchemaEpoch::V2_1_198ToLatest,
                 determinism: ParseDeterminism::Exact,
             }
         );
         assert_eq!(
             resolve_claude_schema(Some("bad-version")),
             super::ClaudeSchemaResolution {
-                epoch: ClaudeSchemaEpoch::V2_1_90ToLatest,
+                epoch: ClaudeSchemaEpoch::V2_1_198ToLatest,
                 determinism: ParseDeterminism::BestEffortForward,
             }
         );
@@ -472,10 +590,14 @@ mod tests {
     fn exposes_epoch_capabilities() {
         assert!(ClaudeSchemaEpoch::V1_0_88To2_0_5.uses_text_completion_fallback());
         assert!(!ClaudeSchemaEpoch::V2_1_84To2_1_89.uses_text_completion_fallback());
-        assert!(!ClaudeSchemaEpoch::V2_1_90ToLatest.uses_text_completion_fallback());
+        assert!(!ClaudeSchemaEpoch::V2_1_90To2_1_160.uses_text_completion_fallback());
+        assert!(!ClaudeSchemaEpoch::V2_1_161To2_1_197.uses_text_completion_fallback());
+        assert!(!ClaudeSchemaEpoch::V2_1_198ToLatest.uses_text_completion_fallback());
         assert!(!ClaudeSchemaEpoch::V2_1_62To2_1_83.supports_attachment_line());
         assert!(!ClaudeSchemaEpoch::V2_1_84To2_1_89.supports_attachment_line());
-        assert!(ClaudeSchemaEpoch::V2_1_90ToLatest.supports_attachment_line());
+        assert!(ClaudeSchemaEpoch::V2_1_90To2_1_160.supports_attachment_line());
+        assert!(ClaudeSchemaEpoch::V2_1_161To2_1_197.supports_attachment_line());
+        assert!(ClaudeSchemaEpoch::V2_1_198ToLatest.supports_attachment_line());
     }
 
     #[test]
@@ -491,18 +613,18 @@ mod tests {
         }
         assert_eq!(
             latest_exact_supported_claude_cli_version().to_string(),
-            "2.1.128"
+            "2.1.199"
         );
     }
 
     #[test]
     fn exposes_expected_parse_determinism() {
         assert_eq!(
-            resolve_claude_parse_determinism(Some("2.1.128")),
+            resolve_claude_parse_determinism(Some("2.1.199")),
             ParseDeterminism::Exact
         );
         assert_eq!(
-            resolve_claude_parse_determinism(Some("2.1.127")),
+            resolve_claude_parse_determinism(Some("2.1.194")),
             ParseDeterminism::BestEffortForward
         );
     }
