@@ -3367,10 +3367,10 @@ mod tests {
     #[test]
     fn selects_audited_range_from_latest_published_down_to_exact_cutoff() {
         let versions = collect_stable_release_versions(vec![
-            "2.1.130".to_owned(),
-            "2.1.128".to_owned(),
-            "2.1.126".to_owned(),
-            "2.1.124".to_owned(),
+            "2.1.200".to_owned(),
+            "2.1.199".to_owned(),
+            "2.1.198".to_owned(),
+            "2.1.197".to_owned(),
         ]);
         let selected = select_audited_release_versions(&versions, None).unwrap();
 
@@ -3379,7 +3379,7 @@ mod tests {
                 .iter()
                 .map(|version| version.raw.clone())
                 .collect::<Vec<_>>(),
-            vec!["2.1.130".to_owned(), "2.1.128".to_owned()]
+            vec!["2.1.200".to_owned(), "2.1.199".to_owned()]
         );
     }
 
@@ -3410,12 +3410,11 @@ mod tests {
     #[test]
     fn sampling_plan_picks_stride_anchors_and_assumed_gaps() {
         let versions = collect_stable_release_versions(vec![
-            "2.1.131".to_owned(),
-            "2.1.130".to_owned(),
-            "2.1.129".to_owned(),
-            "2.1.128".to_owned(),
-            "2.1.127".to_owned(),
-            "2.1.126".to_owned(),
+            "2.1.202".to_owned(),
+            "2.1.201".to_owned(),
+            "2.1.200".to_owned(),
+            "2.1.199".to_owned(),
+            "2.1.198".to_owned(),
         ]);
         let audited = select_audited_release_versions(&versions, None).unwrap();
         let plan = build_sampling_plan(&audited, 2);
@@ -3426,50 +3425,50 @@ mod tests {
                 .map(|version| version.raw.clone())
                 .collect::<Vec<_>>(),
             vec![
-                "2.1.131".to_owned(),
-                "2.1.130".to_owned(),
-                "2.1.128".to_owned(),
+                "2.1.202".to_owned(),
+                "2.1.201".to_owned(),
+                "2.1.199".to_owned(),
             ]
         );
         assert_eq!(
             plan.assumed_compatible_intervals,
-            vec!["2.1.129".to_owned()]
+            vec!["2.1.200".to_owned()]
         );
     }
 
     #[test]
     fn reports_compatibility_when_transcript_manifests_match() {
         let provider = FakeClaudeSchemaAuditProvider::new(
-            &["2.1.130", "2.1.128", "2.1.126"],
+            &["2.1.200", "2.1.199", "2.1.198"],
             &[
                 (
-                    "2.1.130",
+                    "2.1.200",
                     ClaudeAuditSnapshot {
                         transcript_manifest: manifest(
                             &["assistant", "progress", "system", "user"],
                             &["Bash", "Read", "Task"],
                         ),
-                        sdk_manifest: sdk_manifest(Some("0.2.130")),
+                        sdk_manifest: sdk_manifest(Some("0.3.200")),
                     },
                 ),
                 (
-                    "2.1.128",
+                    "2.1.199",
                     ClaudeAuditSnapshot {
                         transcript_manifest: manifest(
                             &["assistant", "progress", "system", "user"],
                             &["Bash", "Read", "Task"],
                         ),
-                        sdk_manifest: sdk_manifest(Some("0.2.128")),
+                        sdk_manifest: sdk_manifest(Some("0.3.199")),
                     },
                 ),
                 (
-                    "2.1.126",
+                    "2.1.198",
                     ClaudeAuditSnapshot {
                         transcript_manifest: manifest(
                             &["assistant", "progress", "system", "user"],
                             &["Bash", "Read", "Task"],
                         ),
-                        sdk_manifest: sdk_manifest(Some("0.2.126")),
+                        sdk_manifest: sdk_manifest(Some("0.3.198")),
                     },
                 ),
             ],
@@ -3489,7 +3488,7 @@ mod tests {
             report.outcome,
             ClaudeSchemaAuditOutcome::Compatible
         ));
-        assert_eq!(report.latest_published_version, "2.1.130");
+        assert_eq!(report.latest_published_version, "2.1.200");
         assert_eq!(report.audited_versions.len(), 2);
         assert!(report.supplementary_sdk_drift.is_some());
     }
@@ -3497,26 +3496,26 @@ mod tests {
     #[test]
     fn detects_first_transcript_drift_and_preserves_sdk_signal_separately() {
         let provider = FakeClaudeSchemaAuditProvider::new(
-            &["2.1.130", "2.1.128", "2.1.126"],
+            &["2.1.200", "2.1.199", "2.1.198"],
             &[
                 (
-                    "2.1.130",
+                    "2.1.200",
                     ClaudeAuditSnapshot {
                         transcript_manifest: manifest(
                             &["assistant", "mystery-event", "progress", "system", "user"],
                             &["Bash", "Read", "Task"],
                         ),
-                        sdk_manifest: sdk_manifest(Some("0.2.130")),
+                        sdk_manifest: sdk_manifest(Some("0.3.200")),
                     },
                 ),
                 (
-                    "2.1.128",
+                    "2.1.199",
                     ClaudeAuditSnapshot {
                         transcript_manifest: manifest(
                             &["assistant", "progress", "system", "user"],
                             &["Bash", "Read", "Task"],
                         ),
-                        sdk_manifest: sdk_manifest(Some("0.2.128")),
+                        sdk_manifest: sdk_manifest(Some("0.3.199")),
                     },
                 ),
             ],
@@ -3535,7 +3534,7 @@ mod tests {
         let ClaudeSchemaAuditOutcome::Drift(drift) = report.outcome else {
             panic!("expected transcript drift");
         };
-        assert_eq!(drift.first_drift_version, "2.1.130");
+        assert_eq!(drift.first_drift_version, "2.1.200");
         assert_eq!(
             drift.boundary_precision,
             ClaudeSchemaDriftBoundaryPrecision::Exact
@@ -3547,16 +3546,16 @@ mod tests {
                 .any(|line| line.contains("mystery-event"))
         );
         assert!(report.supplementary_sdk_drift.is_some());
-        assert!(report.inspected_versions.contains(&"2.1.128".to_owned()));
+        assert!(report.inspected_versions.contains(&"2.1.199".to_owned()));
         assert!(
             !report
                 .compatible_inspected_versions
-                .contains(&"2.1.130".to_owned())
+                .contains(&"2.1.200".to_owned())
         );
         assert!(
             !report
                 .assumed_compatible_intervals
-                .contains(&"2.1.128".to_owned())
+                .contains(&"2.1.199".to_owned())
         );
     }
 

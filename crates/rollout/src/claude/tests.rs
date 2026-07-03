@@ -148,13 +148,25 @@ fn extracts_final_answers_for_representative_schema_epochs() -> Result<()> {
         ),
         (
             "2.1.90",
-            "claude.primary_transcript.2_1_90_to_latest",
+            "claude.primary_transcript.2_1_90_to_2_1_160",
             ParseDeterminism::BestEffortForward,
             Some("end_turn"),
         ),
         (
             "2.1.126",
-            "claude.primary_transcript.2_1_90_to_latest",
+            "claude.primary_transcript.2_1_90_to_2_1_160",
+            ParseDeterminism::Exact,
+            Some("end_turn"),
+        ),
+        (
+            "2.1.161",
+            "claude.primary_transcript.2_1_161_to_2_1_197",
+            ParseDeterminism::Exact,
+            Some("end_turn"),
+        ),
+        (
+            "2.1.198",
+            "claude.primary_transcript.2_1_198_to_latest",
             ParseDeterminism::Exact,
             Some("end_turn"),
         ),
@@ -344,7 +356,7 @@ fn preserves_modern_agent_attachments_and_system_events() -> Result<()> {
 
     assert_eq!(
         rollout.schema_id,
-        "claude.primary_transcript.2_1_90_to_latest"
+        "claude.primary_transcript.2_1_90_to_2_1_160"
     );
     assert_eq!(rollout.determinism, ParseDeterminism::BestEffortForward);
     assert_eq!(rollout.turns.len(), 1);
@@ -456,7 +468,7 @@ fn parses_checked_in_real_fixture_after_attachment_drift() -> Result<()> {
 
     assert_eq!(
         rollout.schema_id,
-        "claude.primary_transcript.2_1_90_to_latest"
+        "claude.primary_transcript.2_1_90_to_2_1_160"
     );
     assert_eq!(rollout.determinism, ParseDeterminism::BestEffortForward);
     assert_eq!(rollout.turns.len(), 1);
@@ -739,6 +751,51 @@ fn normalizes_agent_progress_and_hook_summary_steps() -> Result<()> {
     assert_eq!(call_id.as_deref(), Some("tool-agent"));
     assert_eq!(*hook_count, 2);
     assert!(*has_output);
+
+    Ok(())
+}
+
+#[test]
+fn parses_exact_late_modern_prompt_source_and_hook_summary() -> Result<()> {
+    let rollout = parse_fixture(
+        r##"{"parentUuid":null,"isSidechain":false,"promptId":"prompt-1","promptSource":"user","type":"user","message":{"role":"user","content":"Read README.md"},"uuid":"user-1","timestamp":"2026-04-01T00:00:01Z","userType":"external","entrypoint":"sdk-cli","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.198","gitBranch":"HEAD"}
+{"parentUuid":"user-1","isSidechain":false,"message":{"model":"claude-sonnet-4-6","id":"assistant-1","type":"message","role":"assistant","content":[{"type":"tool_use","id":"tool-read","name":"Read","input":{"file_path":"README.md"}}],"stop_reason":"tool_use","stop_sequence":null},"requestId":"req-1","type":"assistant","uuid":"assistant-1","timestamp":"2026-04-01T00:00:02Z","userType":"external","entrypoint":"sdk-cli","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.198","gitBranch":"HEAD"}
+{"parentUuid":"assistant-1","isSidechain":false,"promptId":"prompt-1","promptSource":"tool_result","origin":"tool","type":"user","message":{"role":"user","content":[{"tool_use_id":"tool-read","type":"tool_result","content":"# Audit Fixture"}]},"uuid":"user-2","timestamp":"2026-04-01T00:00:03Z","toolUseResult":{"type":"text","file":{"filePath":"README.md","content":"# Audit Fixture\n","numLines":1,"startLine":1,"totalLines":1}},"sourceToolAssistantUUID":"assistant-1","userType":"external","entrypoint":"sdk-cli","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.198","gitBranch":"HEAD"}
+{"parentUuid":"user-2","isSidechain":false,"type":"system","subtype":"stop_hook_summary","hookCount":1,"hookInfos":[],"hookErrors":[],"preventedContinuation":false,"stopReason":"","hasOutput":false,"level":"info","timestamp":"2026-04-01T00:00:04Z","uuid":"system-1","toolUseID":"tool-read","userType":"external","entrypoint":"sdk-cli","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.198","gitBranch":"HEAD"}
+{"parentUuid":"user-2","isSidechain":false,"message":{"model":"claude-sonnet-4-6","id":"assistant-2","type":"message","role":"assistant","content":[{"type":"text","text":"# Audit Fixture"}],"stop_reason":"end_turn","stop_sequence":null},"requestId":"req-2","type":"assistant","uuid":"assistant-2","timestamp":"2026-04-01T00:00:05Z","userType":"external","entrypoint":"sdk-cli","cwd":"/tmp/repo","sessionId":"parent-session","version":"2.1.198","gitBranch":"HEAD"}
+"##,
+        &primary_context(),
+    )?;
+
+    assert_eq!(
+        rollout.schema_id,
+        "claude.primary_transcript.2_1_198_to_latest"
+    );
+    assert_eq!(rollout.determinism, ParseDeterminism::Exact);
+    let turn = &rollout.turns[0];
+    assert_eq!(turn.user_message, "Read README.md");
+    assert_eq!(turn.status, CodexTurnStatus::Completed);
+    assert_eq!(turn.steps.len(), 3);
+    let CodexTurnStep::ToolCall { name, .. } = &turn.steps[0] else {
+        panic!("expected read tool call");
+    };
+    assert_eq!(name, "Read");
+    let CodexTurnStep::ToolCallOutput { output, .. } = &turn.steps[1] else {
+        panic!("expected read tool output");
+    };
+    assert!(output.contains("# Audit Fixture"));
+    let CodexTurnStep::HookSummary {
+        call_id,
+        hook_count,
+        has_output,
+        ..
+    } = &turn.steps[2]
+    else {
+        panic!("expected hook summary");
+    };
+    assert_eq!(call_id.as_deref(), Some("tool-read"));
+    assert_eq!(*hook_count, 1);
+    assert!(!*has_output);
 
     Ok(())
 }

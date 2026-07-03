@@ -4,6 +4,8 @@ All notable Darc release changes should be summarized here.
 
 ## Unreleased
 
+- Mark directly audited Claude Code rollout versions through 2.1.199 as exact-supported.
+
 ## [0.2.2] - 2026-05-20
 
 - Show live refresh progress with spinner steps and session/project progress bars.
