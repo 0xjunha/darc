@@ -31,6 +31,11 @@ What the audit does not do:
 - It only audits stable releases that are currently published on Codex GitHub Releases.
 - It does not bump Darc's exact-support boundary automatically.
 
+macOS-safe fallback:
+
+- If macOS blocks or warns on downloaded release binaries, do not bypass Gatekeeper for the audit cache. Use official `openai/codex` source tags instead: check out each stable `rust-v...` tag in the audit range, add a temporary binary in `codex-rs/app-server-protocol` that calls `codex_app_server_protocol::generate_internal_json_schema(out_dir)`, and compare the generated `RolloutLine.json` files with the same normalization rules as `crates/rollout-audit/src/schema_diff.rs`.
+- This source-only fallback avoids executing downloaded Codex binaries while still deriving the schema from the tagged upstream source.
+
 What the audit caches locally:
 
 ```bash
@@ -42,7 +47,7 @@ On Linux and Windows, the default cache root follows the platform cache director
 If you see an error like:
 
 ```text
-GitHub Releases are missing the stable release tag `rust-v0.128.0`
+GitHub Releases are missing the stable release tag `rust-v0.142.5`
 ```
 
 the published release catalog no longer contains the exact-support boundary tag that Darc needs as the audit baseline. Darc cannot advance the audit until that release remains available or the exact-support boundary is updated.

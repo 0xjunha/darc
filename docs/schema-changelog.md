@@ -4,13 +4,14 @@ This maintainer ledger records why Darc treats upstream rollout versions as exac
 
 ## Codex
 
-### Exact through 0.128.0
+### Exact through 0.142.5
 
-- Upstream versions: stable Codex CLI releases `0.33.0 ..= 0.128.0`.
+- Upstream versions: stable Codex CLI releases `0.33.0 ..= 0.142.5`.
 - Darc support: `exact` when the rollout version is within the supported parser families and the parser sees no unsupported exact-mode fields.
 - Schema owner: `crates/rollout/src/codex/version.rs`.
 - Audit evidence: `darc codex-schema-audit` compares published GitHub release schemas against `latest_exact_supported_codex_cli_version()`.
-- Notes: `0.128.0` is the current exact boundary. Newer stable releases stay `best_effort_forward` until a schema audit confirms compatibility and the boundary is advanced.
+- Latest sweep evidence: source-only export from official `openai/codex` tags to avoid executing downloaded release binaries on macOS. The sweep generated `RolloutLine.json` from `codex-app-server-protocol::generate_internal_json_schema()` for `rust-v0.128.0`, `rust-v0.129.0`, `rust-v0.130.0`, `rust-v0.131.0`, `rust-v0.132.0`, `rust-v0.133.0`, `rust-v0.134.0`, `rust-v0.135.0`, `rust-v0.136.0`, `rust-v0.137.0`, `rust-v0.138.0`, `rust-v0.139.0`, `rust-v0.140.0`, `rust-v0.141.0`, `rust-v0.142.0`, `rust-v0.142.1`, `rust-v0.142.2`, `rust-v0.142.3`, `rust-v0.142.4`, and `rust-v0.142.5`.
+- Notes: The source sweep found upstream schema drift after `0.128.0`. Parser-relevant response item variants were version-gated in Darc: `other` by `0.128.0`, `context_compaction` at `0.129.0`, `compaction_trigger` at `0.131.0`, and `agent_message` at `0.138.0`. Other observed drift in app-server event and metadata definitions is ignored or preserved by the Codex parser.
 
 ## Claude Code
 

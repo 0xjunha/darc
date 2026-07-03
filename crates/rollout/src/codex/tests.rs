@@ -60,6 +60,52 @@ fn parses_turn_lifecycle_rollout_and_records_schema_metadata() -> Result<()> {
 }
 
 #[test]
+fn parses_latest_exact_turn_lifecycle_response_item_variants() -> Result<()> {
+    let rollout = parse_rollout_reader(
+        Cursor::new(
+            r#"{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"fixture","cwd":"/tmp/repo","cli_version":"0.142.5"}}
+{"timestamp":"2026-01-01T00:00:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1","started_at":1767225601}}
+{"timestamp":"2026-01-01T00:00:02Z","type":"event_msg","payload":{"type":"user_message","message":"Inspect repo"}}
+{"timestamp":"2026-01-01T00:00:03Z","type":"event_msg","payload":{"type":"safety_buffering","enabled":false}}
+{"timestamp":"2026-01-01T00:00:04Z","type":"response_item","payload":{"type":"context_compaction","encrypted_content":"ctx"}}
+{"timestamp":"2026-01-01T00:00:05Z","type":"response_item","payload":{"type":"compaction_trigger"}}
+{"timestamp":"2026-01-01T00:00:06Z","type":"response_item","payload":{"type":"agent_message","author":"assistant","recipient":"user","content":[{"type":"text","text":"intermediate"}]}}
+{"timestamp":"2026-01-01T00:00:07Z","type":"response_item","payload":{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"Done"}]}}
+{"timestamp":"2026-01-01T00:00:08Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1","completed_at":1767225608}}
+"#,
+        ),
+        Path::new("fixture.jsonl"),
+    )?;
+
+    assert_eq!(rollout.cli_version, "0.142.5");
+    assert_eq!(rollout.schema_id, "codex.turn_lifecycle");
+    assert_eq!(rollout.determinism, ParseDeterminism::Exact);
+    assert_eq!(rollout.turns.len(), 1);
+    assert_eq!(rollout.turns[0].status, CodexTurnStatus::Completed);
+    assert_eq!(
+        rollout.turns[0].final_answer,
+        Some(CodexTurnMessage {
+            timestamp: "2026-01-01T00:00:07Z".to_owned(),
+            text: "Done".to_owned(),
+        })
+    );
+    assert!(matches!(
+        &rollout.turns[0].steps[0],
+        CodexTurnStep::ProviderResponseItem { item_type, .. } if item_type == "context_compaction"
+    ));
+    assert!(matches!(
+        &rollout.turns[0].steps[1],
+        CodexTurnStep::ProviderResponseItem { item_type, .. } if item_type == "compaction_trigger"
+    ));
+    assert!(matches!(
+        &rollout.turns[0].steps[2],
+        CodexTurnStep::ProviderResponseItem { item_type, .. } if item_type == "agent_message"
+    ));
+
+    Ok(())
+}
+
+#[test]
 fn rejects_structured_tool_output_in_pre_097_epoch() {
     let error = parse_rollout_reader(
             Cursor::new(
